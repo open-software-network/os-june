@@ -57,6 +57,68 @@ async fn generated_note_returns_to_notes_tab() {
 }
 
 #[tokio::test]
+async fn generated_note_appends_to_existing_generated_content() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    repos
+        .set_generated_note(
+            &note.id,
+            Some("Generated title".to_string()),
+            "First recording".to_string(),
+        )
+        .await
+        .expect("first generated note");
+
+    let updated = repos
+        .set_generated_note(&note.id, None, "Second recording".to_string())
+        .await
+        .expect("second generated note");
+
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("First recording\n\nSecond recording")
+    );
+    assert_eq!(updated.edited_content, None);
+}
+
+#[tokio::test]
+async fn generated_note_appends_to_existing_edited_content() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    repos
+        .set_generated_note(
+            &note.id,
+            Some("Generated title".to_string()),
+            "First recording".to_string(),
+        )
+        .await
+        .expect("first generated note");
+    repos
+        .update_note(
+            &note.id,
+            None,
+            Some("User edited first recording".to_string()),
+            Some("notes".to_string()),
+        )
+        .await
+        .expect("edit note");
+
+    let updated = repos
+        .set_generated_note(&note.id, None, "Second recording".to_string())
+        .await
+        .expect("second generated note");
+
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("User edited first recording\n\nSecond recording")
+    );
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("First recording\n\nSecond recording")
+    );
+}
+
+#[tokio::test]
 async fn get_note_returns_transcript_and_audio_metadata() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");

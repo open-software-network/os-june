@@ -269,13 +269,19 @@ impl Repositories {
         let title = if current.title.trim().is_empty() {
             title.unwrap_or_else(|| "New note".to_string())
         } else {
-            current.title
+            current.title.clone()
         };
+        let next_generated_content =
+            append_note_content(current.generated_content, content.clone());
+        let next_edited_content = current
+            .edited_content
+            .map(|edited_content| append_note_content(Some(edited_content), content));
         sqlx::query(
-            "UPDATE notes SET title = ?, generated_content = ?, active_tab = 'notes', processing_status = 'ready', last_error = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE notes SET title = ?, generated_content = ?, edited_content = ?, active_tab = 'notes', processing_status = 'ready', last_error = NULL, updated_at = ? WHERE id = ?",
         )
         .bind(title)
-        .bind(content)
+        .bind(next_generated_content)
+        .bind(next_edited_content)
         .bind(timestamp())
         .bind(note_id)
         .execute(&self.pool)
@@ -563,6 +569,19 @@ impl Repositories {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|row| row.get("folder_id")).collect())
+    }
+}
+
+fn append_note_content(existing: Option<String>, addition: String) -> String {
+    let existing = existing.unwrap_or_default();
+    let existing = existing.trim_end();
+    let addition = addition.trim_start();
+    if existing.is_empty() {
+        addition.to_string()
+    } else if addition.is_empty() {
+        existing.to_string()
+    } else {
+        format!("{existing}\n\n{addition}")
     }
 }
 
