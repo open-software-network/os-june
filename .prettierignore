@@ -1,0 +1,9 @@
+legacy/
+node_modules/
+dist/
+build/
+src-tauri/target/
+src-tauri/gen/
+coverage/
+pnpm-lock.yaml
+*.log

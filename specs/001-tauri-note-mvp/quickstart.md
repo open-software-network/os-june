@@ -19,7 +19,7 @@ pnpm tauri dev
 pnpm test
 pnpm test:rust
 pnpm test:ui
-pnpm tauri build -- --bundles app
+pnpm tauri:build
 ```
 
 Implementation should add scripts with these names or document any final equivalents in `README.md`.
@@ -28,7 +28,7 @@ Implementation should add scripts with these names or document any final equival
 
 1. Confirm `src-tauri/tauri.conf.json` includes a microphone usage description for the app bundle.
 2. Confirm `src-tauri/Entitlements.plist` includes the audio input entitlement needed by signed/sandboxed builds.
-3. Run the dev app from `pnpm tauri dev`.
+3. Run the dev app from `pnpm tauri:dev`.
 4. Start a recording from a draft note and verify macOS prompts for microphone access if permission has not been granted.
 5. If permission is denied, verify the UI shows a recovery hint.
 6. For local reset during development, use macOS Privacy & Security settings or `tccutil reset Microphone <bundle-id>` when appropriate.
