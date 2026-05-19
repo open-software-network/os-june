@@ -16,6 +16,16 @@ export OPENAI_API_KEY="..."
 pnpm tauri:dev
 ```
 
+For local development, the Rust backend also loads `.env` from the repository root:
+
+```sh
+cp .env.example .env
+# edit OPENAI_API_KEY in .env
+pnpm tauri:dev
+```
+
+Restart `pnpm tauri:dev` after changing `.env`; the running Tauri process does not reload provider configuration.
+
 Without `OPENAI_API_KEY`, the app stays in local mock mode for offline recording and recovery verification. To force mock mode even when a key is present:
 
 ```sh

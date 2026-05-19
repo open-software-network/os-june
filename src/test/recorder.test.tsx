@@ -52,6 +52,27 @@ describe("RecorderBar", () => {
     expect(onResume).toHaveBeenCalledWith("session-1");
   });
 
+  it("disables recorder actions while finalizing", () => {
+    render(
+      <RecorderBar
+        status={{
+          sessionId: "session-1",
+          state: "validating",
+          elapsedMs: 2_000,
+          level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+          silenceWarning: false,
+          bytesWritten: 1024,
+        }}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Finalizing" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Working" })).toBeDisabled();
+  });
+
   it("warns when the microphone appears silent", () => {
     render(
       <RecorderBar

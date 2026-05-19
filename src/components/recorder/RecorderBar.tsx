@@ -15,16 +15,24 @@ export function RecorderBar({
   onDone,
 }: RecorderBarProps) {
   const paused = status.state === "paused";
+  const controlsEnabled =
+    status.state === "recording" || status.state === "paused";
+  const pauseLabel = paused
+    ? "Resume"
+    : status.state === "recording"
+      ? "Pause"
+      : "Finalizing";
 
   return (
     <div className="recorder-bar" data-state={status.state}>
       <button
         type="button"
+        disabled={!controlsEnabled}
         onClick={() =>
           paused ? onResume(status.sessionId) : onPause(status.sessionId)
         }
       >
-        {paused ? "Resume" : "Pause"}
+        {pauseLabel}
       </button>
       <div className="recorder-meter">
         <span className="elapsed">{formatElapsed(status.elapsedMs)}</span>
@@ -33,9 +41,10 @@ export function RecorderBar({
       <button
         type="button"
         className="done-button"
+        disabled={!controlsEnabled}
         onClick={() => onDone(status.sessionId)}
       >
-        Done
+        {controlsEnabled ? "Done" : "Working"}
       </button>
       {status.silenceWarning ? (
         <p className="recorder-warning" role="status">

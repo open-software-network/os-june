@@ -6,6 +6,7 @@ pub mod domain;
 pub mod providers;
 
 pub fn run() {
+    providers::load_local_env();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,

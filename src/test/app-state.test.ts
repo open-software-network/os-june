@@ -88,4 +88,23 @@ describe("notesReducer", () => {
     expect(state.selectedNoteId).toBe("note-1");
     expect(state.recordingStatus).toEqual(status);
   });
+
+  it("clears recording status after finish processing starts", () => {
+    const status: RecordingStatusDto = {
+      sessionId: "session-1",
+      state: "recording",
+      elapsedMs: 1250,
+      level: { peak: 0.4, rms: 0.2, recentPeaks: [0.1, 0.4] },
+      silenceWarning: false,
+      bytesWritten: 4096,
+    };
+    const recording = notesReducer(createInitialState(), {
+      type: "recordingStatusChanged",
+      status,
+    });
+
+    const cleared = notesReducer(recording, { type: "recordingStatusCleared" });
+
+    expect(cleared.recordingStatus).toBeUndefined();
+  });
 });

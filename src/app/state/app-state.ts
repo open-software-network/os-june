@@ -23,6 +23,7 @@ export type NotesAction =
   | { type: "noteLoaded"; note: NoteDto }
   | { type: "noteUpdated"; note: NoteDto }
   | { type: "recordingStatusChanged"; status: RecordingStatusDto }
+  | { type: "recordingStatusCleared" }
   | { type: "folderCreated"; folder: FolderDto }
   | { type: "folderSelected"; folderId?: string }
   | { type: "notesLoaded"; notes: NoteListItemDto[] }
@@ -72,6 +73,11 @@ export function notesReducer(
       return {
         ...state,
         recordingStatus: action.status,
+      };
+    case "recordingStatusCleared":
+      return {
+        ...state,
+        recordingStatus: undefined,
       };
     case "folderCreated":
       return {

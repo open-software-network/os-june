@@ -2595,6 +2595,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "cpal",
+ "dotenvy",
  "hound",
  "reqwest 0.12.28",
  "serde",

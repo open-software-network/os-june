@@ -49,7 +49,11 @@ export function App() {
     const interval = window.setInterval(() => {
       getRecordingStatus(sessionId)
         .then((status) => dispatch({ type: "recordingStatusChanged", status }))
-        .catch((err: unknown) => setError(messageFromError(err)));
+        .catch((err: unknown) => {
+          if (!isAppErrorCode(err, "recording_not_found")) {
+            setError(messageFromError(err));
+          }
+        });
     }, 250);
     return () => window.clearInterval(interval);
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
@@ -131,14 +135,18 @@ export function App() {
   }
 
   async function handleFinishRecording(sessionId: string) {
+    if (state.recordingStatus?.sessionId === sessionId) {
+      dispatch({
+        type: "recordingStatusChanged",
+        status: { ...state.recordingStatus, state: "validating" },
+      });
+    }
     try {
       const result = await finishRecording(sessionId);
       dispatch({ type: "noteUpdated", note: result.note });
-      dispatch({
-        type: "recordingStatusChanged",
-        status: recordingToStatus(result.recording),
-      });
+      dispatch({ type: "recordingStatusCleared" });
     } catch (err) {
+      dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     }
   }
@@ -264,4 +272,13 @@ function messageFromError(err: unknown) {
     return String((err as { message: unknown }).message);
   }
   return String(err);
+}
+
+function isAppErrorCode(err: unknown, code: string) {
+  return (
+    !!err &&
+    typeof err === "object" &&
+    "code" in err &&
+    String((err as { code: unknown }).code) === code
+  );
 }
