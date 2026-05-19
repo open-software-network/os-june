@@ -9,6 +9,26 @@ pnpm install
 pnpm tauri:dev
 ```
 
+Real transcription and note generation require an OpenAI API key in the shell that launches Tauri:
+
+```sh
+export OPENAI_API_KEY="..."
+pnpm tauri:dev
+```
+
+Without `OPENAI_API_KEY`, the app stays in local mock mode for offline recording and recovery verification. To force mock mode even when a key is present:
+
+```sh
+OS_NOTETAKER_PROVIDER=mock pnpm tauri:dev
+```
+
+Optional model overrides:
+
+```sh
+export OS_NOTETAKER_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+export OS_NOTETAKER_GENERATION_MODEL=gpt-5.2
+```
+
 The app data directory is resolved by Tauri at runtime. In development, inspect the platform app data path for:
 
 - `notes.sqlite3`

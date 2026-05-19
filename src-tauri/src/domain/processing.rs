@@ -20,8 +20,9 @@ pub async fn process_saved_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
+    let provider = crate::providers::configured_provider();
     let transcript = match transcribe_saved_audio(TranscriptionRequest {
-        provider: "mock".to_string(),
+        provider: provider.clone(),
         audio_path,
         title: title.clone(),
     })
@@ -53,7 +54,7 @@ pub async fn process_saved_audio(
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider: "mock".to_string(),
+        provider,
         title,
         transcript: transcript.text,
         language: transcript.language,

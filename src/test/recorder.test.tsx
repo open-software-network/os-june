@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RecorderBar } from "../components/recorder/RecorderBar";
+import { visualPeakScale } from "../components/recorder/Waveform";
 
 describe("RecorderBar", () => {
   it("shows elapsed time, waveform evidence, and pause/done actions while recording", () => {
@@ -71,5 +72,11 @@ describe("RecorderBar", () => {
     expect(
       screen.getByText("Microphone input appears silent"),
     ).toBeInTheDocument();
+  });
+
+  it("amplifies normal speech peaks for visible meter movement", () => {
+    expect(visualPeakScale(0.02)).toBeGreaterThan(0.4);
+    expect(visualPeakScale(0.001)).toBe(0.08);
+    expect(visualPeakScale(0.9)).toBe(1);
   });
 });

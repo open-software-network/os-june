@@ -44,7 +44,7 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
         folders,
         notes,
         active_recoveries,
-        provider_configured: false,
+        provider_configured: crate::providers::openai_provider_configured(),
     })
 }
 
