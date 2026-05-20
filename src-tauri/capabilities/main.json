@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "Main window access to scoped OS Notetaker commands.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

@@ -1,4 +1,6 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useReducer, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
 import { Sidebar } from "../components/sidebar/Sidebar";
@@ -233,7 +235,12 @@ export function App() {
       className="app-shell"
       data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
     >
-      <div className="titlebar-drag" aria-hidden data-tauri-drag-region />
+      <div
+        className="titlebar-drag"
+        aria-hidden
+        data-tauri-drag-region
+        onPointerDown={handleTitlebarPointerDown}
+      />
       <Sidebar
         folders={state.folders}
         notes={state.notes}
@@ -337,6 +344,16 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+  if (event.button !== 0 || event.detail > 1) return;
+  event.preventDefault();
+  void getCurrentWindow()
+    .startDragging()
+    .catch((error: unknown) =>
+      console.warn("Failed to start window drag", error),
+    );
 }
 
 function recordingToStatus(recording: {
