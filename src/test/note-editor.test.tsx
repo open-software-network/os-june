@@ -23,8 +23,11 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
 
 const props = {
   folders: [],
+  sourceMode: "microphoneOnly" as const,
+  checkingSourceReadiness: false,
   onTitleChange: vi.fn(),
   onContentChange: vi.fn(),
+  onSourceModeChange: vi.fn(),
   onStartRecording: vi.fn(),
   onPauseRecording: vi.fn(),
   onResumeRecording: vi.fn(),
@@ -113,6 +116,7 @@ describe("NoteEditor", () => {
           lastError: "Transcription failed",
           audio: {
             id: "audio-1",
+            source: "microphone",
             format: "wav",
             durationMs: 1200,
             sizeBytes: 2048,

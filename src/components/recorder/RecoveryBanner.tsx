@@ -22,6 +22,16 @@ export function RecoveryBanner({
           {recovery.bytesFound} bytes are available from an interrupted
           recording.
         </p>
+        {recovery.sources?.length ? (
+          <ul className="recovery-sources">
+            {recovery.sources.map((source) => (
+              <li key={source.source}>
+                {source.source === "system" ? "System audio" : "Microphone"}:{" "}
+                {source.bytesFound} bytes
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
       <div className="recovery-actions">
         <button type="button" onClick={() => onValidate(recovery.sessionId)}>

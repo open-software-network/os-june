@@ -20,6 +20,7 @@ pub fn run() {
             commands::assign_note_to_folder,
             commands::remove_note_from_folder,
             commands::get_microphone_permission_state,
+            commands::check_recording_source_readiness,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,

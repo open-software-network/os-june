@@ -37,6 +37,9 @@
       "icons/icon.png"
     ],
     "targets": ["app"],
+    "resources": {
+      "../.tauri-helper/OS Notetaker Audio Capture.app": "native/bin/OS Notetaker Audio Capture.app"
+    },
     "macOS": {
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",

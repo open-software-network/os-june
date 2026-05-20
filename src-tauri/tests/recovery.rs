@@ -1,6 +1,7 @@
 use os_notetaker_lib::{
     audio::recovery::scan_recoverable_recordings,
     db::{migrations::run_migrations, repositories::Repositories},
+    domain::types::RecordingSourceMode,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 use tempfile::tempdir;
@@ -26,6 +27,7 @@ async fn scan_surfaces_interrupted_recording_with_audio_bytes() {
         .create_recording_session(
             &note.id,
             "session-1",
+            RecordingSourceMode::MicrophoneOnly,
             &partial.to_string_lossy(),
             &dir.path().join("session.wav").to_string_lossy(),
             None,
@@ -53,6 +55,7 @@ async fn scan_ignores_missing_audio_bytes() {
         .create_recording_session(
             &note.id,
             "session-1",
+            RecordingSourceMode::MicrophoneOnly,
             &dir.path().join("missing.partial.wav").to_string_lossy(),
             &dir.path().join("missing.wav").to_string_lossy(),
             None,

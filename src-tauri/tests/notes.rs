@@ -1,4 +1,7 @@
-use os_notetaker_lib::db::{migrations::run_migrations, repositories::Repositories};
+use os_notetaker_lib::{
+    db::{migrations::run_migrations, repositories::Repositories},
+    domain::types::RecordingSourceMode,
+};
 use sqlx::sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -127,6 +130,7 @@ async fn get_note_returns_transcript_and_audio_metadata() {
         .create_recording_session(
             &note.id,
             session_id,
+            RecordingSourceMode::MicrophoneOnly,
             "/tmp/partial.wav",
             "/tmp/final.wav",
             None,

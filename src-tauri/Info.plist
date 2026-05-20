@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>OS Notetaker records microphone audio locally so it can transcribe and generate your notes.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>OS Notetaker records system audio locally when you choose microphone plus system audio for a note.</string>
 </dict>
 </plist>

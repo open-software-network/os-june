@@ -161,6 +161,7 @@ input:focus-visible,
   right: 0;
   height: var(--titlebar-h);
   z-index: 100;
+  background: transparent;
   -webkit-app-region: drag;
 }
 
@@ -774,7 +775,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-size: var(--fs-display);
   font-weight: 400;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
   line-height: 1.15;
 }
 
@@ -874,6 +875,37 @@ input:focus-visible,
   margin: 0;
 }
 
+.source-transcripts {
+  display: grid;
+  gap: var(--sp-6);
+}
+
+.source-transcripts section {
+  display: grid;
+  gap: var(--sp-2);
+  max-width: 720px;
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 42%, transparent);
+}
+
+.source-transcripts h3 {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.source-transcripts p {
+  margin: 0;
+}
+
+.source-transcript-error {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
+  font-size: var(--fs-sm);
+}
+
 /* Note preview (rendered markdown) --------------------------------- */
 
 .note-preview-wrap {
@@ -898,7 +930,7 @@ input:focus-visible,
   font-family: var(--font-sans);
   font-size: 16px;
   font-weight: 600;
-  letter-spacing: -0.003em;
+  letter-spacing: 0;
   line-height: 1.3;
 }
 
@@ -1091,8 +1123,12 @@ input:focus-visible,
   bottom: var(--sp-5);
   z-index: 3;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: center;
+  gap: var(--sp-3);
   min-height: 56px;
+  padding: 0 var(--sp-4);
   pointer-events: none;
 }
 
@@ -1100,18 +1136,81 @@ input:focus-visible,
   pointer-events: auto;
 }
 
+.source-mode-control {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+}
+
+.source-mode-options {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(128px, max-content));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--card) 86%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+
+.source-mode-option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-md);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    opacity var(--t-fast) var(--ease-out);
+}
+
+.source-mode-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.source-mode-option[data-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: var(--shadow-sm);
+}
+
+.source-mode-option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.source-readiness-warning {
+  max-width: min(520px, calc(100vw - 64px));
+  color: color-mix(in oklch, var(--destructive) 64%, var(--foreground));
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.source-readiness-warning p {
+  margin: 0;
+}
+
 .record-shell {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 52px;
+  min-height: 52px;
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
   background: var(--card);
   box-shadow: var(--shadow-md);
-  overflow: hidden;
+  overflow: visible;
   transition:
     width var(--t-slow) var(--ease-spring),
     box-shadow var(--t-med) var(--ease-out);
@@ -1120,12 +1219,14 @@ input:focus-visible,
 
 .record-shell[data-state="idle"] {
   width: 64px;
+  height: 52px;
+  overflow: hidden;
 }
 
 .record-shell[data-state="recording"],
 .record-shell[data-state="paused"],
 .record-shell[data-state="validating"] {
-  width: min(440px, calc(100% - var(--sp-8)));
+  width: min(560px, calc(100% - var(--sp-8)));
 }
 
 /* Icon-only record trigger. Hover is an inset wash within the shell's
@@ -1147,6 +1248,15 @@ input:focus-visible,
   background: var(--muted);
 }
 
+.record-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.record-button:disabled:hover {
+  background: transparent;
+}
+
 .record-button .record-dot {
   width: 9px;
   height: 9px;
@@ -1162,6 +1272,41 @@ input:focus-visible,
   align-items: center;
   width: 100%;
   padding: 0 2px;
+}
+
+.source-status-list {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.source-status {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) 72px;
+  gap: var(--sp-2);
+  align-items: center;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 42%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.source-status .waveform {
+  height: 20px;
+}
+
+.source-status .waveform span {
+  height: 18px;
+}
+
+.source-warning {
+  grid-column: 1 / -1;
+  color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
 }
 
 .recorder-icon-button,

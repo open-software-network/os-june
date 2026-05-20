@@ -31,6 +31,8 @@ export type NoteListItemDto = {
 export type TranscriptDto = {
   id: string;
   text: string;
+  sourceMode?: RecordingSourceMode;
+  source?: RecordingSource;
   language?: string;
   status: "pending" | "running" | "succeeded" | "failed";
   lastError?: string;
@@ -45,36 +47,79 @@ export type AudioLevelDto = {
 export type RecordingState =
   | "idle"
   | "permissionDenied"
+  | "starting"
   | "recording"
   | "paused"
   | "finalizing"
   | "validating"
+  | "partiallyValid"
   | "invalid"
   | "ready"
   | "failed"
   | "recoverable";
 
+export type RecordingSourceMode = "microphoneOnly" | "microphonePlusSystem";
+export type RecordingSource = "microphone" | "system";
+
+export type SourceState =
+  | "pending"
+  | "permissionDenied"
+  | "unavailable"
+  | "starting"
+  | "recording"
+  | "paused"
+  | "finalizing"
+  | "finalized"
+  | "valid"
+  | "invalid"
+  | "recoverable"
+  | "failed";
+
+export type SourceStatusDto = {
+  source: RecordingSource;
+  state: SourceState;
+  elapsedMs: number;
+  bytesWritten: number;
+  level: AudioLevelDto;
+  silenceWarning: boolean;
+  pathFinalized: boolean;
+  lastError?: string;
+};
+
+export type SourceWarningDto = {
+  source: RecordingSource;
+  code: string;
+  message: string;
+};
+
 export type RecordingStatusDto = {
   sessionId: string;
+  sourceMode?: RecordingSourceMode;
   state: RecordingState;
   elapsedMs: number;
   level: AudioLevelDto;
   silenceWarning: boolean;
   bytesWritten: number;
+  sources?: SourceStatusDto[];
+  warnings?: SourceWarningDto[];
 };
 
 export type RecordingSessionDto = {
   id: string;
   noteId: string;
+  sourceMode?: RecordingSourceMode;
   state: RecordingState;
   startedAt: string;
   elapsedMs: number;
   deviceLabel?: string;
   level: AudioLevelDto;
+  sources?: SourceStatusDto[];
+  warnings?: SourceWarningDto[];
 };
 
 export type AudioArtifactDto = {
   id: string;
+  source?: RecordingSource;
   format: "wav";
   durationMs: number;
   sizeBytes: number;
@@ -86,8 +131,10 @@ export type NoteDto = NoteListItemDto & {
   generatedContent?: string;
   editedContent?: string;
   transcript?: TranscriptDto;
+  sourceTranscripts?: TranscriptDto[];
   recording?: RecordingSessionDto;
   audio?: AudioArtifactDto;
+  audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
 };
@@ -95,10 +142,20 @@ export type NoteDto = NoteListItemDto & {
 export type RecoverableRecordingDto = {
   sessionId: string;
   noteId: string;
+  sourceMode?: RecordingSourceMode;
   startedAt: string;
   partialPathPresent: boolean;
   finalPathPresent: boolean;
   bytesFound: number;
+  sources?: RecoverableSourceDto[];
+};
+
+export type RecoverableSourceDto = {
+  source: RecordingSource;
+  partialPathPresent: boolean;
+  finalPathPresent: boolean;
+  bytesFound: number;
+  lastError?: string;
 };
 
 export type BootstrapResponse = {
@@ -121,16 +178,60 @@ export type AudioValidationDto = {
   warnings: string[];
 };
 
+export type SourceValidationDto = {
+  source: RecordingSource;
+  fileExists: boolean;
+  nonZeroSize: boolean;
+  readableAudio: boolean;
+  expectedDurationMs: number;
+  actualDurationMs?: number;
+  durationWithinTolerance: boolean;
+  nonSilentSignal: boolean;
+  peakAmplitude?: number;
+  rmsAmplitude?: number;
+  warnings: string[];
+  error?: string;
+};
+
 export type FinishRecordingResponse = {
   note: NoteDto;
   recording: RecordingSessionDto;
   validation: AudioValidationDto;
+  validations?: SourceValidationDto[];
   processingStarted: boolean;
+  warnings?: SourceWarningDto[];
 };
 
 export type ListNotesResponse = {
   items: NoteListItemDto[];
   nextCursor?: string;
+};
+
+export type SourceReadinessDto = {
+  source: RecordingSource;
+  required: boolean;
+  ready: boolean;
+  permissionState:
+    | "unknown"
+    | "granted"
+    | "denied"
+    | "restricted"
+    | "unsupported";
+  deviceAvailable: boolean;
+  captureAvailable: boolean;
+  recoveryAction?:
+    | "openMicrophoneSettings"
+    | "openSystemAudioSettings"
+    | "upgradeMacos"
+    | "restartApp";
+  message?: string;
+};
+
+export type RecordingSourceReadinessDto = {
+  sourceMode: RecordingSourceMode;
+  ready: boolean;
+  checkedAt?: string;
+  sources: SourceReadinessDto[];
 };
 
 export async function bootstrapApp() {
@@ -182,9 +283,23 @@ export async function deleteNote(noteId: string) {
   return invoke<void>("delete_note", { request: { noteId } });
 }
 
-export async function startRecording(noteId: string) {
+export async function checkRecordingSourceReadiness(
+  sourceMode: RecordingSourceMode,
+) {
+  return invoke<RecordingSourceReadinessDto>(
+    "check_recording_source_readiness",
+    {
+      request: { sourceMode },
+    },
+  );
+}
+
+export async function startRecording(
+  noteId: string,
+  sourceMode: RecordingSourceMode = "microphoneOnly",
+) {
   return invoke<RecordingSessionDto>("start_recording", {
-    request: { noteId },
+    request: { noteId, sourceMode },
   });
 }
 

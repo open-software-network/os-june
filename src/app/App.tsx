@@ -5,6 +5,7 @@ import { Sidebar } from "../components/sidebar/Sidebar";
 import {
   assignNoteToFolder,
   bootstrapApp,
+  checkRecordingSourceReadiness,
   createFolder,
   createNote,
   deleteNote,
@@ -21,6 +22,10 @@ import {
   updateNote,
 } from "../lib/tauri";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
+import type {
+  RecordingSourceMode,
+  RecordingSourceReadinessDto,
+} from "../lib/tauri";
 import { createInitialState, notesReducer } from "./state/app-state";
 
 export function App() {
@@ -31,6 +36,11 @@ export function App() {
   );
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sourceMode, setSourceMode] =
+    useState<RecordingSourceMode>("microphoneOnly");
+  const [sourceReadiness, setSourceReadiness] =
+    useState<RecordingSourceReadinessDto>();
+  const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const selectedNote = state.selectedNote;
 
   useEffect(() => {
@@ -45,6 +55,24 @@ export function App() {
       })
       .catch((err: unknown) => setError(messageFromError(err)));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCheckingSourceReadiness(true);
+    checkRecordingSourceReadiness(sourceMode)
+      .then((readiness) => {
+        if (!cancelled) setSourceReadiness(readiness);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingSourceReadiness(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceMode]);
 
   useEffect(() => {
     if (
@@ -151,13 +179,25 @@ export function App() {
   async function handleStartRecording() {
     if (!selectedNote) return;
     try {
-      const recording = await startRecording(selectedNote.id);
+      setCheckingSourceReadiness(true);
+      const readiness = await checkRecordingSourceReadiness(sourceMode);
+      setSourceReadiness(readiness);
+      if (!readiness.ready) {
+        setError(
+          readiness.sources.find((source) => source.required && !source.ready)
+            ?.message ?? "The selected recording sources are not ready.",
+        );
+        return;
+      }
+      const recording = await startRecording(selectedNote.id, sourceMode);
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
       });
     } catch (err) {
       setError(messageFromError(err));
+    } finally {
+      setCheckingSourceReadiness(false);
     }
   }
 
@@ -193,7 +233,7 @@ export function App() {
       className="app-shell"
       data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
     >
-      <div className="titlebar-drag" aria-hidden />
+      <div className="titlebar-drag" aria-hidden data-tauri-drag-region />
       <Sidebar
         folders={state.folders}
         notes={state.notes}
@@ -209,87 +249,91 @@ export function App() {
         onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
       />
       <section className="main-panel">
-       <div className="main-panel-body">
-        {error ? <p className="error-banner">{error}</p> : null}
-        <RecoveryBanner
-          recoveries={state.activeRecoveries}
-          onValidate={(sessionId) =>
-            void recoverRecording(sessionId, "validate")
-              .then((note) => {
-                dispatch({ type: "noteUpdated", note });
-                dispatch({ type: "recoveriesUpdated", recoveries: [] });
-              })
-              .catch((err: unknown) => setError(messageFromError(err)))
-          }
-          onDiscard={(sessionId) =>
-            void recoverRecording(sessionId, "discard")
-              .then((note) => {
-                dispatch({ type: "noteUpdated", note });
-                dispatch({ type: "recoveriesUpdated", recoveries: [] });
-              })
-              .catch((err: unknown) => setError(messageFromError(err)))
-          }
-        />
-        <div className="workspace">
-          {selectedNote ? (
-            <NoteEditor
-              note={selectedNote}
-              folders={state.folders}
-              recordingStatus={state.recordingStatus}
-              onTitleChange={(title) => void handleUpdateNote({ title })}
-              onContentChange={(editedContent) =>
-                void handleUpdateNote({ editedContent })
-              }
-              onTabChange={(activeTab) =>
-                void updateNote({ noteId: selectedNote.id, activeTab }).then(
-                  (note) => dispatch({ type: "noteUpdated", note }),
-                )
-              }
-              onStartRecording={() => void handleStartRecording()}
-              onPauseRecording={(sessionId) =>
-                void pauseRecording(sessionId).then((status) =>
-                  dispatch({ type: "recordingStatusChanged", status }),
-                )
-              }
-              onResumeRecording={(sessionId) =>
-                void resumeRecording(sessionId).then((status) =>
-                  dispatch({ type: "recordingStatusChanged", status }),
-                )
-              }
-              onFinishRecording={(sessionId) =>
-                void handleFinishRecording(sessionId)
-              }
-              onRetry={() =>
-                selectedNote
-                  ? void retryProcessing(selectedNote.id).then((note) =>
-                      dispatch({ type: "noteUpdated", note }),
-                    )
-                  : undefined
-              }
-              onAssignFolder={(folderId) =>
-                void assignNoteToFolder(selectedNote.id, folderId).then(
-                  (note) => dispatch({ type: "noteUpdated", note }),
-                )
-              }
-              onRemoveFolder={(folderId) =>
-                void removeNoteFromFolder(selectedNote.id, folderId).then(
-                  (note) => dispatch({ type: "noteUpdated", note }),
-                )
-              }
-            />
-          ) : (
-            <section className="editor-empty">
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => void handleCreateNote()}
-              >
-                New note
-              </button>
-            </section>
-          )}
+        <div className="main-panel-body">
+          {error ? <p className="error-banner">{error}</p> : null}
+          <RecoveryBanner
+            recoveries={state.activeRecoveries}
+            onValidate={(sessionId) =>
+              void recoverRecording(sessionId, "validate")
+                .then((note) => {
+                  dispatch({ type: "noteUpdated", note });
+                  dispatch({ type: "recoveriesUpdated", recoveries: [] });
+                })
+                .catch((err: unknown) => setError(messageFromError(err)))
+            }
+            onDiscard={(sessionId) =>
+              void recoverRecording(sessionId, "discard")
+                .then((note) => {
+                  dispatch({ type: "noteUpdated", note });
+                  dispatch({ type: "recoveriesUpdated", recoveries: [] });
+                })
+                .catch((err: unknown) => setError(messageFromError(err)))
+            }
+          />
+          <div className="workspace">
+            {selectedNote ? (
+              <NoteEditor
+                note={selectedNote}
+                folders={state.folders}
+                recordingStatus={state.recordingStatus}
+                sourceMode={sourceMode}
+                sourceReadiness={sourceReadiness}
+                checkingSourceReadiness={checkingSourceReadiness}
+                onTitleChange={(title) => void handleUpdateNote({ title })}
+                onContentChange={(editedContent) =>
+                  void handleUpdateNote({ editedContent })
+                }
+                onSourceModeChange={setSourceMode}
+                onTabChange={(activeTab) =>
+                  void updateNote({ noteId: selectedNote.id, activeTab }).then(
+                    (note) => dispatch({ type: "noteUpdated", note }),
+                  )
+                }
+                onStartRecording={() => void handleStartRecording()}
+                onPauseRecording={(sessionId) =>
+                  void pauseRecording(sessionId).then((status) =>
+                    dispatch({ type: "recordingStatusChanged", status }),
+                  )
+                }
+                onResumeRecording={(sessionId) =>
+                  void resumeRecording(sessionId).then((status) =>
+                    dispatch({ type: "recordingStatusChanged", status }),
+                  )
+                }
+                onFinishRecording={(sessionId) =>
+                  void handleFinishRecording(sessionId)
+                }
+                onRetry={() =>
+                  selectedNote
+                    ? void retryProcessing(selectedNote.id).then((note) =>
+                        dispatch({ type: "noteUpdated", note }),
+                      )
+                    : undefined
+                }
+                onAssignFolder={(folderId) =>
+                  void assignNoteToFolder(selectedNote.id, folderId).then(
+                    (note) => dispatch({ type: "noteUpdated", note }),
+                  )
+                }
+                onRemoveFolder={(folderId) =>
+                  void removeNoteFromFolder(selectedNote.id, folderId).then(
+                    (note) => dispatch({ type: "noteUpdated", note }),
+                  )
+                }
+              />
+            ) : (
+              <section className="editor-empty">
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => void handleCreateNote()}
+                >
+                  New note
+                </button>
+              </section>
+            )}
+          </div>
         </div>
-       </div>
       </section>
     </main>
   );
@@ -297,17 +341,23 @@ export function App() {
 
 function recordingToStatus(recording: {
   id: string;
+  sourceMode?: RecordingStatusDto["sourceMode"];
   state: RecordingStatusDto["state"];
   elapsedMs: number;
   level: RecordingStatusDto["level"];
+  sources?: RecordingStatusDto["sources"];
+  warnings?: RecordingStatusDto["warnings"];
 }): RecordingStatusDto {
   return {
     sessionId: recording.id,
+    sourceMode: recording.sourceMode,
     state: recording.state,
     elapsedMs: recording.elapsedMs,
     level: recording.level,
     silenceWarning: false,
     bytesWritten: 0,
+    sources: recording.sources,
+    warnings: recording.warnings,
   };
 }
 

@@ -6,17 +6,22 @@ use crate::{
             resume_capture, start_capture,
         },
         recovery::scan_recoverable_recordings,
-        validation::{checksum_file, validate_audio_artifact, AudioValidationConfig},
+        validation::{
+            checksum_file, source_audio_passes_validation, validate_audio_artifact,
+            AudioValidationConfig,
+        },
     },
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
-        processing::{process_saved_audio, retry_from_saved_audio},
+        processing::{process_saved_audio, process_saved_source_audio, retry_from_saved_audio},
         types::{
-            AppError, AssignNoteToFolderRequest, BootstrapResponse, CreateFolderRequest,
-            CreateNoteRequest, DeleteNoteRequest, FinishRecordingResponse, GetNoteRequest,
-            ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
-            RecordingSessionDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
-            RetryProcessingRequest, SessionRequest, StartRecordingRequest, UpdateNoteRequest,
+            AppError, AssignNoteToFolderRequest, BootstrapResponse,
+            CheckRecordingSourceReadinessRequest, CreateFolderRequest, CreateNoteRequest,
+            DeleteNoteRequest, FinishRecordingResponse, GetNoteRequest, ListNotesRequest,
+            ListNotesResponse, MicrophonePermissionResponse, NoteDto, RecordingSessionDto,
+            RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
+            RemoveNoteFromFolderRequest, RetryProcessingRequest, SessionRequest,
+            SourceReadinessDto, StartRecordingRequest, UpdateNoteRequest,
         },
     },
 };
@@ -163,30 +168,63 @@ pub async fn get_microphone_permission_state() -> Result<MicrophonePermissionRes
 }
 
 #[tauri::command]
+pub async fn check_recording_source_readiness(
+    request: CheckRecordingSourceReadinessRequest,
+) -> Result<RecordingSourceReadinessDto, AppError> {
+    Ok(recording_source_readiness(request.source_mode))
+}
+
+#[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
     request: StartRecordingRequest,
 ) -> Result<RecordingSessionDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
-    let started = start_capture(&paths, request.note_id.clone())?;
+    let source_mode = request.source_mode.unwrap_or_default();
+    let readiness = recording_source_readiness(source_mode);
+    if !readiness.ready {
+        let message = readiness
+            .sources
+            .iter()
+            .find(|source| source.required && !source.ready)
+            .and_then(|source| source.message.clone())
+            .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
+        return Err(AppError::new("source_not_ready", message));
+    }
+    let started = start_capture(&paths, request.note_id.clone(), source_mode)?;
     repos
         .create_recording_session(
             &request.note_id,
             &started.session_id,
+            source_mode,
             &started.partial_path.to_string_lossy(),
             &started.final_path.to_string_lossy(),
             started.device_label.clone(),
         )
         .await?;
+    for source in &started.sources {
+        repos
+            .create_pending_source_artifact(
+                &request.note_id,
+                &started.session_id,
+                source.source.as_db(),
+                &source.partial_path.to_string_lossy(),
+                &source.final_path.to_string_lossy(),
+            )
+            .await?;
+    }
     Ok(RecordingSessionDto {
         id: started.session_id,
         note_id: request.note_id,
+        source_mode,
         state: started.status.state,
         started_at: crate::db::repositories::timestamp(),
         elapsed_ms: started.status.elapsed_ms,
         device_label: started.device_label,
         level: started.status.level,
+        sources: started.status.sources,
+        warnings: Vec::new(),
     })
 }
 
@@ -215,16 +253,103 @@ pub async fn finish_recording(
     repos
         .add_checkpoint(&finished.session_id, "done", None)
         .await?;
-    let validation = validate_audio_artifact(
-        &finished.final_path,
-        finished.elapsed_ms,
-        AudioValidationConfig::default(),
-    )
-    .map_err(|error| AppError::new("audio_validation_failed", error.to_string()))?;
-    let checksum = checksum_file(&finished.final_path).unwrap_or_default();
-    let file_size = std::fs::metadata(&finished.final_path)
-        .map(|metadata| metadata.len() as i64)
-        .unwrap_or_default();
+    let source_artifacts = repos
+        .source_artifacts_for_session(&finished.session_id)
+        .await?;
+    let mut source_validations = Vec::new();
+    let mut valid_sources = Vec::new();
+    let mut warnings = Vec::new();
+    let mut primary_validation = None;
+    let mut primary_checksum = String::new();
+    let mut primary_file_size = 0;
+    for source in &finished.sources {
+        let validation = validate_audio_artifact(
+            &source.final_path,
+            source.elapsed_ms,
+            AudioValidationConfig::default(),
+        )
+        .map_err(|error| AppError::new("audio_validation_failed", error.to_string()))?;
+        let checksum = checksum_file(&source.final_path).unwrap_or_default();
+        let file_size = std::fs::metadata(&source.final_path)
+            .map(|metadata| metadata.len() as i64)
+            .unwrap_or_default();
+        if source.source == RecordingSource::Microphone {
+            primary_validation = Some(validation.clone());
+            primary_checksum = checksum.clone();
+            primary_file_size = file_size;
+        }
+        let valid = source_audio_passes_validation(source.source, &validation);
+        if let Some(artifact) = source_artifacts
+            .iter()
+            .find(|artifact| artifact.source == source.source.as_db())
+        {
+            repos
+                .finalize_source_artifact(
+                    &artifact.id,
+                    if valid { "valid" } else { "invalid" },
+                    validation.actual_duration_ms,
+                    file_size,
+                    &checksum,
+                    source.elapsed_ms,
+                    Some(serde_json::to_string(&validation).unwrap_or_default()),
+                    if valid {
+                        None
+                    } else {
+                        Some(validation.warnings.join("; "))
+                    },
+                )
+                .await?;
+            if valid {
+                valid_sources.push((
+                    artifact.id.clone(),
+                    source.source.as_db().to_string(),
+                    source.final_path.clone(),
+                ));
+            }
+        }
+        if !valid {
+            warnings.push(crate::domain::types::SourceWarningDto {
+                source: source.source,
+                code: "source_validation_failed".to_string(),
+                message: format!(
+                    "{} source did not pass validation: {}",
+                    source.source.as_db(),
+                    validation.warnings.join("; ")
+                ),
+            });
+        }
+        source_validations.push(crate::domain::types::SourceValidationDto {
+            source: source.source,
+            file_exists: validation.file_exists,
+            non_zero_size: validation.non_zero_size,
+            readable_audio: validation.readable_audio,
+            expected_duration_ms: validation.expected_duration_ms,
+            actual_duration_ms: Some(validation.actual_duration_ms),
+            duration_within_tolerance: validation.duration_within_tolerance,
+            non_silent_signal: validation.non_silent_signal,
+            peak_amplitude: Some(validation.peak_amplitude),
+            rms_amplitude: Some(validation.rms_amplitude),
+            warnings: validation.warnings.clone(),
+            error: if valid {
+                None
+            } else {
+                Some(validation.warnings.join("; "))
+            },
+        });
+    }
+    let validation =
+        primary_validation.unwrap_or_else(|| crate::domain::types::AudioValidationDto {
+            file_exists: false,
+            non_zero_size: false,
+            readable_audio: false,
+            expected_duration_ms: finished.elapsed_ms,
+            actual_duration_ms: 0,
+            duration_within_tolerance: false,
+            non_silent_signal: false,
+            peak_amplitude: 0.0,
+            rms_amplitude: 0.0,
+            warnings: vec!["No microphone validation was available.".to_string()],
+        });
     repos
         .update_recording_session(
             &finished.session_id,
@@ -234,9 +359,9 @@ pub async fn finish_recording(
                 "invalid"
             },
             finished.elapsed_ms,
-            Some(file_size),
+            Some(primary_file_size),
             Some(validation.actual_duration_ms),
-            Some(checksum.clone()),
+            Some(primary_checksum.clone()),
             Some(validation.peak_amplitude),
             Some(validation.rms_amplitude),
             Some(serde_json::to_string(&validation).unwrap_or_default()),
@@ -248,11 +373,7 @@ pub async fn finish_recording(
         )
         .await?;
 
-    if !(validation.non_zero_size
-        && validation.readable_audio
-        && validation.duration_within_tolerance
-        && validation.non_silent_signal)
-    {
+    if valid_sources.is_empty() {
         repos
             .set_note_status(
                 &finished.note_id,
@@ -264,38 +385,78 @@ pub async fn finish_recording(
             note: repos.get_note(&finished.note_id).await?,
             recording: finished.recording,
             validation,
+            validations: source_validations,
             processing_started: false,
+            warnings,
         });
     }
 
-    let artifact = repos
-        .create_audio_artifact(
-            &finished.note_id,
-            &finished.session_id,
-            &finished.final_path.to_string_lossy(),
-            validation.actual_duration_ms,
-            file_size,
-            &checksum,
-        )
-        .await?;
     repos
         .add_checkpoint(&finished.session_id, "validation", None)
         .await?;
     let title = repos.get_note(&finished.note_id).await?.title;
-    let note = process_saved_audio(
-        &repos,
-        &finished.note_id,
-        &artifact.id,
-        finished.final_path,
-        title,
-    )
-    .await?;
+    let note = if valid_sources.len() == 1
+        && finished.source_mode == RecordingSourceMode::MicrophoneOnly
+    {
+        let (artifact_id, _source, path) = valid_sources[0].clone();
+        process_saved_audio(&repos, &finished.note_id, &artifact_id, path, title).await?
+    } else {
+        process_saved_source_audio(
+            &repos,
+            &finished.note_id,
+            &finished.session_id,
+            finished.source_mode,
+            valid_sources,
+            title,
+        )
+        .await?
+    };
     Ok(FinishRecordingResponse {
         note,
         recording: finished.recording,
         validation,
+        validations: source_validations,
         processing_started: true,
+        warnings,
     })
+}
+
+fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
+    let (microphone_state, microphone_hint) = microphone_permission_state();
+    let microphone_ready = microphone_state == "granted";
+    let mut sources = vec![SourceReadinessDto {
+        source: RecordingSource::Microphone,
+        required: true,
+        ready: microphone_ready,
+        permission_state: microphone_state.clone(),
+        device_available: microphone_ready,
+        capture_available: microphone_ready,
+        recovery_action: microphone_hint
+            .as_ref()
+            .map(|_| "openMicrophoneSettings".to_string()),
+        message: microphone_hint,
+    }];
+    if source_mode == RecordingSourceMode::MicrophonePlusSystem {
+        let mut system = crate::audio::system_macos::system_audio_readiness();
+        if system.ready {
+            if let Err(error) = crate::audio::system_macos::helper_permission_check() {
+                system.ready = false;
+                system.permission_state = "denied".to_string();
+                system.capture_available = false;
+                system.message = Some(error.message);
+            }
+        }
+        sources.push(system);
+    }
+    let ready = sources
+        .iter()
+        .all(|source| !source.required || source.ready);
+    RecordingSourceReadinessDto {
+        source_mode,
+        ready,
+        checked_at: crate::db::repositories::timestamp(),
+        sources,
+    }
 }
 
 #[tauri::command]
@@ -323,12 +484,85 @@ pub async fn recover_recording(
         ));
     };
     if request.action == "discard" {
+        for artifact in repos
+            .source_artifact_paths_for_session(&request.session_id)
+            .await?
+        {
+            for path in [&artifact.partial_path, &artifact.final_path]
+                .into_iter()
+                .flatten()
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         for path in [&info.partial_path, &info.final_path].into_iter().flatten() {
             let _ = std::fs::remove_file(path);
         }
         return Ok(repos
             .mark_recording_discarded(&info.session_id, &info.note_id)
             .await?);
+    }
+    let source_paths = repos
+        .source_artifact_paths_for_session(&request.session_id)
+        .await?;
+    if !source_paths.is_empty() {
+        let mut valid_sources = Vec::new();
+        for artifact in source_paths {
+            let Some(path) = recovery_source_path(&artifact) else {
+                continue;
+            };
+            let validation = validate_audio_artifact(
+                &path,
+                artifact.expected_duration_ms.max(1),
+                AudioValidationConfig::default(),
+            )
+            .map_err(|error| AppError::new("audio_validation_failed", error.to_string()))?;
+            let checksum = checksum_file(&path).unwrap_or_default();
+            let file_size = std::fs::metadata(&path)
+                .map(|metadata| metadata.len() as i64)
+                .unwrap_or_default();
+            let source = RecordingSource::from(artifact.source.as_str());
+            let valid = source_audio_passes_validation(source, &validation);
+            repos
+                .finalize_source_artifact(
+                    &artifact.id,
+                    if valid { "valid" } else { "invalid" },
+                    validation.actual_duration_ms,
+                    file_size,
+                    &checksum,
+                    artifact.expected_duration_ms,
+                    Some(serde_json::to_string(&validation).unwrap_or_default()),
+                    if valid {
+                        None
+                    } else {
+                        Some(validation.warnings.join("; "))
+                    },
+                )
+                .await?;
+            if valid {
+                valid_sources.push((artifact.id, artifact.source, path));
+            }
+        }
+        if valid_sources.is_empty() {
+            repos
+                .set_note_status(
+                    &info.note_id,
+                    crate::domain::types::ProcessingStatus::Failed,
+                    Some("No recoverable source audio passed validation.".to_string()),
+                )
+                .await?;
+            return Ok(repos.get_note(&info.note_id).await?);
+        }
+        let title = repos.get_note(&info.note_id).await?.title;
+        return process_saved_source_audio(
+            &repos,
+            &info.note_id,
+            &info.session_id,
+            info.source_mode,
+            valid_sources,
+            title,
+        )
+        .await;
     }
     let path = recovery_audio_path(&info).ok_or_else(|| {
         AppError::new(
@@ -397,6 +631,18 @@ pub async fn recover_recording(
 }
 
 fn recovery_audio_path(info: &crate::db::repositories::RecordingRecoveryInfo) -> Option<PathBuf> {
+    for path in [&info.final_path, &info.partial_path].into_iter().flatten() {
+        if std::fs::metadata(path)
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
+}
+
+fn recovery_source_path(info: &crate::db::repositories::SourceArtifactPath) -> Option<PathBuf> {
     for path in [&info.final_path, &info.partial_path].into_iter().flatten() {
         if std::fs::metadata(path)
             .map(|metadata| metadata.len() > 0)

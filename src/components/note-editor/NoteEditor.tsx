@@ -3,17 +3,28 @@ import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
-import type { FolderDto, NoteDto, RecordingStatusDto } from "../../lib/tauri";
+import type {
+  FolderDto,
+  NoteDto,
+  RecordingSourceMode,
+  RecordingSourceReadinessDto,
+  RecordingStatusDto,
+} from "../../lib/tauri";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
+import { SourceModeControl } from "../recorder/SourceModeControl";
 import { NotePreview } from "./NotePreview";
 
 type NoteEditorProps = {
   note: NoteDto;
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
+  sourceMode: RecordingSourceMode;
+  sourceReadiness?: RecordingSourceReadinessDto;
+  checkingSourceReadiness: boolean;
   onTitleChange: (title: string) => void;
   onContentChange: (content: string) => void;
+  onSourceModeChange: (mode: RecordingSourceMode) => void;
   onStartRecording: () => void;
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
@@ -33,8 +44,12 @@ export function NoteEditor({
   note,
   folders,
   recordingStatus,
+  sourceMode,
+  sourceReadiness,
+  checkingSourceReadiness,
   onTitleChange,
   onContentChange,
+  onSourceModeChange,
   onStartRecording,
   onPauseRecording,
   onResumeRecording,
@@ -49,6 +64,12 @@ export function NoteEditor({
   const recordingForNote = recordingStatus;
   const shellState = recordingForNote?.state ?? "idle";
   const processing = transientStatus(note.processingStatus);
+  const recordDisabled =
+    checkingSourceReadiness ||
+    (sourceReadiness?.sources.some(
+      (source) => source.required && !source.ready,
+    ) ??
+      false);
 
   return (
     <article className="note-editor">
@@ -101,12 +122,30 @@ export function NoteEditor({
         ) : null}
         {activeTab === "transcription" ? (
           <div className="transcript-view">
-            {note.transcript?.text ? (
+            {note.sourceTranscripts?.length ? (
+              <div className="source-transcripts">
+                {note.sourceTranscripts.map((transcript) => (
+                  <section key={transcript.id}>
+                    <h3>
+                      {transcript.source === "system"
+                        ? "System audio"
+                        : "Microphone"}
+                    </h3>
+                    <p>{transcript.text}</p>
+                    {transcript.lastError ? (
+                      <p className="source-transcript-error">
+                        {transcript.lastError}
+                      </p>
+                    ) : null}
+                  </section>
+                ))}
+              </div>
+            ) : note.transcript?.text ? (
               <p>{note.transcript.text}</p>
             ) : (
               <div className="empty-state">
                 <p>{note.lastError ?? "No transcript is available yet."}</p>
-                {note.audio ? (
+                {note.audio || note.audioSources?.length ? (
                   <button type="button" onClick={onRetry}>
                     <IconArrowRotateClockwise size={14} />
                     Retry
@@ -126,6 +165,12 @@ export function NoteEditor({
       </section>
 
       <div className="editor-footer">
+        <SourceModeControl
+          value={sourceMode}
+          disabled={!!recordingForNote}
+          readiness={sourceReadiness}
+          onChange={onSourceModeChange}
+        />
         <div className="record-shell" data-state={shellState}>
           <AnimatePresence mode="wait" initial={false}>
             {recordingForNote ? (
@@ -151,6 +196,7 @@ export function NoteEditor({
                 className="record-button"
                 aria-label="Record"
                 title="Record"
+                disabled={recordDisabled}
                 onClick={onStartRecording}
                 initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}

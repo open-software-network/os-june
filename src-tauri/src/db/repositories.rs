@@ -1,6 +1,6 @@
 use crate::domain::types::{
     AudioArtifactDto, FolderDto, ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus,
-    TranscriptDto,
+    RecordingSourceMode, TranscriptDto,
 };
 use chrono::{SecondsFormat, Utc};
 use sqlx::{Row, SqlitePool};
@@ -114,8 +114,10 @@ impl Repositories {
             generated_content: row.get("generated_content"),
             edited_content: row.get("edited_content"),
             transcript: self.latest_transcript(note_id).await?,
+            source_transcripts: self.source_transcripts(note_id).await?,
             recording: None,
             audio: self.latest_audio_artifact(note_id).await?,
+            audio_sources: self.latest_audio_sources(note_id).await?,
             active_tab: row.get("active_tab"),
             last_error: row.get("last_error"),
         })
@@ -312,16 +314,18 @@ impl Repositories {
         &self,
         note_id: &str,
         session_id: &str,
+        source_mode: RecordingSourceMode,
         partial_path: &str,
         final_path: &str,
         device_label: Option<String>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO recording_sessions (id, note_id, status, started_at, expected_elapsed_ms, device_label, permission_state, partial_path, final_path)
-             VALUES (?, ?, 'recording', ?, 0, ?, 'granted', ?, ?)",
+            "INSERT INTO recording_sessions (id, note_id, source_mode, status, started_at, expected_elapsed_ms, device_label, permission_state, partial_path, final_path)
+             VALUES (?, ?, ?, 'recording', ?, 0, ?, 'granted', ?, ?)",
         )
         .bind(session_id)
         .bind(note_id)
+        .bind(source_mode.as_db())
         .bind(timestamp())
         .bind(device_label)
         .bind(partial_path)
@@ -331,6 +335,17 @@ impl Repositories {
         self.set_note_status(note_id, ProcessingStatus::Recording, None)
             .await?;
         self.add_checkpoint(session_id, "start", None).await
+    }
+
+    pub async fn recording_session_source_mode(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RecordingSourceMode>, sqlx::Error> {
+        let row = sqlx::query("SELECT source_mode FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str())))
     }
 
     pub async fn update_recording_session(
@@ -389,6 +404,147 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn add_source_checkpoint(
+        &self,
+        session_id: &str,
+        source_artifact_id: Option<&str>,
+        source: Option<&str>,
+        kind: &str,
+        details: Option<String>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO recording_checkpoints (id, recording_session_id, source_artifact_id, source, kind, created_at, details)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(session_id)
+        .bind(source_artifact_id)
+        .bind(source)
+        .bind(kind)
+        .bind(timestamp())
+        .bind(details)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn create_pending_source_artifact(
+        &self,
+        note_id: &str,
+        session_id: &str,
+        source: &str,
+        partial_path: &str,
+        final_path: &str,
+    ) -> Result<AudioArtifactDto, sqlx::Error> {
+        let artifact = AudioArtifactDto {
+            id: Uuid::new_v4().to_string(),
+            source: source.to_string(),
+            format: "wav".to_string(),
+            duration_ms: 0,
+            size_bytes: 0,
+            checksum: String::new(),
+            created_at: timestamp(),
+        };
+        sqlx::query(
+            "INSERT INTO audio_artifacts
+             (id, note_id, recording_session_id, source, partial_path, path, format, duration_ms, size_bytes, checksum, status, expected_duration_ms, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'wav', 0, 0, '', 'recording', 0, ?)",
+        )
+        .bind(&artifact.id)
+        .bind(note_id)
+        .bind(session_id)
+        .bind(source)
+        .bind(partial_path)
+        .bind(final_path)
+        .bind(&artifact.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(artifact)
+    }
+
+    pub async fn source_artifacts_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<AudioArtifactDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at
+             FROM audio_artifacts
+             WHERE recording_session_id = ?
+             ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| AudioArtifactDto {
+                id: row.get("id"),
+                source: row.get("source"),
+                format: row.get("format"),
+                duration_ms: row.get("duration_ms"),
+                size_bytes: row.get("size_bytes"),
+                checksum: row.get("checksum"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn source_artifact_paths_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SourceArtifactPath>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, note_id, source, partial_path, path, expected_duration_ms
+             FROM audio_artifacts
+             WHERE recording_session_id = ?
+             ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SourceArtifactPath {
+                id: row.get("id"),
+                note_id: row.get("note_id"),
+                source: row.get("source"),
+                partial_path: row.get("partial_path"),
+                final_path: row.get("path"),
+                expected_duration_ms: row.get("expected_duration_ms"),
+            })
+            .collect())
+    }
+
+    pub async fn finalize_source_artifact(
+        &self,
+        artifact_id: &str,
+        status: &str,
+        duration_ms: i64,
+        size_bytes: i64,
+        checksum: &str,
+        expected_duration_ms: i64,
+        validation_summary: Option<String>,
+        last_error: Option<String>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE audio_artifacts
+             SET status = ?, duration_ms = ?, size_bytes = ?, checksum = ?, expected_duration_ms = ?,
+                 validation_summary = ?, last_error = ?
+             WHERE id = ?",
+        )
+        .bind(status)
+        .bind(duration_ms)
+        .bind(size_bytes)
+        .bind(checksum)
+        .bind(expected_duration_ms)
+        .bind(validation_summary)
+        .bind(last_error)
+        .bind(artifact_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn create_audio_artifact(
         &self,
         note_id: &str,
@@ -400,6 +556,7 @@ impl Repositories {
     ) -> Result<AudioArtifactDto, sqlx::Error> {
         let artifact = AudioArtifactDto {
             id: Uuid::new_v4().to_string(),
+            source: "microphone".to_string(),
             format: "wav".to_string(),
             duration_ms,
             size_bytes,
@@ -407,8 +564,8 @@ impl Repositories {
             created_at: timestamp(),
         };
         sqlx::query(
-            "INSERT INTO audio_artifacts (id, note_id, recording_session_id, path, format, duration_ms, size_bytes, checksum, created_at)
-             VALUES (?, ?, ?, ?, 'wav', ?, ?, ?, ?)",
+            "INSERT INTO audio_artifacts (id, note_id, recording_session_id, source, path, format, duration_ms, size_bytes, checksum, status, expected_duration_ms, created_at)
+             VALUES (?, ?, ?, 'microphone', ?, 'wav', ?, ?, ?, 'valid', ?, ?)",
         )
         .bind(&artifact.id)
         .bind(note_id)
@@ -417,6 +574,7 @@ impl Repositories {
         .bind(duration_ms)
         .bind(size_bytes)
         .bind(checksum)
+        .bind(duration_ms)
         .bind(&artifact.created_at)
         .execute(&self.pool)
         .await?;
@@ -428,7 +586,7 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Option<(String, String)>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, path FROM audio_artifacts WHERE note_id = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT id, path FROM audio_artifacts WHERE note_id = ? AND status = 'valid' ORDER BY created_at DESC LIMIT 1",
         )
         .bind(note_id)
         .fetch_optional(&self.pool)
@@ -441,9 +599,9 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Option<AudioArtifactDto>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, format, duration_ms, size_bytes, checksum, created_at
+            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at
              FROM audio_artifacts
-             WHERE note_id = ?
+             WHERE note_id = ? AND status = 'valid'
              ORDER BY created_at DESC
              LIMIT 1",
         )
@@ -452,6 +610,7 @@ impl Repositories {
         .await?;
         Ok(row.map(|row| AudioArtifactDto {
             id: row.get("id"),
+            source: row.get("source"),
             format: row.get("format"),
             duration_ms: row.get("duration_ms"),
             size_bytes: row.get("size_bytes"),
@@ -460,9 +619,70 @@ impl Repositories {
         }))
     }
 
+    pub async fn latest_valid_audio_artifact_paths(
+        &self,
+        note_id: &str,
+    ) -> Result<Vec<(String, String, String)>, sqlx::Error> {
+        let session = sqlx::query(
+            "SELECT recording_session_id
+             FROM audio_artifacts
+             WHERE note_id = ? AND status = 'valid'
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(note_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(session) = session else {
+            return Ok(Vec::new());
+        };
+        let session_id: String = session.get("recording_session_id");
+        let rows = sqlx::query(
+            "SELECT id, source, path
+             FROM audio_artifacts
+             WHERE note_id = ? AND recording_session_id = ? AND status = 'valid'
+             ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
+        )
+        .bind(note_id)
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get("id"), row.get("source"), row.get("path")))
+            .collect())
+    }
+
+    async fn latest_audio_sources(
+        &self,
+        note_id: &str,
+    ) -> Result<Vec<AudioArtifactDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at
+             FROM audio_artifacts
+             WHERE note_id = ? AND status = 'valid'
+             ORDER BY created_at DESC",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| AudioArtifactDto {
+                id: row.get("id"),
+                source: row.get("source"),
+                format: row.get("format"),
+                duration_ms: row.get("duration_ms"),
+                size_bytes: row.get("size_bytes"),
+                checksum: row.get("checksum"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
     async fn latest_transcript(&self, note_id: &str) -> Result<Option<TranscriptDto>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, text, language, status, last_error
+            "SELECT id, text, source_mode, source, language, status, last_error
              FROM transcripts
              WHERE note_id = ?
              ORDER BY created_at DESC
@@ -474,10 +694,40 @@ impl Repositories {
         Ok(row.map(|row| TranscriptDto {
             id: row.get("id"),
             text: row.get("text"),
+            source_mode: Some(RecordingSourceMode::from(
+                row.get::<String, _>("source_mode").as_str(),
+            )),
+            source: row.get("source"),
             language: row.get("language"),
             status: row.get("status"),
             last_error: row.get("last_error"),
         }))
+    }
+
+    async fn source_transcripts(&self, note_id: &str) -> Result<Vec<TranscriptDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, text, source_mode, source, language, status, last_error
+             FROM transcripts
+             WHERE note_id = ?
+             ORDER BY created_at ASC",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TranscriptDto {
+                id: row.get("id"),
+                text: row.get("text"),
+                source_mode: Some(RecordingSourceMode::from(
+                    row.get::<String, _>("source_mode").as_str(),
+                )),
+                source: row.get("source"),
+                language: row.get("language"),
+                status: row.get("status"),
+                last_error: row.get("last_error"),
+            })
+            .collect())
     }
 
     pub async fn create_transcript(
@@ -491,18 +741,64 @@ impl Repositories {
         let transcript = TranscriptDto {
             id: Uuid::new_v4().to_string(),
             text: text.to_string(),
+            source_mode: Some(RecordingSourceMode::MicrophoneOnly),
+            source: Some("microphone".to_string()),
             language,
             status: "succeeded".to_string(),
             last_error: None,
         };
         let now = timestamp();
         sqlx::query(
-            "INSERT INTO transcripts (id, note_id, audio_artifact_id, text, language, provider, status, retry_count, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'succeeded', 0, ?, ?)",
+            "INSERT INTO transcripts (id, note_id, audio_artifact_id, source_artifact_id, source, source_mode, text, language, provider, status, retry_count, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'microphone', 'microphone_only', ?, ?, ?, 'succeeded', 0, ?, ?)",
         )
         .bind(&transcript.id)
         .bind(note_id)
         .bind(audio_artifact_id)
+        .bind(audio_artifact_id)
+        .bind(text)
+        .bind(&transcript.language)
+        .bind(provider)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(transcript)
+    }
+
+    pub async fn create_source_transcript(
+        &self,
+        note_id: &str,
+        session_id: &str,
+        audio_artifact_id: &str,
+        source_mode: RecordingSourceMode,
+        source: &str,
+        text: &str,
+        language: Option<String>,
+        provider: &str,
+    ) -> Result<TranscriptDto, sqlx::Error> {
+        let transcript = TranscriptDto {
+            id: Uuid::new_v4().to_string(),
+            text: text.to_string(),
+            source_mode: Some(source_mode),
+            source: Some(source.to_string()),
+            language,
+            status: "succeeded".to_string(),
+            last_error: None,
+        };
+        let now = timestamp();
+        sqlx::query(
+            "INSERT INTO transcripts
+             (id, note_id, recording_session_id, audio_artifact_id, source_artifact_id, source, source_mode, text, language, provider, status, retry_count, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', 0, ?, ?)",
+        )
+        .bind(&transcript.id)
+        .bind(note_id)
+        .bind(session_id)
+        .bind(audio_artifact_id)
+        .bind(audio_artifact_id)
+        .bind(source)
+        .bind(source_mode.as_db())
         .bind(text)
         .bind(&transcript.language)
         .bind(provider)
@@ -546,7 +842,7 @@ impl Repositories {
         session_id: &str,
     ) -> Result<Option<RecordingRecoveryInfo>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, note_id, partial_path, final_path, expected_elapsed_ms
+            "SELECT id, note_id, source_mode, partial_path, final_path, expected_elapsed_ms
              FROM recording_sessions
              WHERE id = ?",
         )
@@ -556,6 +852,7 @@ impl Repositories {
         Ok(row.map(|row| RecordingRecoveryInfo {
             session_id: row.get("id"),
             note_id: row.get("note_id"),
+            source_mode: RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str()),
             partial_path: row.get("partial_path"),
             final_path: row.get("final_path"),
             expected_elapsed_ms: row.get("expected_elapsed_ms"),
@@ -608,9 +905,20 @@ fn append_note_content(existing: Option<String>, addition: String) -> String {
 pub struct RecordingRecoveryInfo {
     pub session_id: String,
     pub note_id: String,
+    pub source_mode: RecordingSourceMode,
     pub partial_path: Option<String>,
     pub final_path: Option<String>,
     pub expected_elapsed_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceArtifactPath {
+    pub id: String,
+    pub note_id: String,
+    pub source: String,
+    pub partial_path: Option<String>,
+    pub final_path: Option<String>,
+    pub expected_duration_ms: i64,
 }
 
 pub fn timestamp() -> String {

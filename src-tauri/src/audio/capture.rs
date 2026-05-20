@@ -1,7 +1,9 @@
 use crate::{
     app_paths::AppPaths,
+    audio::system_macos::SystemAudioCapture,
     domain::types::{
-        AppError, AudioLevelDto, RecordingSessionDto, RecordingState, RecordingStatusDto,
+        AppError, AudioLevelDto, RecordingSessionDto, RecordingSource, RecordingSourceMode,
+        RecordingState, RecordingStatusDto, SourceState, SourceStatusDto,
     },
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -27,8 +29,10 @@ static ACTIVE_RECORDING: LazyLock<Mutex<Option<ActiveRecording>>> =
 pub struct StartedRecording {
     pub session_id: String,
     pub note_id: String,
+    pub source_mode: RecordingSourceMode,
     pub partial_path: PathBuf,
     pub final_path: PathBuf,
+    pub sources: Vec<StartedSource>,
     pub device_label: Option<String>,
     pub status: RecordingStatusDto,
 }
@@ -36,9 +40,23 @@ pub struct StartedRecording {
 pub struct FinishedRecording {
     pub session_id: String,
     pub note_id: String,
+    pub source_mode: RecordingSourceMode,
     pub final_path: PathBuf,
+    pub sources: Vec<FinishedSource>,
     pub elapsed_ms: i64,
     pub recording: RecordingSessionDto,
+}
+
+pub struct StartedSource {
+    pub source: RecordingSource,
+    pub partial_path: PathBuf,
+    pub final_path: PathBuf,
+}
+
+pub struct FinishedSource {
+    pub source: RecordingSource,
+    pub final_path: PathBuf,
+    pub elapsed_ms: i64,
 }
 
 struct ActiveRecording {
@@ -46,6 +64,9 @@ struct ActiveRecording {
     note_id: String,
     partial_path: PathBuf,
     final_path: PathBuf,
+    source_mode: RecordingSourceMode,
+    system_final_path: Option<PathBuf>,
+    system_capture: Option<SystemAudioCapture>,
     started: Instant,
     active_since: Option<Instant>,
     accumulated_active: Duration,
@@ -83,7 +104,11 @@ pub fn microphone_permission_state() -> (String, Option<String>) {
     }
 }
 
-pub fn start_capture(paths: &AppPaths, note_id: String) -> Result<StartedRecording, AppError> {
+pub fn start_capture(
+    paths: &AppPaths,
+    note_id: String,
+    source_mode: RecordingSourceMode,
+) -> Result<StartedRecording, AppError> {
     let mut active = ACTIVE_RECORDING
         .lock()
         .map_err(|_| AppError::new("recording_lock_failed", "Recording state is unavailable."))?;
@@ -109,11 +134,15 @@ pub fn start_capture(paths: &AppPaths, note_id: String) -> Result<StartedRecordi
     let channels = config.channels();
 
     let session_id = Uuid::new_v4().to_string();
-    let note_dir = paths.recordings_dir.join(&note_id);
+    let note_dir = paths.recordings_dir.join(&note_id).join(&session_id);
     std::fs::create_dir_all(&note_dir)
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
-    let partial_path = note_dir.join(format!("{session_id}.partial.wav"));
-    let final_path = note_dir.join(format!("{session_id}.wav"));
+    let partial_path = note_dir.join("microphone.partial.wav");
+    let final_path = note_dir.join("microphone.wav");
+    let system_partial_path = (source_mode == RecordingSourceMode::MicrophonePlusSystem)
+        .then(|| note_dir.join("system.partial.wav"));
+    let system_final_path = (source_mode == RecordingSourceMode::MicrophonePlusSystem)
+        .then(|| note_dir.join("system.wav"));
     let writer = WavWriter::create(
         &partial_path,
         WavSpec {
@@ -186,8 +215,23 @@ pub fn start_capture(paths: &AppPaths, note_id: String) -> Result<StartedRecordi
         .play()
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
 
+    let system_capture = if let (Some(system_partial_path), Some(system_final_path)) =
+        (system_partial_path.clone(), system_final_path.clone())
+    {
+        match SystemAudioCapture::start(system_partial_path.clone(), system_final_path.clone()) {
+            Ok(capture) => Some(capture),
+            Err(error) => {
+                let _ = std::fs::remove_file(&partial_path);
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+
     let status = RecordingStatusDto {
         session_id: session_id.clone(),
+        source_mode,
         state: RecordingState::Recording,
         elapsed_ms: 0,
         level: AudioLevelDto {
@@ -197,6 +241,16 @@ pub fn start_capture(paths: &AppPaths, note_id: String) -> Result<StartedRecordi
         },
         silence_warning: false,
         bytes_written: 0,
+        sources: source_statuses(
+            source_mode,
+            RecordingState::Recording,
+            0,
+            AudioLevelDto::default(),
+            0,
+            system_capture.as_ref(),
+            false,
+        ),
+        warnings: Vec::new(),
     };
 
     *active = Some(ActiveRecording {
@@ -204,6 +258,9 @@ pub fn start_capture(paths: &AppPaths, note_id: String) -> Result<StartedRecordi
         note_id: note_id.clone(),
         partial_path: partial_path.clone(),
         final_path: final_path.clone(),
+        source_mode,
+        system_final_path: system_final_path.clone(),
+        system_capture,
         started: Instant::now(),
         active_since: Some(Instant::now()),
         accumulated_active: Duration::ZERO,
@@ -217,8 +274,10 @@ pub fn start_capture(paths: &AppPaths, note_id: String) -> Result<StartedRecordi
     Ok(StartedRecording {
         session_id,
         note_id,
+        source_mode,
         partial_path,
         final_path,
+        sources: started_sources(source_mode, &note_dir),
         device_label,
         status,
     })
@@ -233,6 +292,9 @@ pub fn pause_capture(session_id: &str) -> Result<RecordingStatusDto, AppError> {
         }
         recording.paused = true;
         recording.paused_flag.store(true, Ordering::Release);
+        if let Some(system) = recording.system_capture.as_mut() {
+            system.pause();
+        }
     }
     Ok(recording.status())
 }
@@ -244,6 +306,9 @@ pub fn resume_capture(session_id: &str) -> Result<RecordingStatusDto, AppError> 
         recording.active_since = Some(Instant::now());
         recording.paused = false;
         recording.paused_flag.store(false, Ordering::Release);
+        if let Some(system) = recording.system_capture.as_mut() {
+            system.resume();
+        }
     }
     Ok(recording.status())
 }
@@ -277,17 +342,23 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
     let recording_dto = RecordingSessionDto {
         id: recording.session_id.clone(),
         note_id: recording.note_id.clone(),
+        source_mode: recording.source_mode,
         state: status.state,
         started_at: crate::db::repositories::timestamp(),
         elapsed_ms: status.elapsed_ms,
         device_label: None,
         level: status.level,
+        sources: status.sources,
+        warnings: status.warnings,
     };
     let ActiveRecording {
         session_id,
         note_id,
         partial_path,
         final_path,
+        source_mode,
+        system_capture,
+        system_final_path,
         writer,
         paused_flag,
         _stream,
@@ -306,10 +377,25 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
     }
     std::fs::rename(&partial_path, &final_path)
         .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))?;
+    let mut sources = vec![FinishedSource {
+        source: RecordingSource::Microphone,
+        final_path: final_path.clone(),
+        elapsed_ms: recording_dto.elapsed_ms,
+    }];
+    if let Some(system_capture) = system_capture {
+        let system_path = system_capture.stop()?;
+        sources.push(FinishedSource {
+            source: RecordingSource::System,
+            final_path: system_final_path.unwrap_or(system_path.clone()),
+            elapsed_ms: recording_dto.elapsed_ms,
+        });
+    }
     Ok(FinishedRecording {
         session_id,
         note_id,
+        source_mode,
         final_path,
+        sources,
         elapsed_ms: recording_dto.elapsed_ms,
         recording: recording_dto,
     })
@@ -433,18 +519,97 @@ impl ActiveRecording {
         } else {
             (0.0, 0.0, Vec::new(), 0)
         };
+        let elapsed_ms = self.elapsed().as_millis() as i64;
+        let level = AudioLevelDto {
+            peak,
+            rms,
+            recent_peaks: recent_peaks.clone(),
+        };
         RecordingStatusDto {
             session_id: self.session_id.clone(),
+            source_mode: self.source_mode,
             state,
-            elapsed_ms: self.elapsed().as_millis() as i64,
-            level: AudioLevelDto {
-                peak,
-                rms,
-                recent_peaks,
-            },
+            elapsed_ms,
+            level: level.clone(),
             silence_warning: self.started.elapsed() >= Duration::from_secs(10)
                 && rms < DEFAULT_SILENCE_THRESHOLD,
             bytes_written,
+            sources: source_statuses(
+                self.source_mode,
+                state,
+                elapsed_ms,
+                level,
+                bytes_written,
+                self.system_capture.as_ref(),
+                self.started.elapsed() >= Duration::from_secs(10)
+                    && rms < DEFAULT_SILENCE_THRESHOLD,
+            ),
+            warnings: Vec::new(),
         }
     }
+}
+
+fn started_sources(
+    source_mode: RecordingSourceMode,
+    note_dir: &std::path::Path,
+) -> Vec<StartedSource> {
+    let mut sources = vec![StartedSource {
+        source: RecordingSource::Microphone,
+        partial_path: note_dir.join("microphone.partial.wav"),
+        final_path: note_dir.join("microphone.wav"),
+    }];
+    if source_mode == RecordingSourceMode::MicrophonePlusSystem {
+        sources.push(StartedSource {
+            source: RecordingSource::System,
+            partial_path: note_dir.join("system.partial.wav"),
+            final_path: note_dir.join("system.wav"),
+        });
+    }
+    sources
+}
+
+fn source_statuses(
+    source_mode: RecordingSourceMode,
+    state: RecordingState,
+    elapsed_ms: i64,
+    microphone_level: AudioLevelDto,
+    microphone_bytes: i64,
+    system_capture: Option<&SystemAudioCapture>,
+    microphone_silence_warning: bool,
+) -> Vec<SourceStatusDto> {
+    let source_state = match state {
+        RecordingState::Paused => SourceState::Paused,
+        RecordingState::Validating | RecordingState::Finalizing => SourceState::Finalizing,
+        RecordingState::Invalid => SourceState::Invalid,
+        RecordingState::Failed => SourceState::Failed,
+        RecordingState::Recoverable => SourceState::Recoverable,
+        _ => SourceState::Recording,
+    };
+    let mut sources = vec![SourceStatusDto {
+        source: RecordingSource::Microphone,
+        state: source_state,
+        elapsed_ms,
+        bytes_written: microphone_bytes,
+        level: microphone_level,
+        silence_warning: microphone_silence_warning,
+        path_finalized: false,
+        last_error: None,
+    }];
+    if source_mode == RecordingSourceMode::MicrophonePlusSystem {
+        let (level, bytes_written, last_error) = system_capture
+            .map(|capture| capture.status())
+            .unwrap_or_default();
+        let system_silence_warning = elapsed_ms >= 10_000 && level.peak < DEFAULT_SILENCE_THRESHOLD;
+        sources.push(SourceStatusDto {
+            source: RecordingSource::System,
+            state: source_state,
+            elapsed_ms,
+            bytes_written,
+            level,
+            silence_warning: system_silence_warning,
+            path_finalized: false,
+            last_error,
+        });
+    }
+    sources
 }
