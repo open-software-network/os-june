@@ -88,6 +88,7 @@ final class SystemAudioRecorder {
     private var audioFile: AVAudioFile?
     private var audioConverter: AVAudioConverter?
     private var inputFormat: AVAudioFormat?
+    private var inputStreamDescription: AudioStreamBasicDescription?
     private var outputFormat: AVAudioFormat?
     private var didStop = false
     private var isPaused = false
@@ -161,14 +162,24 @@ final class SystemAudioRecorder {
         processTapID = tapID
 
         var streamDescription = try tapID.readAudioTapStreamBasicDescription()
-        guard let inputFormat = AVAudioFormat(streamDescription: &streamDescription) else {
+        log("tap format sampleRate=\(streamDescription.mSampleRate) formatID=\(streamDescription.mFormatID) flags=\(streamDescription.mFormatFlags) bytesPerPacket=\(streamDescription.mBytesPerPacket) framesPerPacket=\(streamDescription.mFramesPerPacket) bytesPerFrame=\(streamDescription.mBytesPerFrame) channelsPerFrame=\(streamDescription.mChannelsPerFrame) bitsPerChannel=\(streamDescription.mBitsPerChannel)")
+        let inputFormat = AVAudioFormat(streamDescription: &streamDescription)
+        guard inputFormat != nil || canManuallyDownmix(streamDescription) else {
             throw "Failed to create audio format for system tap."
         }
-        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: inputFormat.sampleRate, channels: inputFormat.channelCount, interleaved: true) else {
+        let outputChannelCount = min(max(streamDescription.mChannelsPerFrame, 1), 2)
+        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: streamDescription.mSampleRate, channels: outputChannelCount, interleaved: true) else {
             throw "Failed to create output audio format."
         }
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            throw "Failed to create audio converter."
+        let converter: AVAudioConverter?
+        if let inputFormat {
+            guard let formatConverter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+                throw "Failed to create audio converter."
+            }
+            converter = formatConverter
+        } else {
+            log("using manual system tap downmix for \(streamDescription.mChannelsPerFrame)-channel input")
+            converter = nil
         }
 
         let aggregateUID = UUID().uuidString
@@ -199,11 +210,12 @@ final class SystemAudioRecorder {
         try waitForAggregateDeviceReady(aggregateDeviceID)
 
         if checkOnly {
-            emit(["event": "authorized", "message": "System audio capture is authorized."])
+            emit(["event": "ready", "message": "System audio capture is authorized."])
             return
         }
 
         self.inputFormat = inputFormat
+        inputStreamDescription = streamDescription
         self.outputFormat = outputFormat
         audioConverter = converter
         activeStartedAt = Date().addingTimeInterval(-timelineOffset)
@@ -253,6 +265,7 @@ final class SystemAudioRecorder {
         audioFile = nil
         audioConverter = nil
         inputFormat = nil
+        inputStreamDescription = nil
         outputFormat = nil
         log("stopped maxLevel=\(maxLevel)")
         if emitStopped {
@@ -286,6 +299,31 @@ final class SystemAudioRecorder {
         emit(["event": "level", "level": String(level), "maxLevel": String(maxLevel)])
     }
 
+    private func emitLevel(fromInt16Buffer buffer: AVAudioPCMBuffer) {
+        let now = Date()
+        guard now.timeIntervalSince(lastLevelEmit) >= 0.08 else { return }
+        lastLevelEmit = now
+        let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        guard let firstBuffer = audioBuffers.first,
+              let data = firstBuffer.mData,
+              firstBuffer.mDataByteSize > 0
+        else {
+            emit(["event": "level", "level": "0"])
+            return
+        }
+        let sampleCount = Int(firstBuffer.mDataByteSize) / MemoryLayout<Int16>.size
+        let samples = data.bindMemory(to: Int16.self, capacity: sampleCount)
+        var sum: Double = 0
+        for index in 0..<sampleCount {
+            let sample = Double(samples[index]) / Double(Int16.max)
+            sum += sample * sample
+        }
+        let rms = sampleCount > 0 ? sqrt(sum / Double(sampleCount)) : 0
+        let level = min(1, rms * 4)
+        maxLevel = max(maxLevel, level)
+        emit(["event": "level", "level": String(level), "maxLevel": String(maxLevel)])
+    }
+
     private func emit(_ object: [String: String]) {
         let data = try! JSONSerialization.data(withJSONObject: object)
         print(String(data: data, encoding: .utf8)!)
@@ -303,25 +341,32 @@ final class SystemAudioRecorder {
         let paused = isPaused
         pauseLock.unlock()
         guard !paused else { return }
-        guard let inputFormat, let outputFormat, let converter = audioConverter else { return }
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, bufferListNoCopy: inputData, deallocator: nil) else { return }
         do {
-            emitLevel(from: buffer)
-            let frameCapacity = max(1, AVAudioFrameCount(Double(buffer.frameLength) * outputFormat.sampleRate / inputFormat.sampleRate))
-            guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else { return }
-            var didProvideInput = false
-            var conversionError: NSError?
-            let status = converter.convert(to: convertedBuffer, error: &conversionError) { _, inputStatus in
-                if didProvideInput {
-                    inputStatus.pointee = .noDataNow
-                    return nil
+            let convertedBuffer: AVAudioPCMBuffer?
+            if let inputFormat, let outputFormat, let converter = audioConverter {
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, bufferListNoCopy: inputData, deallocator: nil) else { return }
+                emitLevel(from: buffer)
+                let frameCapacity = max(1, AVAudioFrameCount(Double(buffer.frameLength) * outputFormat.sampleRate / inputFormat.sampleRate))
+                guard let bufferForOutput = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else { return }
+                var didProvideInput = false
+                var conversionError: NSError?
+                let status = converter.convert(to: bufferForOutput, error: &conversionError) { _, inputStatus in
+                    if didProvideInput {
+                        inputStatus.pointee = .noDataNow
+                        return nil
+                    }
+                    didProvideInput = true
+                    inputStatus.pointee = .haveData
+                    return buffer
                 }
-                didProvideInput = true
-                inputStatus.pointee = .haveData
-                return buffer
+                if let conversionError { throw conversionError }
+                convertedBuffer = status == .haveData || status == .inputRanDry ? bufferForOutput : nil
+            } else {
+                guard let outputFormat, let inputStreamDescription else { return }
+                convertedBuffer = try manuallyDownmix(inputData, inputDescription: inputStreamDescription, outputFormat: outputFormat)
             }
-            if let conversionError { throw conversionError }
-            if status == .haveData || status == .inputRanDry, convertedBuffer.frameLength > 0, let audioFile {
+            if let convertedBuffer, convertedBuffer.frameLength > 0, let audioFile, let outputFormat {
+                emitLevel(fromInt16Buffer: convertedBuffer)
                 try writeTimelineSilenceIfNeeded(beforeWriting: convertedBuffer.frameLength, to: audioFile, format: outputFormat)
                 try audioFile.write(from: convertedBuffer)
                 outputFramesWritten += AVAudioFramePosition(convertedBuffer.frameLength)
@@ -329,6 +374,70 @@ final class SystemAudioRecorder {
         } catch {
             emit(["event": "error", "message": describeError(error)])
         }
+    }
+
+    private func manuallyDownmix(
+        _ inputData: UnsafePointer<AudioBufferList>,
+        inputDescription: AudioStreamBasicDescription,
+        outputFormat: AVAudioFormat
+    ) throws -> AVAudioPCMBuffer? {
+        guard canManuallyDownmix(inputDescription) else { return nil }
+        let inputChannels = Int(inputDescription.mChannelsPerFrame)
+        let bytesPerSample = Int(inputDescription.mBitsPerChannel / 8)
+        guard inputChannels > 0, bytesPerSample > 0 else { return nil }
+        let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
+        guard let firstInputBuffer = inputBuffers.first,
+              let inputPointer = firstInputBuffer.mData
+        else {
+            return nil
+        }
+
+        let interleaved = inputDescription.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+        let frameCount: Int
+        if interleaved {
+            guard inputDescription.mBytesPerFrame > 0 else { return nil }
+            frameCount = Int(firstInputBuffer.mDataByteSize) / Int(inputDescription.mBytesPerFrame)
+        } else {
+            frameCount = Int(firstInputBuffer.mDataByteSize) / bytesPerSample
+        }
+        guard frameCount > 0 else { return nil }
+
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            return nil
+        }
+        outputBuffer.frameLength = AVAudioFrameCount(frameCount)
+        let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBuffer.mutableAudioBufferList)
+        guard let firstOutputBuffer = outputBuffers.first,
+              let outputPointer = firstOutputBuffer.mData
+        else {
+            return nil
+        }
+
+        let inputSamples = inputPointer.bindMemory(to: Float.self, capacity: frameCount * inputChannels)
+        let outputChannels = Int(outputFormat.channelCount)
+        let outputSamples = outputPointer.bindMemory(to: Int16.self, capacity: frameCount * outputChannels)
+
+        for frameIndex in 0..<frameCount {
+            let left = interleaved ? inputSamples[frameIndex * inputChannels] : inputSamples[frameIndex]
+            let right: Float
+            if inputChannels > 1 {
+                if interleaved {
+                    right = inputSamples[frameIndex * inputChannels + 1]
+                } else if inputBuffers.count > 1, let rightPointer = inputBuffers[1].mData {
+                    right = rightPointer.bindMemory(to: Float.self, capacity: frameCount)[frameIndex]
+                } else {
+                    right = left
+                }
+            } else {
+                right = left
+            }
+            outputSamples[frameIndex * outputChannels] = int16Sample(left)
+            if outputChannels > 1 {
+                outputSamples[frameIndex * outputChannels + 1] = int16Sample(right)
+            }
+        }
+
+        return outputBuffer
     }
 
     private func writeTimelineSilenceIfNeeded(beforeWriting incomingFrames: AVAudioFrameCount, to audioFile: AVAudioFile, format: AVAudioFormat) throws {
@@ -388,6 +497,22 @@ final class SystemAudioRecorder {
         }
         throw "Aggregate audio device was not readable after creation: \(lastError.map(describeError) ?? "unknown error")"
     }
+}
+
+private func canManuallyDownmix(_ description: AudioStreamBasicDescription) -> Bool {
+    description.mFormatID == kAudioFormatLinearPCM &&
+        description.mSampleRate > 0 &&
+        description.mChannelsPerFrame > 0 &&
+        description.mBitsPerChannel == 32 &&
+        description.mFormatFlags & kAudioFormatFlagIsFloat != 0
+}
+
+private func int16Sample(_ sample: Float) -> Int16 {
+    let clamped = max(-1, min(1, sample))
+    if clamped >= 0 {
+        return Int16(clamped * Float(Int16.max))
+    }
+    return Int16(clamped * 32768)
 }
 
 private let systemAudioIOProc: AudioDeviceIOProc = { _, _, inputData, _, _, _, clientData in
