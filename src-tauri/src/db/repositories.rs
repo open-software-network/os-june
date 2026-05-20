@@ -916,9 +916,28 @@ fn append_note_content(existing: Option<String>, addition: String) -> String {
         addition.to_string()
     } else if addition.is_empty() {
         existing.to_string()
+    } else if content_starts_with_note(addition, existing) {
+        addition.to_string()
+    } else if content_starts_with_note(existing, addition) {
+        existing.to_string()
     } else {
         format!("{existing}\n\n{addition}")
     }
+}
+
+fn content_starts_with_note(content: &str, note: &str) -> bool {
+    let content = content.trim();
+    let note = note.trim();
+    if note.is_empty() {
+        return true;
+    }
+    if content == note {
+        return true;
+    }
+    content
+        .strip_prefix(note)
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(char::is_whitespace)
 }
 
 #[derive(Debug, Clone)]

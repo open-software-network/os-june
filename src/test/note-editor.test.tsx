@@ -23,7 +23,7 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
 
 const props = {
   folders: [],
-  sourceMode: "microphoneOnly" as const,
+  sourceMode: "microphonePlusSystem" as const,
   checkingSourceReadiness: false,
   onTitleChange: vi.fn(),
   onContentChange: vi.fn(),
@@ -170,7 +170,7 @@ describe("NoteEditor", () => {
     expect(onRetry).toHaveBeenCalled();
   });
 
-  it("keeps showing working state and hides retry while processing", () => {
+  it("locks the record button and hides retry while processing", () => {
     render(
       <NoteEditor
         {...props}
@@ -190,10 +190,26 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Working" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record" })).toBeDisabled();
     expect(screen.getByText("Transcribing audio...")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps existing notes visible while showing processing status below them", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "generating",
+          generatedContent: "Existing notes stay visible",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Existing notes stay visible")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Generating notes");
   });
 });

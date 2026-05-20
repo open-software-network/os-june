@@ -9,7 +9,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type NotePreviewProps = {
   noteId: string;
   markdown: string;
-  onChange: (markdown: string) => void;
+  // Tagged with the noteId the editor was created under so a late
+  // blur (during note-switch teardown) can't silently overwrite a
+  // different note's content.
+  onChange: (noteId: string, markdown: string) => void;
   emptyPlaceholder?: string;
 };
 
@@ -45,7 +48,11 @@ export function NotePreview({
         },
       },
       onBlur: ({ editor }) => {
-        onChange(htmlToMarkdown(editor.view.dom));
+        // `noteId` here is the value at editor-creation time — the
+        // useEditor dep list tears the editor down on note change, so
+        // this closure always reflects the note the editor was bound
+        // to, even when blur fires during teardown.
+        onChange(noteId, htmlToMarkdown(editor.view.dom));
       },
     },
     [noteId],
@@ -73,6 +80,26 @@ export function NotePreview({
       window.removeEventListener("scroll", updateToolbar, true);
     };
   }, [editor]);
+
+  // Backend writes (transcribe → generate) arrive after the editor has
+  // already mounted, so we have to pull new markdown in by hand. Skip
+  // if the user is actively editing — clobbering focused content would
+  // be a worse bug than the stale render. Guarded with try/catch and
+  // an isDestroyed check so we never touch a torn-down view during
+  // note-switch unmounts.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || editor.isFocused) return;
+    try {
+      const current = htmlToMarkdown(editor.view.dom).trim();
+      if (current === markdown.trim()) return;
+      editor.commands.setContent(markdownToHtml(markdown), {
+        emitUpdate: false,
+      });
+    } catch {
+      // Editor is mid-teardown or view isn't ready yet — the next
+      // mount will paint the correct content.
+    }
+  }, [editor, markdown]);
 
   function applyFormat(command: "h1" | "bullet" | "bold") {
     if (!editor) return;

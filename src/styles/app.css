@@ -100,14 +100,17 @@ input:focus-visible,
   box-shadow: none;
 }
 
-/* Quiet scrollbars — match Fellow. */
+/* Quiet, themed scrollbars — thinner than Fellow's 6px default; only
+ * paints the thumb while hover/scroll. Thumb uses muted-foreground at
+ * low alpha so it matches our warm-neutral palette. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent)
+    transparent;
 }
 *::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
@@ -118,7 +121,10 @@ input:focus-visible,
 }
 *:hover::-webkit-scrollbar-thumb,
 *:focus-within::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
 }
 
 /* App shell — sidebar tint outside, white card inset for the main area. */
@@ -327,21 +333,30 @@ input:focus-visible,
 
 /* Sidebar search ---------------------------------------------------- */
 
+/* Search trigger — port of Fellow's SidebarSearchTrigger:
+ * card bg, top-inner highlight, soft drop, 1px ring all in box-shadow;
+ * kbd hint on the right uses muted/60 bg + mono-ish font. */
 .sidebar-search {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-columns: 14px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-2);
-  height: var(--control-xl);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--sidebar-border);
+  height: 32px;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border: 0;
   border-radius: var(--r-md);
   background: var(--card);
   color: var(--muted-foreground);
+  cursor: text;
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 60%),
+    0 1px 2px 0 oklch(0% 0 none / 4%),
+    0 0 0 1px oklch(0% 0 none / 4%);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.sidebar-search:focus-within {
-  border-color: var(--ring);
+.sidebar-search:hover {
+  background: color-mix(in oklch, var(--card) 80%, transparent);
 }
 
 .sidebar-search input {
@@ -357,8 +372,106 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.sidebar-search-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-search {
+    box-shadow:
+      inset 0 1px 0 0 oklch(100% 0 none / 4%),
+      0 0 0 1px oklch(100% 0 none / 6%);
+  }
+}
+
+[data-theme="dark"] .sidebar-search {
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 4%),
+    0 0 0 1px oklch(100% 0 none / 6%);
+}
+
 .sidebar[data-collapsed="true"] .sidebar-search {
   display: none;
+}
+
+/* Primary nav (Dictation, etc.) — Fellow SidebarMenuButton vibe:
+ * full-width, rounded, icon + label, hover wash, active wash. */
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
+}
+
+.sidebar-nav-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 30px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.sidebar-nav-item:hover {
+  background: var(--sidebar-accent);
+}
+
+.sidebar-nav-item[data-active="true"] {
+  background: var(--sidebar-accent);
+  font-weight: 500;
+}
+
+.sidebar-nav-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted-foreground);
+}
+
+.sidebar-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-nav-label {
+  display: none;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-nav-item {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto;
+  grid-template-columns: 1fr;
+  place-items: center;
+  padding: 0;
 }
 
 /* Sidebar section --------------------------------------------------- */
@@ -425,26 +538,83 @@ input:focus-visible,
   gap: 1px;
   overflow-y: auto;
   padding-bottom: var(--sp-6);
-  /* Fade the bottom edge as long lists scroll past. */
-  mask-image: linear-gradient(
-    to bottom,
-    black 0,
-    black calc(100% - 32px),
-    transparent 100%
-  );
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    black 0,
-    black calc(100% - 32px),
-    transparent 100%
-  );
+}
+
+/* Top + bottom fades live OUTSIDE the scrolling element so the scrollbar
+ * isn't affected. Both overlay opacities are driven by the inner
+ * element's scroll position via a single scroll-timeline:
+ *   - top fade: hidden at scroll 0, visible from ~15%+
+ *   - bottom fade: visible until ~85%, hidden at scroll 100%
+ * Net effect: top fade appears once content scrolls up, bottom fade
+ * disappears once you reach the end. Both visible in the middle.
+ * Inspired by twilson.net/scroll-mask but uses overlay opacity (not
+ * mask-image), so the scrollbar stays untouched. Graceful fallback
+ * leaves both overlays visible when scroll-timeline isn't supported. */
+.notes-nav-wrap::before,
+.notes-nav-wrap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 8px;
+  height: 32px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.notes-nav-wrap::before {
+  top: 0;
+  background: linear-gradient(to top, transparent, var(--sidebar) 100%);
+  opacity: 0;
+}
+
+.notes-nav-wrap::after {
+  bottom: 0;
+  background: linear-gradient(to bottom, transparent, var(--sidebar) 100%);
+}
+
+@supports (animation-timeline: scroll()) {
+  .notes-nav-wrap {
+    timeline-scope: --notes-nav-scroll;
+  }
+  .notes-nav {
+    scroll-timeline: --notes-nav-scroll block;
+  }
+  .notes-nav-wrap::before {
+    animation: notes-nav-fade-start linear both;
+    animation-timeline: --notes-nav-scroll;
+  }
+  .notes-nav-wrap::after {
+    animation: notes-nav-fade-end linear both;
+    animation-timeline: --notes-nav-scroll;
+  }
+}
+
+@keyframes notes-nav-fade-start {
+  0% {
+    opacity: 0;
+  }
+  15%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes notes-nav-fade-end {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .note-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
+  padding-right: var(--sp-1);
   border-radius: var(--r-md);
 }
 
@@ -494,18 +664,24 @@ input:focus-visible,
 .note-row-menu {
   display: inline-grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  margin: 0 3px 0 0;
+  justify-self: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
   border: 0;
   border-radius: var(--r-xs);
   background: transparent;
   color: var(--muted-foreground);
   opacity: 0;
+  line-height: 0;
   transition:
     opacity var(--t-fast) var(--ease-out),
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
+}
+
+.note-row-menu svg {
+  display: block;
 }
 
 .note-row:hover .note-row-menu,
@@ -582,7 +758,10 @@ input:focus-visible,
 /* Inset main card --------------------------------------------------- */
 
 /* The white card is pinned: fixed height, never grows past the viewport.
- * Its body scrolls internally so content is always clipped by the card. */
+ * Its body scrolls internally so content is always clipped by the card.
+ *
+ * Uniform tight radius on all four corners so the card nests cleanly
+ * inside the macOS window's curve instead of leaving slivered gaps. */
 .main-panel {
   position: relative;
   display: flex;
@@ -590,7 +769,7 @@ input:focus-visible,
   min-height: 0;
   flex-direction: column;
   margin: calc(var(--titlebar-h) + var(--sp-2)) var(--sp-3) var(--sp-3) 0;
-  border-radius: var(--r-2xl);
+  border-radius: var(--r-window);
   background: var(--card);
   color: var(--card-foreground);
   box-shadow: var(--shadow-sm), var(--shadow-inset);
@@ -610,17 +789,69 @@ input:focus-visible,
   padding: 0 var(--sp-8) var(--sp-5);
 }
 
-/* Fade content into the card floor as it scrolls behind the record button. */
+/* Top + bottom fades for the main card. Top is short (28px) since no
+ * sticky header sits there; bottom is taller (96px) so content dissolves
+ * cleanly behind the record button. Same scroll-timeline trick as the
+ * notes rail — fades vanish at the extremes of scroll so end-of-content
+ * isn't clipped. */
+.main-panel::before,
 .main-panel::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.main-panel::before {
+  top: 0;
+  height: 28px;
+  background: linear-gradient(to top, transparent, var(--card) 100%);
+  opacity: 0;
+}
+
+.main-panel::after {
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
-  pointer-events: none;
-  z-index: 2;
+}
+
+@supports (animation-timeline: scroll()) {
+  .main-panel {
+    timeline-scope: --main-panel-scroll;
+  }
+  .main-panel-body {
+    scroll-timeline: --main-panel-scroll block;
+  }
+  .main-panel::before {
+    animation: main-panel-fade-start linear both;
+    animation-timeline: --main-panel-scroll;
+  }
+  .main-panel::after {
+    animation: main-panel-fade-end linear both;
+    animation-timeline: --main-panel-scroll;
+  }
+}
+
+@keyframes main-panel-fade-start {
+  0% {
+    opacity: 0;
+  }
+  15%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes main-panel-fade-end {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .workspace {
@@ -635,7 +866,13 @@ input:focus-visible,
   gap: var(--sp-5);
   width: 100%;
   max-width: 720px;
-  min-height: calc(100vh - 60px);
+  /* Fill the workspace but don't exceed it — the previous
+   * `calc(100vh - 60px)` baked a viewport-tall minimum that overflowed
+   * the main-panel-body by a few dozen pixels, letting you scroll past
+   * content. 100% fills the workspace (flex:1 inside main-panel-body)
+   * so the recorder still hangs at the bottom for short notes without
+   * creating phantom scroll. */
+  min-height: 100%;
   margin: 0 auto;
   padding: var(--sp-10) 0 var(--sp-5);
 }
@@ -870,6 +1107,49 @@ input:focus-visible,
   line-height: 1.6;
 }
 
+/* Sits above the first transcript card and shares its max-width so
+ * the copy action right-aligns with the card edge. */
+.transcript-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  max-width: 720px;
+  margin-bottom: var(--sp-2);
+}
+
+.transcript-toolbar::before {
+  content: "";
+}
+
+/* "Copy entire transcript" pill — mirrors the muted-chip language
+ * used by the meta squircles. */
+.transcript-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.transcript-copy:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.transcript-copy[data-copied] {
+  color: var(--warm-strong);
+}
+
 .transcript-view p {
   max-width: 720px;
   margin: 0;
@@ -882,26 +1162,35 @@ input:focus-visible,
 
 .source-transcripts section {
   display: grid;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   max-width: 720px;
   padding: var(--sp-5) var(--sp-6);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--muted) 42%, transparent);
+  border-radius: var(--r-lg);
+  background: var(--card);
 }
 
+/* Squircle chips for source / timestamp metadata — modest radius
+ * keeps them reading as metadata blocks rather than pills, the muted
+ * fill lets them sit quietly against the white card. */
 .transcript-turn-meta {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
-  align-items: baseline;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  align-items: center;
 }
 
-.transcript-turn-meta time {
+.transcript-turn-meta > span,
+.transcript-turn-meta > time {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 75%, transparent);
+  color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-weight: 400;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .source-transcripts p {
@@ -919,9 +1208,13 @@ input:focus-visible,
   position: relative;
 }
 
+.note-body-stack {
+  padding-bottom: 140px;
+}
+
 .note-preview {
   position: relative;
-  padding: var(--sp-2) 0 140px;
+  padding: var(--sp-2) 0 0;
   font-size: var(--fs-lg);
   line-height: 1.7;
   color: var(--foreground);
@@ -935,7 +1228,7 @@ input:focus-visible,
   margin: var(--sp-5) 0 var(--sp-2);
   color: var(--foreground);
   font-family: var(--font-sans);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.3;
@@ -994,36 +1287,33 @@ input:focus-visible,
 }
 
 .note-generating {
-  margin: var(--sp-3) 0;
+  display: inline-block;
+  margin: var(--sp-1) 0 0;
   font-size: var(--fs-md);
   font-weight: 500;
   background: linear-gradient(
     90deg,
-    var(--muted-foreground) 0%,
-    color-mix(in oklch, var(--foreground) 28%, var(--muted-foreground)) 35%,
+    color-mix(in oklch, var(--muted-foreground) 80%, transparent) 0%,
+    color-mix(in oklch, var(--foreground) 58%, var(--muted-foreground)) 38%,
     var(--foreground) 50%,
-    color-mix(in oklch, var(--foreground) 28%, var(--muted-foreground)) 65%,
-    var(--muted-foreground) 100%
+    color-mix(in oklch, var(--foreground) 58%, var(--muted-foreground)) 62%,
+    color-mix(in oklch, var(--muted-foreground) 80%, transparent) 100%
   );
-  background-size: 300% 100%;
+  background-size: 180% 100%;
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: note-shimmer 2.8s ease-in-out infinite;
+  animation: note-shimmer 1.05s linear infinite;
   will-change: background-position;
 }
 
 @keyframes note-shimmer {
   0% {
-    background-position: 150% 0;
-  }
-  45%,
-  55% {
-    background-position: 50% 0;
+    background-position: 130% 0;
   }
   100% {
-    background-position: -50% 0;
+    background-position: -70% 0;
   }
 }
 
@@ -1131,7 +1421,7 @@ input:focus-visible,
   z-index: 3;
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
   gap: var(--sp-3);
   min-height: 56px;
@@ -1143,91 +1433,239 @@ input:focus-visible,
   pointer-events: auto;
 }
 
-.source-mode-control {
-  display: grid;
-  justify-items: center;
-  gap: var(--sp-2);
-}
-
-.source-mode-options {
-  display: inline-grid;
-  grid-template-columns: repeat(2, minmax(128px, max-content));
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--card) 86%, transparent);
-  box-shadow: var(--shadow-sm);
-}
-
-.source-mode-option {
+.record-stage {
   position: relative;
-  display: inline-flex;
+  width: 100%;
+  height: var(--record-idle-height);
+  flex: 0 0 var(--record-idle-height);
+}
+
+.record-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
   align-items: center;
+  min-width: 0;
+}
+
+.record-state-idle,
+.record-state-working {
   justify-content: center;
-  min-height: 30px;
-  padding: 0 var(--sp-4);
+}
+
+.record-state-recorder {
+  justify-content: stretch;
+}
+
+.record-state-working .record-button {
+  width: 84px;
+}
+
+.record-idle {
+  display: flex;
+  align-items: stretch;
+  width: var(--record-idle-width);
+  height: 40px;
+  gap: 2px;
+}
+
+.record-idle .record-button {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 40px;
+}
+
+.record-options-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 100%;
+  padding: 0 var(--sp-2);
+  border: 0;
+  /* Concentric with the shell's 6px visual inset (14 - 6 = 8). */
   border-radius: var(--r-md);
+  background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out),
-    opacity var(--t-fast) var(--ease-out);
+    color var(--t-fast) var(--ease-out);
 }
 
-.source-mode-option input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.source-mode-option[data-selected="true"] {
-  background: var(--card);
+.record-options-trigger:hover,
+.record-options-trigger[aria-expanded="true"] {
+  background: var(--muted);
   color: var(--foreground);
-  box-shadow: var(--shadow-sm);
 }
 
-.source-mode-option:has(input:disabled) {
-  cursor: default;
-  opacity: 0.58;
+/* Only the icon spins — the button bg/hit area stays put. */
+.record-options-trigger svg {
+  transition: transform 360ms var(--ease-out);
 }
 
-.source-readiness-warning {
-  max-width: min(520px, calc(100vw - 64px));
-  color: color-mix(in oklch, var(--destructive) 64%, var(--foreground));
+.record-options-trigger[data-rotated="true"] svg {
+  transform: rotate(180deg);
+}
+
+/* Expanding settings panel inside the record shell.
+ *
+ * Uses the modern grid-template-rows: 0fr → 1fr trick to animate to
+ * intrinsic height — no JS measurement, no pop at the end. The shell's
+ * width animates on the same curve so the reveal feels like one motion.
+ * The inner row fades + slides into place a beat after the height
+ * starts opening (opacity transition has a delay only when opening).
+ */
+.record-options-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 100%;
+  transition: grid-template-rows 360ms var(--ease-out);
+}
+
+.record-options-panel[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.record-options-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Blur + fade + slide reveal. Row resolves out of a soft blur as the
+ * height opens, then crisps up — feels seamless rather than snapping
+ * into focus. Filter duration runs long past the opacity so the focus
+ * pull eases in slowly, no abrupt edge to the resolve. */
+.record-options-row {
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(-4px);
+  transition:
+    opacity 260ms var(--ease-out),
+    filter 380ms var(--ease-out),
+    transform 260ms var(--ease-out);
+  will-change: filter, opacity, transform;
+}
+
+.record-options-panel[data-open="true"] .record-options-row {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+  transition:
+    opacity 360ms var(--ease-out) 140ms,
+    filter 520ms var(--ease-out) 140ms,
+    transform 400ms var(--ease-out) 140ms;
+}
+
+/* Settings row sits inside an inner muted card, mirroring the Granola
+ * pattern — a quiet surface within the white pill. */
+.record-options-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  white-space: nowrap;
+}
+
+.record-options-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.record-options-hint {
+  color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  text-align: center;
+  font-weight: 400;
 }
 
-.source-readiness-warning p {
-  margin: 0;
-}
-
-.record-shell {
+/* shadcn-style switch */
+.switch {
   position: relative;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-height: 52px;
-  padding: 5px;
-  border: 1px solid var(--border);
+  flex-shrink: 0;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--input);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.switch[data-state="checked"] {
+  background: var(--foreground);
+}
+
+.switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.switch-thumb {
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 0 2px;
+  border-radius: var(--r-pill);
+  background: var(--card);
+  transform: translateX(0);
+  transition: transform var(--t-fast) var(--ease-out);
+  box-shadow: 0 1px 2px oklch(0% 0 none / 12%);
+}
+
+.switch[data-state="checked"] .switch-thumb {
+  background: var(--background);
+  transform: translateX(14px);
+}
+
+.record-shell {
+  --record-shell-border: 1px;
+  --record-shell-inset: 6px;
+  --record-shell-padding: calc(
+    var(--record-shell-inset) - var(--record-shell-border)
+  );
+  --record-idle-width: 86px;
+  --record-idle-height: 40px;
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: flex-end;
+  justify-content: flex-end;
+  min-height: calc(
+    var(--record-idle-height) + (var(--record-shell-inset) * 2)
+  );
+  padding: var(--record-shell-padding);
+  border: var(--record-shell-border) solid var(--border);
   border-radius: var(--r-xl);
   background: var(--card);
   box-shadow: var(--shadow-md);
   overflow: visible;
+  /* Matched 360ms ease-out across width, chevron rotation, and the
+   * grid-template-rows panel expansion. All three move with the same
+   * curve so the shell expands as one motion. */
   transition:
-    width var(--t-slow) var(--ease-spring),
+    width 360ms var(--ease-out),
     box-shadow var(--t-med) var(--ease-out);
   will-change: width;
 }
 
 .record-shell[data-state="idle"] {
-  width: 64px;
-  height: 52px;
-  overflow: hidden;
+  width: calc(var(--record-idle-width) + (var(--record-shell-inset) * 2));
+  overflow: visible;
+}
+
+.record-shell[data-state="idle"][data-options-open="true"] {
+  width: 320px;
 }
 
 .record-shell[data-state="working"] {
@@ -1236,14 +1674,20 @@ input:focus-visible,
   overflow: hidden;
 }
 
+.record-shell[data-state="starting"],
 .record-shell[data-state="recording"],
 .record-shell[data-state="paused"],
 .record-shell[data-state="validating"] {
-  width: min(560px, calc(100% - var(--sp-8)));
+  /* Sized to fit: pause(40) + 16 + timer(44) + 24 + waveform(38) + 24
+   * + stop(40) + 12 shell border/padding = 238. 2px slack at 240. */
+  width: min(240px, calc(100% - var(--sp-8)));
+  overflow: hidden;
 }
 
 /* Icon-only record trigger. Hover is an inset wash within the shell's
- * padding, so it reads as a soft pressed surface, not a new outline. */
+ * padding, so it reads as a soft pressed surface, not a new outline.
+ * Concentric corners: shell --r-xl (14px) - 6px visual inset = 8px
+ * inner, so the button's radius nests cleanly inside the shell curve. */
 .record-button {
   display: inline-flex;
   align-items: center;
@@ -1251,14 +1695,15 @@ input:focus-visible,
   width: 100%;
   height: 100%;
   border: 0;
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--foreground);
   transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .record-button:hover {
-  background: var(--muted);
+  background: var(--warm-soft);
+  color: var(--warm-strong);
 }
 
 .record-button:disabled {
@@ -1279,55 +1724,24 @@ input:focus-visible,
 }
 
 .recorder-bar {
+  /* Pause anchored to the left, stop anchored to the right; the meter
+   * occupies the 1fr middle column and distributes timer/waveform via
+   * its own space-between. Margins on the meter create the 16px gap
+   * from pause and the 24px gap to stop. */
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: var(--sp-2);
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   width: 100%;
-  padding: 0 2px;
-}
-
-.source-status-list {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-.source-status {
-  display: grid;
-  grid-template-columns: 82px minmax(0, 1fr) 72px;
-  gap: var(--sp-2);
-  align-items: center;
-  min-width: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--muted) 42%, transparent);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-.source-status .waveform {
-  height: 20px;
-}
-
-.source-status .waveform span {
-  height: 18px;
-}
-
-.source-warning {
-  grid-column: 1 / -1;
-  color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
+  height: var(--record-idle-height);
+  padding: 0;
 }
 
 .recorder-icon-button,
 .recorder-stop {
   display: inline-grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: var(--record-idle-height);
+  height: var(--record-idle-height);
   border: 0;
   border-radius: var(--r-md);
   background: var(--muted);
@@ -1340,6 +1754,13 @@ input:focus-visible,
 
 .recorder-icon-button:hover {
   background: color-mix(in oklch, var(--muted) 88%, var(--foreground));
+}
+
+/* Paused = same warm "resume capture" affordance as the idle record
+ * button. Visually links the two "start audio" states. */
+.recorder-bar[data-state="paused"] .recorder-icon-button:hover {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
 }
 
 .recorder-stop {
@@ -1358,12 +1779,12 @@ input:focus-visible,
 }
 
 .recorder-meter {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--sp-3);
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   min-width: 0;
-  padding: 0 var(--sp-2);
+  margin-left: var(--sp-6); /* 16px from pause */
+  margin-right: var(--sp-8); /* 24px from stop */
 }
 
 .elapsed {
@@ -1377,25 +1798,27 @@ input:focus-visible,
 /* Waveform ---------------------------------------------------------- */
 
 .waveform {
-  display: grid;
-  grid-template-columns: repeat(32, 1fr);
-  gap: 3px;
+  display: flex;
+  gap: 2px;
   align-items: center;
-  justify-content: stretch;
+  justify-content: center;
   min-width: 0;
-  height: 30px;
+  height: 24px;
   padding: 0 2px;
 }
 
 .waveform span {
   display: block;
-  height: 28px;
-  width: 100%;
-  min-width: 2px;
+  flex: 0 0 auto;
+  width: 3px;
+  /* Animate height directly so the rounded ends stay perfect circles —
+   * scaleY would squash the border-radius into a lozenge at low values. */
+  height: max(3px, calc(20px * var(--bar-fill, 0.15)));
   border-radius: 999px;
   background: var(--foreground);
   opacity: 0.85;
-  transform-origin: center;
+  transition: height 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: height;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {
@@ -1475,4 +1898,295 @@ input:focus-visible,
 
 .notes-list .selected {
   background: var(--muted);
+}
+
+/* Dictation settings page ------------------------------------------- */
+
+.settings-page {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--sp-10) 0 var(--sp-12);
+}
+
+.settings-header {
+  display: grid;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-8);
+}
+
+.settings-title {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+
+.settings-description {
+  margin: 0;
+  max-width: 560px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.55;
+}
+
+/* Group label sits outside the card so multiple cards can sit under one
+ * section, like macOS System Settings. */
+.settings-group {
+  display: grid;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+
+.settings-group-heading {
+  margin: 0;
+  padding: 0 var(--sp-1);
+  color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
+  font-size: var(--fs-md);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Granola-style settings card — quiet rounded container, no heavy chrome. */
+.settings-card {
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border-radius: var(--r-lg);
+  background: var(--card);
+}
+
+.settings-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-row:first-child {
+  padding-top: 0;
+}
+
+.settings-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.settings-row-info {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-row-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.settings-row-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.settings-row-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* Keycap frame — wraps one or more keycaps in a 28px-tall container with a
+ * subtle border so the group reads as one shortcut display while each
+ * keycap inside keeps its own filled bg. Matches macOS shortcut UI. */
+.keycap-frame {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 3px;
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+.keycap-frame-capturing {
+  justify-content: flex-end;
+  padding: 0 var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+
+.keycap {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--muted);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+/* Buttons — borrow Fellow's Button variants. Secondary uses translucent
+ * secondary bg so hover (alpha shift) stays subtle, not "go to muted". */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 28px;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.btn-secondary {
+  background: color-mix(in oklch, var(--muted) 65%, transparent);
+  color: var(--secondary-foreground);
+}
+
+.btn-secondary:hover {
+  background: var(--muted);
+}
+
+.btn-ghost:hover {
+  background: var(--muted);
+}
+
+/* Select trigger — transparent bg, subtle border only; hover deepens the
+ * border. Chevron absolutely positioned at right. */
+.select-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 220px;
+  height: 32px;
+  padding: 0 32px 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+
+.select-trigger:hover {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+}
+
+.select-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+}
+
+.select-trigger > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-trigger svg {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-3);
+  transform: translateY(-50%);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+/* Native-macOS popup behavior: the popover slides up so the currently
+ * selected option lines up with the trigger's position. The vertical
+ * offset is set inline via `style.top` based on the selected index.
+ *
+ * Anchored to BOTH `left: 0` and `right: 0` so the popover width matches
+ * the trigger exactly. Wider items would otherwise spill past the right
+ * edge and reveal the trigger underneath on the left. */
+.select-popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  margin: 0;
+  /* sp-1 horizontal + sp-1 vertical padding gives the same inset feel as
+   * the context menu, so item hover wash has a rounded border-radius
+   * with a small breathing strip around it. The slide-up calc accounts
+   * for the vertical padding so the selected item still lines up with
+   * the trigger. */
+  padding: var(--sp-1);
+  list-style: none;
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow:
+    0 12px 32px oklch(0% 0 none / 12%),
+    0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.select-popover li {
+  list-style: none;
+}
+
+.select-popover button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--sp-1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select-popover button:hover {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.select-popover button[data-selected="true"] {
+  color: var(--foreground);
+}
+
+.select-check {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  color: var(--foreground);
 }

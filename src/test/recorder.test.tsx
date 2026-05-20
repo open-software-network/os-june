@@ -73,7 +73,7 @@ describe("RecorderBar", () => {
     expect(screen.getByRole("button", { name: "Working" })).toBeDisabled();
   });
 
-  it("warns when the microphone appears silent", () => {
+  it("does not surface a silence prompt even when the backend flags it", () => {
     render(
       <RecorderBar
         status={{
@@ -91,8 +91,8 @@ describe("RecorderBar", () => {
     );
 
     expect(
-      screen.getByText("Microphone input appears silent"),
-    ).toBeInTheDocument();
+      screen.queryByText("Microphone input appears silent"),
+    ).not.toBeInTheDocument();
   });
 
   it("amplifies normal speech peaks for visible meter movement", () => {

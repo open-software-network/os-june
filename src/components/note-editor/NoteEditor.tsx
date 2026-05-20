@@ -1,8 +1,12 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconClipboard } from "central-icons/IconClipboard";
 import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
+import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
   NoteDto,
@@ -12,7 +16,6 @@ import type {
 } from "../../lib/tauri";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
-import { SourceModeControl } from "../recorder/SourceModeControl";
 import { NotePreview } from "./NotePreview";
 
 type NoteEditorProps = {
@@ -23,7 +26,7 @@ type NoteEditorProps = {
   sourceReadiness?: RecordingSourceReadinessDto;
   checkingSourceReadiness: boolean;
   onTitleChange: (title: string) => void;
-  onContentChange: (content: string) => void;
+  onContentChange: (noteId: string, content: string) => void;
   onSourceModeChange: (mode: RecordingSourceMode) => void;
   onStartRecording: () => void;
   onPauseRecording: (sessionId: string) => void;
@@ -78,19 +81,37 @@ export function NoteEditor({
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const recordingForNote = recordingStatus;
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const systemOn = sourceMode === "microphonePlusSystem";
+  const systemReadiness = sourceReadiness?.sources.find(
+    (source) => source.source === "system",
+  );
+  const systemBlocked = !!(systemReadiness && !systemReadiness.ready);
+
+  // Auto-close the options panel whenever a recording starts so the
+  // shell can transition into the recorder bar cleanly.
+  useEffect(() => {
+    if (recordingForNote) setOptionsOpen(false);
+  }, [recordingForNote]);
   const processingLock =
     note.processingStatus === "transcribing" ||
-    note.processingStatus === "generating";
-  const shellState =
-    recordingForNote?.state ?? (processingLock ? "working" : "idle");
+    note.processingStatus === "generating" ||
+    note.processingStatus === "validating";
+  // Shell snaps straight back to idle after stop — the body shimmer
+  // covers the "still processing" affordance, and the record button
+  // stays disabled via processingLock so nothing can re-trigger.
+  const shellState = recordingForNote?.state ?? "idle";
   const processing = transientStatus(note.processingStatus);
   const processingText = processingMessage(note.processingStatus);
   const canRetry =
     note.processingStatus === "failed" &&
     !!(note.audio || note.audioSources?.length);
+  // Don't gate the record button on the background readiness check —
+  // a quick toggle would briefly disable it and feel glitchy.
+  // handleStartRecording re-runs a fresh check on click and surfaces any
+  // error, so background readiness only informs the popover hint.
   const recordDisabled =
     processingLock ||
-    checkingSourceReadiness ||
     (sourceReadiness?.sources.some(
       (source) => source.required && !source.ready,
     ) ??
@@ -135,18 +156,13 @@ export function NoteEditor({
       </header>
 
       <section className="editor-content">
-        {activeTab === "notes" &&
-        (note.processingStatus === "transcribing" ||
-          note.processingStatus === "generating" ||
-          note.processingStatus === "validating") ? (
-          <p className="note-generating" role="status" aria-live="polite">
-            {note.processingStatus === "transcribing"
-              ? "Transcribing audio…"
-              : "Generating notes…"}
-          </p>
-        ) : null}
         {activeTab === "transcription" ? (
           <div className="transcript-view">
+            {transcriptToText(note) ? (
+              <div className="transcript-toolbar">
+                <CopyTranscriptButton text={transcriptToText(note)} />
+              </div>
+            ) : null}
             {note.sourceTranscripts?.length ? (
               <div className="source-transcripts">
                 {note.sourceTranscripts.map((transcript) => {
@@ -189,76 +205,147 @@ export function NoteEditor({
             )}
           </div>
         ) : (
-          <NotePreview
-            noteId={note.id}
-            markdown={content}
-            onChange={onContentChange}
-            emptyPlaceholder="Record or start writing..."
-          />
+          <div className="note-body-stack">
+            <NotePreview
+              noteId={note.id}
+              markdown={content}
+              onChange={onContentChange}
+              emptyPlaceholder="Record or start writing..."
+            />
+            {processingLock ? (
+              <p
+                className="note-generating"
+                role="status"
+                aria-live="polite"
+              >
+                {note.processingStatus === "generating"
+                  ? "Generating notes…"
+                  : "Transcribing audio…"}
+              </p>
+            ) : null}
+          </div>
         )}
       </section>
 
       <div className="editor-footer">
-        <SourceModeControl
-          value={sourceMode}
-          disabled={!!recordingForNote || processingLock}
-          readiness={sourceReadiness}
-          onChange={onSourceModeChange}
-        />
-        <div className="record-shell" data-state={shellState}>
-          <AnimatePresence mode="wait" initial={false}>
-            {recordingForNote ? (
-              <motion.div
-                key="recorder"
-                style={{ width: "100%" }}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 4 }}
-                transition={{ duration: 0.14, ease: "easeOut" }}
-              >
-                <RecorderBar
-                  status={recordingForNote}
-                  onPause={onPauseRecording}
-                  onResume={onResumeRecording}
-                  onDone={onFinishRecording}
-                />
-              </motion.div>
-            ) : processingLock ? (
-              <motion.button
-                key="working"
-                type="button"
-                className="record-button"
-                disabled
-                initial={{ opacity: 0, scale: 0.96 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.96 }}
-                transition={{ duration: 0.14, ease: "easeOut" }}
-              >
-                Working
-              </motion.button>
-            ) : (
-              <motion.button
-                key="record"
-                type="button"
-                className="record-button"
-                aria-label="Record"
-                title="Record"
-                disabled={recordDisabled}
-                onClick={onStartRecording}
-                initial={{ opacity: 0, scale: 0.96 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.96 }}
-                transition={{ duration: 0.14, ease: "easeOut" }}
-              >
-                <IconMicrophone size={20} />
-              </motion.button>
-            )}
-          </AnimatePresence>
+        <div
+          className="record-shell"
+          data-state={shellState}
+          data-options-open={!recordingForNote && !processingLock && optionsOpen}
+        >
+          {!recordingForNote && !processingLock ? (
+            <div
+              className="record-options-panel"
+              data-open={optionsOpen}
+              aria-hidden={!optionsOpen}
+            >
+              <div className="record-options-panel-inner">
+                <div className="record-options-row">
+                  <Switch
+                    checked={systemOn}
+                    disabled={systemBlocked && !systemOn}
+                    aria-labelledby="record-options-system"
+                    onCheckedChange={(next) =>
+                      onSourceModeChange(
+                        next ? "microphonePlusSystem" : "microphoneOnly",
+                      )
+                    }
+                  />
+                  <span
+                    id="record-options-system"
+                    className="record-options-label"
+                  >
+                    Capture system audio
+                    {systemBlocked ? (
+                      <span className="record-options-hint">
+                        {systemReadiness?.message ?? "Not available"}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <div className="record-stage">
+            <AnimatePresence initial={false}>
+              {recordingForNote ? (
+                <motion.div
+                  key="recorder"
+                  className="record-state record-state-recorder"
+                  initial={{ opacity: 0 }}
+                  animate={{
+                    opacity: 1,
+                    transition: {
+                      duration: 0.22,
+                      delay: 0.14,
+                      ease: [0.22, 1, 0.36, 1],
+                    },
+                  }}
+                  exit={{
+                    opacity: 0,
+                    transition: { duration: 0.12, ease: [0.22, 1, 0.36, 1] },
+                  }}
+                >
+                  <RecorderBar
+                    status={recordingForNote}
+                    onPause={onPauseRecording}
+                    onResume={onResumeRecording}
+                    onDone={onFinishRecording}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="idle"
+                  className="record-state record-state-idle"
+                  initial={{ opacity: 0 }}
+                  animate={{
+                    opacity: 1,
+                    // Symmetric to the recorder enter — delay the reveal
+                    // so the idle pill resolves as the shell finishes
+                    // collapsing back, not while it's still wide.
+                    transition: {
+                      duration: 0.22,
+                      delay: 0.12,
+                      ease: [0.22, 1, 0.36, 1],
+                    },
+                  }}
+                  exit={{
+                    opacity: 0,
+                    transition: { duration: 0.12, ease: [0.22, 1, 0.36, 1] },
+                  }}
+                >
+                  <div className="record-idle">
+                    <button
+                      type="button"
+                      className="record-button"
+                      aria-label="Record"
+                      title="Record"
+                      disabled={recordDisabled}
+                      onClick={onStartRecording}
+                    >
+                      <IconMicrophone size={20} />
+                    </button>
+                    <button
+                      type="button"
+                      className="record-options-trigger"
+                      aria-label="Recording options"
+                      aria-expanded={optionsOpen}
+                      data-rotated={optionsOpen}
+                      onClick={() => setOptionsOpen((value) => !value)}
+                    >
+                      <IconChevronBottom size={16} />
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
     </article>
   );
 }
+
 
 function FolderChip({
   folders,
@@ -369,6 +456,54 @@ function processingMessage(status: NoteDto["processingStatus"]): string | null {
     default:
       return null;
   }
+}
+
+function transcriptToText(note: NoteDto): string {
+  if (note.sourceTranscripts?.length) {
+    return note.sourceTranscripts
+      .map((turn) => {
+        const meta = formatTurnTime(turn.startMs, turn.endMs)
+          ? `${sourceLabel(turn.source)} ${formatTurnTime(turn.startMs, turn.endMs)}`
+          : sourceLabel(turn.source);
+        return `${meta}\n${turn.text}`;
+      })
+      .join("\n\n");
+  }
+  return note.transcript?.text ?? "";
+}
+
+function CopyTranscriptButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      // Clipboard API can fail in restricted contexts; stay silent
+      // rather than nag — the user can retry.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="transcript-copy"
+      onClick={() => void handleCopy()}
+      data-copied={copied || undefined}
+      aria-label={copied ? "Transcript copied" : "Copy transcript"}
+      title={copied ? "Copied" : "Copy transcript"}
+    >
+      {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
 }
 
 function formatFullDate(value: string) {

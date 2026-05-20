@@ -1,6 +1,7 @@
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSidebarHiddenLeftWide } from "central-icons/IconSidebarHiddenLeftWide";
 import { IconSidebarSimpleLeftWide } from "central-icons/IconSidebarSimpleLeftWide";
@@ -8,11 +9,15 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
+export type SidebarView = "notes" | "dictation";
+
 type SidebarProps = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
   selectedNoteId?: string;
   selectedFolderId?: string;
+  activeView: SidebarView;
+  onChangeView: (view: SidebarView) => void;
   onCreateFolder: () => void;
   onCreateNote: () => void;
   onSelectAll: () => void;
@@ -25,13 +30,15 @@ type SidebarProps = {
 
 type MenuState = {
   noteId: string;
-  x: number;
-  y: number;
+  right: number;
+  top: number;
 };
 
 export function Sidebar({
   notes,
   selectedNoteId,
+  activeView,
+  onChangeView,
   onCreateNote,
   onSelectNote,
   onDeleteNote,
@@ -67,11 +74,20 @@ export function Sidebar({
     };
   }, [menu]);
 
-  // Anchor the menu just below the overflow trigger so it always opens in the
-  // same spot, regardless of where the click landed.
+  // Right-aligns the popover with the overflow button and parks it just
+  // below — keeps it tucked next to the trigger rather than flying off to
+  // the right. Clicking the same button again toggles it closed.
   function openMenuForNote(noteId: string, anchor: HTMLElement) {
+    if (menu?.noteId === noteId) {
+      setMenu(null);
+      return;
+    }
     const rect = anchor.getBoundingClientRect();
-    setMenu({ noteId, x: rect.right, y: rect.bottom + 4 });
+    setMenu({
+      noteId,
+      right: window.innerWidth - rect.right,
+      top: rect.bottom + 4,
+    });
   }
 
   return (
@@ -116,7 +132,7 @@ export function Sidebar({
         <button
           type="button"
           className="icon-button sidebar-search-collapsed"
-          aria-label="Search notes"
+          aria-label="Jump to"
           onClick={onToggleCollapsed}
         >
           <IconMagnifyingGlass size={16} />
@@ -127,12 +143,34 @@ export function Sidebar({
           <input
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search notes"
+            placeholder="Jump to…"
           />
+          <kbd className="sidebar-search-kbd" aria-hidden>
+            ⌘K
+          </kbd>
         </label>
       )}
 
-      <section className="sidebar-section" aria-label="Notes">
+      <nav className="sidebar-nav" aria-label="Primary">
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "dictation"}
+          aria-current={activeView === "dictation" ? "page" : undefined}
+          onClick={() => onChangeView("dictation")}
+        >
+          <span className="sidebar-nav-icon">
+            <IconMicrophoneSparkle size={16} />
+          </span>
+          <span className="sidebar-nav-label">Dictation</span>
+        </button>
+      </nav>
+
+      <section
+        className="sidebar-section"
+        aria-label="Notes"
+        data-active={activeView === "notes"}
+      >
         <div className="section-title">
           <span className="section-title-label">
             Notes <span className="section-count">{filteredNotes.length}</span>
@@ -141,7 +179,10 @@ export function Sidebar({
             type="button"
             className="icon-button section-add"
             aria-label="New note"
-            onClick={onCreateNote}
+            onClick={() => {
+              onChangeView("notes");
+              onCreateNote();
+            }}
           >
             <IconPlusMedium size={14} />
           </button>
@@ -153,8 +194,13 @@ export function Sidebar({
                 <NoteRow
                   key={note.id}
                   note={note}
-                  selected={selectedNoteId === note.id}
-                  onSelect={() => onSelectNote(note.id)}
+                  selected={
+                    activeView === "notes" && selectedNoteId === note.id
+                  }
+                  onSelect={() => {
+                    onChangeView("notes");
+                    onSelectNote(note.id);
+                  }}
                   onOpenMenu={(anchor) => openMenuForNote(note.id, anchor)}
                 />
               ))
@@ -170,7 +216,7 @@ export function Sidebar({
       {menu ? (
         <div
           className="context-menu"
-          style={{ left: menu.x, top: menu.y }}
+          style={{ right: menu.right, top: menu.top }}
           role="menu"
           onClick={(event) => event.stopPropagation()}
         >

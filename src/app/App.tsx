@@ -1,9 +1,10 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { DictationSettings } from "../components/dictation/DictationSettings";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
-import { Sidebar } from "../components/sidebar/Sidebar";
+import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import {
   assignNoteToFolder,
   bootstrapApp,
@@ -39,8 +40,9 @@ export function App() {
   );
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [sourceMode, setSourceMode] =
-    useState<RecordingSourceMode>("microphoneOnly");
+    useState<RecordingSourceMode>("microphonePlusSystem");
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
@@ -197,21 +199,22 @@ export function App() {
 
   async function handleStartRecording() {
     if (!selectedNote) return;
+    dispatch({
+      type: "recordingStatusChanged",
+      status: startingRecordingStatus(sourceMode),
+    });
     try {
       setCheckingSourceReadiness(true);
       const readiness = await checkRecordingSourceReadiness(sourceMode);
       setSourceReadiness(readiness);
       if (!readiness.ready) {
+        dispatch({ type: "recordingStatusCleared" });
         setError(
           readiness.sources.find((source) => source.required && !source.ready)
             ?.message ?? "The selected recording sources are not ready.",
         );
         return;
       }
-      dispatch({
-        type: "recordingStatusChanged",
-        status: startingRecordingStatus(sourceMode),
-      });
       const recording = await startRecording(selectedNote.id, sourceMode);
       dispatch({
         type: "recordingStatusChanged",
@@ -226,16 +229,13 @@ export function App() {
   }
 
   async function handleFinishRecording(sessionId: string) {
-    if (state.recordingStatus?.sessionId === sessionId) {
-      dispatch({
-        type: "recordingStatusChanged",
-        status: { ...state.recordingStatus, state: "validating" },
-      });
-    }
-    // The backend awaits the full transcribe + generate pipeline before
-    // returning, so we'd never see an in-between status without a poll.
-    // Optimistically flip the selected note into "transcribing" so the
-    // shimmer paints while we wait.
+    // Collapse the shell back to idle the instant stop is pressed so it
+    // never lingers wide while the (potentially long) transcribe +
+    // generate pipeline runs. The record button stays disabled via
+    // processingLock until the backend resolves, and the body shimmer
+    // ("Transcribing audio…" → "Generating notes…") tells the user
+    // work is still in flight.
+    dispatch({ type: "recordingStatusCleared" });
     if (selectedNote) {
       dispatch({
         type: "noteUpdated",
@@ -245,9 +245,7 @@ export function App() {
     try {
       const result = await finishRecording(sessionId);
       dispatch({ type: "noteUpdated", note: result.note });
-      dispatch({ type: "recordingStatusCleared" });
     } catch (err) {
-      dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     }
   }
@@ -268,6 +266,8 @@ export function App() {
         notes={state.notes}
         selectedNoteId={state.selectedNoteId}
         selectedFolderId={state.selectedFolderId}
+        activeView={activeView}
+        onChangeView={setActiveView}
         onCreateFolder={() => void handleCreateFolder()}
         onCreateNote={() => void handleCreateNote()}
         onSelectAll={() => void handleSelectFolder(undefined)}
@@ -300,7 +300,9 @@ export function App() {
             }
           />
           <div className="workspace">
-            {selectedNote ? (
+            {activeView === "dictation" ? (
+              <DictationSettings />
+            ) : selectedNote ? (
               <NoteEditor
                 note={selectedNote}
                 folders={state.folders}
@@ -309,9 +311,13 @@ export function App() {
                 sourceReadiness={sourceReadiness}
                 checkingSourceReadiness={checkingSourceReadiness}
                 onTitleChange={(title) => void handleUpdateNote({ title })}
-                onContentChange={(editedContent) =>
-                  void handleUpdateNote({ editedContent })
-                }
+                onContentChange={(sourceNoteId, editedContent) => {
+                  // Blur fired by an editor that was already torn
+                  // down on note-switch — ignore so we don't write
+                  // the old note's content into the new selectedNote.
+                  if (sourceNoteId !== selectedNote.id) return;
+                  void handleUpdateNote({ editedContent });
+                }}
                 onSourceModeChange={setSourceMode}
                 onTabChange={(activeTab) =>
                   void updateNote({ noteId: selectedNote.id, activeTab }).then(

@@ -1,38 +1,37 @@
-import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { AudioLevelDto } from "../../lib/tauri";
 
 type WaveformProps = {
   level: AudioLevelDto;
 };
 
-const BAR_COUNT = 32;
-// Spring tuned for a soft VU-meter feel — lower stiffness + higher damping
-// reads as smoother / less twitchy than a snappy meter.
-const BAR_SPRING = { stiffness: 180, damping: 30, mass: 0.7 };
+const BAR_COUNT = 8;
+const FLOOR = 0.06;
+const GAIN = 11;
 
 export function Waveform({ level }: WaveformProps) {
+  const refs = useRef<Array<HTMLSpanElement | null>>([]);
   const targets = computeTargetPeaks(level);
+
+  useEffect(() => {
+    for (let i = 0; i < BAR_COUNT; i++) {
+      const el = refs.current[i];
+      if (el) el.style.setProperty("--bar-fill", targets[i].toFixed(3));
+    }
+  });
 
   return (
     <div className="waveform" aria-label="Microphone activity">
-      {targets.map((peak, index) => (
-        <WaveformBar key={index} target={peak} />
+      {Array.from({ length: BAR_COUNT }, (_, index) => (
+        <span
+          key={index}
+          ref={(el) => {
+            refs.current[index] = el;
+          }}
+        />
       ))}
     </div>
   );
-}
-
-function WaveformBar({ target }: { target: number }) {
-  const raw = useMotionValue(target);
-  const eased = useSpring(raw, BAR_SPRING);
-  const scaleY = useTransform(eased, (v) => visualPeakScale(v));
-
-  useEffect(() => {
-    raw.set(target);
-  }, [raw, target]);
-
-  return <motion.span style={{ scaleY }} />;
 }
 
 function computeTargetPeaks(level: AudioLevelDto) {
@@ -46,15 +45,13 @@ function computeTargetPeaks(level: AudioLevelDto) {
     const neighbor = source[sourceIndex - 1] ?? peak;
     const next = source[sourceIndex + 1] ?? peak;
     const rolloff = 0.78 + Math.sin(index * 0.85) * 0.12;
-    return Math.max(0, (neighbor * 0.22 + peak * 0.56 + next * 0.22) * rolloff);
+    const blended = Math.max(
+      0,
+      (neighbor * 0.22 + peak * 0.56 + next * 0.22) * rolloff,
+    );
+    return visualPeakScale(blended);
   });
 }
-
-// Floor is intentionally low (idle bars are a thin seismograph line) and the
-// ceiling is the full bar height, so loud peaks travel a long visible
-// distance. Tune FLOOR/GAIN to taste.
-const FLOOR = 0.06;
-const GAIN = 11;
 
 export function visualPeakScale(peak: number) {
   const normalized = Math.max(0, Math.min(1, peak));

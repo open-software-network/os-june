@@ -48,6 +48,10 @@
   --r-xl: 14px;
   --r-2xl: 18px;
   --r-pill: 999px;
+  /* macOS window corner radius (Sonoma/Sequoia). Use this on inset
+   * surfaces that should feel like they belong inside the native window
+   * curve — currently the main panel. */
+  --r-window: 10px;
 
   /* Controls --------------------------------------------------------- */
   --control-xs: 22px;
@@ -89,6 +93,11 @@
   --sidebar-border: oklch(86.91% 0.0015 84.59);
 
   --record: oklch(60% 0.22 27);
+  /* Warm-accent set for the record button hover state — a soft peach
+   * surface and a deeper terracotta foreground. Reusable for any
+   * "live/recording" primary action that wants a warmer feel. */
+  --warm-soft: oklch(90% 0.07 55);
+  --warm-strong: oklch(52% 0.16 38);
   --focus-ring: oklch(60% 0.04 250 / 32%);
   /* Warm-gray text selection — neutral to the warm palette, never blue. */
   --selection: oklch(86% 0.0015 84.59);
@@ -143,6 +152,8 @@
     --sidebar-border: oklch(1 0 0 / 8%);
 
     --record: oklch(0.6 0.22 27);
+    --warm-soft: oklch(0.42 0.12 50);
+    --warm-strong: oklch(0.86 0.16 60);
     --focus-ring: oklch(0.6 0.04 250 / 40%);
     --selection: oklch(0.68 0.0015 84.59 / 72%);
     --selection-foreground: oklch(0.16 0.0015 84.59);
@@ -189,4 +200,6 @@
   --sidebar-border: oklch(1 0 0 / 8%);
   --selection: oklch(0.68 0.0015 84.59 / 72%);
   --selection-foreground: oklch(0.16 0.0015 84.59);
+  --warm-soft: oklch(0.42 0.12 50);
+  --warm-strong: oklch(0.86 0.16 60);
 }

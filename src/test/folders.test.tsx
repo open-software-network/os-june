@@ -43,6 +43,8 @@ describe("folders UI", () => {
         notes={notes}
         selectedNoteId="note-2"
         selectedFolderId={undefined}
+        activeView="notes"
+        onChangeView={vi.fn()}
         onCreateFolder={vi.fn()}
         onCreateNote={vi.fn()}
         onSelectAll={vi.fn()}
@@ -55,7 +57,7 @@ describe("folders UI", () => {
     expect(screen.getByText("Scribe")).toBeInTheDocument();
     expect(screen.getByText("Second")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("Search notes"), "second");
+    await user.type(screen.getByPlaceholderText("Jump to…"), "second");
     await user.click(screen.getAllByRole("button", { name: /Second/ })[0]);
 
     expect(screen.queryByText("New note")).not.toBeInTheDocument();
@@ -71,6 +73,8 @@ describe("folders UI", () => {
         notes={notes}
         selectedNoteId="note-2"
         selectedFolderId={undefined}
+        activeView="notes"
+        onChangeView={vi.fn()}
         onCreateFolder={vi.fn()}
         onCreateNote={vi.fn()}
         onSelectAll={vi.fn()}
