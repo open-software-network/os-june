@@ -1,183 +1,94 @@
+import Placeholder from "@tiptap/extension-placeholder";
+import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
 import { IconBold } from "central-icons-filled/IconBold";
 import { IconBulletList } from "central-icons-filled/IconBulletList";
 import { IconH1 } from "central-icons-filled/IconH1";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type NotePreviewProps = {
-  /** Stable id of the note — used to remount the editor when it changes. */
   noteId: string;
   markdown: string;
   onChange: (markdown: string) => void;
   emptyPlaceholder?: string;
 };
 
-/**
- * Editable note surface rendered as a quiet read-style doc (Granola/Fellow
- * flavored): headings become serif section titles, lists/paragraphs are
- * styled for scanning, markdown chrome is diminished.
- *
- * It is an *uncontrolled* `contentEditable` region — React seeds the initial
- * HTML once (keyed on `noteId`) and then stays out of the way so the caret
- * never jumps. On blur we serialize the DOM back to markdown and report up.
- *
- * The selection toolbar floats above highlighted text with a deliberately
- * slim command set (bold / italic / copy) — the same lightweight treatment
- * Fellow uses for inline comments.
- */
 export function NotePreview({
   noteId,
   markdown,
   onChange,
   emptyPlaceholder,
 }: NotePreviewProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [toolbar, setToolbar] = useState<{ x: number; y: number } | null>(
-    null,
-  );
-
-  // Built once per note — feeding this back through React on every keystroke
-  // would fight the caret, so it is intentionally not reactive to `markdown`.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [toolbar, setToolbar] = useState<{ x: number; y: number } | null>(null);
   const initialHtml = useMemo(() => markdownToHtml(markdown), [noteId]);
 
-  // Empty tracking lives entirely on the DOM (no React state) so re-renders
-  // can never overwrite the contentEditable's children while the user types.
-  useLayoutEffect(() => {
-    syncEmpty();
-  });
+  const editor = useEditor(
+    {
+      extensions: [
+        StarterKit.configure({
+          heading: {
+            levels: [1],
+          },
+        }),
+        Placeholder.configure({
+          placeholder: emptyPlaceholder ?? "Record or start writing...",
+        }),
+      ],
+      content: initialHtml,
+      editorProps: {
+        attributes: {
+          class: "note-preview",
+          role: "textbox",
+          "aria-label": "Generated note",
+          "aria-multiline": "true",
+        },
+      },
+      onBlur: ({ editor }) => {
+        onChange(htmlToMarkdown(editor.view.dom));
+      },
+    },
+    [noteId],
+  );
 
   useEffect(() => {
-    function update() {
-      const selection = window.getSelection();
-      const root = ref.current;
-      if (!selection || selection.isCollapsed || !root) {
-        setToolbar(null);
-        return;
-      }
-      const anchor = selection.anchorNode;
-      if (!anchor || !root.contains(anchor)) {
-        setToolbar(null);
-        return;
-      }
-      const rect = selection.getRangeAt(0).getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) {
-        setToolbar(null);
-        return;
-      }
-      setToolbar({ x: rect.left + rect.width / 2, y: rect.top - 8 });
+    if (!editor) return;
+
+    function updateToolbar() {
+      setToolbar(getToolbarPosition(editor));
     }
-    document.addEventListener("selectionchange", update);
-    window.addEventListener("scroll", update, true);
+    function hideToolbar() {
+      setToolbar(null);
+    }
+
+    editor.on("selectionUpdate", updateToolbar);
+    editor.on("focus", updateToolbar);
+    editor.on("blur", hideToolbar);
+    window.addEventListener("scroll", updateToolbar, true);
+
     return () => {
-      document.removeEventListener("selectionchange", update);
-      window.removeEventListener("scroll", update, true);
+      editor.off("selectionUpdate", updateToolbar);
+      editor.off("focus", updateToolbar);
+      editor.off("blur", hideToolbar);
+      window.removeEventListener("scroll", updateToolbar, true);
     };
-  }, []);
-
-  function commit() {
-    const root = ref.current;
-    if (root) onChange(htmlToMarkdown(root));
-  }
-
-  function syncEmpty() {
-    const root = ref.current;
-    if (!root) return;
-    const empty = !root.textContent?.trim();
-    if (empty) root.setAttribute("data-empty", "true");
-    else root.removeAttribute("data-empty");
-  }
-
-  // Belt-and-suspenders fallback: regardless of how the space landed
-  // (keyboard layout, IME, paste), if a block now starts with "# ", "- "
-  // or "* ", convert it. Fires after the DOM has the new content.
-  function handleInput() {
-    syncEmpty();
-    const root = ref.current;
-    const selection = window.getSelection();
-    if (!root || !selection || !selection.isCollapsed) return;
-
-    let block: Node | null = selection.anchorNode;
-    while (block && block !== root && block.parentNode !== root) {
-      block = block.parentNode;
-    }
-    if (!block || block === root || block.nodeType !== Node.ELEMENT_NODE)
-      return;
-    const blockEl = block as HTMLElement;
-    const tag = blockEl.tagName.toLowerCase();
-    if (tag === "h1" || tag === "li") return;
-
-    const text = blockEl.textContent ?? "";
-    if (text.startsWith("# ")) {
-      applyBlockCommand(blockEl, "h1", 2);
-    } else if (text.startsWith("- ") || text.startsWith("* ")) {
-      applyBlockCommand(blockEl, "bullet", 2);
-    }
-  }
-
-  // Markdown shortcuts: typing "# ", "- " or "* " at the start of a line
-  // rewrites that block into a heading or bullet — the discoverable gesture
-  // everyone already tries.
-  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key === " " || event.code === "Space") {
-      applyBlockShortcut(ref.current, event);
-      syncEmpty();
-      return;
-    }
-    if (event.key === "Enter") {
-      // After committing Enter, if we ended up still inside an h1 (some
-      // browsers inherit the tag for the next block), demote to <p>.
-      requestAnimationFrame(() => {
-        const selection = window.getSelection();
-        const root = ref.current;
-        if (!selection || !root) return;
-        let block: Node | null = selection.anchorNode;
-        while (block && block.parentNode !== root) block = block.parentNode;
-        if (block && (block as HTMLElement).tagName === "H1") {
-          document.execCommand("formatBlock", false, "p");
-        }
-      });
-    }
-  }
+  }, [editor]);
 
   function applyFormat(command: "h1" | "bullet" | "bold") {
-    const root = ref.current;
-    if (!root) return;
-    root.focus();
+    if (!editor) return;
     if (command === "bold") {
-      document.execCommand("bold");
+      editor.chain().focus().toggleBold().run();
     } else if (command === "bullet") {
-      document.execCommand("insertUnorderedList");
-    } else if (command === "h1") {
-      // Toggle between h1 and paragraph for the current block.
-      const selection = window.getSelection();
-      if (!selection) return;
-      let block: Node | null = selection.anchorNode;
-      while (block && block.parentNode !== root) block = block.parentNode;
-      const tag =
-        (block as HTMLElement | null)?.tagName?.toLowerCase() === "h1"
-          ? "p"
-          : "h1";
-      document.execCommand("formatBlock", false, tag);
+      editor.chain().focus().toggleBulletList().run();
+    } else {
+      editor.chain().focus().toggleHeading({ level: 1 }).run();
     }
-    syncEmpty();
+    setToolbar(getToolbarPosition(editor));
   }
 
   return (
-    <>
-      <div
-        key={noteId}
-        ref={ref}
-        className="note-preview"
-        contentEditable
-        suppressContentEditableWarning
-        role="textbox"
-        aria-multiline="true"
-        aria-label="Generated note"
-        data-placeholder={emptyPlaceholder ?? "Record or start writing…"}
-        onKeyDown={handleKeyDown}
-        onInput={handleInput}
-        onBlur={commit}
-        dangerouslySetInnerHTML={{ __html: initialHtml }}
-      />
+    <div ref={wrapRef} className="note-preview-wrap">
+      <EditorContent editor={editor} />
       {toolbar ? (
         <div
           className="selection-toolbar"
@@ -188,6 +99,7 @@ export function NotePreview({
         >
           <button
             type="button"
+            data-active={editor?.isActive("heading", { level: 1 }) || undefined}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => applyFormat("h1")}
             title="Heading"
@@ -197,6 +109,7 @@ export function NotePreview({
           </button>
           <button
             type="button"
+            data-active={editor?.isActive("bulletList") || undefined}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => applyFormat("bullet")}
             title="Bullet list"
@@ -207,6 +120,7 @@ export function NotePreview({
           <span className="divider" aria-hidden />
           <button
             type="button"
+            data-active={editor?.isActive("bold") || undefined}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => applyFormat("bold")}
             title="Bold"
@@ -216,8 +130,23 @@ export function NotePreview({
           </button>
         </div>
       ) : null}
-    </>
+    </div>
   );
+}
+
+function getToolbarPosition(editor: Editor | null) {
+  if (!editor || editor.state.selection.empty) return null;
+  try {
+    const { from, to } = editor.state.selection;
+    const start = editor.view.coordsAtPos(from);
+    const end = editor.view.coordsAtPos(to);
+    return {
+      x: (start.left + end.right) / 2,
+      y: Math.min(start.top, end.top) - 8,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /* ---- markdown <-> html (tiny subset: headings, lists, paragraphs, bold) -- */
@@ -253,11 +182,10 @@ function markdownToHtml(markdown: string): string {
       closeList();
       continue;
     }
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    const heading = line.match(/^#{1,4}\s+(.+)$/);
     if (heading) {
       closeList();
-      const tag = heading[1].length === 1 ? "h1" : "h2";
-      html.push(`<${tag}>${inlineToHtml(heading[2])}</${tag}>`);
+      html.push(`<h1>${inlineToHtml(heading[1])}</h1>`);
       continue;
     }
     const item = line.match(/^[-*]\s+(.+)$/);
@@ -273,12 +201,6 @@ function markdownToHtml(markdown: string): string {
     html.push(`<p>${inlineToHtml(line)}</p>`);
   }
   closeList();
-  // Leave empty notes truly empty. Seeding "<p><br></p>" sounds reasonable
-  // but Chrome inserts typed characters before the trailing <br>, which
-  // keeps that <br> in the paragraph — so every line you type ends with a
-  // visible line break ("each space pushes to the next line"). Loose text
-  // under root for the very first keystroke is fine; the markdown shortcut
-  // wraps it on the first space.
   return html.join("");
 }
 
@@ -294,86 +216,6 @@ function inlineToMarkdown(node: Node): string {
   return inner;
 }
 
-/* Rewrites the caret's current line into a heading / list item when the
- * text typed so far is a markdown marker ("#", "-", "*"). */
-function applyBlockShortcut(
-  root: HTMLDivElement | null,
-  event: React.KeyboardEvent<HTMLDivElement>,
-) {
-  const selection = window.getSelection();
-  if (!root || !selection || !selection.isCollapsed) return;
-  const range = selection.getRangeAt(0);
-
-  // Walk up to the block element that is a direct child of the editor
-  // root. The caret can land in three places we have to handle:
-  //   1. inside a real block (<p>, <h1>, <li>, …) — easy case
-  //   2. inside a loose text node sitting directly under root — wrap it
-  //   3. on the root itself with no children — seed a <p> and move on
-  let block: Node | null = range.startContainer;
-  while (block && block !== root && block.parentNode !== root) {
-    block = block.parentNode;
-  }
-  let blockEl: HTMLElement;
-  if (block && block !== root && block.nodeType === Node.ELEMENT_NODE) {
-    blockEl = block as HTMLElement;
-  } else if (block && block !== root && block.nodeType === Node.TEXT_NODE) {
-    const wrapper = document.createElement("p");
-    block.parentNode?.insertBefore(wrapper, block);
-    wrapper.appendChild(block);
-    blockEl = wrapper;
-  } else {
-    // No proper block under the caret — bail rather than rewrap the entire
-    // editor, which used to scramble the DOM mid-keystroke.
-    return;
-  }
-
-  const pre = document.createRange();
-  pre.selectNodeContents(blockEl);
-  pre.setEnd(range.startContainer, range.startOffset);
-  const marker = pre.toString();
-
-  const command: "h1" | "bullet" | null =
-    marker === "#"
-      ? "h1"
-      : marker === "-" || marker === "*"
-        ? "bullet"
-        : null;
-  if (!command) return;
-
-  event.preventDefault();
-  applyBlockCommand(blockEl, command, marker.length);
-}
-
-/* Single point of truth: strip the markdown marker, drop the caret inside
- * the block, then defer to the same execCommand path the toolbar uses so
- * keyboard- and toolbar-triggered headings/lists are byte-identical. */
-function applyBlockCommand(
-  blockEl: HTMLElement,
-  command: "h1" | "bullet",
-  markerLen: number,
-) {
-  if (markerLen > 0) {
-    const first = blockEl.firstChild;
-    if (first && first.nodeType === Node.TEXT_NODE) {
-      first.textContent = (first.textContent ?? "").slice(markerLen);
-    } else {
-      blockEl.textContent = (blockEl.textContent ?? "").slice(markerLen);
-    }
-  }
-  const selection = window.getSelection();
-  if (!selection) return;
-  const caret = document.createRange();
-  caret.selectNodeContents(blockEl);
-  caret.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(caret);
-  if (command === "h1") {
-    document.execCommand("formatBlock", false, "h1");
-  } else {
-    document.execCommand("insertUnorderedList");
-  }
-}
-
 function htmlToMarkdown(root: HTMLElement): string {
   const blocks: string[] = [];
   for (const node of Array.from(root.childNodes)) {
@@ -387,11 +229,10 @@ function htmlToMarkdown(root: HTMLElement): string {
     const tag = el.tagName.toLowerCase();
     if (tag === "h1") {
       blocks.push(`# ${inlineToMarkdown(el).trim()}`);
-    } else if (tag === "h2" || tag === "h3" || tag === "h4") {
-      blocks.push(`## ${inlineToMarkdown(el).trim()}`);
     } else if (tag === "ul" || tag === "ol") {
       for (const li of Array.from(el.querySelectorAll("li"))) {
-        blocks.push(`- ${inlineToMarkdown(li).trim()}`);
+        const text = inlineToMarkdown(li).trim();
+        if (text) blocks.push(`- ${text}`);
       }
     } else {
       const text = inlineToMarkdown(el).trim();

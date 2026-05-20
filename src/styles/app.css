@@ -49,6 +49,7 @@ body {
 
 ::selection {
   background: var(--selection);
+  color: var(--selection-foreground);
 }
 
 button,
@@ -88,11 +89,21 @@ input:focus-visible,
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
-*::-webkit-scrollbar { width: 6px; height: 6px; }
-*::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: transparent; border-radius: 9999px; }
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+}
 *:hover::-webkit-scrollbar-thumb,
-*:focus-within::-webkit-scrollbar-thumb { background: var(--border); }
+*:focus-within::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
 
 /* App shell — sidebar tint outside, white card inset for the main area. */
 
@@ -167,17 +178,31 @@ input:focus-visible,
   width: auto;
 }
 
-.sidebar-brand-img.dark { display: none; }
-
-@media (prefers-color-scheme: dark) {
-  .sidebar-brand-img.light { display: none; }
-  .sidebar-brand-img.dark  { display: block; }
+.sidebar-brand-img.dark {
+  display: none;
 }
 
-[data-theme="dark"] .sidebar-brand-img.light { display: none; }
-[data-theme="dark"] .sidebar-brand-img.dark  { display: block; }
-[data-theme="light"] .sidebar-brand-img.light { display: block; }
-[data-theme="light"] .sidebar-brand-img.dark  { display: none; }
+@media (prefers-color-scheme: dark) {
+  .sidebar-brand-img.light {
+    display: none;
+  }
+  .sidebar-brand-img.dark {
+    display: block;
+  }
+}
+
+[data-theme="dark"] .sidebar-brand-img.light {
+  display: none;
+}
+[data-theme="dark"] .sidebar-brand-img.dark {
+  display: block;
+}
+[data-theme="light"] .sidebar-brand-img.light {
+  display: block;
+}
+[data-theme="light"] .sidebar-brand-img.dark {
+  display: none;
+}
 
 .sidebar[data-collapsed="true"] .sidebar-header {
   padding: var(--sp-1) 0 0;
@@ -551,9 +576,7 @@ input:focus-visible,
   border-radius: var(--r-2xl);
   background: var(--card);
   color: var(--card-foreground);
-  box-shadow:
-    var(--shadow-sm),
-    var(--shadow-inset);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
   overflow: hidden;
 }
 
@@ -718,8 +741,13 @@ input:focus-visible,
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .note-title {
@@ -832,7 +860,12 @@ input:focus-visible,
 
 /* Note preview (rendered markdown) --------------------------------- */
 
+.note-preview-wrap {
+  position: relative;
+}
+
 .note-preview {
+  position: relative;
   padding: var(--sp-2) 0 140px;
   font-size: var(--fs-lg);
   line-height: 1.7;
@@ -894,9 +927,12 @@ input:focus-visible,
 
 /* Dull placeholder — visible enough to read with caret resting in an empty
  * editor, quiet enough to disappear next to real text. */
-.note-preview[data-empty="true"]::before {
+.note-preview p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
-  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  float: left;
+  width: 0;
+  height: 0;
+  color: color-mix(in oklch, var(--muted-foreground) 42%, transparent);
   pointer-events: none;
   font-weight: 400;
 }
@@ -925,8 +961,12 @@ input:focus-visible,
 }
 
 @keyframes note-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 /* Floating selection toolbar ---------------------------------------- */

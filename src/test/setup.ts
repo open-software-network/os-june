@@ -11,4 +11,34 @@ if (!("ResizeObserver" in globalThis)) {
   };
 }
 
+if (!document.elementFromPoint) {
+  document.elementFromPoint = () => document.body;
+}
+
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () =>
+    ({
+      length: 0,
+      item: () => null,
+      [Symbol.iterator]: function* () {},
+    }) as DOMRectList;
+}
+
+if (!Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}
+
+if (!HTMLElement.prototype.getClientRects) {
+  HTMLElement.prototype.getClientRects = () =>
+    ({
+      length: 0,
+      item: () => null,
+      [Symbol.iterator]: function* () {},
+    }) as DOMRectList;
+}
+
+if (!HTMLElement.prototype.getBoundingClientRect) {
+  HTMLElement.prototype.getBoundingClientRect = () => new DOMRect();
+}
+
 afterEach(() => cleanup());

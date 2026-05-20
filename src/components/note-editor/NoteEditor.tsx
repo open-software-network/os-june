@@ -93,11 +93,7 @@ export function NoteEditor({
         (note.processingStatus === "transcribing" ||
           note.processingStatus === "generating" ||
           note.processingStatus === "validating") ? (
-          <p
-            className="note-generating"
-            role="status"
-            aria-live="polite"
-          >
+          <p className="note-generating" role="status" aria-live="polite">
             {note.processingStatus === "transcribing"
               ? "Transcribing audio…"
               : "Generating notes…"}
@@ -124,7 +120,7 @@ export function NoteEditor({
             noteId={note.id}
             markdown={content}
             onChange={onContentChange}
-            emptyPlaceholder="Record or start writing…"
+            emptyPlaceholder="Record or start writing..."
           />
         )}
       </section>
