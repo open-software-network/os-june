@@ -46,6 +46,24 @@ The app data directory is resolved by Tauri at runtime. In development, inspect 
 - `recordings/{note_id}/{session_id}/microphone.wav`
 - `recordings/{note_id}/{session_id}/system.wav` when `Microphone + system audio` is selected
 
+## Dictation
+
+Dictation is paste-only: it does not create notes or store transcript records. Press the configured global shortcut from another app to start microphone dictation, press it again to stop, and OS Scribe transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
+
+The default shortcut is `Fn+Space`. If macOS cannot register it, the app falls back to `Ctrl+Opt+Space`. The Dictation settings page can save another shortcut with Cmd, Ctrl, Opt, or Shift plus one supported non-modifier key.
+
+Manual validation:
+
+1. Launch with `OPENAI_API_KEY` configured.
+2. Grant microphone and Accessibility permissions.
+3. Focus a text field in TextEdit, VS Code, or a browser.
+4. Press the configured shortcut to start dictation.
+5. Speak a short sentence.
+6. Press the configured shortcut again to stop.
+7. Confirm the HUD transitions through listening, transcribing, pasting, and success.
+8. Confirm the transcript appears in the original focused text field.
+9. Select a microphone in Dictation settings, restart, and confirm the selection persists.
+
 ## macOS Audio Permission Debugging
 
 The macOS bundle includes:
@@ -55,6 +73,8 @@ The macOS bundle includes:
 - `com.apple.security.device.audio-input` in `src-tauri/Entitlements.plist`
 
 The `Microphone only` mode is the default. The `Microphone + system audio` mode uses a small macOS helper built by `src-tauri/build.rs` into `.tauri-helper/` during `pnpm tauri:dev`, `pnpm test:rust`, or `pnpm tauri:build`. Generated helper binaries are ignored by git and kept outside `src-tauri` so Tauri dev does not restart on its own generated files.
+
+Dictation uses a separate macOS helper built into `.tauri-helper/OS Scribe Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
 
 Local `pnpm tauri:build` output is ad-hoc signed unless a signing identity is configured. Before distribution, verify the signed bundle embeds the expected entitlements:
 
