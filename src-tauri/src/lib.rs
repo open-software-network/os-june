@@ -2,11 +2,13 @@ pub mod app_paths;
 pub mod audio;
 pub mod commands;
 pub mod db;
+pub mod dictation;
 pub mod domain;
 pub mod providers;
 
 pub fn run() {
     providers::load_local_env();
+    let context = tauri::generate_context!();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,
@@ -28,8 +30,23 @@ pub fn run() {
             commands::get_recording_status,
             commands::finish_recording,
             commands::retry_processing,
-            commands::recover_recording
+            commands::recover_recording,
+            dictation::dictation_settings,
+            dictation::set_dictation_shortcut,
+            dictation::set_dictation_microphone,
+            dictation::dictation_helper_command,
+            dictation::dictation_hotkey_status,
+            dictation::latest_dictation_event
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run OS Notetaker");
+        .setup(|app| {
+            dictation::setup(app);
+            Ok(())
+        })
+        .build(context)
+        .expect("failed to build OS Notetaker")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                dictation::stop_helper(app);
+            }
+        });
 }

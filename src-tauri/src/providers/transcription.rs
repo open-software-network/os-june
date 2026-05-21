@@ -1,7 +1,7 @@
 use crate::domain::types::AppError;
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TRANSCRIPTION_PROVIDER: &str = "mock";
 const DEFAULT_OPENAI_TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
@@ -86,7 +86,7 @@ async fn transcribe_with_openai(
         .unwrap_or_else(|| DEFAULT_OPENAI_TRANSCRIPTION_MODEL.to_string());
     let audio_part = Part::bytes(audio_bytes)
         .file_name(filename)
-        .mime_str("audio/wav")
+        .mime_str(transcription_audio_mime(&request.audio_path))
         .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
     let supports_prompt = !model.contains("diarize");
     let mut form = Form::new()
@@ -137,6 +137,18 @@ async fn transcribe_with_openai(
         language: None,
         provider: crate::providers::OPENAI_PROVIDER.to_string(),
     })
+}
+
+pub fn transcription_audio_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("m4a") | Some("mp4") => "audio/mp4",
+        _ => "audio/wav",
+    }
 }
 
 fn transcription_language_override() -> Option<String> {

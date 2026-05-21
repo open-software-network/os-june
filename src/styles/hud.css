@@ -1,0 +1,200 @@
+@import "./tokens.css";
+
+:root {
+  color: var(--foreground);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+.hud {
+  --hud-bg: color-mix(in oklch, var(--popover) 92%, transparent);
+  --hud-border: color-mix(in oklch, var(--border) 80%, transparent);
+  --hud-bar: var(--foreground);
+  --hud-bar-soft: var(--muted-foreground);
+  --hud-danger: var(--destructive);
+
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 28px;
+  padding: 5px 8px;
+  border: 1px solid var(--hud-border);
+  border-radius: 999px;
+  background: var(--hud-bg);
+  color: var(--foreground);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(9px) saturate(1.2);
+}
+
+.hud-bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  height: 17px;
+  gap: 3.5px;
+}
+
+.hud-bar {
+  width: 3.5px;
+  min-height: 4px;
+  height: calc(4px + (var(--level, 0.2) * 13px));
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--hud-bar) 96%, transparent),
+    color-mix(in oklch, var(--hud-bar-soft) 86%, transparent)
+  );
+  box-shadow: 0 0 8px color-mix(in oklch, var(--foreground) 12%, transparent);
+  transition:
+    height 90ms ease-out,
+    opacity 140ms ease-out,
+    transform 140ms ease-out;
+}
+
+.hud-progress,
+.hud-success,
+.hud-error-mark,
+.hud-message {
+  display: none;
+}
+
+.hud-progress {
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid color-mix(in oklch, var(--border) 72%, transparent);
+  border-top-color: var(--foreground);
+  border-radius: 999px;
+  animation: hud-spin 820ms linear infinite;
+}
+
+.hud-success {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  border: 1px solid color-mix(in oklch, var(--foreground) 76%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 0 10px color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.hud-success::after {
+  content: "";
+  position: absolute;
+  top: 3.5px;
+  left: 5px;
+  width: 4.5px;
+  height: 7.5px;
+  border: solid var(--foreground);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.hud-error-mark {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  border: 1px solid color-mix(in oklch, var(--hud-danger) 78%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 0 10px color-mix(in oklch, var(--hud-danger) 14%, transparent);
+}
+
+.hud-error-mark::before,
+.hud-error-mark::after {
+  content: "";
+  position: absolute;
+  top: 7.5px;
+  left: 4.5px;
+  width: 7px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: var(--hud-danger);
+}
+
+.hud-error-mark::before {
+  transform: rotate(45deg);
+}
+
+.hud-error-mark::after {
+  transform: rotate(-45deg);
+}
+
+.hud-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.hud[data-state="transcribing"] .hud-bars,
+.hud[data-state="pasting"] .hud-bars,
+.hud[data-state="success"] .hud-bars,
+.hud[data-state="silent-error"] .hud-bars,
+.hud[data-state="error"] .hud-bars {
+  display: none;
+}
+
+.hud[data-state="transcribing"] .hud-progress,
+.hud[data-state="pasting"] .hud-progress {
+  display: block;
+}
+
+.hud[data-state="pasting"] .hud-progress {
+  animation-duration: 620ms;
+}
+
+.hud[data-state="success"],
+.hud[data-state="silent-error"],
+.hud[data-state="error"] {
+  min-width: 29px;
+  padding-inline: 6px;
+}
+
+.hud[data-state="success"] .hud-success,
+.hud[data-state="silent-error"] .hud-error-mark,
+.hud[data-state="error"] .hud-error-mark {
+  display: block;
+}
+
+.hud[data-state="silent-error"],
+.hud[data-state="error"] {
+  border-color: color-mix(in oklch, var(--hud-danger) 36%, var(--border));
+}
+
+@keyframes hud-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-bar,
+  .hud-progress {
+    transition: none;
+    animation: none;
+  }
+}

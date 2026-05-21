@@ -6,7 +6,8 @@ use os_notetaker_lib::{
     providers::{
         generation::{generate_note_from_transcript, GenerationRequest},
         transcription::{
-            normalize_transcription_language, transcribe_saved_audio, TranscriptionRequest,
+            normalize_transcription_language, transcribe_saved_audio, transcription_audio_mime,
+            TranscriptionRequest,
         },
     },
 };
@@ -176,4 +177,11 @@ fn transcription_language_override_rejects_invalid_values() {
     assert_eq!(normalize_transcription_language(""), None);
     assert_eq!(normalize_transcription_language("spanish"), None);
     assert_eq!(normalize_transcription_language("es-ES"), None);
+}
+
+#[test]
+fn transcription_audio_mime_uses_file_extension() {
+    assert_eq!(transcription_audio_mime("recording.wav".as_ref()), "audio/wav");
+    assert_eq!(transcription_audio_mime("dictation.m4a".as_ref()), "audio/mp4");
+    assert_eq!(transcription_audio_mime("dictation.MP4".as_ref()), "audio/mp4");
 }

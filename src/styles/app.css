@@ -1641,9 +1641,7 @@ input:focus-visible,
   align-items: stretch;
   align-self: flex-end;
   justify-content: flex-end;
-  min-height: calc(
-    var(--record-idle-height) + (var(--record-shell-inset) * 2)
-  );
+  min-height: calc(var(--record-idle-height) + (var(--record-shell-inset) * 2));
   padding: var(--record-shell-padding);
   border: var(--record-shell-border) solid var(--border);
   border-radius: var(--r-xl);
@@ -1931,6 +1929,18 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-lg);
   line-height: 1.55;
+}
+
+.settings-status,
+.settings-row-error {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.settings-row-error {
+  color: var(--destructive);
 }
 
 /* Group label sits outside the card so multiple cards can sit under one

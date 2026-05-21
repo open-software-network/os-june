@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OS Scribe Dictation</title>
+  </head>
+  <body>
+    <div id="hud" class="hud" data-state="idle">
+      <div class="hud-bars" aria-hidden="true">
+        <span class="hud-bar"></span>
+        <span class="hud-bar"></span>
+        <span class="hud-bar"></span>
+        <span class="hud-bar"></span>
+        <span class="hud-bar"></span>
+        <span class="hud-bar"></span>
+        <span class="hud-bar"></span>
+      </div>
+      <span class="hud-progress" aria-hidden="true"></span>
+      <span class="hud-success" aria-hidden="true"></span>
+      <span class="hud-error-mark" aria-hidden="true"></span>
+      <span id="hud-status" class="hud-status">Idle</span>
+      <p id="hud-transcript" class="hud-message"></p>
+    </div>
+    <script type="module" src="/src/hud.ts"></script>
+  </body>
+</html>

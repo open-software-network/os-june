@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/128x128.png");
     println!("cargo:rerun-if-changed=icons/128x128@2x.png");
     build_system_audio_helper();
+    build_dictation_helper();
     tauri_build::build();
 }
 
@@ -49,7 +50,9 @@ fn build_system_audio_helper() {
             .unwrap_or(false);
     let mut should_sign = false;
     if !executable_current {
-        let status = std::process::Command::new("swiftc")
+        let mut command = std::process::Command::new("swiftc");
+        configure_swift_command(&mut command, &manifest_dir, "14.2");
+        let status = command
             .arg("-framework")
             .arg("Foundation")
             .arg("-framework")
@@ -119,5 +122,143 @@ fn build_system_audio_helper() {
             .arg("-")
             .arg(&app_dir)
             .status();
+    }
+}
+
+fn build_dictation_helper() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let source = manifest_dir
+        .join("native")
+        .join("mac-dictation-helper")
+        .join("main.swift");
+    if !source.exists() {
+        return;
+    }
+    println!("cargo:rerun-if-changed={}", source.display());
+
+    let helper_dir = manifest_dir
+        .parent()
+        .expect("src-tauri should have a repository parent")
+        .join(".tauri-helper");
+    let app_dir = helper_dir.join("OS Scribe Dictation Helper.app");
+    let contents_dir = app_dir.join("Contents");
+    let macos_dir = contents_dir.join("MacOS");
+    std::fs::create_dir_all(&macos_dir).expect("dictation helper app dir should be created");
+    let executable = macos_dir.join("os-scribe-dictation-helper");
+
+    let source_modified = std::fs::metadata(&source)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let executable_current = executable.exists()
+        && source_modified
+            .and_then(|source_modified| {
+                std::fs::metadata(&executable)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .map(|executable_modified| executable_modified >= source_modified)
+            })
+            .unwrap_or(false);
+    let mut should_sign = false;
+    if !executable_current {
+        let mut command = std::process::Command::new("swiftc");
+        configure_swift_command(&mut command, &manifest_dir, "14.0");
+        let status = command
+            .arg("-framework")
+            .arg("Foundation")
+            .arg("-framework")
+            .arg("AppKit")
+            .arg("-framework")
+            .arg("AVFoundation")
+            .arg("-framework")
+            .arg("Carbon")
+            .arg("-framework")
+            .arg("CoreMedia")
+            .arg("-framework")
+            .arg("CoreGraphics")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status();
+        if !matches!(status, Ok(status) if status.success()) {
+            println!("cargo:warning=dictation helper could not be built; dictation will report unavailable");
+            return;
+        }
+        should_sign = true;
+    }
+
+    let plist = contents_dir.join("Info.plist");
+    let plist_contents = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>OS Scribe Dictation Helper</string>
+  <key>CFBundleExecutable</key>
+  <string>os-scribe-dictation-helper</string>
+  <key>CFBundleIdentifier</key>
+  <string>network.opensoftware.os-notetaker.dictation-helper</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>OS Scribe Dictation Helper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>OS Scribe needs microphone access to turn your speech into text.</string>
+</dict>
+</plist>
+"#;
+    let plist_current =
+        std::fs::read_to_string(&plist).is_ok_and(|current| current == plist_contents);
+    if !plist_current {
+        std::fs::write(plist, plist_contents)
+            .expect("dictation helper Info.plist should be written");
+        should_sign = true;
+    }
+
+    if should_sign {
+        let _ = std::process::Command::new("codesign")
+            .arg("--force")
+            .arg("--deep")
+            .arg("--sign")
+            .arg("-")
+            .arg(&app_dir)
+            .status();
+    }
+}
+
+fn configure_swift_command(
+    command: &mut std::process::Command,
+    manifest_dir: &std::path::Path,
+    macos_version: &str,
+) {
+    if let Some(target) = swift_target(macos_version) {
+        command.arg("-target").arg(target);
+    }
+    let module_cache = manifest_dir.join("target").join("swift-module-cache");
+    std::fs::create_dir_all(&module_cache).expect("swift module cache dir should be created");
+    command.arg("-module-cache-path").arg(module_cache);
+}
+
+fn swift_target(macos_version: &str) -> Option<String> {
+    match std::env::var("HOST").ok()?.as_str() {
+        "aarch64-apple-darwin" => Some(format!("arm64-apple-macosx{macos_version}")),
+        "x86_64-apple-darwin" => Some(format!("x86_64-apple-macosx{macos_version}")),
+        _ => None,
     }
 }
