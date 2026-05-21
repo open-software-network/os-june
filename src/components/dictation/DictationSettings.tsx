@@ -159,7 +159,7 @@ export function DictationSettings() {
       if (event.repeat) return;
 
       const result = shortcutFromKeyboardEvent(event);
-      if (result.error) {
+      if ("error" in result) {
         setShortcutError(result.error);
         setStatus(result.error);
         return;
