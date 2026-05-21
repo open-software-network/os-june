@@ -35,6 +35,27 @@ async fn updates_title_body_and_active_tab() {
 }
 
 #[tokio::test]
+async fn deleting_note_removes_it_from_all_note_lists() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Work").await.expect("folder");
+    let note = repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("note");
+
+    repos.delete_note(&note.id).await.expect("delete note");
+
+    let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
+    assert!(all_notes.items.is_empty());
+
+    let folder_notes = repos
+        .list_notes(Some(folder.id), 50, None)
+        .await
+        .expect("folder notes");
+    assert!(folder_notes.items.is_empty());
+}
+
+#[tokio::test]
 async fn generated_note_returns_to_notes_tab() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");

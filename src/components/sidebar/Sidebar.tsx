@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
+import { X } from "lucide-react";
 import type { FolderDto } from "../../lib/tauri";
 
 type SidebarProps = {
   folders: FolderDto[];
   selectedFolderId?: string;
   onCreateFolder: (name: string) => Promise<void> | void;
+  onDeleteFolder: (folder: FolderDto) => void;
   onSelectAll: () => void;
   onSelectFolder: (folderId: string) => void;
 };
@@ -13,6 +15,7 @@ export function Sidebar({
   folders,
   selectedFolderId,
   onCreateFolder,
+  onDeleteFolder,
   onSelectAll,
   onSelectFolder,
 }: SidebarProps) {
@@ -85,14 +88,26 @@ export function Sidebar({
       </button>
       <nav className="folder-nav" aria-label="Folders">
         {folders.map((folder) => (
-          <button
+          <div
             key={folder.id}
-            type="button"
-            className={selectedFolderId === folder.id ? "active" : undefined}
-            onClick={() => onSelectFolder(folder.id)}
+            className={
+              selectedFolderId === folder.id
+                ? "folder-nav-item active"
+                : "folder-nav-item"
+            }
           >
-            {folder.name}
-          </button>
+            <button type="button" onClick={() => onSelectFolder(folder.id)}>
+              {folder.name}
+            </button>
+            <button
+              type="button"
+              className="icon-button danger"
+              aria-label={`Delete folder ${folder.name}`}
+              onClick={() => onDeleteFolder(folder)}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
         ))}
       </nav>
     </aside>

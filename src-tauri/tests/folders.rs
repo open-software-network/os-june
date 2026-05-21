@@ -43,3 +43,47 @@ async fn assigning_and_removing_folder_keeps_note_in_all_notes() {
     assert_eq!(all_notes.items.len(), 1);
     assert_eq!(all_notes.items[0].id, note.id);
 }
+
+#[tokio::test]
+async fn deleting_folder_without_notes_keeps_associated_notes() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Work").await.expect("folder");
+    let note = repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("note");
+
+    repos
+        .delete_folder(&folder.id, false)
+        .await
+        .expect("delete folder");
+
+    let folders = repos.list_folders().await.expect("folders");
+    assert!(folders.is_empty());
+
+    let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
+    assert_eq!(all_notes.items.len(), 1);
+    assert_eq!(all_notes.items[0].id, note.id);
+    assert!(all_notes.items[0].folder_ids.is_empty());
+}
+
+#[tokio::test]
+async fn deleting_folder_with_notes_removes_associated_notes() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Work").await.expect("folder");
+    repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("note");
+
+    repos
+        .delete_folder(&folder.id, true)
+        .await
+        .expect("delete folder and notes");
+
+    let folders = repos.list_folders().await.expect("folders");
+    assert!(folders.is_empty());
+
+    let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
+    assert!(all_notes.items.is_empty());
+}

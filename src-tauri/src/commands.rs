@@ -17,11 +17,11 @@ use crate::{
         types::{
             AppError, AssignNoteToFolderRequest, BootstrapResponse,
             CheckRecordingSourceReadinessRequest, CreateFolderRequest, CreateNoteRequest,
-            FinishRecordingResponse, GetNoteRequest, ListNotesRequest, ListNotesResponse,
-            MicrophonePermissionResponse, NoteDto, RecordingSessionDto, RecordingSource,
-            RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RetryProcessingRequest, SessionRequest,
-            SourceReadinessDto, StartRecordingRequest, UpdateNoteRequest,
+            DeleteFolderRequest, DeleteNoteRequest, FinishRecordingResponse, GetNoteRequest,
+            ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RetryProcessingRequest,
+            SessionRequest, SourceReadinessDto, StartRecordingRequest, UpdateNoteRequest,
         },
     },
 };
@@ -82,6 +82,15 @@ pub async fn get_note(app: AppHandle, request: GetNoteRequest) -> Result<NoteDto
 }
 
 #[tauri::command]
+pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
+    repositories(&app)
+        .await?
+        .delete_note(&request.note_id)
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<NoteDto, AppError> {
     Ok(repositories(&app)
         .await?
@@ -114,6 +123,15 @@ pub async fn list_folders(
     app: AppHandle,
 ) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
     Ok(repositories(&app).await?.list_folders().await?)
+}
+
+#[tauri::command]
+pub async fn delete_folder(app: AppHandle, request: DeleteFolderRequest) -> Result<(), AppError> {
+    repositories(&app)
+        .await?
+        .delete_folder(&request.folder_id, request.delete_notes)
+        .await?;
+    Ok(())
 }
 
 #[tauri::command]

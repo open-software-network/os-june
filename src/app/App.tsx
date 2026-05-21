@@ -9,6 +9,8 @@ import {
   checkRecordingSourceReadiness,
   createFolder,
   createNote,
+  deleteFolder,
+  deleteNote,
   finishRecording,
   getRecordingStatus,
   getNote,
@@ -21,7 +23,12 @@ import {
   startRecording,
   updateNote,
 } from "../lib/tauri";
-import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
+import type {
+  FolderDto,
+  NoteDto,
+  NoteListItemDto,
+  RecordingStatusDto,
+} from "../lib/tauri";
 import type {
   RecordingSourceMode,
   RecordingSourceReadinessDto,
@@ -112,6 +119,19 @@ export function App() {
     }
   }
 
+  async function handleDeleteNote(note: NoteListItemDto) {
+    const title = note.title.trim() || "New note";
+    if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteNote(note.id);
+      dispatch({ type: "noteDeleted", noteId: note.id });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   async function handleSelectFolder(folderId?: string) {
     dispatch({ type: "folderSelected", folderId });
     try {
@@ -131,6 +151,34 @@ export function App() {
     } catch (err) {
       setError(messageFromError(err));
       throw err;
+    }
+  }
+
+  async function handleDeleteFolder(folder: FolderDto) {
+    if (
+      !window.confirm(
+        `Delete folder "${folder.name}"? Notes can be kept in All Notes or deleted in the next step.`,
+      )
+    ) {
+      return;
+    }
+    const deleteNotes = window.confirm(
+      `Delete notes in "${folder.name}" too?\n\nOK deletes the notes. Cancel keeps them in All Notes.`,
+    );
+    const deletingSelectedFolder = state.selectedFolderId === folder.id;
+    try {
+      await deleteFolder(folder.id, deleteNotes);
+      dispatch({
+        type: "folderDeleted",
+        folderId: folder.id,
+        deleteNotes,
+      });
+      if (deletingSelectedFolder) {
+        const response = await listNotes(undefined);
+        dispatch({ type: "notesLoaded", notes: response.items });
+      }
+    } catch (err) {
+      setError(messageFromError(err));
     }
   }
 
@@ -218,6 +266,7 @@ export function App() {
         folders={state.folders}
         selectedFolderId={state.selectedFolderId}
         onCreateFolder={(name) => handleCreateFolder(name)}
+        onDeleteFolder={(folder) => void handleDeleteFolder(folder)}
         onSelectAll={() => void handleSelectFolder(undefined)}
         onSelectFolder={(folderId) => void handleSelectFolder(folderId)}
       />
@@ -250,6 +299,7 @@ export function App() {
               state.selectedFolderId ? "No notes in this folder yet" : undefined
             }
             onSelectNote={(noteId) => void handleSelectNote(noteId)}
+            onDeleteNote={(note) => void handleDeleteNote(note)}
             onCreateNote={() => void handleCreateNote()}
           />
           {selectedNote ? (

@@ -215,6 +215,84 @@ impl Repositories {
         self.get_note(note_id).await
     }
 
+    pub async fn delete_note(&self, note_id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        delete_note_records(&mut tx, note_id).await?;
+        tx.commit().await
+    }
+
+    pub async fn delete_folder(
+        &self,
+        folder_id: &str,
+        delete_notes: bool,
+    ) -> Result<(), sqlx::Error> {
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+
+        if delete_notes {
+            sqlx::query(
+                "DELETE FROM generation_results
+                 WHERE note_id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM transcripts
+                 WHERE note_id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM audio_artifacts
+                 WHERE note_id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM recording_checkpoints
+                 WHERE recording_session_id IN (
+                   SELECT rs.id
+                   FROM recording_sessions rs
+                   INNER JOIN note_folders nf ON nf.note_id = rs.note_id
+                   WHERE nf.folder_id = ?
+                 )",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM recording_sessions
+                 WHERE note_id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM notes
+                 WHERE id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM note_folders WHERE folder_id = ?")
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE folders SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await
+    }
+
     pub async fn update_note(
         &self,
         note_id: &str,
@@ -880,13 +958,55 @@ impl Repositories {
 
     async fn folder_ids(&self, note_id: &str) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT folder_id FROM note_folders WHERE note_id = ? ORDER BY assigned_at ASC",
+            "SELECT nf.folder_id
+             FROM note_folders nf
+             INNER JOIN folders f ON f.id = nf.folder_id
+             WHERE nf.note_id = ? AND f.deleted_at IS NULL
+             ORDER BY nf.assigned_at ASC",
         )
         .bind(note_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|row| row.get("folder_id")).collect())
     }
+}
+
+async fn delete_note_records(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    note_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM generation_results WHERE note_id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM transcripts WHERE note_id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM audio_artifacts WHERE note_id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        "DELETE FROM recording_checkpoints
+         WHERE recording_session_id IN (SELECT id FROM recording_sessions WHERE note_id = ?)",
+    )
+    .bind(note_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("DELETE FROM recording_sessions WHERE note_id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM note_folders WHERE note_id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM notes WHERE id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 fn append_note_content(existing: Option<String>, addition: String) -> String {

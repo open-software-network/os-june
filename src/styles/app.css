@@ -67,6 +67,25 @@ select {
   cursor: pointer;
 }
 
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.icon-button.danger {
+  color: #8c1d18;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.icon-button.danger:hover {
+  border-color: rgba(185, 28, 28, 0.24);
+  background: rgba(254, 226, 226, 0.86);
+}
+
 .sidebar button:disabled {
   cursor: default;
   opacity: 0.52;
@@ -111,7 +130,25 @@ select {
   gap: 8px;
 }
 
-.sidebar .active {
+.folder-nav-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 6px;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.folder-nav-item > button:first-child {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar .active,
+.folder-nav-item.active > button:first-child {
   background: rgba(28, 99, 214, 0.12);
   border-color: rgba(28, 99, 214, 0.18);
 }
@@ -153,16 +190,30 @@ select {
   background: rgba(255, 255, 255, 0.44);
 }
 
-.notes-list > button:not(.primary-action) {
+.note-list-item {
   display: grid;
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 8px;
+  align-items: stretch;
   min-height: 68px;
-  padding: 12px;
-  text-align: left;
   border: 1px solid rgba(31, 35, 42, 0.1);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.58);
+}
+
+.note-select-button {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  text-align: left;
+  border: 0;
+  background: transparent;
   cursor: pointer;
+}
+
+.note-list-item .icon-button {
+  align-self: start;
+  margin: 8px 8px 0 0;
 }
 
 .notes-list .selected {
