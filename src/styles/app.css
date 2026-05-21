@@ -1933,6 +1933,18 @@ input:focus-visible,
   line-height: 1.55;
 }
 
+.settings-status,
+.settings-row-error {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.settings-row-error {
+  color: var(--destructive);
+}
+
 /* Group label sits outside the card so multiple cards can sit under one
  * section, like macOS System Settings. */
 .settings-group {

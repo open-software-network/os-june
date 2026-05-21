@@ -64,6 +64,51 @@ export type RecordingState =
 export type RecordingSourceMode = "microphoneOnly" | "microphonePlusSystem";
 export type RecordingSource = "microphone" | "system";
 
+export type DictationShortcutModifiers = {
+  command: boolean;
+  control: boolean;
+  option: boolean;
+  shift: boolean;
+  function: boolean;
+};
+
+export type DictationShortcutSetting = {
+  keyCode?: number;
+  code: string;
+  modifiers: DictationShortcutModifiers;
+  label: string;
+};
+
+export type DictationMicrophoneSetting = {
+  id?: string;
+  name?: string;
+};
+
+export type DictationSettingsDto = {
+  shortcut: DictationShortcutSetting;
+  microphone: DictationMicrophoneSetting;
+};
+
+export type DictationSettingsResponse = {
+  settings: DictationSettingsDto;
+};
+
+export type DictationMicrophoneDeviceDto = {
+  id: string;
+  name: string;
+};
+
+export type DictationHelperEvent = {
+  type: string;
+  payload?: {
+    devices?: DictationMicrophoneDeviceDto[];
+    selectedID?: string;
+    message?: string;
+    code?: string;
+    [key: string]: unknown;
+  };
+};
+
 export type SourceState =
   | "pending"
   | "permissionDenied"
@@ -349,4 +394,34 @@ export async function recoverRecording(
   return invoke<NoteDto>("recover_recording", {
     request: { sessionId, action },
   });
+}
+
+export async function dictationSettings() {
+  return invoke<DictationSettingsResponse>("dictation_settings");
+}
+
+export async function setDictationShortcut(
+  shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label">,
+) {
+  return invoke<DictationSettingsDto>("set_dictation_shortcut", { shortcut });
+}
+
+export async function setDictationMicrophone(id?: string, name?: string) {
+  return invoke<DictationSettingsDto>("set_dictation_microphone", {
+    id,
+    name,
+  });
+}
+
+export async function dictationHelperCommand(command: Record<string, unknown>) {
+  return invoke<void>("dictation_helper_command", { command });
+}
+
+export async function dictationHotkeyStatus() {
+  return invoke<DictationHelperEvent>("dictation_hotkey_status");
+}
+
+export async function latestDictationEvent() {
+  const payload = await invoke<string | undefined>("latest_dictation_event");
+  return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
 }

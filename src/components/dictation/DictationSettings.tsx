@@ -1,32 +1,133 @@
+import { listen } from "@tauri-apps/api/event";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { useEffect, useRef, useState } from "react";
+import {
+  dictationHelperCommand,
+  dictationHotkeyStatus,
+  dictationSettings,
+  setDictationMicrophone,
+  setDictationShortcut,
+} from "../../lib/tauri";
+import type {
+  DictationHelperEvent,
+  DictationMicrophoneDeviceDto,
+  DictationSettingsDto,
+  DictationShortcutModifiers,
+  DictationShortcutSetting,
+} from "../../lib/tauri";
 
-const MICROPHONE_OPTIONS = [
-  "Auto-detect",
-  "MacBook Pro Microphone",
-  "AirPods Pro",
-  "External USB Mic",
-] as const;
+const DEFAULT_SETTINGS: DictationSettingsDto = {
+  shortcut: {
+    code: "Space",
+    label: "Fn+Space",
+    modifiers: {
+      command: false,
+      control: false,
+      option: false,
+      shift: false,
+      function: true,
+    },
+  },
+  microphone: {},
+};
 
-type MicrophoneOption = (typeof MICROPHONE_OPTIONS)[number];
-
-const MODIFIER_KEYS = new Set([
-  "Meta",
-  "Shift",
-  "Alt",
-  "Control",
-  "OS",
-  "ContextMenu",
+const MODIFIER_CODES = new Set([
+  "AltLeft",
+  "AltRight",
+  "ControlLeft",
+  "ControlRight",
+  "MetaLeft",
+  "MetaRight",
+  "ShiftLeft",
+  "ShiftRight",
 ]);
 
+const KEY_LABELS: Record<string, string> = {
+  Backquote: "`",
+  Backslash: "\\",
+  Backspace: "Delete",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Comma: ",",
+  Digit0: "0",
+  Digit1: "1",
+  Digit2: "2",
+  Digit3: "3",
+  Digit4: "4",
+  Digit5: "5",
+  Digit6: "6",
+  Digit7: "7",
+  Digit8: "8",
+  Digit9: "9",
+  Enter: "Return",
+  Equal: "=",
+  Escape: "Esc",
+  Minus: "-",
+  Period: ".",
+  Quote: "'",
+  Semicolon: ";",
+  Slash: "/",
+  Space: "Space",
+  Tab: "Tab",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  ArrowUp: "Up",
+};
+
+type ShortcutCaptureResult =
+  | {
+      shortcut: Pick<
+        DictationShortcutSetting,
+        "code" | "modifiers" | "label"
+      >;
+      error?: never;
+    }
+  | { shortcut?: never; error: string };
+
 export function DictationSettings() {
-  const [shortcut, setShortcut] = useState<string[]>(["⇧", "T"]);
+  const [settings, setSettings] =
+    useState<DictationSettingsDto>(DEFAULT_SETTINGS);
+  const [microphones, setMicrophones] = useState<
+    DictationMicrophoneDeviceDto[]
+  >([]);
   const [capturing, setCapturing] = useState(false);
-  const [microphone, setMicrophone] =
-    useState<MicrophoneOption>("Auto-detect");
+  const [shortcutError, setShortcutError] = useState<string>();
+  const [status, setStatus] = useState<string>();
   const [micOpen, setMicOpen] = useState(false);
   const micWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    async function boot() {
+      try {
+        const response = await dictationSettings();
+        if (cancelled) return;
+        setSettings(response.settings);
+        const hotkey = await dictationHotkeyStatus();
+        if (!cancelled) handleHelperEvent(hotkey);
+        await requestMicrophones();
+      } catch (error) {
+        if (!cancelled) setStatus(messageFromError(error));
+      }
+    }
+
+    void listen<string>("dictation-event", (event) => {
+      const helperEvent = parseDictationEvent(event.payload);
+      if (helperEvent) handleHelperEvent(helperEvent);
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    void boot();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!micOpen) return;
@@ -49,26 +150,82 @@ export function DictationSettings() {
   useEffect(() => {
     if (!capturing) return;
     function onKey(event: KeyboardEvent) {
-      event.preventDefault();
       if (event.key === "Escape") {
         setCapturing(false);
+        setShortcutError(undefined);
         return;
       }
-      // Ignore standalone modifier presses — wait for the trailing key.
-      if (MODIFIER_KEYS.has(event.key)) return;
+      event.preventDefault();
+      if (event.repeat) return;
 
-      const parts: string[] = [];
-      if (event.metaKey) parts.push("⌘");
-      if (event.ctrlKey) parts.push("⌃");
-      if (event.altKey) parts.push("⌥");
-      if (event.shiftKey) parts.push("⇧");
-      parts.push(formatKey(event));
-      setShortcut(parts);
-      setCapturing(false);
+      const result = shortcutFromKeyboardEvent(event);
+      if (result.error) {
+        setShortcutError(result.error);
+        setStatus(result.error);
+        return;
+      }
+
+      setShortcutError(undefined);
+      void saveShortcut(result.shortcut);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [capturing]);
+
+  async function requestMicrophones() {
+    try {
+      await dictationHelperCommand({ type: "list_microphones" });
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  function handleHelperEvent(helperEvent: DictationHelperEvent) {
+    if (helperEvent.type === "microphone_devices") {
+      setMicrophones(helperEvent.payload?.devices ?? []);
+      return;
+    }
+    if (helperEvent.type === "error") {
+      setStatus(helperEvent.payload?.message ?? "Dictation helper failed.");
+    }
+  }
+
+  async function saveShortcut(
+    shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label">,
+  ) {
+    try {
+      const next = await setDictationShortcut(shortcut);
+      setSettings(next);
+      setCapturing(false);
+      setStatus(`Shortcut set to ${next.shortcut.label}.`);
+    } catch (error) {
+      setShortcutError(messageFromError(error));
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function selectMicrophone(id?: string, name?: string) {
+    try {
+      const next = await setDictationMicrophone(id, name);
+      setSettings(next);
+      setMicOpen(false);
+      setStatus(name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.");
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  const microphoneName = settings.microphone.name ?? "Auto-detect";
+  const microphoneOptions = [
+    { id: undefined, name: "Auto-detect" },
+    ...microphones,
+  ];
+  const selectedMicrophoneIndex = Math.max(
+    0,
+    microphoneOptions.findIndex(
+      (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
+    ),
+  );
 
   return (
     <div className="settings-page">
@@ -78,6 +235,7 @@ export function DictationSettings() {
           Dictate from anywhere on your Mac. Scribe drops the transcript
           wherever your cursor is.
         </p>
+        {status ? <p className="settings-status">{status}</p> : null}
       </header>
 
       <section className="settings-group" aria-labelledby="shortcuts-heading">
@@ -93,13 +251,22 @@ export function DictationSettings() {
                   Hold this combination from anywhere on your Mac to start
                   dictating.
                 </p>
+                {shortcutError ? (
+                  <p className="settings-row-error">{shortcutError}</p>
+                ) : null}
               </div>
               <div className="settings-row-control">
-                <KeycapShortcut keys={shortcut} capturing={capturing} />
+                <KeycapShortcut
+                  label={settings.shortcut.label}
+                  capturing={capturing}
+                />
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => setCapturing((value) => !value)}
+                  onClick={() => {
+                    setShortcutError(undefined);
+                    setCapturing((value) => !value);
+                  }}
                 >
                   {capturing ? "Cancel" : "Change"}
                 </button>
@@ -128,41 +295,35 @@ export function DictationSettings() {
                   className="select-trigger"
                   aria-haspopup="listbox"
                   aria-expanded={micOpen}
-                  onClick={() => setMicOpen((value) => !value)}
+                  onClick={() => {
+                    setMicOpen((value) => !value);
+                    void requestMicrophones();
+                  }}
                 >
-                  <span>{microphone}</span>
+                  <span>{microphoneName}</span>
                   <IconChevronDownSmall size={14} />
                 </button>
                 {micOpen ? (
                   <ul
                     className="select-popover"
                     role="listbox"
-                    style={{
-                      // Slide so the selected item's top sits at the
-                      // trigger top, accounting for the popover's 4px
-                      // (sp-1) inset padding.
-                      top: -(
-                        4 +
-                        Math.max(0, MICROPHONE_OPTIONS.indexOf(microphone)) *
-                          28
-                      ),
-                    }}
+                    style={{ top: -(4 + selectedMicrophoneIndex * 28) }}
                   >
-                    {MICROPHONE_OPTIONS.map((option) => {
-                      const selected = option === microphone;
+                    {microphoneOptions.map((option) => {
+                      const selected =
+                        (option.id ?? "") === (settings.microphone.id ?? "");
                       return (
-                        <li key={option}>
+                        <li key={option.id ?? "auto"}>
                           <button
                             type="button"
                             role="option"
                             aria-selected={selected}
                             data-selected={selected}
-                            onClick={() => {
-                              setMicrophone(option);
-                              setMicOpen(false);
-                            }}
+                            onClick={() =>
+                              void selectMicrophone(option.id, option.id ? option.name : undefined)
+                            }
                           >
-                            <span>{option}</span>
+                            <span>{option.name}</span>
                             <span className="select-check" aria-hidden>
                               {selected ? (
                                 <IconCheckmark1Small size={14} />
@@ -184,10 +345,10 @@ export function DictationSettings() {
 }
 
 function KeycapShortcut({
-  keys,
+  label,
   capturing,
 }: {
-  keys: string[];
+  label: string;
   capturing: boolean;
 }) {
   if (capturing) {
@@ -197,11 +358,9 @@ function KeycapShortcut({
       </span>
     );
   }
+  const keys = label.split("+").filter(Boolean);
   return (
-    <span
-      className="keycap-frame"
-      aria-label={`Shortcut ${keys.join(" ")}`}
-    >
+    <span className="keycap-frame" aria-label={`Shortcut ${label}`}>
       {keys.map((key, idx) => (
         <kbd key={`${key}-${idx}`} className="keycap">
           {key}
@@ -211,23 +370,70 @@ function KeycapShortcut({
   );
 }
 
-function formatKey(event: KeyboardEvent): string {
-  // Prefer event.code so Shift+T renders as "T", Option+T as "T" (not "†"),
-  // etc. Only fall back to event.key for non-letter/number keys.
-  const code = event.code;
-  if (code.startsWith("Key") && code.length === 4) return code.slice(3);
-  if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
+export function shortcutFromKeyboardEvent(
+  event: Pick<
+    KeyboardEvent,
+    "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"
+  >,
+): ShortcutCaptureResult {
+  if (MODIFIER_CODES.has(event.code)) {
+    return { error: "Press one non-modifier key with your shortcut." };
+  }
+  if (!event.code) {
+    return { error: "That key is not supported for global shortcuts." };
+  }
 
-  const key = event.key;
-  if (key === " " || code === "Space") return "Space";
-  if (key === "ArrowUp") return "↑";
-  if (key === "ArrowDown") return "↓";
-  if (key === "ArrowLeft") return "←";
-  if (key === "ArrowRight") return "→";
-  if (key === "Enter") return "↩";
-  if (key === "Tab") return "⇥";
-  if (key === "Escape") return "⎋";
-  if (key === "Backspace") return "⌫";
-  if (key.length === 1) return key.toUpperCase();
-  return key;
+  const modifiers: DictationShortcutModifiers = {
+    command: event.metaKey,
+    control: event.ctrlKey,
+    option: event.altKey,
+    shift: event.shiftKey,
+    function: false,
+  };
+  const modifierLabels = [
+    modifiers.command && "Cmd",
+    modifiers.control && "Ctrl",
+    modifiers.option && "Opt",
+    modifiers.shift && "Shift",
+  ].filter(Boolean) as string[];
+
+  if (modifierLabels.length === 0) {
+    return { error: "Shortcut must include Cmd, Ctrl, Opt, or Shift." };
+  }
+
+  return {
+    shortcut: {
+      code: event.code,
+      modifiers,
+      label: [...modifierLabels, keyLabel(event.code, event.key)].join("+"),
+    },
+  };
+}
+
+function keyLabel(code: string, key: string) {
+  if (KEY_LABELS[code]) return KEY_LABELS[code];
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  return key.length === 1 ? key.toUpperCase() : code;
+}
+
+function parseDictationEvent(payload: unknown): DictationHelperEvent | undefined {
+  try {
+    if (typeof payload === "string") {
+      return JSON.parse(payload) as DictationHelperEvent;
+    }
+    if (payload && typeof payload === "object") {
+      return payload as DictationHelperEvent;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function messageFromError(error: unknown) {
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
 }
