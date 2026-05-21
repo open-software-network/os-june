@@ -13,7 +13,10 @@ use crate::{
     },
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
-        processing::{process_saved_audio, process_saved_source_audio, retry_from_saved_audio},
+        processing::{
+            manual_notes_for_generation, process_saved_audio, process_saved_source_audio,
+            retry_from_saved_audio,
+        },
         types::{
             AppError, AssignNoteToFolderRequest, BootstrapResponse,
             CheckRecordingSourceReadinessRequest, CreateFolderRequest, CreateNoteRequest,
@@ -401,7 +404,7 @@ pub async fn finish_recording(
         )
         .await?;
     let note = repos.get_note(&finished.note_id).await?;
-    let manual_notes = note.edited_content.clone();
+    let manual_notes = manual_notes_for_generation(&note);
     let task_repos = repos.clone();
     let task_note_id = finished.note_id.clone();
     let task_session_id = finished.session_id.clone();
@@ -588,6 +591,7 @@ pub async fn recover_recording(
             return Ok(repos.get_note(&info.note_id).await?);
         }
         let note = repos.get_note(&info.note_id).await?;
+        let manual_notes = manual_notes_for_generation(&note);
         return process_saved_source_audio(
             &repos,
             &info.note_id,
@@ -595,7 +599,7 @@ pub async fn recover_recording(
             info.source_mode,
             valid_sources,
             note.title,
-            note.edited_content,
+            manual_notes,
         )
         .await;
     }
@@ -662,13 +666,14 @@ pub async fn recover_recording(
         )
         .await?;
     let note = repos.get_note(&info.note_id).await?;
+    let manual_notes = manual_notes_for_generation(&note);
     process_saved_audio(
         &repos,
         &info.note_id,
         &artifact.id,
         path,
         note.title,
-        note.edited_content,
+        manual_notes,
     )
     .await
 }

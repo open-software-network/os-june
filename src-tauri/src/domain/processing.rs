@@ -121,6 +121,27 @@ pub fn build_transcription_context(previous: &[SourceTranscriptInput]) -> Option
     ))
 }
 
+pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
+    let edited = note.edited_content.as_deref()?.trim();
+    if edited.is_empty() {
+        return None;
+    }
+    let Some(generated) = note.generated_content.as_deref().map(str::trim) else {
+        return Some(edited.to_string());
+    };
+    if generated.is_empty() {
+        return Some(edited.to_string());
+    }
+    if edited == generated {
+        return None;
+    }
+    edited
+        .strip_prefix(generated)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 pub async fn process_saved_audio(
     repos: &Repositories,
     note_id: &str,
@@ -373,6 +394,7 @@ pub async fn retry_from_saved_audio(
         ));
     }
     let note = repos.get_note(note_id).await?;
+    let manual_notes = manual_notes_for_generation(&note);
     if sources.len() == 1 {
         let (audio_artifact_id, _source, audio_path) = sources[0].clone();
         return process_saved_audio(
@@ -381,7 +403,7 @@ pub async fn retry_from_saved_audio(
             &audio_artifact_id,
             PathBuf::from(audio_path),
             note.title,
-            note.edited_content.clone(),
+            manual_notes,
         )
         .await;
     }
@@ -395,7 +417,7 @@ pub async fn retry_from_saved_audio(
             .map(|(id, source, path)| (id, source, PathBuf::from(path)))
             .collect(),
         note.title,
-        note.edited_content,
+        manual_notes,
     )
     .await
 }
