@@ -420,6 +420,7 @@ pub async fn finish_recording(
             process_saved_audio(
                 &task_repos,
                 &task_note_id,
+                &task_session_id,
                 &artifact_id,
                 path,
                 title,
@@ -670,6 +671,7 @@ pub async fn recover_recording(
     process_saved_audio(
         &repos,
         &info.note_id,
+        &info.session_id,
         &artifact.id,
         path,
         note.title,

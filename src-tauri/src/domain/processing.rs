@@ -145,6 +145,7 @@ pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
 pub async fn process_saved_audio(
     repos: &Repositories,
     note_id: &str,
+    session_id: &str,
     audio_artifact_id: &str,
     audio_path: PathBuf,
     title: String,
@@ -208,7 +209,7 @@ pub async fn process_saved_audio(
             return Err(error);
         }
     };
-    repos
+    let generation_result_id = repos
         .create_generation_result(
             note_id,
             &transcript_row.id,
@@ -219,7 +220,13 @@ pub async fn process_saved_audio(
         )
         .await?;
     Ok(repos
-        .set_generated_note(note_id, generated.title_suggestion, generated.content)
+        .set_generated_note_for_session(
+            note_id,
+            Some(session_id),
+            Some(&generation_result_id),
+            generated.title_suggestion,
+            generated.content,
+        )
         .await?)
 }
 
@@ -367,7 +374,7 @@ pub async fn process_saved_source_audio(
         }
     };
     let transcript_id = first_transcript_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    repos
+    let generation_result_id = repos
         .create_generation_result(
             note_id,
             &transcript_id,
@@ -378,7 +385,13 @@ pub async fn process_saved_source_audio(
         )
         .await?;
     Ok(repos
-        .set_generated_note(note_id, generated.title_suggestion, generated.content)
+        .set_generated_note_for_session(
+            note_id,
+            Some(session_id),
+            Some(&generation_result_id),
+            generated.title_suggestion,
+            generated.content,
+        )
         .await?)
 }
 
@@ -396,10 +409,11 @@ pub async fn retry_from_saved_audio(
     let note = repos.get_note(note_id).await?;
     let manual_notes = manual_notes_for_generation(&note);
     if sources.len() == 1 {
-        let (audio_artifact_id, _source, audio_path) = sources[0].clone();
+        let (audio_artifact_id, _source, audio_path, session_id) = sources[0].clone();
         return process_saved_audio(
             repos,
             note_id,
+            &session_id,
             &audio_artifact_id,
             PathBuf::from(audio_path),
             note.title,
@@ -407,14 +421,18 @@ pub async fn retry_from_saved_audio(
         )
         .await;
     }
+    let session_id = sources
+        .first()
+        .map(|(_id, _source, _path, session_id)| session_id.clone())
+        .unwrap_or_default();
     process_saved_source_audio(
         repos,
         note_id,
-        "",
+        &session_id,
         RecordingSourceMode::MicrophonePlusSystem,
         sources
             .into_iter()
-            .map(|(id, source, path)| (id, source, PathBuf::from(path)))
+            .map(|(id, source, path, _session_id)| (id, source, PathBuf::from(path)))
             .collect(),
         note.title,
         manual_notes,

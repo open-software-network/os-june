@@ -200,6 +200,124 @@ async fn generated_note_strips_manual_note_echo_when_appending() {
 }
 
 #[tokio::test]
+async fn generated_note_replaces_existing_session_block() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+
+    repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "First transcript result".to_string(),
+        )
+        .await
+        .expect("first generated block");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            None,
+            "Retried transcript result".to_string(),
+        )
+        .await
+        .expect("retried generated block");
+
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("Retried transcript result")
+    );
+}
+
+#[tokio::test]
+async fn generated_note_composes_distinct_session_blocks_in_order() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+
+    repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "First transcript result".to_string(),
+        )
+        .await
+        .expect("first generated block");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-2"),
+            None,
+            None,
+            "First transcript result\n\nSecond transcript result".to_string(),
+        )
+        .await
+        .expect("second generated block");
+
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("First transcript result\n\nSecond transcript result")
+    );
+}
+
+#[tokio::test]
+async fn generated_session_block_strips_manual_note_echo_before_composing() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"".to_string(),
+        )
+        .await
+        .expect("first generated block");
+    repos
+        .update_note(
+            &note.id,
+            None,
+            Some(
+                "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\nTest 2".to_string(),
+            ),
+            Some("notes".to_string()),
+        )
+        .await
+        .expect("manual note");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-2"),
+            None,
+            None,
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\nTest 2:\n\n## Test 2\n\n- Transcript: \"Tres, dos, uno, hola hola.\""
+                .to_string(),
+        )
+        .await
+        .expect("second generated block");
+
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some(
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\n- Transcript: \"Tres, dos, uno, hola hola.\""
+        )
+    );
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some(
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\nTest 2\n\n- Transcript: \"Tres, dos, uno, hola hola.\""
+        )
+    );
+}
+
+#[tokio::test]
 async fn generated_note_appends_to_existing_edited_content() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");
