@@ -561,3 +561,61 @@ select {
   display: flex;
   gap: 8px;
 }
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.confirmation-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid rgba(31, 35, 42, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 72px rgba(17, 24, 39, 0.2);
+}
+
+.confirmation-dialog h2,
+.confirmation-dialog p {
+  margin: 0;
+}
+
+.confirmation-dialog h2 {
+  font-size: 18px;
+}
+
+.confirmation-dialog p {
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.dialog-actions button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(36, 38, 43, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+  cursor: pointer;
+}
+
+.dialog-actions .danger-action {
+  color: #ffffff;
+  border-color: rgba(127, 29, 29, 0.26);
+  background: #b42318;
+}

@@ -36,6 +36,10 @@ import type {
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
 
+type PendingDeletion =
+  | { kind: "note"; note: NoteListItemDto }
+  | { kind: "folder"; folder: FolderDto };
+
 export function App() {
   const [state, dispatch] = useReducer(
     notesReducer,
@@ -48,6 +52,7 @@ export function App() {
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
+  const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion>();
   const selectedNote = state.selectedNote;
 
   useEffect(() => {
@@ -119,14 +124,15 @@ export function App() {
     }
   }
 
-  async function handleDeleteNote(note: NoteListItemDto) {
-    const title = note.title.trim() || "New note";
-    if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) {
-      return;
-    }
+  function handleDeleteNote(note: NoteListItemDto) {
+    setPendingDeletion({ kind: "note", note });
+  }
+
+  async function confirmDeleteNote(note: NoteListItemDto) {
     try {
       await deleteNote(note.id);
       dispatch({ type: "noteDeleted", noteId: note.id });
+      setPendingDeletion(undefined);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -154,17 +160,11 @@ export function App() {
     }
   }
 
-  async function handleDeleteFolder(folder: FolderDto) {
-    if (
-      !window.confirm(
-        `Delete folder "${folder.name}"? Notes can be kept in All Notes or deleted in the next step.`,
-      )
-    ) {
-      return;
-    }
-    const deleteNotes = window.confirm(
-      `Delete notes in "${folder.name}" too?\n\nOK deletes the notes. Cancel keeps them in All Notes.`,
-    );
+  function handleDeleteFolder(folder: FolderDto) {
+    setPendingDeletion({ kind: "folder", folder });
+  }
+
+  async function confirmDeleteFolder(folder: FolderDto, deleteNotes: boolean) {
     const deletingSelectedFolder = state.selectedFolderId === folder.id;
     try {
       await deleteFolder(folder.id, deleteNotes);
@@ -177,6 +177,7 @@ export function App() {
         const response = await listNotes(undefined);
         dispatch({ type: "notesLoaded", notes: response.items });
       }
+      setPendingDeletion(undefined);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -365,7 +366,95 @@ export function App() {
           )}
         </div>
       </section>
+      {pendingDeletion ? (
+        <DeletionDialog
+          pendingDeletion={pendingDeletion}
+          onCancel={() => setPendingDeletion(undefined)}
+          onDeleteNote={(note) => void confirmDeleteNote(note)}
+          onDeleteFolder={(folder, deleteNotes) =>
+            void confirmDeleteFolder(folder, deleteNotes)
+          }
+        />
+      ) : null}
     </main>
+  );
+}
+
+function DeletionDialog({
+  pendingDeletion,
+  onCancel,
+  onDeleteNote,
+  onDeleteFolder,
+}: {
+  pendingDeletion: PendingDeletion;
+  onCancel: () => void;
+  onDeleteNote: (note: NoteListItemDto) => void;
+  onDeleteFolder: (folder: FolderDto, deleteNotes: boolean) => void;
+}) {
+  if (pendingDeletion.kind === "note") {
+    const title = pendingDeletion.note.title.trim() || "New note";
+    return (
+      <div className="dialog-backdrop">
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-note-title"
+          className="confirmation-dialog"
+        >
+          <h2 id="delete-note-title">{`Delete "${title}"?`}</h2>
+          <p>This cannot be undone.</p>
+          <div className="dialog-actions">
+            <button type="button" onClick={onCancel}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="danger-action"
+              onClick={() => onDeleteNote(pendingDeletion.note)}
+            >
+              Delete note
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-folder-title"
+        className="confirmation-dialog"
+      >
+        <h2 id="delete-folder-title">
+          {`Delete folder "${pendingDeletion.folder.name}"?`}
+        </h2>
+        <p>
+          You can keep the notes in All Notes or delete the notes in this folder
+          too.
+        </p>
+        <div className="dialog-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onDeleteFolder(pendingDeletion.folder, false)}
+          >
+            Keep notes
+          </button>
+          <button
+            type="button"
+            className="danger-action"
+            onClick={() => onDeleteFolder(pendingDeletion.folder, true)}
+          >
+            Delete notes too
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
