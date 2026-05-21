@@ -247,7 +247,7 @@ export function DictationSettings() {
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Dictate anywhere</h3>
                 <p className="settings-row-description">
-                  Hold this combination from anywhere on your Mac to start
+                  Press this combination from anywhere on your Mac to start
                   dictating.
                 </p>
                 {shortcutError ? (
