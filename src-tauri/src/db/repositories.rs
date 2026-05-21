@@ -351,6 +351,9 @@ impl Repositories {
         } else {
             current.title.clone()
         };
+        let appending_to_existing = current.generated_content.as_deref().is_some_and(has_text)
+            || current.edited_content.as_deref().is_some_and(has_text);
+        let content = normalize_generated_addition(&title, &content, appending_to_existing);
         let next_generated_content =
             append_note_content(current.generated_content, content.clone());
         let next_edited_content = current
@@ -1020,6 +1023,36 @@ fn append_note_content(existing: Option<String>, addition: String) -> String {
     } else {
         format!("{existing}\n\n{addition}")
     }
+}
+
+fn normalize_generated_addition(title: &str, content: &str, appending_to_existing: bool) -> String {
+    let content = content.trim();
+    if !appending_to_existing {
+        return content.to_string();
+    }
+    let Some((heading, rest)) = content.split_once('\n') else {
+        return content.to_string();
+    };
+    let Some(heading_text) = heading.strip_prefix("# ") else {
+        return content.to_string();
+    };
+    if is_duplicate_generated_heading(title, heading_text) {
+        rest.trim_start().to_string()
+    } else {
+        content.to_string()
+    }
+}
+
+fn is_duplicate_generated_heading(title: &str, heading: &str) -> bool {
+    let heading = heading.trim();
+    let title = title.trim();
+    heading.eq_ignore_ascii_case("New note")
+        || heading.eq_ignore_ascii_case("Generated note")
+        || (!title.is_empty() && heading.eq_ignore_ascii_case(title))
+}
+
+fn has_text(value: &str) -> bool {
+    !value.trim().is_empty()
 }
 
 #[derive(Debug, Clone)]
