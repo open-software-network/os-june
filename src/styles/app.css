@@ -877,6 +877,7 @@ input:focus-visible,
   padding: var(--sp-10) 0 var(--sp-5);
 }
 
+
 .editor-header {
   display: grid;
   justify-items: start;
@@ -1275,15 +1276,16 @@ input:focus-visible,
 }
 
 /* Dull placeholder — visible enough to read with caret resting in an empty
- * editor, quiet enough to disappear next to real text. */
+ * editor, quiet enough to disappear next to real text. Body copy size so
+ * the prompt feels like an invitation, not a label. */
 .note-preview p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
   height: 0;
-  color: color-mix(in oklch, var(--muted-foreground) 42%, transparent);
+  color: color-mix(in oklch, var(--muted-foreground) 60%, transparent);
   pointer-events: none;
+  font-size: var(--fs-lg);
   font-weight: 400;
-  white-space: nowrap;
 }
 
 .note-generating {
@@ -2199,4 +2201,1122 @@ input:focus-visible,
   place-items: center;
   width: 16px;
   color: var(--foreground);
+}
+
+/* Primary solid button (Granola / Claude style) -------------------- */
+
+.primary-action.primary-solid {
+  border-color: transparent;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.primary-action.primary-solid:hover {
+  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
+  border-color: transparent;
+}
+
+.primary-action.primary-solid:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Ghost icon button — back-arrow style header chip ------------------ */
+
+.ghost-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.ghost-icon-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.ghost-icon-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Shared sticky crumb bar (folder detail + note-from-folder editor) - */
+
+.crumb-bar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 40px;
+  margin: 0 calc(-1 * var(--sp-8));
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid
+    color-mix(in oklch, var(--border) 60%, transparent);
+  background: color-mix(in oklch, var(--card) 78%, transparent);
+  backdrop-filter: saturate(140%) blur(14px);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+}
+
+.crumb-link {
+  height: var(--control-md);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.crumb-link:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.crumb-sep {
+  color: var(--muted-foreground);
+  opacity: 0.5;
+  font-size: var(--fs-md);
+}
+
+.crumb-current {
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-md);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.crumb-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+/* Folders workspace ------------------------------------------------- */
+
+.folders-workspace {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: var(--sp-10) 0 var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+}
+
+.folders-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-6);
+}
+
+.folders-heading h1 {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-display);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.folders-subtitle {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.folders-create {
+  flex-shrink: 0;
+}
+
+/* Folders controls row — short search left, sort right ---------- */
+
+.folders-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.folders-search {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  width: 260px;
+  max-width: 50%;
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--muted-foreground);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+
+.folders-search:focus-within {
+  border-color: var(--ring);
+}
+
+.folders-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.folders-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Sort dropdown trigger ------------------------------------------- */
+
+.folders-sort {
+  position: relative;
+}
+
+.folders-sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.folders-sort-trigger:hover,
+.folders-sort-trigger[aria-expanded="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.folders-sort-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 140px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.folders-sort-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.folders-sort-item:hover {
+  background: var(--muted);
+}
+
+.folders-sort-check {
+  display: inline-grid;
+  place-items: center;
+  color: var(--foreground);
+}
+
+.folders-grid {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+/* Slim, click-anywhere card. The article itself is `role=button`, so
+ * every pixel inside the card padding routes to onOpen. The overflow
+ * menu is layered above with stopPropagation. */
+.folder-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--muted) 28%, transparent);
+  color: var(--card-foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.folder-card:hover,
+.folder-card[data-menu-open="true"] {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+}
+
+.folder-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Quiet folder icon — same subtle pill as the meta row. */
+.folder-card-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+}
+
+.folder-card-icon > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.folder-card-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.folder-card-body > .folder-card-footer {
+  margin-top: var(--sp-3);
+}
+
+.folder-card-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-card-meta {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Card footer — count + updated date sits below the description (or
+ * directly under the title when there's no description) so the card
+ * height stays compact and predictable. */
+.folder-card-footer {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.folder-card-footer-dot {
+  opacity: 0.5;
+}
+
+.folder-card-menu {
+  align-self: start;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.folder-card:hover .folder-card-menu,
+.folder-card:focus-within .folder-card-menu,
+.folder-card[data-menu-open="true"] .folder-card-menu {
+  opacity: 1;
+}
+
+.folder-card-menu:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.folders-empty {
+  display: grid;
+  place-items: center;
+  gap: var(--sp-3);
+  min-height: 200px;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+/* Folder detail ----------------------------------------------------- */
+
+.folder-detail {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* The detail content lives in a constrained column and centers under
+ * the sticky bar. Use the same max-width as the editor. */
+.folder-detail-content {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--sp-8) 0 var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+/* Title + description hug each other (2px); meta sits well below. */
+.folder-detail-header {
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-detail-header > h1,
+.folder-detail-header > form,
+.folder-detail-header > .folder-detail-description,
+.folder-detail-header > .folder-detail-meta {
+  margin: 0;
+}
+
+.folder-detail-header > .folder-detail-description {
+  margin-top: var(--sp-2);
+}
+
+.folder-detail-header > .folder-detail-meta {
+  margin-top: var(--sp-6);
+}
+
+/* Negative margin so the hover bg extends to the *left* of the text,
+ * but the text itself stays anchored at the column edge. Same trick
+ * for the inline edit input — the baseline doesn't shift. */
+.folder-detail-title {
+  margin: 0 calc(-1 * var(--sp-2));
+  padding: 2px var(--sp-2);
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-display);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  cursor: text;
+  border-radius: var(--r-sm);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.folder-detail-title:hover {
+  background: color-mix(in oklch, var(--muted) 30%, transparent);
+}
+
+.folder-detail-title:focus,
+.folder-detail-title:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.folder-detail-title-input {
+  display: block;
+  margin: 0 calc(-1 * var(--sp-2));
+  border: 0;
+  padding: 2px var(--sp-2);
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-display);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  width: calc(100% + var(--sp-4));
+  border-radius: var(--r-sm);
+}
+
+.folder-detail-title-input:focus,
+.folder-detail-title-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.folder-detail-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+/* Quiet meta row — folder icon in a soft pill, then count, then date. */
+.folder-detail-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.folder-detail-meta-pill {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+}
+
+.folder-detail-meta-dot {
+  opacity: 0.5;
+}
+
+/* Folder action row — primary New note + secondary Add existing. */
+.folder-actions-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* Notes list — rows ride on white by default, hover lifts a quiet
+ * gray bg and reveals the row overflow menu. Equal padding on all sides. */
+.folder-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Negative horizontal margin keeps the note's title aligned with the
+ * page text bounds at rest, while the hover background still extends
+ * past the column on each side for a roomier hit area. */
+.folder-note-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0 calc(-1 * var(--sp-4));
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: transparent;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.folder-note-row:hover,
+.folder-note-row[data-menu-open="true"] {
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.folder-note-main {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.folder-note-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+
+.folder-note-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.folder-note-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-note-subtitle {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-note-time {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.folder-note-menu {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.folder-note-row:hover .folder-note-menu,
+.folder-note-row:focus-within .folder-note-menu,
+.folder-note-row[data-menu-open="true"] .folder-note-menu {
+  opacity: 1;
+}
+
+.folder-note-menu:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+/* Folder empty state — subtle gray surface, muted helper text above
+ * side-by-side primary + secondary actions. */
+.folder-empty-surface {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-5);
+  min-height: 280px;
+  padding: var(--sp-10) var(--sp-6);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.folder-empty-hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.folder-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* Folder action row above the notes list — right-aligned. */
+.folder-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+/* Add-existing-note dialog ----------------------------------------- */
+
+.add-notes-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-height: 320px;
+}
+
+.add-notes-search {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--muted-foreground);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+
+.add-notes-search:focus-within {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.add-notes-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.add-notes-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.add-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.add-notes-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--card);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.add-notes-row:hover,
+.add-notes-row[data-selected="true"] {
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.add-notes-check {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--foreground);
+}
+
+.add-notes-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+
+.add-notes-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.add-notes-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-notes-preview {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-notes-empty {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-4);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+/* Dialog system ---------------------------------------------------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-8);
+  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  backdrop-filter: saturate(140%) blur(8px);
+  -webkit-backdrop-filter: saturate(140%) blur(8px);
+  animation: dialog-backdrop-in var(--t-med) var(--ease-out);
+}
+
+.dialog-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  width: 460px;
+  max-width: 100%;
+  max-height: calc(100vh - var(--sp-12));
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-lg);
+  animation: dialog-card-in var(--t-med) var(--ease-spring);
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.dialog-header .dialog-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialog-header .dialog-close {
+  flex: 0 0 auto;
+  margin-left: var(--sp-4);
+}
+
+.dialog-leading {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dialog-close {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.dialog-close:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.dialog-description {
+  margin: calc(-1 * var(--sp-3)) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+/* Generous padding (+ negative outer margin) so the inputs' focus
+ * rings (3px outer box-shadow) can paint without being clipped by the
+ * dialog-card or by overflow on inner scrollers. */
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  min-height: 0;
+  padding: var(--sp-1);
+  margin: calc(-1 * var(--sp-1));
+}
+
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.dialog-field-label {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.dialog-field-hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.dialog-input,
+.dialog-textarea {
+  display: block;
+  width: 100%;
+  min-height: var(--control-lg);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.dialog-input:hover,
+.dialog-textarea:hover {
+  border-color: var(--ring);
+}
+
+.dialog-input:focus,
+.dialog-textarea:focus,
+.dialog-input:focus-visible,
+.dialog-textarea:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.dialog-textarea {
+  min-height: 96px;
+  resize: none;
+  line-height: 1.45;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+@keyframes dialog-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialog-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Move-to-folder popover (Claude pattern) -------------------------- */
+
+.move-to-folder-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 22px;
+  margin: 0 calc(-1 * var(--sp-1));
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.move-to-folder-trigger:hover,
+.move-to-folder-trigger[aria-expanded="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.move-to-folder-trigger[data-assigned="true"] {
+  color: var(--foreground);
+}
+
+.move-to-folder-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  width: 280px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.move-to-folder-search {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-md);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--muted-foreground);
+}
+
+.move-to-folder-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.move-to-folder-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.move-to-folder-divider {
+  height: 1px;
+  margin: 2px var(--sp-1);
+  background: var(--border);
+}
+
+.move-to-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.move-to-folder-item,
+.move-to-folder-create {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.move-to-folder-item:hover,
+.move-to-folder-create:hover {
+  background: var(--muted);
+}
+
+.move-to-folder-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.move-to-folder-item-check {
+  color: var(--muted-foreground);
+}
+
+.move-to-folder-item[aria-checked="true"] .move-to-folder-item-check {
+  color: var(--foreground);
+}
+
+.move-to-folder-empty {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
 }

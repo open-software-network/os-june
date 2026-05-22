@@ -81,7 +81,7 @@ async fn creates_notes_in_reverse_chronological_order() {
 async fn creates_folders_and_assigns_notes_without_removing_all_notes_visibility() {
     let repos = test_repositories().await;
     let folder = repos
-        .create_folder("Field Notes")
+        .create_folder("Field Notes", None)
         .await
         .expect("folder should be created");
     let note = repos
@@ -120,7 +120,7 @@ async fn creates_folders_and_assigns_notes_without_removing_all_notes_visibility
 #[tokio::test]
 async fn deletes_note_and_removes_folder_assignment() {
     let repos = test_repositories().await;
-    let folder = repos.create_folder("Calls").await.expect("folder");
+    let folder = repos.create_folder("Calls", None).await.expect("folder");
     let note = repos
         .create_note(Some(folder.id.clone()))
         .await

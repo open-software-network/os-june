@@ -57,6 +57,10 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
     .await?;
     ensure_column(_pool, "recording_checkpoints", "source", "TEXT").await?;
     ensure_column(_pool, "recording_checkpoints", "source_artifact_id", "TEXT").await?;
+    ensure_column(_pool, "folders", "description", "TEXT").await?;
+    // Folder names don't need to be unique — each folder has a stable
+    // UUID, and the user may legitimately want two "Inbox"es etc.
+    drop_index_if_exists(_pool, "idx_folders_active_name").await?;
     for statement in include_str!("../../migrations/002_source_modes.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
@@ -107,4 +111,16 @@ async fn ensure_column(
 fn is_duplicate_column_error(error: &sqlx::Error, column: &str) -> bool {
     let message = error.to_string().to_lowercase();
     message.contains("duplicate column name") && message.contains(&column.to_lowercase())
+}
+
+async fn drop_index_if_exists(
+    pool: &SqlitePool,
+    index: &str,
+) -> Result<(), sqlx::migrate::MigrateError> {
+    let sql = format!("DROP INDEX IF EXISTS {index}");
+    sqlx::query(&sql)
+        .execute(pool)
+        .await
+        .map_err(sqlx::migrate::MigrateError::Execute)?;
+    Ok(())
 }

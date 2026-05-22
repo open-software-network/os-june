@@ -18,40 +18,74 @@ impl Repositories {
 
     pub async fn list_folders(&self) -> Result<Vec<FolderDto>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, name, created_at, updated_at FROM folders WHERE deleted_at IS NULL ORDER BY lower(name) ASC",
+            "SELECT id, name, description, created_at, updated_at FROM folders WHERE deleted_at IS NULL ORDER BY lower(name) ASC",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| FolderDto {
-                id: row.get("id"),
-                name: row.get("name"),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-            })
-            .collect())
+        Ok(rows.into_iter().map(folder_from_row).collect())
     }
 
-    pub async fn create_folder(&self, name: impl AsRef<str>) -> Result<FolderDto, sqlx::Error> {
+    pub async fn create_folder(
+        &self,
+        name: impl AsRef<str>,
+        description: Option<&str>,
+    ) -> Result<FolderDto, sqlx::Error> {
         let now = timestamp();
+        let description = description
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         let folder = FolderDto {
             id: Uuid::new_v4().to_string(),
             name: name.as_ref().trim().to_string(),
+            description: description.clone(),
             created_at: now.clone(),
             updated_at: now,
         };
 
-        sqlx::query("INSERT INTO folders (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-            .bind(&folder.id)
-            .bind(&folder.name)
-            .bind(&folder.created_at)
-            .bind(&folder.updated_at)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO folders (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&folder.id)
+        .bind(&folder.name)
+        .bind(&folder.description)
+        .bind(&folder.created_at)
+        .bind(&folder.updated_at)
+        .execute(&self.pool)
+        .await?;
 
         Ok(folder)
+    }
+
+    pub async fn rename_folder(
+        &self,
+        folder_id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<FolderDto, sqlx::Error> {
+        let now = timestamp();
+        let trimmed = name.trim();
+        let description = description
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        sqlx::query(
+            "UPDATE folders SET name = ?, description = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(trimmed)
+        .bind(&description)
+        .bind(&now)
+        .bind(folder_id)
+        .execute(&self.pool)
+        .await?;
+
+        let row = sqlx::query(
+            "SELECT id, name, description, created_at, updated_at FROM folders WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(folder_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(folder_from_row(row))
     }
 
     pub async fn create_note(&self, folder_id: Option<String>) -> Result<NoteDto, sqlx::Error> {
@@ -1440,6 +1474,26 @@ pub struct SourceArtifactPath {
 
 pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn folder_from_row(row: sqlx::sqlite::SqliteRow) -> FolderDto {
+    FolderDto {
+        id: row.get("id"),
+        name: row.get("name"),
+        description: row
+            .try_get::<Option<String>, _>("description")
+            .unwrap_or(None)
+            .and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
 }
 
 fn preview_for(title: &str, content: &str) -> String {

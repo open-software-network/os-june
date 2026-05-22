@@ -35,7 +35,9 @@ export function NotePreview({
           },
         }),
         Placeholder.configure({
-          placeholder: emptyPlaceholder ?? "Record or start writing...",
+          placeholder:
+            emptyPlaceholder ??
+            "Hit record to capture a conversation, or just start typing your thoughts here.",
         }),
       ],
       content: initialHtml,

@@ -1,5 +1,6 @@
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconFolders } from "central-icons/IconFolders";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
@@ -9,7 +10,7 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
-export type SidebarView = "notes" | "dictation";
+export type SidebarView = "notes" | "dictation" | "folders";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -35,6 +36,7 @@ type MenuState = {
 };
 
 export function Sidebar({
+  folders,
   notes,
   selectedNoteId,
   activeView,
@@ -163,6 +165,18 @@ export function Sidebar({
             <IconMicrophoneSparkle size={16} />
           </span>
           <span className="sidebar-nav-label">Dictation</span>
+        </button>
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "folders"}
+          aria-current={activeView === "folders" ? "page" : undefined}
+          onClick={() => onChangeView("folders")}
+        >
+          <span className="sidebar-nav-icon">
+            <IconFolders size={16} />
+          </span>
+          <span className="sidebar-nav-label">Folders</span>
         </button>
       </nav>
 

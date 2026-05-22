@@ -2,6 +2,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { DictationSettings } from "../components/dictation/DictationSettings";
+import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
+import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
@@ -11,6 +13,7 @@ import {
   checkRecordingSourceReadiness,
   createFolder,
   createNote,
+  deleteFolder,
   deleteNote,
   finishRecording,
   getRecordingStatus,
@@ -19,6 +22,7 @@ import {
   pauseRecording,
   removeNoteFromFolder,
   recoverRecording,
+  renameFolder,
   resumeRecording,
   retryProcessing,
   startRecording,
@@ -41,6 +45,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("notes");
+  const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   const [sourceMode, setSourceMode] =
     useState<RecordingSourceMode>("microphonePlusSystem");
   const [sourceReadiness, setSourceReadiness] =
@@ -115,33 +120,68 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [selectedNote?.id, selectedNote?.processingStatus]);
 
-  async function handleCreateNote() {
+  async function handleCreateNote(folderId?: string) {
     try {
-      const note = await createNote(state.selectedFolderId);
+      const note = await createNote(folderId ?? state.selectedFolderId);
       dispatch({ type: "noteLoaded", note });
+      setActiveView("notes");
     } catch (err) {
       setError(messageFromError(err));
     }
   }
 
-  async function handleSelectFolder(folderId?: string) {
+  function handleSelectFolder(folderId?: string) {
     dispatch({ type: "folderSelected", folderId });
+  }
+
+  async function handleCreateFolder(name: string, description?: string) {
     try {
-      const response = await listNotes(folderId);
-      dispatch({ type: "notesLoaded", notes: response.items });
+      const folder = await createFolder(name, description);
+      dispatch({ type: "folderCreated", folder });
+      return folder;
+    } catch (err) {
+      setError(messageFromError(err));
+      return undefined;
+    }
+  }
+
+  async function handleRenameFolder(
+    folderId: string,
+    name: string,
+    description?: string,
+  ) {
+    try {
+      const folder = await renameFolder(folderId, name, description);
+      dispatch({ type: "folderRenamed", folder });
     } catch (err) {
       setError(messageFromError(err));
     }
   }
 
-  async function handleCreateFolder() {
-    const name = window.prompt("Folder name");
-    if (!name?.trim()) return;
+  async function handleDeleteFolder(folderId: string) {
     try {
-      const folder = await createFolder(name);
-      dispatch({ type: "folderCreated", folder });
-      const response = await listNotes(folder.id);
-      dispatch({ type: "notesLoaded", notes: response.items });
+      // Deleting a folder strips its association from any notes but
+      // never deletes the notes themselves — they stay in your library.
+      await deleteFolder(folderId, false);
+      dispatch({ type: "folderDeleted", folderId });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleAssignNoteToFolder(noteId: string, folderId: string) {
+    try {
+      const note = await assignNoteToFolder(noteId, folderId);
+      dispatch({ type: "noteUpdated", note });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleRemoveNoteFromFolder(noteId: string, folderId: string) {
+    try {
+      const note = await removeNoteFromFolder(noteId, folderId);
+      dispatch({ type: "noteUpdated", note });
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -151,6 +191,7 @@ export function App() {
     try {
       const note = await getNote(noteId);
       dispatch({ type: "noteLoaded", note });
+      setOriginFolderId(undefined);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -163,13 +204,24 @@ export function App() {
     }
     try {
       await deleteNote(noteId);
-      const response = await listNotes(state.selectedFolderId);
+      const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const nextNoteId = response.items[0]?.id;
       if (nextNoteId) {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
       }
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleSelectNoteFromFolder(noteId: string, folderId: string) {
+    try {
+      const note = await getNote(noteId);
+      dispatch({ type: "noteLoaded", note });
+      setOriginFolderId(folderId);
+      setActiveView("notes");
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -267,11 +319,22 @@ export function App() {
         selectedNoteId={state.selectedNoteId}
         selectedFolderId={state.selectedFolderId}
         activeView={activeView}
-        onChangeView={setActiveView}
-        onCreateFolder={() => void handleCreateFolder()}
+        onChangeView={(view) => {
+          setActiveView(view);
+          if (view === "folders") {
+            dispatch({ type: "folderSelected", folderId: undefined });
+          }
+          if (view !== "notes") {
+            setOriginFolderId(undefined);
+          }
+        }}
+        onCreateFolder={() => {
+          setActiveView("folders");
+          dispatch({ type: "folderSelected", folderId: undefined });
+        }}
         onCreateNote={() => void handleCreateNote()}
-        onSelectAll={() => void handleSelectFolder(undefined)}
-        onSelectFolder={(folderId) => void handleSelectFolder(folderId)}
+        onSelectAll={() => handleSelectFolder(undefined)}
+        onSelectFolder={(folderId) => handleSelectFolder(folderId)}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
         collapsed={sidebarCollapsed}
@@ -302,7 +365,65 @@ export function App() {
           <div className="workspace">
             {activeView === "dictation" ? (
               <DictationSettings />
+            ) : activeView === "folders" ? (
+              <FoldersWorkspace
+                folders={state.folders}
+                notes={state.notes}
+                selectedFolderId={state.selectedFolderId}
+                onSelectFolder={(folderId) =>
+                  dispatch({ type: "folderSelected", folderId })
+                }
+                onCreateFolder={(name, description) =>
+                  handleCreateFolder(name, description)
+                }
+                onRenameFolder={(folderId, name, description) =>
+                  void handleRenameFolder(folderId, name, description)
+                }
+                onDeleteFolder={(folderId) => void handleDeleteFolder(folderId)}
+                onCreateNote={(folderId) => void handleCreateNote(folderId)}
+                onSelectNote={(noteId) => {
+                  const folderId = state.selectedFolderId;
+                  if (folderId) {
+                    void handleSelectNoteFromFolder(noteId, folderId);
+                  } else {
+                    void handleSelectNote(noteId).then(() =>
+                      setActiveView("notes"),
+                    );
+                  }
+                }}
+                onAssignNoteToFolder={(noteId, folderId) =>
+                  assignNoteToFolder(noteId, folderId).then((note) => {
+                    dispatch({ type: "noteUpdated", note });
+                  })
+                }
+                onRemoveNoteFromFolder={(noteId, folderId) =>
+                  void handleRemoveNoteFromFolder(noteId, folderId)
+                }
+                onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+              />
             ) : selectedNote ? (
+              <>
+                {originFolderId ? (
+                  <NoteFromFolderCrumb
+                    folder={state.folders.find(
+                      (folder) => folder.id === originFolderId,
+                    )}
+                    noteTitle={selectedNote.title.trim() || "New note"}
+                    onBackToFolders={() => {
+                      setActiveView("folders");
+                      dispatch({
+                        type: "folderSelected",
+                        folderId: undefined,
+                      });
+                      setOriginFolderId(undefined);
+                    }}
+                    onBackToFolder={(folderId) => {
+                      setActiveView("folders");
+                      dispatch({ type: "folderSelected", folderId });
+                      setOriginFolderId(undefined);
+                    }}
+                  />
+                ) : null}
               <NoteEditor
                 note={selectedNote}
                 folders={state.folders}
@@ -355,7 +476,20 @@ export function App() {
                     (note) => dispatch({ type: "noteUpdated", note }),
                   )
                 }
+                onCreateAndAssignFolder={(name) => {
+                  void (async () => {
+                    const folder = await handleCreateFolder(name);
+                    if (folder) {
+                      const note = await assignNoteToFolder(
+                        selectedNote.id,
+                        folder.id,
+                      );
+                      dispatch({ type: "noteUpdated", note });
+                    }
+                  })();
+                }}
               />
+              </>
             ) : (
               <section className="editor-empty">
                 <button

@@ -12,20 +12,31 @@ async fn repos() -> Repositories {
 }
 
 #[tokio::test]
-async fn rejects_duplicate_active_folder_names() {
+async fn allows_duplicate_folder_names_with_distinct_ids() {
     let repos = repos().await;
-    repos.create_folder("Ideas").await.expect("first folder");
+    let first = repos
+        .create_folder("Ideas", None)
+        .await
+        .expect("first folder");
+    let second = repos
+        .create_folder("Ideas", None)
+        .await
+        .expect("second folder allowed");
 
-    let duplicate = repos.create_folder("Ideas").await;
-
-    assert!(duplicate.is_err());
+    assert_ne!(first.id, second.id);
+    let listed = repos.list_folders().await.expect("list");
+    let ideas: Vec<_> = listed
+        .into_iter()
+        .filter(|folder| folder.name == "Ideas")
+        .collect();
+    assert_eq!(ideas.len(), 2);
 }
 
 #[tokio::test]
 async fn assigning_and_removing_folder_keeps_note_in_all_notes() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");
-    let folder = repos.create_folder("Work").await.expect("folder");
+    let folder = repos.create_folder("Work", None).await.expect("folder");
 
     let assigned = repos
         .assign_note_to_folder(&note.id, &folder.id)
@@ -47,7 +58,7 @@ async fn assigning_and_removing_folder_keeps_note_in_all_notes() {
 #[tokio::test]
 async fn deleting_folder_without_notes_keeps_associated_notes() {
     let repos = repos().await;
-    let folder = repos.create_folder("Work").await.expect("folder");
+    let folder = repos.create_folder("Work", None).await.expect("folder");
     let note = repos
         .create_note(Some(folder.id.clone()))
         .await
@@ -70,7 +81,7 @@ async fn deleting_folder_without_notes_keeps_associated_notes() {
 #[tokio::test]
 async fn deleting_folder_with_notes_removes_associated_notes() {
     let repos = repos().await;
-    let folder = repos.create_folder("Work").await.expect("folder");
+    let folder = repos.create_folder("Work", None).await.expect("folder");
     repos
         .create_note(Some(folder.id.clone()))
         .await

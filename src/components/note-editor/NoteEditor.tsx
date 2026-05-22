@@ -1,11 +1,13 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
@@ -35,6 +37,7 @@ type NoteEditorProps = {
   onRetry: () => void;
   onAssignFolder: (folderId: string) => void;
   onRemoveFolder: (folderId: string) => void;
+  onCreateAndAssignFolder: (name: string) => void;
   onTabChange: (tab: "notes" | "transcription") => void;
 };
 
@@ -76,6 +79,7 @@ export function NoteEditor({
   onRetry,
   onAssignFolder,
   onRemoveFolder,
+  onCreateAndAssignFolder,
   onTabChange,
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
@@ -132,6 +136,7 @@ export function NoteEditor({
             folderIds={note.folderIds}
             onAssign={onAssignFolder}
             onRemove={onRemoveFolder}
+            onCreateAndAssign={onCreateAndAssignFolder}
           />
           {processing ? (
             <span className="note-overline-status">
@@ -210,7 +215,7 @@ export function NoteEditor({
               noteId={note.id}
               markdown={content}
               onChange={onContentChange}
-              emptyPlaceholder="Record or start writing..."
+              emptyPlaceholder="Hit record to capture a conversation, or just start typing your thoughts here."
             />
             {processingLock ? (
               <p
@@ -352,17 +357,22 @@ function FolderChip({
   folderIds,
   onAssign,
   onRemove,
+  onCreateAndAssign,
 }: {
   folders: FolderDto[];
   folderIds: string[];
   onAssign: (folderId: string) => void;
   onRemove: (folderId: string) => void;
+  onCreateAndAssign: (name: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    setQuery("");
     function onClick(event: MouseEvent) {
       if (!ref.current?.contains(event.target as Node)) setOpen(false);
     }
@@ -371,6 +381,7 @@ function FolderChip({
     }
     window.addEventListener("mousedown", onClick);
     window.addEventListener("keydown", onKey);
+    requestAnimationFrame(() => searchRef.current?.focus());
     return () => {
       window.removeEventListener("mousedown", onClick);
       window.removeEventListener("keydown", onKey);
@@ -378,48 +389,102 @@ function FolderChip({
   }, [open]);
 
   const assigned = folders.filter((folder) => folderIds.includes(folder.id));
-  const label =
-    assigned.length > 0
-      ? assigned.map((folder) => folder.name).join(", ")
-      : "Add to folder";
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return folders;
+    return folders.filter((folder) =>
+      folder.name.toLowerCase().includes(normalized),
+    );
+  }, [folders, query]);
+
+  const trimmed = query.trim();
+  const exactMatch = folders.some(
+    (folder) => folder.name.toLowerCase() === trimmed.toLowerCase(),
+  );
+  const showCreate = trimmed.length > 0 && !exactMatch;
 
   return (
     <div className="folder-chip-wrap" ref={ref}>
       <button
         type="button"
-        className="folder-chip"
+        className="move-to-folder-trigger"
+        data-assigned={assigned.length > 0}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
         <IconFolder1 size={13} />
-        {label}
+        {assigned.length > 0
+          ? assigned.map((folder) => folder.name).join(", ")
+          : "Folder"}
       </button>
       {open ? (
-        <div className="folder-popover" role="menu">
-          {folders.length > 0 ? (
-            folders.map((folder) => {
-              const isAssigned = folderIds.includes(folder.id);
-              return (
-                <button
-                  key={folder.id}
-                  type="button"
-                  role="menuitemcheckbox"
-                  aria-checked={isAssigned}
-                  onClick={() =>
-                    isAssigned ? onRemove(folder.id) : onAssign(folder.id)
-                  }
-                >
-                  <span className="folder-popover-check">
-                    {isAssigned ? "✓" : ""}
-                  </span>
-                  {folder.name}
-                </button>
-              );
-            })
-          ) : (
-            <p className="folder-popover-empty">No folders yet</p>
-          )}
+        <div className="move-to-folder-popover" role="menu">
+          <div className="move-to-folder-search">
+            <IconMagnifyingGlass size={12} />
+            <input
+              ref={searchRef}
+              type="search"
+              placeholder="Search or create folder"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && showCreate) {
+                  event.preventDefault();
+                  onCreateAndAssign(trimmed);
+                  setOpen(false);
+                }
+              }}
+            />
+          </div>
+          {showCreate ? (
+            <>
+              <button
+                type="button"
+                className="move-to-folder-create"
+                onClick={() => {
+                  onCreateAndAssign(trimmed);
+                  setOpen(false);
+                }}
+              >
+                <IconPlusMedium size={12} />
+                <span className="move-to-folder-item-name">
+                  Create “{trimmed}”
+                </span>
+                <span aria-hidden />
+              </button>
+              <div className="move-to-folder-divider" aria-hidden />
+            </>
+          ) : null}
+          <div className="move-to-folder-list">
+            {filtered.length > 0 ? (
+              filtered.map((folder) => {
+                const isAssigned = folderIds.includes(folder.id);
+                return (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={isAssigned}
+                    className="move-to-folder-item"
+                    onClick={() =>
+                      isAssigned ? onRemove(folder.id) : onAssign(folder.id)
+                    }
+                  >
+                    <IconFolder1 size={12} />
+                    <span className="move-to-folder-item-name">
+                      {folder.name}
+                    </span>
+                    <span className="move-to-folder-item-check" aria-hidden>
+                      {isAssigned ? "✓" : ""}
+                    </span>
+                  </button>
+                );
+              })
+            ) : trimmed.length === 0 ? (
+              <p className="move-to-folder-empty">No folders yet.</p>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>
