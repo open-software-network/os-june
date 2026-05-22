@@ -4,7 +4,9 @@ use serde_json::{json, Value};
 
 pub const DEFAULT_GENERATION_PROVIDER: &str = "mock";
 const DEFAULT_OPENAI_GENERATION_MODEL: &str = "gpt-5.2";
+const DEFAULT_VENICE_GENERATION_MODEL: &str = "zai-org-glm-5";
 const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
+const INCREMENTAL_NOTE_INSTRUCTIONS: &str = "You write one incremental markdown note block from a newly captured transcript. Use only the new transcript plus optional new manual notes. Existing generated note content is context only: do not repeat, summarize, rewrite, or reformat it. Manual notes are context only unless they add facts; do not output manual note labels as headings, bullets, titles, or section names. Do not add wrapper headings such as Note, Generated note, Transcript, or Summary. Preserve the speaker's language unless the source material is mixed-language. Return only the new note block to append.";
 
 #[derive(Debug, Clone)]
 pub struct GenerationRequest {
@@ -51,10 +53,11 @@ pub async fn generate_note_from_transcript(
             provider: DEFAULT_GENERATION_PROVIDER.to_string(),
             prompt_version: PROMPT_VERSION.to_string(),
         }),
-        "openai" => generate_with_openai(&request, transcript).await,
+        crate::providers::OPENAI_PROVIDER => generate_with_openai(&request, transcript).await,
+        crate::providers::VENICE_PROVIDER => generate_with_venice(&request, transcript).await,
         _ => Err(AppError::new(
             "provider_not_configured",
-            "Unsupported generation provider. Use OS_NOTETAKER_PROVIDER=mock or configure OPENAI_API_KEY.",
+            "Unsupported generation provider. Use OS_NOTETAKER_PROVIDER=mock, openai, or venice with the matching API key.",
         )),
     }
 }
@@ -90,7 +93,7 @@ async fn generate_with_openai(
     );
     let body = json!({
         "model": model,
-        "instructions": "You write one incremental markdown note block from a newly captured transcript. Use only the new transcript plus optional new manual notes. Existing generated note content is context only: do not repeat, summarize, rewrite, or reformat it. Manual notes are context only unless they add facts; do not output manual note labels as headings, bullets, titles, or section names. Do not add wrapper headings such as Note, Generated note, Transcript, or Summary. Preserve the speaker's language unless the source material is mixed-language. Return only the new note block to append.",
+        "instructions": INCREMENTAL_NOTE_INSTRUCTIONS,
         "input": format!(
             "Current title: {}\nDetected language: {}\n\n{}",
             if title_hint.is_empty() { "New note" } else { title_hint },
@@ -139,6 +142,92 @@ async fn generate_with_openai(
             Some(title_hint.to_string())
         },
         provider: crate::providers::OPENAI_PROVIDER.to_string(),
+        prompt_version: PROMPT_VERSION.to_string(),
+    })
+}
+
+async fn generate_with_venice(
+    request: &GenerationRequest,
+    transcript: &str,
+) -> Result<GenerationProviderResult, AppError> {
+    let api_key = crate::providers::venice_api_key().ok_or_else(|| {
+        AppError::new(
+            "provider_not_configured",
+            "VENICE_API_KEY is required for Venice note generation. Set OS_NOTETAKER_PROVIDER=venice with VENICE_API_KEY, or use mock for offline verification.",
+        )
+    })?;
+    let model = std::env::var("VENICE_GENERATION_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_VENICE_GENERATION_MODEL.to_string());
+    let title_hint = request.title.trim();
+    let source_text = generation_source_text(
+        request.existing_generated_note.as_deref(),
+        request.manual_notes.as_deref(),
+        transcript,
+    );
+    let body = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": INCREMENTAL_NOTE_INSTRUCTIONS,
+            },
+            {
+                "role": "user",
+                "content": format!(
+                    "Current title: {}\nDetected language: {}\n\n{}",
+                    if title_hint.is_empty() { "New note" } else { title_hint },
+                    request.language.as_deref().unwrap_or("unknown"),
+                    source_text
+                ),
+            }
+        ],
+    });
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/chat/completions",
+            crate::providers::venice_api_base_url()
+        ))
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    if !status.is_success() {
+        return Err(AppError::new(
+            "provider_request_failed",
+            format!("Venice generation failed with status {status}: {body}"),
+        ));
+    }
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|error| AppError::new("provider_response_invalid", error.to_string()))?;
+    let content = extract_chat_completion_text(&parsed).ok_or_else(|| {
+        AppError::new(
+            "provider_response_invalid",
+            "Venice generation response did not contain text output.",
+        )
+    })?;
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err(AppError::new(
+            "generation_empty",
+            "Venice returned an empty generated note.",
+        ));
+    }
+    Ok(GenerationProviderResult {
+        content,
+        title_suggestion: if title_hint.is_empty() {
+            Some("New note".to_string())
+        } else {
+            Some(title_hint.to_string())
+        },
+        provider: crate::providers::VENICE_PROVIDER.to_string(),
         prompt_version: PROMPT_VERSION.to_string(),
     })
 }
@@ -206,9 +295,36 @@ fn extract_response_text(value: &Value) -> Option<String> {
     }
 }
 
+fn extract_chat_completion_text(value: &Value) -> Option<String> {
+    let content = value
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let parts = content
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            item.get("text")
+                .or_else(|| item.get("content"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::generation_source_text;
+    use super::{extract_chat_completion_text, generation_source_text};
 
     #[test]
     fn generation_source_text_separates_existing_manual_and_new_transcript() {
@@ -223,5 +339,23 @@ mod tests {
         assert!(input.contains("<new_transcript>\nNew transcript text"));
         assert!(input.contains("Do not repeat existing note content"));
         assert!(input.contains("Do not output manual note labels"));
+    }
+
+    #[test]
+    fn extracts_venice_chat_completion_text() {
+        let response = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "Generated note block"
+                    }
+                }
+            ]
+        });
+
+        assert_eq!(
+            extract_chat_completion_text(&response).as_deref(),
+            Some("Generated note block")
+        );
     }
 }
