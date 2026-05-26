@@ -36,6 +36,7 @@ pub fn run() {
             dictation::dictation_settings,
             dictation::set_dictation_shortcut,
             dictation::set_dictation_microphone,
+            dictation::set_dictation_post_processing,
             dictation::dictation_helper_command,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,

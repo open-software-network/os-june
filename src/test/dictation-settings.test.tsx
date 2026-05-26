@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
   dictationHotkeyStatus: vi.fn(),
   setDictationShortcut: vi.fn(),
+  setDictationPostProcessing: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -16,6 +17,7 @@ vi.mock("../lib/tauri", () => ({
   dictationSettings: mocks.dictationSettings,
   dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   setDictationShortcut: mocks.setDictationShortcut,
+  setDictationPostProcessing: mocks.setDictationPostProcessing,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -35,6 +37,7 @@ const baseSettings: DictationSettingsDto = {
     },
   },
   microphone: {},
+  postProcessing: { enabled: false },
 };
 
 describe("DictationSettings", () => {
@@ -49,6 +52,10 @@ describe("DictationSettings", () => {
     mocks.setDictationShortcut.mockImplementation(async (shortcut) => ({
       ...baseSettings,
       shortcut,
+    }));
+    mocks.setDictationPostProcessing.mockImplementation(async (enabled) => ({
+      ...baseSettings,
+      postProcessing: { enabled },
     }));
     mocks.listen.mockImplementation((_event, handler) => {
       mocks.eventHandler = handler;
@@ -71,6 +78,7 @@ describe("DictationSettings", () => {
           },
         },
         microphone: {},
+        postProcessing: { enabled: false },
       },
     });
 
@@ -126,5 +134,19 @@ describe("DictationSettings", () => {
         },
       }),
     );
+  });
+
+  it("toggles LLM cleanup for dictated text", async () => {
+    const user = userEvent.setup();
+    render(<DictationSettings />);
+
+    await user.click(
+      await screen.findByRole("switch", { name: "Polish dictated text" }),
+    );
+
+    expect(mocks.setDictationPostProcessing).toHaveBeenCalledWith(true);
+    expect(
+      await screen.findByText("Dictation cleanup enabled."),
+    ).toBeInTheDocument();
   });
 });

@@ -85,9 +85,14 @@ export type DictationMicrophoneSetting = {
   name?: string;
 };
 
+export type DictationPostProcessingSetting = {
+  enabled: boolean;
+};
+
 export type DictationSettingsDto = {
   shortcut: DictationShortcutSetting;
   microphone: DictationMicrophoneSetting;
+  postProcessing: DictationPostProcessingSetting;
 };
 
 export type DictationSettingsResponse = {
@@ -475,6 +480,12 @@ export async function setDictationMicrophone(id?: string, name?: string) {
   return invoke<DictationSettingsDto>("set_dictation_microphone", {
     id,
     name,
+  });
+}
+
+export async function setDictationPostProcessing(enabled: boolean) {
+  return invoke<DictationSettingsDto>("set_dictation_post_processing", {
+    enabled,
   });
 }
 

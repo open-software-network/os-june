@@ -5,6 +5,7 @@ use crate::providers::{
     VENICE_PROVIDER,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{json, Value};
 use std::{
     ffi::c_void,
     fs,
@@ -50,6 +51,8 @@ pub struct HotkeyManager {
 pub struct DictationSettings {
     pub shortcut: DictationShortcutSetting,
     pub microphone: DictationMicrophoneSetting,
+    #[serde(default)]
+    pub post_processing: DictationPostProcessingSetting,
 }
 
 impl Default for DictationSettings {
@@ -57,6 +60,7 @@ impl Default for DictationSettings {
         Self {
             shortcut: DictationShortcutSetting::fn_space(),
             microphone: DictationMicrophoneSetting::default(),
+            post_processing: DictationPostProcessingSetting::default(),
         }
     }
 }
@@ -185,6 +189,12 @@ impl From<DictationShortcutPreset> for DictationShortcutSetting {
 pub struct DictationMicrophoneSetting {
     pub id: Option<String>,
     pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationPostProcessingSetting {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -378,6 +388,16 @@ pub fn set_dictation_microphone(
     })?;
     apply_microphone_setting(&helper_state, &settings.microphone)?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn set_dictation_post_processing(
+    state: State<'_, DictationSettingsState>,
+    enabled: bool,
+) -> Result<DictationSettings, AppError> {
+    update_settings(&state, |settings| {
+        settings.post_processing.enabled = enabled;
+    })
 }
 
 #[tauri::command]
@@ -671,7 +691,8 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
         context: None,
     })
     .await;
-    let outcome = outcome_from_transcription_result(result);
+    let outcome =
+        outcome_from_transcription_result(result, dictation_post_processing_enabled(&app)).await;
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
         emit_dictation_event_value(&app, app_error_event(error));
@@ -714,21 +735,147 @@ struct DictationTranscriptionOutcome {
     event: Option<serde_json::Value>,
 }
 
-fn outcome_from_transcription_result(
+async fn outcome_from_transcription_result(
     result: Result<TranscriptionProviderResult, AppError>,
+    post_processing_enabled: bool,
 ) -> DictationTranscriptionOutcome {
     match result {
-        Ok(transcript) => DictationTranscriptionOutcome {
-            helper_command: serde_json::json!({
-                "type": "paste_text",
-                "text": transcript.text,
-            }),
-            event: None,
-        },
+        Ok(transcript) => {
+            let mut event = None;
+            let text = if post_processing_enabled {
+                match post_process_dictation_text(&transcript.text).await {
+                    Ok(cleaned) => cleaned,
+                    Err(error) => {
+                        event = Some(app_error_event(AppError::new(
+                            "dictation_post_processing_failed",
+                            format!(
+                                "Post-processing failed, so the raw transcript was pasted. {}",
+                                error.message
+                            ),
+                        )));
+                        transcript.text
+                    }
+                }
+            } else {
+                transcript.text
+            };
+            DictationTranscriptionOutcome {
+                helper_command: serde_json::json!({
+                    "type": "paste_text",
+                    "text": text,
+                }),
+                event,
+            }
+        }
         Err(error) => DictationTranscriptionOutcome {
             helper_command: serde_json::json!({ "type": "discard_recording" }),
             event: Some(app_error_event(error)),
         },
+    }
+}
+
+fn dictation_post_processing_enabled(app: &AppHandle) -> bool {
+    app.state::<DictationSettingsState>()
+        .settings
+        .lock()
+        .map(|settings| settings.post_processing.enabled)
+        .unwrap_or(false)
+}
+
+async fn post_process_dictation_text(transcript: &str) -> Result<String, AppError> {
+    let transcript = transcript.trim();
+    if transcript.is_empty() {
+        return Err(AppError::new(
+            "transcription_empty",
+            "Transcript is empty, so it cannot be post-processed.",
+        ));
+    }
+    let api_key = crate::providers::venice_api_key().ok_or_else(|| {
+        AppError::new(
+            "provider_not_configured",
+            "VENICE_API_KEY is required for dictation post-processing.",
+        )
+    })?;
+    let body = json!({
+        "model": crate::providers::venice_generation_model(),
+        "messages": [
+            {
+                "role": "system",
+                "content": dictation_post_processing_instructions(),
+            },
+            {
+                "role": "user",
+                "content": format!("<raw_dictation>\n{transcript}\n</raw_dictation>"),
+            }
+        ],
+    });
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/chat/completions",
+            crate::providers::venice_api_base_url()
+        ))
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    if !status.is_success() {
+        return Err(AppError::new(
+            "provider_request_failed",
+            format!("Venice dictation post-processing failed with status {status}: {body}"),
+        ));
+    }
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|error| AppError::new("provider_response_invalid", error.to_string()))?;
+    let text = extract_chat_completion_text(&parsed).ok_or_else(|| {
+        AppError::new(
+            "provider_response_invalid",
+            "Venice post-processing response did not contain text output.",
+        )
+    })?;
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(AppError::new(
+            "dictation_post_processing_empty",
+            "Venice returned empty post-processed text.",
+        ));
+    }
+    Ok(text)
+}
+
+fn dictation_post_processing_instructions() -> &'static str {
+    "Rewrite raw dictated text into the text the speaker likely intended to paste. Remove filler words, false starts, and conversational hesitations such as um, uh, like, you know, and repeated fragments when they do not change meaning. Convert spoken punctuation and formatting cues into literal text, for example quote/unquote into quotation marks, new paragraph into a paragraph break, comma/period/question mark into punctuation, and open paren/close paren into parentheses. Preserve the speaker's meaning, wording, language, names, code terms, numbers, and tone. Do not summarize, add facts, answer the text, or wrap it in markdown. Return only the final paste-ready text."
+}
+
+fn extract_chat_completion_text(value: &Value) -> Option<String> {
+    let content = value
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let parts = content
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            item.get("text")
+                .or_else(|| item.get("content"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
     }
 }
 
@@ -1284,6 +1431,7 @@ mod tests {
         assert_eq!(settings.shortcut.label, "Fn+Space");
         assert_eq!(settings.shortcut.code, "Space");
         assert!(settings.shortcut.modifiers.function);
+        assert!(!settings.post_processing.enabled);
     }
 
     #[test]
@@ -1296,6 +1444,7 @@ mod tests {
         assert_eq!(settings.shortcut.label, "Ctrl+Opt+Space");
         assert!(settings.shortcut.modifiers.control);
         assert!(settings.shortcut.modifiers.option);
+        assert!(!settings.post_processing.enabled);
     }
 
     #[test]
@@ -1327,13 +1476,17 @@ mod tests {
         assert_eq!(err.code, "dictation_shortcut_unsupported");
     }
 
-    #[test]
-    fn successful_transcription_maps_to_paste_command() {
-        let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
-            text: "Paste this transcript.".to_string(),
-            language: Some("en".to_string()),
-            provider: crate::providers::VENICE_PROVIDER.to_string(),
-        }));
+    #[tokio::test]
+    async fn successful_transcription_maps_to_paste_command() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Paste this transcript.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            false,
+        )
+        .await;
 
         assert_eq!(
             outcome.helper_command,
@@ -1345,12 +1498,16 @@ mod tests {
         assert!(outcome.event.is_none());
     }
 
-    #[test]
-    fn failed_transcription_maps_to_discard_and_error() {
-        let outcome = outcome_from_transcription_result(Err(AppError::new(
-            "transcription_failed",
-            "The provider failed.",
-        )));
+    #[tokio::test]
+    async fn failed_transcription_maps_to_discard_and_error() {
+        let outcome = outcome_from_transcription_result(
+            Err(AppError::new(
+                "transcription_failed",
+                "The provider failed.",
+            )),
+            false,
+        )
+        .await;
 
         assert_eq!(
             outcome.helper_command,
@@ -1382,6 +1539,33 @@ mod tests {
             dictation_transcription_provider(crate::providers::VENICE_PROVIDER.to_string())
                 .expect("venice should be accepted"),
             crate::providers::VENICE_PROVIDER
+        );
+    }
+
+    #[test]
+    fn post_processing_prompt_contains_dictation_contract() {
+        let prompt = dictation_post_processing_instructions();
+
+        assert!(prompt.contains("Remove filler words"));
+        assert!(prompt.contains("quote/unquote"));
+        assert!(prompt.contains("Return only the final paste-ready text"));
+    }
+
+    #[test]
+    fn extracts_dictation_post_processing_text() {
+        let response = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "Cleaned text."
+                    }
+                }
+            ]
+        });
+
+        assert_eq!(
+            extract_chat_completion_text(&response).as_deref(),
+            Some("Cleaned text.")
         );
     }
 }

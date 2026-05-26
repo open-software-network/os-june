@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   dictationHotkeyStatus,
   dictationSettings,
+  setDictationPostProcessing,
   setDictationShortcut,
 } from "../../lib/tauri";
 import type {
@@ -11,6 +12,7 @@ import type {
   DictationShortcutModifiers,
   DictationShortcutSetting,
 } from "../../lib/tauri";
+import { Switch } from "../ui/Switch";
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   shortcut: {
@@ -25,6 +27,7 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
     },
   },
   microphone: {},
+  postProcessing: { enabled: false },
 };
 
 const MODIFIER_CODES = new Set([
@@ -160,6 +163,18 @@ export function DictationSettings() {
     }
   }
 
+  async function savePostProcessing(enabled: boolean) {
+    try {
+      const next = await setDictationPostProcessing(enabled);
+      setSettings(next);
+      setStatus(
+        enabled ? "Dictation cleanup enabled." : "Dictation cleanup disabled.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   return (
     <div className="settings-page">
       <header className="settings-header">
@@ -203,6 +218,34 @@ export function DictationSettings() {
                 >
                   {capturing ? "Cancel" : "Change"}
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-group" aria-labelledby="cleanup-heading">
+        <h2 id="cleanup-heading" className="settings-group-heading">
+          Cleanup
+        </h2>
+        <div className="settings-card">
+          <div className="settings-rows">
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Polish dictated text</h3>
+                <p className="settings-row-description">
+                  Uses your Venice note model after transcription to remove
+                  filler words and convert spoken formatting before paste.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <Switch
+                  checked={settings.postProcessing.enabled}
+                  aria-label="Polish dictated text"
+                  onCheckedChange={(enabled) =>
+                    void savePostProcessing(enabled)
+                  }
+                />
               </div>
             </div>
           </div>

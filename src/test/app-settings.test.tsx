@@ -43,6 +43,7 @@ const baseSettings: DictationSettingsDto = {
     },
   },
   microphone: {},
+  postProcessing: { enabled: false },
 };
 
 describe("AppSettings", () => {

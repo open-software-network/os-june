@@ -39,6 +39,7 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
     },
   },
   microphone: {},
+  postProcessing: { enabled: false },
 };
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
