@@ -146,7 +146,7 @@ describe("DictationSettings", () => {
 
     expect(mocks.setDictationPostProcessing).toHaveBeenCalledWith(true);
     expect(
-      await screen.findByText("Dictation cleanup enabled."),
-    ).toBeInTheDocument();
+      screen.queryByText("Dictation cleanup enabled."),
+    ).not.toBeInTheDocument();
   });
 });

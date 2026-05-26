@@ -167,9 +167,6 @@ export function DictationSettings() {
     try {
       const next = await setDictationPostProcessing(enabled);
       setSettings(next);
-      setStatus(
-        enabled ? "Dictation cleanup enabled." : "Dictation cleanup disabled.",
-      );
     } catch (error) {
       setStatus(messageFromError(error));
     }

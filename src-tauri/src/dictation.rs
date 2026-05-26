@@ -19,6 +19,8 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
 
+const DICTATION_POST_PROCESSING_TIMEOUT: Duration = Duration::from_secs(12);
+
 pub struct HelperProcess {
     child: Child,
     stdin: ChildStdin,
@@ -741,18 +743,14 @@ async fn outcome_from_transcription_result(
 ) -> DictationTranscriptionOutcome {
     match result {
         Ok(transcript) => {
-            let mut event = None;
             let text = if post_processing_enabled {
-                match post_process_dictation_text(&transcript.text).await {
+                match post_process_dictation_text_with_timeout(&transcript.text).await {
                     Ok(cleaned) => cleaned,
                     Err(error) => {
-                        event = Some(app_error_event(AppError::new(
-                            "dictation_post_processing_failed",
-                            format!(
-                                "Post-processing failed, so the raw transcript was pasted. {}",
-                                error.message
-                            ),
-                        )));
+                        eprintln!(
+                            "dictation post-processing failed; pasting raw transcript: {}",
+                            error.message
+                        );
                         transcript.text
                     }
                 }
@@ -764,13 +762,28 @@ async fn outcome_from_transcription_result(
                     "type": "paste_text",
                     "text": text,
                 }),
-                event,
+                event: None,
             }
         }
         Err(error) => DictationTranscriptionOutcome {
             helper_command: serde_json::json!({ "type": "discard_recording" }),
             event: Some(app_error_event(error)),
         },
+    }
+}
+
+async fn post_process_dictation_text_with_timeout(transcript: &str) -> Result<String, AppError> {
+    match tokio::time::timeout(
+        DICTATION_POST_PROCESSING_TIMEOUT,
+        post_process_dictation_text(transcript),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(AppError::new(
+            "dictation_post_processing_timeout",
+            "Dictation post-processing timed out.",
+        )),
     }
 }
 
@@ -798,6 +811,8 @@ async fn post_process_dictation_text(transcript: &str) -> Result<String, AppErro
     })?;
     let body = json!({
         "model": crate::providers::venice_generation_model(),
+        "temperature": 0.2,
+        "max_tokens": 1024,
         "messages": [
             {
                 "role": "system",
@@ -1549,6 +1564,11 @@ mod tests {
         assert!(prompt.contains("Remove filler words"));
         assert!(prompt.contains("quote/unquote"));
         assert!(prompt.contains("Return only the final paste-ready text"));
+    }
+
+    #[test]
+    fn post_processing_timeout_is_bounded() {
+        assert!(DICTATION_POST_PROCESSING_TIMEOUT <= Duration::from_secs(12));
     }
 
     #[test]
