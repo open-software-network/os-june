@@ -107,6 +107,7 @@ export type DictationHelperEvent = {
   payload?: {
     devices?: DictationMicrophoneDeviceDto[];
     selectedID?: string;
+    shortcut?: DictationShortcutSetting;
     message?: string;
     code?: string;
     [key: string]: unknown;

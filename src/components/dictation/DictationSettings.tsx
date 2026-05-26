@@ -40,82 +40,11 @@ const BARE_FN_SHORTCUT: Pick<
   },
 };
 
-const FN_SPACE_SHORTCUT: Pick<
-  DictationShortcutSetting,
-  "code" | "modifiers" | "label"
-> = {
-  code: "Space",
-  label: "Fn+Space",
-  modifiers: {
-    ...EMPTY_MODIFIERS,
-    function: true,
-  },
-};
-
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   shortcut: BARE_FN_SHORTCUT,
   activationMode: "push_to_talk",
   microphone: {},
 };
-
-const MODIFIER_CODES = new Set([
-  "AltLeft",
-  "AltRight",
-  "ControlLeft",
-  "ControlRight",
-  "MetaLeft",
-  "MetaRight",
-  "ShiftLeft",
-  "ShiftRight",
-]);
-
-const KEY_LABELS: Record<string, string> = {
-  Backquote: "`",
-  Backslash: "\\",
-  Backspace: "Delete",
-  BracketLeft: "[",
-  BracketRight: "]",
-  Comma: ",",
-  Digit0: "0",
-  Digit1: "1",
-  Digit2: "2",
-  Digit3: "3",
-  Digit4: "4",
-  Digit5: "5",
-  Digit6: "6",
-  Digit7: "7",
-  Digit8: "8",
-  Digit9: "9",
-  Enter: "Return",
-  Equal: "=",
-  Escape: "Esc",
-  Minus: "-",
-  Period: ".",
-  Quote: "'",
-  Semicolon: ";",
-  Slash: "/",
-  Space: "Space",
-  Tab: "Tab",
-  ArrowDown: "Down",
-  ArrowLeft: "Left",
-  ArrowRight: "Right",
-  ArrowUp: "Up",
-};
-
-type ShortcutCaptureResult =
-  | {
-      shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label">;
-      error?: never;
-    }
-  | { shortcut?: never; error: string };
-
-type ShortcutPreset = "fn" | "fn_space" | "custom";
-
-const SHORTCUT_PRESETS = [
-  { value: "fn", label: "Fn / Globe" },
-  { value: "fn_space", label: "Fn+Space" },
-  { value: "custom", label: "Custom" },
-] as const;
 
 const ACTIVATION_MODE_OPTIONS = [
   { value: "push_to_talk", label: "Push-to-talk" },
@@ -187,22 +116,10 @@ export function DictationSettings() {
     if (!capturing) return;
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setCapturing(false);
-        setShortcutError(undefined);
+        event.preventDefault();
+        void cancelShortcutCapture();
         return;
       }
-      event.preventDefault();
-      if (event.repeat) return;
-
-      const result = shortcutFromKeyboardEvent(event);
-      if ("error" in result) {
-        setShortcutError(result.error);
-        setStatus(result.error);
-        return;
-      }
-
-      setShortcutError(undefined);
-      void saveShortcut(result.shortcut);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -229,6 +146,30 @@ export function DictationSettings() {
       setStatus(
         helperEvent.payload?.message ?? "Fn/Globe shortcut is unavailable.",
       );
+      return;
+    }
+    if (helperEvent.type === "shortcut_capture_started") {
+      setStatus("Press the shortcut to record it.");
+      return;
+    }
+    if (helperEvent.type === "shortcut_capture_error") {
+      const message =
+        helperEvent.payload?.message ?? "Shortcut could not be captured.";
+      setShortcutError(message);
+      setStatus(message);
+      return;
+    }
+    if (helperEvent.type === "shortcut_captured") {
+      const shortcut = shortcutFromCapturePayload(
+        helperEvent.payload?.shortcut,
+      );
+      if (!shortcut) {
+        setShortcutError("Shortcut capture returned invalid data.");
+        setStatus("Shortcut capture returned invalid data.");
+        return;
+      }
+      setShortcutError(undefined);
+      void saveShortcut(shortcut);
     }
   }
 
@@ -242,6 +183,28 @@ export function DictationSettings() {
       setStatus(`Shortcut set to ${next.shortcut.label}.`);
     } catch (error) {
       setShortcutError(messageFromError(error));
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function startShortcutCapture() {
+    setShortcutError(undefined);
+    setCapturing(true);
+    try {
+      await dictationHelperCommand({ type: "start_shortcut_capture" });
+    } catch (error) {
+      setCapturing(false);
+      setShortcutError(messageFromError(error));
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function cancelShortcutCapture() {
+    setCapturing(false);
+    setShortcutError(undefined);
+    try {
+      await dictationHelperCommand({ type: "cancel_shortcut_capture" });
+    } catch (error) {
       setStatus(messageFromError(error));
     }
   }
@@ -271,24 +234,6 @@ export function DictationSettings() {
     }
   }
 
-  function selectShortcutPreset(preset: ShortcutPreset) {
-    if (preset === "fn") {
-      setCapturing(false);
-      setShortcutError(undefined);
-      void saveShortcut(BARE_FN_SHORTCUT);
-      return;
-    }
-    if (preset === "fn_space") {
-      setCapturing(false);
-      setShortcutError(undefined);
-      void saveShortcut(FN_SPACE_SHORTCUT);
-      return;
-    }
-
-    setShortcutError(undefined);
-    setCapturing(true);
-  }
-
   const microphoneName = settings.microphone.name ?? "Auto-detect";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
@@ -300,7 +245,6 @@ export function DictationSettings() {
       (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
     ),
   );
-  const activeShortcutPreset = shortcutPreset(settings.shortcut);
 
   return (
     <div className="settings-page">
@@ -323,7 +267,8 @@ export function DictationSettings() {
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Dictate anywhere</h3>
                 <p className="settings-row-description">
-                  Shortcut used from anywhere on your Mac.
+                  Press Change, then press Fn/Globe or any supported modifier
+                  shortcut.
                 </p>
                 {shortcutError ? (
                   <p className="settings-row-error">{shortcutError}</p>
@@ -338,25 +283,15 @@ export function DictationSettings() {
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => {
-                    setShortcutError(undefined);
-                    setCapturing((value) => !value);
+                    if (capturing) {
+                      void cancelShortcutCapture();
+                    } else {
+                      void startShortcutCapture();
+                    }
                   }}
                 >
                   {capturing ? "Cancel" : "Change"}
                 </button>
-              </div>
-            </div>
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Preset</h3>
-              </div>
-              <div className="settings-row-control">
-                <SegmentedControl
-                  value={activeShortcutPreset}
-                  options={SHORTCUT_PRESETS}
-                  onValueChange={selectShortcutPreset}
-                  aria-label="Dictation shortcut preset"
-                />
               </div>
             </div>
             <div className="settings-row">
@@ -477,83 +412,8 @@ function KeycapShortcut({
   );
 }
 
-export function shortcutFromKeyboardEvent(
-  event: Pick<
-    KeyboardEvent,
-    "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"
-  >,
-): ShortcutCaptureResult {
-  if (MODIFIER_CODES.has(event.code)) {
-    return { error: "Press one non-modifier key with your shortcut." };
-  }
-  if (!event.code) {
-    return { error: "That key is not supported for global shortcuts." };
-  }
-
-  const modifiers: DictationShortcutModifiers = {
-    command: event.metaKey,
-    control: event.ctrlKey,
-    option: event.altKey,
-    shift: event.shiftKey,
-    function: false,
-  };
-  const modifierLabels = [
-    modifiers.command && "Cmd",
-    modifiers.control && "Ctrl",
-    modifiers.option && "Opt",
-    modifiers.shift && "Shift",
-  ].filter(Boolean) as string[];
-
-  if (modifierLabels.length === 0) {
-    return { error: "Shortcut must include Cmd, Ctrl, Opt, or Shift." };
-  }
-
-  return {
-    shortcut: {
-      code: event.code,
-      modifiers,
-      label: [...modifierLabels, keyLabel(event.code, event.key)].join("+"),
-    },
-  };
-}
-
-function keyLabel(code: string, key: string) {
-  if (KEY_LABELS[code]) return KEY_LABELS[code];
-  if (code.startsWith("Key")) return code.slice(3);
-  if (code.startsWith("Digit")) return code.slice(5);
-  return key.length === 1 ? key.toUpperCase() : code;
-}
-
 function activationModeLabel(mode: DictationActivationMode) {
   return mode === "toggle" ? "Toggle" : "Push-to-talk";
-}
-
-function shortcutPreset(shortcut: DictationShortcutSetting): ShortcutPreset {
-  if (isBareFnShortcut(shortcut)) return "fn";
-  if (isFnSpaceShortcut(shortcut)) return "fn_space";
-  return "custom";
-}
-
-function isBareFnShortcut(shortcut: DictationShortcutSetting) {
-  return (
-    shortcut.code === "Fn" &&
-    shortcut.modifiers.function &&
-    !shortcut.modifiers.command &&
-    !shortcut.modifiers.control &&
-    !shortcut.modifiers.option &&
-    !shortcut.modifiers.shift
-  );
-}
-
-function isFnSpaceShortcut(shortcut: DictationShortcutSetting) {
-  return (
-    shortcut.code === "Space" &&
-    shortcut.modifiers.function &&
-    !shortcut.modifiers.command &&
-    !shortcut.modifiers.control &&
-    !shortcut.modifiers.option &&
-    !shortcut.modifiers.shift
-  );
 }
 
 function parseDictationEvent(
@@ -570,6 +430,33 @@ function parseDictationEvent(
     return undefined;
   }
   return undefined;
+}
+
+function shortcutFromCapturePayload(
+  shortcut: unknown,
+): Pick<DictationShortcutSetting, "code" | "modifiers" | "label"> | undefined {
+  if (!shortcut || typeof shortcut !== "object") return undefined;
+
+  const value = shortcut as Partial<DictationShortcutSetting>;
+  const modifiers = value.modifiers;
+  if (
+    typeof value.code !== "string" ||
+    typeof value.label !== "string" ||
+    !modifiers ||
+    typeof modifiers.command !== "boolean" ||
+    typeof modifiers.control !== "boolean" ||
+    typeof modifiers.option !== "boolean" ||
+    typeof modifiers.shift !== "boolean" ||
+    typeof modifiers.function !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  return {
+    code: value.code,
+    label: value.label,
+    modifiers,
+  };
 }
 
 function messageFromError(error: unknown) {

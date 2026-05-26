@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DictationSettings } from "../components/dictation/DictationSettings";
@@ -99,28 +99,35 @@ describe("DictationSettings", () => {
       await screen.findByLabelText("Shortcut Ctrl+Opt+Space"),
     ).toBeInTheDocument();
     expect(screen.getByText("AirPods Pro")).toBeInTheDocument();
+    expect(screen.queryByText("Preset")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Dictation shortcut preset"),
+    ).not.toBeInTheDocument();
   });
 
-  it("rejects modifier-only and no-modifier shortcut captures", async () => {
+  it("shows native shortcut capture errors", async () => {
     const user = userEvent.setup();
     render(<DictationSettings />);
 
     await user.click(await screen.findByRole("button", { name: "Change" }));
-    fireEvent.keyDown(window, {
-      code: "ShiftLeft",
-      key: "Shift",
-      shiftKey: true,
-    });
-    expect(
-      await screen.findAllByText(
-        "Press one non-modifier key with your shortcut.",
-      ),
-    ).toHaveLength(2);
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "start_shortcut_capture",
+      }),
+    );
 
-    fireEvent.keyDown(window, { code: "KeyT", key: "t" });
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "shortcut_capture_error",
+        payload: {
+          message: "Shortcut must include Cmd, Ctrl, Opt, Shift, or Fn.",
+        },
+      }),
+    });
+
     expect(
       await screen.findAllByText(
-        "Shortcut must include Cmd, Ctrl, Opt, or Shift.",
+        "Shortcut must include Cmd, Ctrl, Opt, Shift, or Fn.",
       ),
     ).toHaveLength(2);
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
@@ -131,7 +138,30 @@ describe("DictationSettings", () => {
     render(<DictationSettings />);
 
     await user.click(await screen.findByRole("button", { name: "Change" }));
-    fireEvent.keyDown(window, { code: "KeyT", key: "t", ctrlKey: true });
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "start_shortcut_capture",
+      }),
+    );
+
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "shortcut_captured",
+        payload: {
+          shortcut: {
+            code: "KeyT",
+            label: "Ctrl+T",
+            modifiers: {
+              command: false,
+              control: true,
+              option: false,
+              shift: false,
+              function: false,
+            },
+          },
+        },
+      }),
+    });
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith({
@@ -163,7 +193,7 @@ describe("DictationSettings", () => {
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
   });
 
-  it("sets the bare Fn preset without keyboard capture", async () => {
+  it("records bare Fn from native shortcut capture", async () => {
     const user = userEvent.setup();
     mocks.dictationSettings.mockResolvedValue({
       settings: {
@@ -184,7 +214,27 @@ describe("DictationSettings", () => {
 
     render(<DictationSettings />);
 
-    await user.click(await screen.findByRole("button", { name: "Fn / Globe" }));
+    expect(screen.queryByText("Fn / Globe")).not.toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Change" }));
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "shortcut_captured",
+        payload: {
+          shortcut: {
+            code: "Fn",
+            label: "Fn",
+            modifiers: {
+              command: false,
+              control: false,
+              option: false,
+              shift: false,
+              function: true,
+            },
+          },
+        },
+      }),
+    });
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith({
