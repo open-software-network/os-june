@@ -1,6 +1,6 @@
 use crate::domain::types::{
-    AppError, AudioArtifactDto, FolderDto, ListNotesResponse, NoteDto, NoteListItemDto,
-    ProcessingStatus, RecordingSourceMode, TranscriptDto,
+    AppError, AudioArtifactDto, DictionaryEntryDto, FolderDto, ListNotesResponse, NoteDto,
+    NoteListItemDto, ProcessingStatus, RecordingSourceMode, TranscriptDto,
 };
 use chrono::{SecondsFormat, Utc};
 use sqlx::{Row, SqlitePool};
@@ -253,6 +253,104 @@ impl Repositories {
             .execute(&self.pool)
             .await?;
         self.get_note(note_id).await
+    }
+
+    pub async fn list_dictionary_entries(&self) -> Result<Vec<DictionaryEntryDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, phrase, pronunciation, description, created_at, updated_at
+             FROM dictionary_entries
+             WHERE deleted_at IS NULL
+             ORDER BY lower(phrase) ASC, created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(dictionary_entry_from_row).collect())
+    }
+
+    pub async fn create_dictionary_entry(
+        &self,
+        phrase: &str,
+        pronunciation: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<DictionaryEntryDto, sqlx::Error> {
+        let now = timestamp();
+        let entry = DictionaryEntryDto {
+            id: Uuid::new_v4().to_string(),
+            phrase: phrase.trim().to_string(),
+            pronunciation: clean_optional_text(pronunciation),
+            description: clean_optional_text(description),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        sqlx::query(
+            "INSERT INTO dictionary_entries (id, phrase, pronunciation, description, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&entry.id)
+        .bind(&entry.phrase)
+        .bind(&entry.pronunciation)
+        .bind(&entry.description)
+        .bind(&entry.created_at)
+        .bind(&entry.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(entry)
+    }
+
+    pub async fn update_dictionary_entry(
+        &self,
+        entry_id: &str,
+        phrase: &str,
+        pronunciation: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<DictionaryEntryDto, AppError> {
+        let now = timestamp();
+        let result = sqlx::query(
+            "UPDATE dictionary_entries
+             SET phrase = ?, pronunciation = ?, description = ?, updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(phrase.trim())
+        .bind(clean_optional_text(pronunciation))
+        .bind(clean_optional_text(description))
+        .bind(&now)
+        .bind(entry_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new(
+                "dictionary_entry_not_found",
+                "Dictionary entry was not found.",
+            ));
+        }
+        let row = sqlx::query(
+            "SELECT id, phrase, pronunciation, description, created_at, updated_at
+             FROM dictionary_entries
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(entry_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(dictionary_entry_from_row(row))
+    }
+
+    pub async fn delete_dictionary_entry(&self, entry_id: &str) -> Result<(), AppError> {
+        let now = timestamp();
+        let result = sqlx::query(
+            "UPDATE dictionary_entries SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(entry_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new(
+                "dictionary_entry_not_found",
+                "Dictionary entry was not found.",
+            ));
+        }
+        Ok(())
     }
 
     pub async fn update_note(
@@ -1500,6 +1598,29 @@ fn folder_from_row(row: sqlx::sqlite::SqliteRow) -> FolderDto {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn dictionary_entry_from_row(row: sqlx::sqlite::SqliteRow) -> DictionaryEntryDto {
+    DictionaryEntryDto {
+        id: row.get("id"),
+        phrase: row.get("phrase"),
+        pronunciation: row
+            .try_get::<Option<String>, _>("pronunciation")
+            .unwrap_or(None)
+            .and_then(|value| clean_optional_text(Some(value.as_str()))),
+        description: row
+            .try_get::<Option<String>, _>("description")
+            .unwrap_or(None)
+            .and_then(|value| clean_optional_text(Some(value.as_str()))),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn clean_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn preview_for(title: &str, content: &str) -> String {

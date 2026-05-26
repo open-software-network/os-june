@@ -1,3 +1,4 @@
+import { IconBooks } from "central-icons/IconBooks";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFolders } from "central-icons/IconFolders";
@@ -10,7 +11,7 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
-export type SidebarView = "notes" | "settings" | "folders";
+export type SidebarView = "notes" | "settings" | "folders" | "dictionary";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -165,6 +166,18 @@ export function Sidebar({
             <IconFolders size={16} />
           </span>
           <span className="sidebar-nav-label">Folders</span>
+        </button>
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "dictionary"}
+          aria-current={activeView === "dictionary" ? "page" : undefined}
+          onClick={() => onChangeView("dictionary")}
+        >
+          <span className="sidebar-nav-icon">
+            <IconBooks size={16} />
+          </span>
+          <span className="sidebar-nav-label">Dictionary</span>
         </button>
       </nav>
 

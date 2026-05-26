@@ -103,6 +103,30 @@ describe("Sidebar — Folders nav item", () => {
     expect(button.textContent?.replace(/\s/g, "")).toBe("Folders");
   });
 
+  it("activates the dictionary view when clicked", async () => {
+    const user = userEvent.setup();
+    const onChangeView = vi.fn();
+    render(
+      <Sidebar
+        folders={folders}
+        notes={notes}
+        selectedNoteId={undefined}
+        selectedFolderId={undefined}
+        activeView="notes"
+        onChangeView={onChangeView}
+        onCreateFolder={vi.fn()}
+        onCreateNote={vi.fn()}
+        onSelectAll={vi.fn()}
+        onSelectFolder={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Dictionary/ }));
+    expect(onChangeView).toHaveBeenCalledWith("dictionary");
+  });
+
   it("renders settings as a sidebar footer action", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();

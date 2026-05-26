@@ -19,13 +19,15 @@ use crate::{
         },
         types::{
             AppError, AssignNoteToFolderRequest, BootstrapResponse,
-            CheckRecordingSourceReadinessRequest, CreateFolderRequest, CreateNoteRequest,
-            DeleteFolderRequest, DeleteNoteRequest, FinishRecordingResponse, GetNoteRequest,
-            ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
-            OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource, RecordingSourceMode,
-            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SessionRequest, SourceReadinessDto,
-            StartRecordingRequest, UpdateNoteRequest,
+            CheckRecordingSourceReadinessRequest, CreateDictionaryEntryRequest,
+            CreateFolderRequest, CreateNoteRequest, DeleteDictionaryEntryRequest,
+            DeleteFolderRequest, DeleteNoteRequest, DictionaryEntryDto, FinishRecordingResponse,
+            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
+            NoteDto, OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource,
+            RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
+            RemoveNoteFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
+            SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -190,6 +192,67 @@ pub async fn remove_note_from_folder(
         .await?
         .remove_note_from_folder(&request.note_id, &request.folder_id)
         .await?)
+}
+
+#[tauri::command]
+pub async fn list_dictionary_entries(app: AppHandle) -> Result<Vec<DictionaryEntryDto>, AppError> {
+    Ok(repositories(&app).await?.list_dictionary_entries().await?)
+}
+
+#[tauri::command]
+pub async fn create_dictionary_entry(
+    app: AppHandle,
+    request: CreateDictionaryEntryRequest,
+) -> Result<DictionaryEntryDto, AppError> {
+    let phrase = request.phrase.trim();
+    if phrase.is_empty() {
+        return Err(AppError::new(
+            "dictionary_phrase_required",
+            "Dictionary word or phrase is required.",
+        ));
+    }
+    Ok(repositories(&app)
+        .await?
+        .create_dictionary_entry(
+            phrase,
+            request.pronunciation.as_deref(),
+            request.description.as_deref(),
+        )
+        .await?)
+}
+
+#[tauri::command]
+pub async fn update_dictionary_entry(
+    app: AppHandle,
+    request: UpdateDictionaryEntryRequest,
+) -> Result<DictionaryEntryDto, AppError> {
+    let phrase = request.phrase.trim();
+    if phrase.is_empty() {
+        return Err(AppError::new(
+            "dictionary_phrase_required",
+            "Dictionary word or phrase is required.",
+        ));
+    }
+    repositories(&app)
+        .await?
+        .update_dictionary_entry(
+            &request.entry_id,
+            phrase,
+            request.pronunciation.as_deref(),
+            request.description.as_deref(),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn delete_dictionary_entry(
+    app: AppHandle,
+    request: DeleteDictionaryEntryRequest,
+) -> Result<(), AppError> {
+    repositories(&app)
+        .await?
+        .delete_dictionary_entry(&request.entry_id)
+        .await
 }
 
 #[tauri::command]
@@ -782,7 +845,7 @@ fn recovery_source_path(info: &crate::db::repositories::SourceArtifactPath) -> O
     None
 }
 
-async fn repositories(app: &AppHandle) -> Result<Repositories, AppError> {
+pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppError> {
     let paths = app_paths(app)?;
     let options =
         SqliteConnectOptions::from_str(&format!("sqlite://{}", paths.database_path.display()))

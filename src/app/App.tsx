@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { DictionaryWorkspace } from "../components/dictionary/DictionaryWorkspace";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
@@ -418,6 +419,8 @@ export function App() {
                 onSourceModeChange={setSourceMode}
                 onOpenOnboarding={() => setShowOnboarding(true)}
               />
+            ) : activeView === "dictionary" ? (
+              <DictionaryWorkspace />
             ) : activeView === "folders" ? (
               <FoldersWorkspace
                 folders={state.folders}

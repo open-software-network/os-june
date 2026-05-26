@@ -1,7 +1,9 @@
 use os_notetaker_lib::domain::processing::{
-    build_transcription_context, coalesce_source_transcripts, labeled_transcript_from_sources,
-    valid_sources_for_processing, SourceTranscriptInput,
+    build_dictionary_context, build_transcription_context, coalesce_source_transcripts,
+    labeled_transcript_from_sources, merge_transcription_context, valid_sources_for_processing,
+    SourceTranscriptInput,
 };
+use os_notetaker_lib::domain::types::DictionaryEntryDto;
 
 #[test]
 fn labeled_transcript_keeps_microphone_and_system_sections() {
@@ -128,4 +130,34 @@ fn builds_transcription_context_from_previous_turns() {
     assert!(context.contains("System: No, al final"));
     assert!(context.contains("Microphone: Con Planeta Magic."));
     assert!(context.contains("Preserve the spoken language"));
+}
+
+#[test]
+fn builds_dictionary_context_from_custom_terms() {
+    let context = build_dictionary_context(&[DictionaryEntryDto {
+        id: "entry-1".to_string(),
+        phrase: "Junho Hong".to_string(),
+        pronunciation: Some("joon-ho hong".to_string()),
+        description: Some("User's full name".to_string()),
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        updated_at: "2026-05-26T00:00:00Z".to_string(),
+    }])
+    .expect("dictionary context should be built");
+
+    assert!(context.contains("Custom dictionary terms"));
+    assert!(context.contains("Junho Hong"));
+    assert!(context.contains("sounds like: joon-ho hong"));
+    assert!(context.contains("exact spelling and capitalization"));
+}
+
+#[test]
+fn merges_dictionary_and_previous_transcription_context() {
+    let merged = merge_transcription_context(
+        Some("Custom dictionary terms:\n- OSS"),
+        Some("Previous transcript context:\nMicrophone: OSS"),
+    )
+    .expect("merged context");
+
+    assert!(merged.contains("Custom dictionary terms"));
+    assert!(merged.contains("Previous transcript context"));
 }

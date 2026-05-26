@@ -18,6 +18,15 @@ export type FolderDto = {
   updatedAt: string;
 };
 
+export type DictionaryEntryDto = {
+  id: string;
+  phrase: string;
+  pronunciation?: string;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type NoteListItemDto = {
   id: string;
   title: string;
@@ -363,6 +372,37 @@ export async function assignNoteToFolder(noteId: string, folderId: string) {
 export async function removeNoteFromFolder(noteId: string, folderId: string) {
   return invoke<NoteDto>("remove_note_from_folder", {
     request: { noteId, folderId },
+  });
+}
+
+export async function listDictionaryEntries() {
+  return invoke<DictionaryEntryDto[]>("list_dictionary_entries");
+}
+
+export async function createDictionaryEntry(input: {
+  phrase: string;
+  pronunciation?: string;
+  description?: string;
+}) {
+  return invoke<DictionaryEntryDto>("create_dictionary_entry", {
+    request: input,
+  });
+}
+
+export async function updateDictionaryEntry(input: {
+  entryId: string;
+  phrase: string;
+  pronunciation?: string;
+  description?: string;
+}) {
+  return invoke<DictionaryEntryDto>("update_dictionary_entry", {
+    request: input,
+  });
+}
+
+export async function deleteDictionaryEntry(entryId: string) {
+  return invoke<void>("delete_dictionary_entry", {
+    request: { entryId },
   });
 }
 

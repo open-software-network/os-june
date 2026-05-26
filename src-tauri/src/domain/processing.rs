@@ -3,7 +3,7 @@ use crate::{
         coalesce_turns_for_transcription, detect_turns, write_turn_wav, DetectionSource,
     },
     db::repositories::Repositories,
-    domain::types::{AppError, NoteDto, ProcessingStatus, RecordingSourceMode},
+    domain::types::{AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode},
     providers::{
         generation::{generate_note_from_transcript, GenerationRequest},
         transcription::{
@@ -17,6 +17,7 @@ pub const PROMPT_VERSION: &str = "notes-mvp-v3";
 const TRANSCRIPT_COHERENCE_GAP_MS: i64 = 2_500;
 const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
+const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTranscriptInput {
@@ -121,6 +122,52 @@ pub fn build_transcription_context(previous: &[SourceTranscriptInput]) -> Option
     ))
 }
 
+pub fn build_dictionary_context(entries: &[DictionaryEntryDto]) -> Option<String> {
+    let lines = entries
+        .iter()
+        .filter(|entry| !entry.phrase.trim().is_empty())
+        .take(DICTIONARY_CONTEXT_MAX_ENTRIES)
+        .map(|entry| {
+            let mut line = format!("- {}", entry.phrase.trim());
+            if let Some(pronunciation) = entry.pronunciation.as_deref().map(str::trim) {
+                if !pronunciation.is_empty() {
+                    line.push_str(&format!(" (sounds like: {pronunciation})"));
+                }
+            }
+            if let Some(description) = entry.description.as_deref().map(str::trim) {
+                if !description.is_empty() {
+                    line.push_str(&format!(" — {description}"));
+                }
+            }
+            line
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Custom dictionary terms:\n{}\n\nWhen the audio sounds like one of these words or phrases, prefer this exact spelling and capitalization.",
+        lines.join("\n")
+    ))
+}
+
+pub fn merge_transcription_context(
+    dictionary_context: Option<&str>,
+    previous_context: Option<&str>,
+) -> Option<String> {
+    let parts = [dictionary_context, previous_context]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
     let edited = note.edited_content.as_deref()?.trim();
     if edited.is_empty() {
@@ -167,11 +214,13 @@ pub async fn process_saved_audio(
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
+    let dictionary_entries = repos.list_dictionary_entries().await?;
+    let dictionary_context = build_dictionary_context(&dictionary_entries);
     let transcript = match transcribe_saved_audio(TranscriptionRequest {
         provider: transcription_provider.clone(),
         audio_path,
         title: title.clone(),
-        context: None,
+        context: dictionary_context,
     })
     .await
     {
@@ -257,6 +306,8 @@ pub async fn process_saved_source_audio(
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
+    let dictionary_entries = repos.list_dictionary_entries().await?;
+    let dictionary_context = build_dictionary_context(&dictionary_entries);
     let mut first_transcript_id = None;
     let turns = detect_turns(
         &sources
@@ -317,6 +368,7 @@ pub async fn process_saved_source_audio(
         transcription_jobs,
         transcription_provider.clone(),
         title.clone(),
+        dictionary_context,
         default_turn_transcriber(),
     )
     .await?;
@@ -487,6 +539,7 @@ async fn transcribe_turn_jobs_by_source_lane(
     jobs: Vec<TurnTranscriptionJob>,
     provider: String,
     title: String,
+    dictionary_context: Option<String>,
     transcriber: TurnTranscriber,
 ) -> Result<Vec<TranscriptCandidate>, AppError> {
     let mut lanes: Vec<(String, Vec<TurnTranscriptionJob>)> = Vec::new();
@@ -505,9 +558,11 @@ async fn transcribe_turn_jobs_by_source_lane(
     for (_, lane_jobs) in lanes {
         let provider = provider.clone();
         let title = title.clone();
+        let dictionary_context = dictionary_context.clone();
         let transcriber = Arc::clone(&transcriber);
         join_set.spawn(async move {
-            transcribe_source_lane(lane_jobs, provider, title, transcriber).await
+            transcribe_source_lane(lane_jobs, provider, title, dictionary_context, transcriber)
+                .await
         });
     }
 
@@ -536,6 +591,7 @@ async fn transcribe_source_lane(
     jobs: Vec<TurnTranscriptionJob>,
     provider: String,
     title: String,
+    dictionary_context: Option<String>,
     transcriber: TurnTranscriber,
 ) -> Result<Vec<TranscriptCandidate>, AppError> {
     let mut transcript_inputs = Vec::new();
@@ -545,7 +601,10 @@ async fn transcribe_source_lane(
             provider: provider.clone(),
             audio_path: job.audio_path,
             title: title.clone(),
-            context: build_transcription_context(&transcript_inputs),
+            context: merge_transcription_context(
+                dictionary_context.as_deref(),
+                build_transcription_context(&transcript_inputs).as_deref(),
+            ),
         })
         .await
         {
@@ -713,6 +772,7 @@ mod tests {
             ],
             "test-provider".to_string(),
             "Meeting".to_string(),
+            None,
             transcriber,
         )
         .await
