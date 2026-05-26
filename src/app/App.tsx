@@ -70,6 +70,8 @@ export function App() {
         if (firstNoteId) {
           const note = await getNote(firstNoteId);
           dispatch({ type: "noteLoaded", note });
+        } else {
+          setActiveView("dictation");
         }
       })
       .catch((err: unknown) => setError(messageFromError(err)));
@@ -228,6 +230,9 @@ export function App() {
       if (nextNoteId) {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
+      } else {
+        setActiveView("dictation");
+        setOriginFolderId(undefined);
       }
     } catch (err) {
       setError(messageFromError(err));
