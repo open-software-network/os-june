@@ -28,8 +28,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const baseSettings: DictationSettingsDto = {
   shortcut: {
-    code: "Space",
-    label: "Fn+Space",
+    code: "Fn",
+    label: "Fn",
     modifiers: {
       command: false,
       control: false,
@@ -48,7 +48,7 @@ describe("DictationSettings", () => {
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.dictationHotkeyStatus.mockResolvedValue({
       type: "hotkey_trigger_ready",
-      payload: { shortcut: "Fn+Space" },
+      payload: { shortcut: "Fn" },
     });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockImplementation(async (shortcut) => ({
@@ -151,5 +151,59 @@ describe("DictationSettings", () => {
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
+  });
+
+  it("sets the bare Fn preset without keyboard capture", async () => {
+    const user = userEvent.setup();
+    mocks.dictationSettings.mockResolvedValue({
+      settings: {
+        ...baseSettings,
+        shortcut: {
+          code: "Space",
+          label: "Fn+Space",
+          modifiers: {
+            command: false,
+            control: false,
+            option: false,
+            shift: false,
+            function: true,
+          },
+        },
+      },
+    });
+
+    render(<DictationSettings />);
+
+    await user.click(await screen.findByRole("button", { name: "Fn / Globe" }));
+
+    await waitFor(() =>
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith({
+        code: "Fn",
+        label: "Fn",
+        modifiers: {
+          command: false,
+          control: false,
+          option: false,
+          shift: false,
+          function: true,
+        },
+      }),
+    );
+  });
+
+  it("shows native Fn monitor errors", async () => {
+    render(<DictationSettings />);
+
+    await waitFor(() => expect(mocks.listen).toHaveBeenCalled());
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "fn_monitor_unavailable",
+        payload: { message: "Could not monitor Fn/Globe key events." },
+      }),
+    });
+
+    expect(
+      await screen.findByText("Could not monitor Fn/Globe key events."),
+    ).toBeInTheDocument();
   });
 });

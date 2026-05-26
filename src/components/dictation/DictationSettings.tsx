@@ -16,19 +16,42 @@ import type {
   DictationShortcutModifiers,
   DictationShortcutSetting,
 } from "../../lib/tauri";
+import { SegmentedControl } from "../ui/SegmentedControl";
+
+const EMPTY_MODIFIERS: DictationShortcutModifiers = {
+  command: false,
+  control: false,
+  option: false,
+  shift: false,
+  function: false,
+};
+
+const BARE_FN_SHORTCUT: Pick<
+  DictationShortcutSetting,
+  "code" | "modifiers" | "label"
+> = {
+  code: "Fn",
+  label: "Fn",
+  modifiers: {
+    ...EMPTY_MODIFIERS,
+    function: true,
+  },
+};
+
+const FN_SPACE_SHORTCUT: Pick<
+  DictationShortcutSetting,
+  "code" | "modifiers" | "label"
+> = {
+  code: "Space",
+  label: "Fn+Space",
+  modifiers: {
+    ...EMPTY_MODIFIERS,
+    function: true,
+  },
+};
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
-  shortcut: {
-    code: "Space",
-    label: "Fn+Space",
-    modifiers: {
-      command: false,
-      control: false,
-      option: false,
-      shift: false,
-      function: true,
-    },
-  },
+  shortcut: BARE_FN_SHORTCUT,
   microphone: {},
 };
 
@@ -82,6 +105,14 @@ type ShortcutCaptureResult =
       error?: never;
     }
   | { shortcut?: never; error: string };
+
+type ShortcutPreset = "fn" | "fn_space" | "custom";
+
+const SHORTCUT_PRESETS = [
+  { value: "fn", label: "Fn / Globe" },
+  { value: "fn_space", label: "Fn+Space" },
+  { value: "custom", label: "Custom" },
+] as const;
 
 export function DictationSettings() {
   const [settings, setSettings] =
@@ -184,6 +215,12 @@ export function DictationSettings() {
     }
     if (helperEvent.type === "error") {
       setStatus(helperEvent.payload?.message ?? "Dictation helper failed.");
+      return;
+    }
+    if (helperEvent.type === "fn_monitor_unavailable") {
+      setStatus(
+        helperEvent.payload?.message ?? "Fn/Globe shortcut is unavailable.",
+      );
     }
   }
 
@@ -214,6 +251,24 @@ export function DictationSettings() {
     }
   }
 
+  function selectShortcutPreset(preset: ShortcutPreset) {
+    if (preset === "fn") {
+      setCapturing(false);
+      setShortcutError(undefined);
+      void saveShortcut(BARE_FN_SHORTCUT);
+      return;
+    }
+    if (preset === "fn_space") {
+      setCapturing(false);
+      setShortcutError(undefined);
+      void saveShortcut(FN_SPACE_SHORTCUT);
+      return;
+    }
+
+    setShortcutError(undefined);
+    setCapturing(true);
+  }
+
   const microphoneName = settings.microphone.name ?? "Auto-detect";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
@@ -225,6 +280,7 @@ export function DictationSettings() {
       (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
     ),
   );
+  const activeShortcutPreset = shortcutPreset(settings.shortcut);
 
   return (
     <div className="settings-page">
@@ -247,8 +303,7 @@ export function DictationSettings() {
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Dictate anywhere</h3>
                 <p className="settings-row-description">
-                  Press this combination from anywhere on your Mac to start
-                  dictating.
+                  Shortcut used from anywhere on your Mac.
                 </p>
                 {shortcutError ? (
                   <p className="settings-row-error">{shortcutError}</p>
@@ -269,6 +324,19 @@ export function DictationSettings() {
                 >
                   {capturing ? "Cancel" : "Change"}
                 </button>
+              </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Preset</h3>
+              </div>
+              <div className="settings-row-control">
+                <SegmentedControl
+                  value={activeShortcutPreset}
+                  options={SHORTCUT_PRESETS}
+                  onValueChange={selectShortcutPreset}
+                  aria-label="Dictation shortcut preset"
+                />
               </div>
             </div>
           </div>
@@ -417,6 +485,34 @@ function keyLabel(code: string, key: string) {
   if (code.startsWith("Key")) return code.slice(3);
   if (code.startsWith("Digit")) return code.slice(5);
   return key.length === 1 ? key.toUpperCase() : code;
+}
+
+function shortcutPreset(shortcut: DictationShortcutSetting): ShortcutPreset {
+  if (isBareFnShortcut(shortcut)) return "fn";
+  if (isFnSpaceShortcut(shortcut)) return "fn_space";
+  return "custom";
+}
+
+function isBareFnShortcut(shortcut: DictationShortcutSetting) {
+  return (
+    shortcut.code === "Fn" &&
+    shortcut.modifiers.function &&
+    !shortcut.modifiers.command &&
+    !shortcut.modifiers.control &&
+    !shortcut.modifiers.option &&
+    !shortcut.modifiers.shift
+  );
+}
+
+function isFnSpaceShortcut(shortcut: DictationShortcutSetting) {
+  return (
+    shortcut.code === "Space" &&
+    shortcut.modifiers.function &&
+    !shortcut.modifiers.command &&
+    !shortcut.modifiers.control &&
+    !shortcut.modifiers.option &&
+    !shortcut.modifiers.shift
+  );
 }
 
 function parseDictationEvent(
