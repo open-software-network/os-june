@@ -1,0 +1,5 @@
+{
+  "build": {
+    "runner": "../scripts/cargo-os-scribe-runner.sh"
+  }
+}

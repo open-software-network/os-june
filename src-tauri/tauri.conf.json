@@ -61,6 +61,7 @@
       "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app"
     },
     "macOS": {
+      "bundleName": "OS Scribe",
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],
