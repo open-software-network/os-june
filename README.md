@@ -52,14 +52,14 @@ Dictation is paste-only: it does not create notes or store transcript records. C
 
 Dictation requires real transcription. If `OPENAI_API_KEY` is not visible to the Tauri process, dictation reports a configuration error instead of pasting the local mock transcript used by offline note-recording tests. During development, put the key in `.env` or export it in the shell before running `pnpm tauri:dev`.
 
-The default shortcut is bare `Fn`/Globe and the default activation mode is `Push-to-talk`. If macOS opens emoji, input-source, or system dictation UI when pressing Fn, set System Settings > Keyboard > "Press Fn key to" or "Press Globe key to" to `Do Nothing`. The Dictation settings page can switch back to `Fn+Space` or save another shortcut with Cmd, Ctrl, Opt, or Shift plus one supported non-modifier key. Push-to-talk for custom shortcuts depends on macOS exposing both key-down and key-up events for that shortcut.
+The default shortcut is bare `Fn`/Globe and the default activation mode is `Push-to-talk`. If macOS opens emoji, input-source, or system dictation UI when pressing Fn, set System Settings > Keyboard > "Press Fn key to" or "Press Globe key to" to `Do Nothing`. The Dictation settings page records the shortcut you press, including bare `Fn`/Globe, `Fn+Space`, or another shortcut with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Push-to-talk for custom shortcuts depends on macOS exposing both key-down and key-up events for that shortcut.
 
 Manual validation:
 
 1. Launch with `OPENAI_API_KEY` configured.
 2. Grant microphone and Accessibility permissions.
 3. Focus a text field in TextEdit, VS Code, or a browser.
-4. In Dictation settings, choose `Fn / Globe` and `Push-to-talk`.
+4. In Dictation settings, press Change, record `Fn`/Globe, and choose `Push-to-talk`.
 5. Hold Fn/Globe to start dictation.
 6. Speak a short sentence.
 7. Release Fn/Globe to stop, transcribe, and paste.
