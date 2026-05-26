@@ -31,7 +31,10 @@ import {
   startRecording,
   updateNote,
 } from "../lib/tauri";
-import { playRecordingSound } from "../lib/recording-sounds";
+import {
+  playRecordingSound,
+  preloadRecordingSounds,
+} from "../lib/recording-sounds";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
 import type {
   RecordingSourceMode,
@@ -64,6 +67,10 @@ export function App() {
     () => !onboardingComplete() || onboardingRouteRequested(),
   );
   const selectedNote = state.selectedNote;
+
+  useEffect(() => {
+    preloadRecordingSounds();
+  }, []);
 
   useEffect(() => {
     function showOnboardingFromRoute() {
@@ -342,6 +349,26 @@ export function App() {
     }
   }
 
+  async function handlePauseRecording(sessionId: string) {
+    try {
+      const status = await pauseRecording(sessionId);
+      dispatch({ type: "recordingStatusChanged", status });
+      playRecordingSound("pause");
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleResumeRecording(sessionId: string) {
+    playRecordingSound("start");
+    try {
+      const status = await resumeRecording(sessionId);
+      dispatch({ type: "recordingStatusChanged", status });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   function handleOnboardingComplete() {
     markOnboardingComplete();
     setShowOnboarding(false);
@@ -510,14 +537,10 @@ export function App() {
                   }
                   onStartRecording={() => void handleStartRecording()}
                   onPauseRecording={(sessionId) =>
-                    void pauseRecording(sessionId).then((status) =>
-                      dispatch({ type: "recordingStatusChanged", status }),
-                    )
+                    void handlePauseRecording(sessionId)
                   }
                   onResumeRecording={(sessionId) =>
-                    void resumeRecording(sessionId).then((status) =>
-                      dispatch({ type: "recordingStatusChanged", status }),
-                    )
+                    void handleResumeRecording(sessionId)
                   }
                   onFinishRecording={(sessionId) =>
                     void handleFinishRecording(sessionId)
