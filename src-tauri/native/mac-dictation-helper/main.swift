@@ -68,6 +68,36 @@ func helperBundleIdentifier() -> String {
     Bundle.main.bundleIdentifier ?? "unknown"
 }
 
+enum RecordingCueSound: String {
+    case start = "record-start"
+    case stop = "record-end"
+}
+
+enum RecordingCuePlayer {
+    private static var sounds: [RecordingCueSound: NSSound] = [:]
+
+    static func play(_ cue: RecordingCueSound) {
+        let sound = sounds[cue] ?? load(cue)
+        guard let sound else {
+            return
+        }
+        sound.stop()
+        sound.currentTime = 0
+        sound.play()
+    }
+
+    private static func load(_ cue: RecordingCueSound) -> NSSound? {
+        guard let url = Bundle.main.url(forResource: cue.rawValue, withExtension: "mp3") else {
+            return nil
+        }
+        guard let sound = NSSound(contentsOf: url, byReference: false) else {
+            return nil
+        }
+        sounds[cue] = sound
+        return sound
+    }
+}
+
 func microphoneDevices() -> [[String: String]] {
     audioInputDevices().map { device in
         [
@@ -967,6 +997,7 @@ final class DictationController {
         isListening = false
         isFinalizing = true
         stopMetering()
+        RecordingCuePlayer.play(.stop)
         emit("finalizing_transcript")
 
         if let selectedDeviceRecorder {
@@ -1040,8 +1071,9 @@ final class DictationController {
             recordingURL = nextRecordingURL
             isListening = true
             startMetering()
+            RecordingCuePlayer.play(.start)
             emit("listening_started", [
-                "recognitionMode": "openai_recording",
+                "recognitionMode": "venice_recording",
                 "microphone": preferredMicrophoneName ?? "Auto-detect",
             ])
         } catch {
@@ -1070,8 +1102,9 @@ final class DictationController {
             recordingURL = url
             isListening = true
             recorder.start()
+            RecordingCuePlayer.play(.start)
             emit("listening_started", [
-                "recognitionMode": "openai_recording",
+                "recognitionMode": "venice_recording",
                 "microphone": device.localizedName,
             ])
         } catch {

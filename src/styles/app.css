@@ -1968,6 +1968,14 @@ input:focus-visible,
   color: var(--destructive);
 }
 
+.settings-row-inline-error {
+  display: block;
+  margin-top: 2px;
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
 /* Group label sits outside the card so multiple cards can sit under one
  * section, like macOS System Settings. */
 .settings-group {
@@ -1976,9 +1984,16 @@ input:focus-visible,
   margin-bottom: var(--sp-6);
 }
 
+.settings-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-1);
+}
+
 .settings-group-heading {
   margin: 0;
-  padding: 0 var(--sp-1);
   color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
   font-size: var(--fs-md);
   font-weight: 500;
@@ -2042,6 +2057,129 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
+}
+
+.settings-permission-control {
+  min-width: 225px;
+  justify-content: flex-end;
+}
+
+.settings-model-control {
+  width: min(420px, 44vw);
+  justify-content: flex-end;
+}
+
+.settings-group-action {
+  height: 26px;
+  padding: 0 var(--sp-2);
+  color: var(--muted-foreground);
+}
+
+.permission-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 24px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.permission-pill[data-state="allowed"] {
+  background: color-mix(in oklch, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.permission-pill[data-state="blocked"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+
+/* First-run permissions onboarding ---------------------------------- */
+
+.onboarding-dialog .dialog-description {
+  max-width: 520px;
+}
+
+.onboarding-permissions {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+.onboarding-permission-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.onboarding-permission-row:first-child {
+  padding-top: 0;
+}
+
+.onboarding-permission-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.onboarding-permission-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-permission-copy h3,
+.onboarding-permission-copy p {
+  margin: 0;
+}
+
+.onboarding-permission-copy h3 {
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.onboarding-permission-copy p {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.onboarding-permission-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  min-width: 225px;
+}
+
+.onboarding-status {
+  margin: var(--sp-4) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .onboarding-permission-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: var(--sp-3);
+  }
+
+  .onboarding-permission-control {
+    min-width: 0;
+    justify-content: space-between;
+  }
 }
 
 /* Keycap frame — wraps one or more keycaps in a 28px-tall container with a
@@ -2224,6 +2362,242 @@ input:focus-visible,
   place-items: center;
   width: 16px;
   color: var(--foreground);
+}
+
+.model-summary-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 300px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.model-summary-button:hover {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+  background: color-mix(in oklch, var(--muted) 28%, transparent);
+}
+
+.model-summary-button > svg {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  color: var(--muted-foreground);
+}
+
+.model-summary-main,
+.model-summary-meta {
+  min-width: 0;
+}
+
+.model-summary-main {
+  display: grid;
+  gap: 1px;
+}
+
+.model-summary-name {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-summary-id {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-summary-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  overflow: hidden;
+}
+
+.model-summary-price {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 20px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.model-badge[data-kind="private"] {
+  background: color-mix(in oklch, oklch(0.58 0.08 285) 18%, transparent);
+  color: oklch(0.42 0.12 285);
+}
+
+.model-badge[data-kind="anon"],
+.model-badge[data-kind="privacy"] {
+  background: color-mix(in oklch, oklch(0.58 0.08 220) 16%, transparent);
+  color: oklch(0.42 0.12 220);
+}
+
+.model-badge[data-kind="uncensored"] {
+  background: color-mix(in oklch, oklch(0.62 0.14 45) 16%, transparent);
+  color: oklch(0.46 0.14 45);
+}
+
+.model-picker-dialog {
+  gap: var(--sp-4);
+}
+
+.model-picker-toolbar {
+  display: flex;
+  align-items: center;
+}
+
+.model-picker-search {
+  width: 100%;
+  height: var(--control-xl);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.model-picker-search:focus,
+.model-picker-search:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.model-picker-list {
+  display: grid;
+  gap: var(--sp-3);
+  max-height: min(520px, calc(100vh - 260px));
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-1);
+  margin: calc(-1 * var(--sp-1));
+}
+
+.model-picker-option {
+  display: grid;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.model-picker-option:hover {
+  border-color: color-mix(in oklch, var(--foreground) 22%, transparent);
+  background: color-mix(in oklch, var(--muted) 30%, transparent);
+}
+
+.model-picker-option[data-selected="true"] {
+  border-color: color-mix(in oklch, var(--foreground) 28%, transparent);
+  background: color-mix(in oklch, var(--muted) 38%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+
+.model-picker-option-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: start;
+  gap: var(--sp-3);
+}
+
+.model-picker-title-group {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.model-picker-name {
+  overflow: hidden;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-id {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-selected {
+  display: inline-grid;
+  place-items: center;
+  color: var(--foreground);
+}
+
+.model-picker-description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.model-picker-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
 
 /* Primary solid button (Granola / Claude style) -------------------- */

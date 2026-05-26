@@ -6,22 +6,20 @@ import type { DictationSettingsDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
-  dictationHotkeyStatus: vi.fn(),
   dictationHelperCommand: vi.fn(),
+  dictationHotkeyStatus: vi.fn(),
   setDictationShortcut: vi.fn(),
   setDictationActivationMode: vi.fn(),
-  setDictationMicrophone: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
 
 vi.mock("../lib/tauri", () => ({
   dictationSettings: mocks.dictationSettings,
-  dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationHelperCommand: mocks.dictationHelperCommand,
+  dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationActivationMode: mocks.setDictationActivationMode,
-  setDictationMicrophone: mocks.setDictationMicrophone,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -53,7 +51,6 @@ describe("DictationSettings", () => {
       type: "hotkey_trigger_ready",
       payload: { shortcut: "Fn" },
     });
-    mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockImplementation(async (shortcut) => ({
       ...baseSettings,
       shortcut,
@@ -64,17 +61,14 @@ describe("DictationSettings", () => {
         activationMode,
       }),
     );
-    mocks.setDictationMicrophone.mockImplementation(async (id, name) => ({
-      ...baseSettings,
-      microphone: { id, name },
-    }));
+    mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listen.mockImplementation((_event, handler) => {
       mocks.eventHandler = handler;
       return Promise.resolve(vi.fn());
     });
   });
 
-  it("renders native shortcut and selected microphone settings", async () => {
+  it("renders native shortcut settings", async () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         shortcut: {
@@ -89,7 +83,7 @@ describe("DictationSettings", () => {
           },
         },
         activationMode: "push_to_talk",
-        microphone: { id: "airpods", name: "AirPods Pro" },
+        microphone: {},
       },
     });
 
@@ -98,7 +92,6 @@ describe("DictationSettings", () => {
     expect(
       await screen.findByLabelText("Shortcut Ctrl+Opt+Space"),
     ).toBeInTheDocument();
-    expect(screen.getByText("AirPods Pro")).toBeInTheDocument();
     expect(screen.queryByText("Preset")).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText("Dictation shortcut preset"),
@@ -133,7 +126,7 @@ describe("DictationSettings", () => {
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
   });
 
-  it("updates shortcut and microphone through native commands", async () => {
+  it("updates shortcut through native command", async () => {
     const user = userEvent.setup();
     render(<DictationSettings />);
 
@@ -176,21 +169,6 @@ describe("DictationSettings", () => {
         },
       }),
     );
-
-    await waitFor(() => expect(mocks.listen).toHaveBeenCalled());
-    mocks.eventHandler?.({
-      payload: JSON.stringify({
-        type: "microphone_devices",
-        payload: { devices: [{ id: "usb", name: "USB Mic" }] },
-      }),
-    });
-
-    await user.click(
-      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
-    );
-    await user.click(await screen.findByRole("option", { name: "USB Mic" }));
-
-    expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
   });
 
   it("records bare Fn from native shortcut capture", async () => {

@@ -22,10 +22,10 @@ use crate::{
             CheckRecordingSourceReadinessRequest, CreateFolderRequest, CreateNoteRequest,
             DeleteFolderRequest, DeleteNoteRequest, FinishRecordingResponse, GetNoteRequest,
             ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SessionRequest, SourceReadinessDto, StartRecordingRequest,
-            UpdateNoteRequest,
+            OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource, RecordingSourceMode,
+            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SessionRequest, SourceReadinessDto,
+            StartRecordingRequest, UpdateNoteRequest,
         },
     },
 };
@@ -53,7 +53,7 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
         folders,
         notes,
         active_recoveries,
-        provider_configured: crate::providers::openai_provider_configured(),
+        provider_configured: crate::providers::provider_configured(),
     })
 }
 
@@ -206,6 +206,45 @@ pub async fn check_recording_source_readiness(
     request: CheckRecordingSourceReadinessRequest,
 ) -> Result<RecordingSourceReadinessDto, AppError> {
     Ok(recording_source_readiness(request.source_mode))
+}
+
+#[tauri::command]
+pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        let url = match request.pane.as_str() {
+            "microphone" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            "accessibility" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            }
+            "systemAudio" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            _ => "x-apple.systempreferences:com.apple.preference.security",
+        };
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg(url)
+            .status()
+            .map_err(|error| AppError::new("settings_open_failed", error.to_string()))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "settings_open_failed",
+                format!("System Settings returned status {status}."),
+            ))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = request;
+        Err(AppError::new(
+            "settings_open_unsupported",
+            "Privacy settings shortcuts are only supported on macOS.",
+        ))
+    }
 }
 
 #[tauri::command]
@@ -399,7 +438,7 @@ pub async fn finish_recording(
             Some(validation.peak_amplitude),
             Some(validation.rms_amplitude),
             Some(serde_json::to_string(&validation).unwrap_or_default()),
-            if validation.non_silent_signal && validation.duration_within_tolerance {
+            if validation.duration_within_tolerance {
                 None
             } else {
                 Some(validation.warnings.join("; "))
@@ -673,7 +712,7 @@ pub async fn recover_recording(
             Some(validation.peak_amplitude),
             Some(validation.rms_amplitude),
             Some(serde_json::to_string(&validation).unwrap_or_default()),
-            if validation.non_silent_signal && validation.duration_within_tolerance {
+            if validation.duration_within_tolerance {
                 None
             } else {
                 Some(validation.warnings.join("; "))
@@ -682,8 +721,7 @@ pub async fn recover_recording(
         .await?;
     if !(validation.non_zero_size
         && validation.readable_audio
-        && validation.duration_within_tolerance
-        && validation.non_silent_signal)
+        && validation.duration_within_tolerance)
     {
         repos
             .set_note_status(

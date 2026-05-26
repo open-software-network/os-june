@@ -4,13 +4,14 @@ import { IconFolders } from "central-icons/IconFolders";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconSettingsGear1 } from "central-icons/IconSettingsGear1";
 import { IconSidebarHiddenLeftWide } from "central-icons/IconSidebarHiddenLeftWide";
 import { IconSidebarSimpleLeftWide } from "central-icons/IconSidebarSimpleLeftWide";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
-export type SidebarView = "notes" | "dictation" | "folders";
+export type SidebarView = "notes" | "dictation" | "settings" | "folders";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -154,6 +155,18 @@ export function Sidebar({
       )}
 
       <nav className="sidebar-nav" aria-label="Primary">
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "settings"}
+          aria-current={activeView === "settings" ? "page" : undefined}
+          onClick={() => onChangeView("settings")}
+        >
+          <span className="sidebar-nav-icon">
+            <IconSettingsGear1 size={16} />
+          </span>
+          <span className="sidebar-nav-label">Settings</span>
+        </button>
         <button
           type="button"
           className="sidebar-nav-item"

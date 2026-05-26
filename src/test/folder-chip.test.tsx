@@ -45,9 +45,7 @@ function baseProps(folders: FolderDto[]) {
 describe("Folder chip — move-to-folder popover", () => {
   it("shows 'Folder' label when nothing is assigned", () => {
     render(<NoteEditor {...baseProps([])} />);
-    expect(
-      screen.getByRole("button", { name: /^Folder/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Folder/ })).toBeInTheDocument();
   });
 
   it("filters folders by the search query", async () => {

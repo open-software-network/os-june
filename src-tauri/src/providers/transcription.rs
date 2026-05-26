@@ -3,9 +3,7 @@ use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_TRANSCRIPTION_PROVIDER: &str = "mock";
-const DEFAULT_OPENAI_TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
-const OPENAI_TRANSCRIPTIONS_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
+pub const DEFAULT_TRANSCRIPTION_PROVIDER: &str = crate::providers::VENICE_PROVIDER;
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionRequest {
@@ -34,18 +32,10 @@ pub async fn transcribe_saved_audio(
     }
 
     match request.provider.as_str() {
-        "mock" | "" => Ok(TranscriptionProviderResult {
-            text: format!(
-                "{}: This is a local mock transcript generated from saved audio.",
-                request.title.trim()
-            ),
-            language: Some("en".to_string()),
-            provider: DEFAULT_TRANSCRIPTION_PROVIDER.to_string(),
-        }),
-        "openai" => transcribe_with_openai(&request).await,
+        crate::providers::VENICE_PROVIDER => transcribe_with_venice(&request).await,
         _ => Err(AppError::new(
             "provider_not_configured",
-            "Unsupported transcription provider. Use OS_NOTETAKER_PROVIDER=mock or configure OPENAI_API_KEY.",
+            "Unsupported transcription provider. Venice is the only supported provider; set VENICE_API_KEY.",
         )),
     }
 }
@@ -63,13 +53,13 @@ pub fn normalize_transcription_language(value: &str) -> Option<String> {
     }
 }
 
-async fn transcribe_with_openai(
+async fn transcribe_with_venice(
     request: &TranscriptionRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
-    let api_key = crate::providers::openai_api_key().ok_or_else(|| {
+    let api_key = crate::providers::venice_api_key().ok_or_else(|| {
         AppError::new(
             "provider_not_configured",
-            "OPENAI_API_KEY is required for real transcription. Unset OS_NOTETAKER_PROVIDER or set it to mock for offline verification.",
+            "VENICE_API_KEY is required for Venice transcription.",
         )
     })?;
     let audio_bytes = std::fs::read(&request.audio_path)
@@ -80,15 +70,11 @@ async fn transcribe_with_openai(
         .and_then(|value| value.to_str())
         .unwrap_or("recording.wav")
         .to_string();
-    let model = std::env::var("OS_NOTETAKER_TRANSCRIPTION_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_OPENAI_TRANSCRIPTION_MODEL.to_string());
+    let model = crate::providers::venice_transcription_model();
     let audio_part = Part::bytes(audio_bytes)
         .file_name(filename)
         .mime_str(transcription_audio_mime(&request.audio_path))
         .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
-    let supports_prompt = !model.contains("diarize");
     let mut form = Form::new()
         .text("model", model)
         .text("response_format", "json")
@@ -96,17 +82,11 @@ async fn transcribe_with_openai(
     if let Some(language) = transcription_language_override() {
         form = form.text("language", language);
     }
-    if supports_prompt {
-        if let Some(context) = request
-            .context
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            form = form.text("prompt", context.to_string());
-        }
-    }
     let response = reqwest::Client::new()
-        .post(OPENAI_TRANSCRIPTIONS_URL)
+        .post(format!(
+            "{}/audio/transcriptions",
+            crate::providers::venice_api_base_url()
+        ))
         .bearer_auth(api_key)
         .multipart(form)
         .send()
@@ -120,7 +100,7 @@ async fn transcribe_with_openai(
     if !status.is_success() {
         return Err(AppError::new(
             "provider_request_failed",
-            format!("OpenAI transcription failed with status {status}: {body}"),
+            format!("Venice transcription failed with status {status}: {body}"),
         ));
     }
     let parsed: OpenAiTranscriptionResponse = serde_json::from_str(&body)
@@ -129,13 +109,13 @@ async fn transcribe_with_openai(
     if text.is_empty() {
         return Err(AppError::new(
             "transcription_empty",
-            "OpenAI returned an empty transcript.",
+            "Venice returned an empty transcript.",
         ));
     }
     Ok(TranscriptionProviderResult {
         text,
         language: None,
-        provider: crate::providers::OPENAI_PROVIDER.to_string(),
+        provider: crate::providers::VENICE_PROVIDER.to_string(),
     })
 }
 

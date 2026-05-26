@@ -193,9 +193,7 @@ describe("FoldersWorkspace — detail view", () => {
     const props = baseProps();
     render(<FoldersWorkspace {...props} selectedFolderId="folder-1" />);
 
-    await user.click(
-      screen.getByRole("button", { name: /^Folders$/ }),
-    );
+    await user.click(screen.getByRole("button", { name: /^Folders$/ }));
     expect(props.onSelectFolder).toHaveBeenCalledWith(undefined);
   });
 

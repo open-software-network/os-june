@@ -9,7 +9,6 @@ pub const MIN_RECORDING_MS: i64 = 1_000;
 pub struct AudioValidationConfig {
     pub min_duration_ms: i64,
     pub duration_tolerance_ms: i64,
-    pub silence_rms_threshold: f32,
 }
 
 impl Default for AudioValidationConfig {
@@ -17,7 +16,6 @@ impl Default for AudioValidationConfig {
         Self {
             min_duration_ms: MIN_RECORDING_MS,
             duration_tolerance_ms: 750,
-            silence_rms_threshold: 0.01,
         }
     }
 }
@@ -98,31 +96,20 @@ pub fn validate_audio_artifact(
     if samples > 0 {
         result.rms_amplitude = (sum_square / samples as f64).sqrt() as f32;
     }
-    result.non_silent_signal = result.rms_amplitude >= config.silence_rms_threshold
-        && result.peak_amplitude >= config.silence_rms_threshold * 3.0;
-    if !result.non_silent_signal {
-        result.warnings.push("audio appears silent".to_string());
-    }
+    result.non_silent_signal = samples > 0;
 
     Ok(result)
 }
 
-pub fn validation_config_for_source(source: RecordingSource) -> AudioValidationConfig {
-    match source {
-        RecordingSource::Microphone => AudioValidationConfig::default(),
-        RecordingSource::System => AudioValidationConfig {
-            silence_rms_threshold: 0.003,
-            ..AudioValidationConfig::default()
-        },
-    }
+pub fn validation_config_for_source(_source: RecordingSource) -> AudioValidationConfig {
+    AudioValidationConfig::default()
 }
 
 pub fn source_audio_passes_validation(
     source: RecordingSource,
     validation: &AudioValidationDto,
 ) -> bool {
-    let has_usable_audio =
-        validation.non_zero_size && validation.readable_audio && validation.non_silent_signal;
+    let has_usable_audio = validation.non_zero_size && validation.readable_audio;
     match source {
         RecordingSource::Microphone => has_usable_audio && validation.duration_within_tolerance,
         RecordingSource::System => has_usable_audio,

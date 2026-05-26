@@ -241,6 +241,12 @@ pub struct SourceReadinessDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenPrivacySettingsRequest {
+    pub pane: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptDto {
     pub id: String,
     pub text: String,

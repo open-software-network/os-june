@@ -218,11 +218,7 @@ export function NoteEditor({
               emptyPlaceholder="Hit record to capture a conversation, or just start typing your thoughts here"
             />
             {processingLock ? (
-              <p
-                className="note-generating"
-                role="status"
-                aria-live="polite"
-              >
+              <p className="note-generating" role="status" aria-live="polite">
                 {note.processingStatus === "generating"
                   ? "Generating notes…"
                   : "Transcribing audio…"}
@@ -236,7 +232,9 @@ export function NoteEditor({
         <div
           className="record-shell"
           data-state={shellState}
-          data-options-open={!recordingForNote && !processingLock && optionsOpen}
+          data-options-open={
+            !recordingForNote && !processingLock && optionsOpen
+          }
         >
           {!recordingForNote && !processingLock ? (
             <div
@@ -350,7 +348,6 @@ export function NoteEditor({
     </article>
   );
 }
-
 
 function FolderChip({
   folders,

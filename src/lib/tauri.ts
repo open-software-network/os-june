@@ -114,6 +114,36 @@ export type DictationHelperEvent = {
   };
 };
 
+export type ProviderModelMode = "transcription" | "generation";
+
+export type ProviderModelSettingsDto = {
+  transcriptionModel: string;
+  generationModel: string;
+};
+
+export type ProviderModelSettingsResponse = {
+  settings: ProviderModelSettingsDto;
+};
+
+export type VeniceModelDto = {
+  id: string;
+  name: string;
+  modelType: string;
+  description?: string;
+  privacy?: string;
+  pricing?: unknown;
+  contextTokens?: number;
+  traits: string[];
+  capabilities: string[];
+};
+
+export type VeniceModelsResponse = {
+  mode: ProviderModelMode;
+  modelType: string;
+  selectedModel: string;
+  models: VeniceModelDto[];
+};
+
 export type SourceState =
   | "pending"
   | "permissionDenied"
@@ -365,6 +395,12 @@ export async function checkRecordingSourceReadiness(
   );
 }
 
+export async function openPrivacySettings(
+  pane: "microphone" | "accessibility" | "systemAudio",
+) {
+  return invoke<void>("open_privacy_settings", { request: { pane } });
+}
+
 export async function startRecording(
   noteId: string,
   sourceMode: RecordingSourceMode = "microphoneOnly",
@@ -415,6 +451,22 @@ export async function recoverRecording(
 
 export async function dictationSettings() {
   return invoke<DictationSettingsResponse>("dictation_settings");
+}
+
+export async function providerModelSettings() {
+  return invoke<ProviderModelSettingsResponse>("provider_model_settings");
+}
+
+export async function listVeniceModels(mode: ProviderModelMode) {
+  return invoke<VeniceModelsResponse>("list_venice_models", {
+    request: { mode },
+  });
+}
+
+export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
+  return invoke<ProviderModelSettingsDto>("set_venice_model", {
+    request: { mode, modelId },
+  });
 }
 
 export async function setDictationShortcut(

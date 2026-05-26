@@ -11,13 +11,7 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
@@ -352,8 +346,7 @@ function FolderCard({
             <IconFileText size={11} />
           </span>
           <span>
-            {folderNotes.length}{" "}
-            {folderNotes.length === 1 ? "note" : "notes"}
+            {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
           </span>
           <span className="folder-card-footer-dot" aria-hidden>
             ·
@@ -448,9 +441,7 @@ function FolderDetail({
 }: FoldersWorkspaceProps & { folder: FolderDto }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(folder.name);
-  const [menu, setMenu] = useState<{ right: number; top: number } | null>(
-    null,
-  );
+  const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement | null>(null);
@@ -558,9 +549,7 @@ function FolderDetail({
                 ref={titleRef}
                 className="folder-detail-title-input"
                 value={titleDraft}
-                onChange={(event) =>
-                  setTitleDraft(event.currentTarget.value)
-                }
+                onChange={(event) => setTitleDraft(event.currentTarget.value)}
                 onBlur={commitRename}
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
@@ -598,8 +587,7 @@ function FolderDetail({
             <span className="folder-detail-meta-dot" aria-hidden>
               ·
             </span>
-            {folderNotes.length}{" "}
-            {folderNotes.length === 1 ? "note" : "notes"}
+            {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
             <span className="folder-detail-meta-dot" aria-hidden>
               ·
             </span>
@@ -780,9 +768,7 @@ function FolderNoteRow({
   onRemoveFromFolder: () => void;
   onDelete: () => void;
 }) {
-  const [menu, setMenu] = useState<{ right: number; top: number } | null>(
-    null,
-  );
+  const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
 
   useEffect(() => {
     if (!menu) return;
@@ -803,11 +789,7 @@ function FolderNoteRow({
   return (
     <li>
       <div className="folder-note-row" data-menu-open={menu !== null}>
-        <button
-          type="button"
-          className="folder-note-main"
-          onClick={onSelect}
-        >
+        <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
             <IconFileText size={14} />
           </span>

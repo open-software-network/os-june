@@ -148,7 +148,10 @@ fn build_dictation_helper() {
     let app_dir = helper_dir.join("OS Scribe Dictation Helper.app");
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
+    let resources_dir = contents_dir.join("Resources");
     std::fs::create_dir_all(&macos_dir).expect("dictation helper app dir should be created");
+    std::fs::create_dir_all(&resources_dir)
+        .expect("dictation helper resources dir should be created");
     let executable = macos_dir.join("os-scribe-dictation-helper");
 
     let source_modified = std::fs::metadata(&source)
@@ -229,6 +232,34 @@ fn build_dictation_helper() {
         std::fs::write(plist, plist_contents)
             .expect("dictation helper Info.plist should be written");
         should_sign = true;
+    }
+
+    let public_sounds_dir = manifest_dir
+        .parent()
+        .expect("src-tauri should have a repository parent")
+        .join("public")
+        .join("sounds");
+    for sound in ["record-start.mp3", "record-end.mp3"] {
+        let source = public_sounds_dir.join(sound);
+        println!("cargo:rerun-if-changed={}", source.display());
+        let destination = resources_dir.join(sound);
+        let source_bytes = std::fs::read(&source).unwrap_or_else(|error| {
+            panic!(
+                "dictation sound {} should be readable: {error}",
+                source.display()
+            )
+        });
+        let destination_current =
+            std::fs::read(&destination).is_ok_and(|current| current == source_bytes);
+        if !destination_current {
+            std::fs::write(&destination, source_bytes).unwrap_or_else(|error| {
+                panic!(
+                    "dictation sound {} should be copied to helper resources: {error}",
+                    destination.display()
+                )
+            });
+            should_sign = true;
+        }
     }
 
     if should_sign {

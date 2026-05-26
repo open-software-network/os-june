@@ -9,10 +9,10 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Real transcription and note generation require an OpenAI API key in the shell that launches Tauri:
+Real transcription and note generation use Venice AI and require a Venice API key in the shell that launches Tauri:
 
 ```sh
-export OPENAI_API_KEY="..."
+export VENICE_API_KEY="..."
 pnpm tauri:dev
 ```
 
@@ -20,24 +20,20 @@ For local development, the Rust backend also loads `.env` from the repository ro
 
 ```sh
 cp .env.example .env
-# edit OPENAI_API_KEY in .env
+# edit VENICE_API_KEY in .env
 pnpm tauri:dev
 ```
 
 Restart `pnpm tauri:dev` after changing `.env`; the running Tauri process does not reload provider configuration.
 
-Without `OPENAI_API_KEY`, the app stays in local mock mode for offline recording and recovery verification. To force mock mode even when a key is present:
+Optional initial model defaults:
 
 ```sh
-OS_NOTETAKER_PROVIDER=mock pnpm tauri:dev
+export VENICE_TRANSCRIPTION_MODEL=nvidia/parakeet-tdt-0.6b-v3
+export VENICE_GENERATION_MODEL=zai-org-glm-5
 ```
 
-Optional model overrides:
-
-```sh
-export OS_NOTETAKER_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
-export OS_NOTETAKER_GENERATION_MODEL=gpt-5.2
-```
+The Settings tab can load available Venice models and save separate selections for transcription/dictation and note generation. Saved selections are stored in the app config directory and take effect for new provider requests.
 
 The app data directory is resolved by Tauri at runtime. In development, inspect the platform app data path for:
 
@@ -50,13 +46,13 @@ The app data directory is resolved by Tauri at runtime. In development, inspect 
 
 Dictation is paste-only: it does not create notes or store transcript records. Choose a dictation shortcut and an activation mode in Dictation settings. Push-to-talk records while the shortcut is held and stops when it is released. Toggle starts or stops dictation each time the shortcut is pressed. OS Scribe transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
 
-Dictation requires real transcription. If `OPENAI_API_KEY` is not visible to the Tauri process, dictation reports a configuration error instead of pasting the local mock transcript used by offline note-recording tests. During development, put the key in `.env` or export it in the shell before running `pnpm tauri:dev`.
+Dictation requires Venice transcription. If `VENICE_API_KEY` is not visible to the Tauri process, dictation reports a configuration error. During development, put the key in `.env` or export it in the shell before running `pnpm tauri:dev`.
 
 The default shortcut is bare `Fn`/Globe and the default activation mode is `Push-to-talk`. If macOS opens emoji, input-source, or system dictation UI when pressing Fn, set System Settings > Keyboard > "Press Fn key to" or "Press Globe key to" to `Do Nothing`. The Dictation settings page records the shortcut you press, including bare `Fn`/Globe, `Fn+Space`, or another shortcut with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Push-to-talk for custom shortcuts depends on macOS exposing both key-down and key-up events for that shortcut.
 
 Manual validation:
 
-1. Launch with `OPENAI_API_KEY` configured.
+1. Launch with `VENICE_API_KEY` configured.
 2. Grant microphone and Accessibility permissions.
 3. Focus a text field in TextEdit, VS Code, or a browser.
 4. In Dictation settings, press Change, record `Fn`/Globe, and choose `Push-to-talk`.

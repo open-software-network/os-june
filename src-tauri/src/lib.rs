@@ -25,6 +25,7 @@ pub fn run() {
             commands::remove_note_from_folder,
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
+            commands::open_privacy_settings,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -38,9 +39,13 @@ pub fn run() {
             dictation::set_dictation_microphone,
             dictation::dictation_helper_command,
             dictation::dictation_hotkey_status,
-            dictation::latest_dictation_event
+            dictation::latest_dictation_event,
+            providers::provider_model_settings,
+            providers::list_venice_models,
+            providers::set_venice_model
         ])
         .setup(|app| {
+            providers::setup(app);
             dictation::setup(app);
             Ok(())
         })

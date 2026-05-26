@@ -99,7 +99,9 @@ export function notesReducer(
     case "folderDeleted":
       return {
         ...state,
-        folders: state.folders.filter((folder) => folder.id !== action.folderId),
+        folders: state.folders.filter(
+          (folder) => folder.id !== action.folderId,
+        ),
         selectedFolderId:
           state.selectedFolderId === action.folderId
             ? undefined

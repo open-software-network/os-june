@@ -1,8 +1,7 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
 use os_notetaker_lib::{
     audio::validation::{
-        source_audio_passes_validation, validate_audio_artifact, validation_config_for_source,
-        AudioValidationConfig,
+        source_audio_passes_validation, validate_audio_artifact, AudioValidationConfig,
     },
     domain::types::RecordingSource,
 };
@@ -138,28 +137,24 @@ fn accepts_shorter_non_silent_system_audio() {
 }
 
 #[test]
-fn accepts_low_rms_system_audio_with_strong_peak() {
+fn accepts_low_rms_audio_without_loudness_thresholds() {
     let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("quiet-system.wav");
+    let path = dir.path().join("quiet.wav");
     write_sparse_peak_wav(&path, 13_107, 2_000, 3_200);
 
-    let default_result = validate_audio_artifact(&path, 2_000, AudioValidationConfig::default())
-        .expect("default validation should run");
-    let system_result = validate_audio_artifact(
-        &path,
-        2_000,
-        validation_config_for_source(RecordingSource::System),
-    )
-    .expect("system validation should run");
+    let result = validate_audio_artifact(&path, 2_000, AudioValidationConfig::default())
+        .expect("validation should run");
 
-    assert!(!default_result.non_silent_signal);
-    assert!(system_result.peak_amplitude > 0.3);
-    assert!(system_result.rms_amplitude > 0.003);
-    assert!(system_result.rms_amplitude < 0.01);
-    assert!(system_result.non_silent_signal);
+    assert!(result.peak_amplitude > 0.3);
+    assert!(result.rms_amplitude < 0.01);
+    assert!(result.non_silent_signal);
     assert!(source_audio_passes_validation(
         RecordingSource::System,
-        &system_result
+        &result
+    ));
+    assert!(source_audio_passes_validation(
+        RecordingSource::Microphone,
+        &result
     ));
 }
 
@@ -196,7 +191,7 @@ fn flags_duration_mismatch() {
 }
 
 #[test]
-fn rejects_silent_audio() {
+fn accepts_silent_audio_for_provider_decision() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("silent.wav");
     write_wav(&path, 0, 1_500);
@@ -205,15 +200,19 @@ fn rejects_silent_audio() {
         .expect("validation should run");
 
     assert!(result.readable_audio);
-    assert!(!result.non_silent_signal);
-    assert!(result
+    assert!(result.non_silent_signal);
+    assert!(!result
         .warnings
         .iter()
         .any(|warning| warning.contains("silent")));
+    assert!(source_audio_passes_validation(
+        RecordingSource::Microphone,
+        &result
+    ));
 }
 
 #[test]
-fn rejects_isolated_peak_without_sustained_signal() {
+fn accepts_isolated_peak_for_provider_decision() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("single-click.wav");
     write_impulse_wav(&path, i16::MAX, 1_500);
@@ -223,10 +222,13 @@ fn rejects_isolated_peak_without_sustained_signal() {
 
     assert!(result.readable_audio);
     assert!(result.peak_amplitude > 0.9);
-    assert!(result.rms_amplitude < AudioValidationConfig::default().silence_rms_threshold);
-    assert!(!result.non_silent_signal);
-    assert!(result
+    assert!(result.non_silent_signal);
+    assert!(!result
         .warnings
         .iter()
         .any(|warning| warning.contains("silent")));
+    assert!(source_audio_passes_validation(
+        RecordingSource::Microphone,
+        &result
+    ));
 }
