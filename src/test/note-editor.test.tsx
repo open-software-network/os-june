@@ -35,6 +35,9 @@ const props = {
   onRetry: vi.fn(),
   onAssignFolder: vi.fn(),
   onRemoveFolder: vi.fn(),
+  onCreateAndAssignFolder: vi.fn(),
+  onNavigateToFolders: vi.fn(),
+  onNavigateToFolder: vi.fn(),
   onTabChange: vi.fn(),
 };
 

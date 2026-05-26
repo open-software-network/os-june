@@ -13,6 +13,7 @@ export type ProcessingStatus =
 export type FolderDto = {
   id: string;
   name: string;
+  description?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -290,13 +291,25 @@ export async function createNote(folderId?: string) {
   return invoke<NoteDto>("create_note", { request: { folderId } });
 }
 
-export async function createFolder(name: string) {
-  return invoke<FolderDto>("create_folder", { request: { name } });
+export async function createFolder(name: string, description?: string) {
+  return invoke<FolderDto>("create_folder", {
+    request: { name, description },
+  });
 }
 
 export async function deleteFolder(folderId: string, deleteNotes: boolean) {
   return invoke<void>("delete_folder", {
     request: { folderId, deleteNotes },
+  });
+}
+
+export async function renameFolder(
+  folderId: string,
+  name: string,
+  description?: string,
+) {
+  return invoke<FolderDto>("rename_folder", {
+    request: { folderId, name, description },
   });
 }
 

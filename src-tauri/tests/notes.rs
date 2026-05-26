@@ -37,7 +37,7 @@ async fn updates_title_body_and_active_tab() {
 #[tokio::test]
 async fn deleting_note_removes_it_from_all_note_lists() {
     let repos = repos().await;
-    let folder = repos.create_folder("Work").await.expect("folder");
+    let folder = repos.create_folder("Work", None).await.expect("folder");
     let note = repos
         .create_note(Some(folder.id.clone()))
         .await

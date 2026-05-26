@@ -23,8 +23,9 @@ use crate::{
             DeleteFolderRequest, DeleteNoteRequest, FinishRecordingResponse, GetNoteRequest,
             ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
             RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RetryProcessingRequest,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest, UpdateNoteRequest,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RenameFolderRequest,
+            RetryProcessingRequest, SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            UpdateNoteRequest,
         },
     },
 };
@@ -129,7 +130,10 @@ pub async fn create_folder(
             "Folder name is required.",
         ));
     }
-    Ok(repositories(&app).await?.create_folder(name).await?)
+    Ok(repositories(&app)
+        .await?
+        .create_folder(name, request.description.as_deref())
+        .await?)
 }
 
 #[tauri::command]
@@ -146,6 +150,24 @@ pub async fn delete_folder(app: AppHandle, request: DeleteFolderRequest) -> Resu
         .delete_folder(&request.folder_id, request.delete_notes)
         .await?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_folder(
+    app: AppHandle,
+    request: RenameFolderRequest,
+) -> Result<crate::domain::types::FolderDto, AppError> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err(AppError::new(
+            "folder_name_required",
+            "Folder name is required.",
+        ));
+    }
+    Ok(repositories(&app)
+        .await?
+        .rename_folder(&request.folder_id, name, request.description.as_deref())
+        .await?)
 }
 
 #[tauri::command]

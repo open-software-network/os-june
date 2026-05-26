@@ -8,10 +8,6 @@ CREATE TABLE IF NOT EXISTS folders (
   deleted_at TEXT
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_active_name
-ON folders (name)
-WHERE deleted_at IS NULL;
-
 CREATE TABLE IF NOT EXISTS notes (
   id TEXT PRIMARY KEY NOT NULL,
   title TEXT NOT NULL DEFAULT '',

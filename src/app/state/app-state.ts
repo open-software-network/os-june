@@ -25,7 +25,10 @@ export type NotesAction =
   | { type: "recordingStatusChanged"; status: RecordingStatusDto }
   | { type: "recordingStatusCleared" }
   | { type: "folderCreated"; folder: FolderDto }
+  | { type: "folderRenamed"; folder: FolderDto }
+  | { type: "folderDeleted"; folderId: string }
   | { type: "folderSelected"; folderId?: string }
+  | { type: "foldersLoaded"; folders: FolderDto[] }
   | { type: "notesLoaded"; notes: NoteListItemDto[] }
   | { type: "recoveriesUpdated"; recoveries: RecoverableRecordingDto[] };
 
@@ -48,7 +51,7 @@ export function notesReducer(
         state.selectedNoteId ?? action.payload.notes[0]?.id;
       return {
         ...state,
-        folders: action.payload.folders,
+        folders: sortFolders(action.payload.folders),
         notes: action.payload.notes,
         activeRecoveries: action.payload.activeRecoveries,
         selectedNoteId,
@@ -82,8 +85,40 @@ export function notesReducer(
     case "folderCreated":
       return {
         ...state,
-        folders: [...state.folders, action.folder],
-        selectedFolderId: action.folder.id,
+        folders: sortFolders([...state.folders, action.folder]),
+      };
+    case "folderRenamed":
+      return {
+        ...state,
+        folders: sortFolders(
+          state.folders.map((folder) =>
+            folder.id === action.folder.id ? action.folder : folder,
+          ),
+        ),
+      };
+    case "folderDeleted":
+      return {
+        ...state,
+        folders: state.folders.filter((folder) => folder.id !== action.folderId),
+        selectedFolderId:
+          state.selectedFolderId === action.folderId
+            ? undefined
+            : state.selectedFolderId,
+        notes: state.notes.map((note) =>
+          note.folderIds.includes(action.folderId)
+            ? {
+                ...note,
+                folderIds: note.folderIds.filter(
+                  (id) => id !== action.folderId,
+                ),
+              }
+            : note,
+        ),
+      };
+    case "foldersLoaded":
+      return {
+        ...state,
+        folders: sortFolders(action.folders),
       };
     case "folderSelected":
       return {
@@ -117,6 +152,12 @@ function upsertNote(state: NotesState, note: NoteDto): NotesState {
       b.createdAt.localeCompare(a.createdAt),
     ),
   };
+}
+
+function sortFolders(folders: FolderDto[]): FolderDto[] {
+  return [...folders].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
 }
 
 function toListItem(note: NoteDto): NoteListItemDto {
