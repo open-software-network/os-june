@@ -89,6 +89,58 @@ describe("notesReducer", () => {
     expect(state.recordingStatus).toEqual(status);
   });
 
+  it("renames and deletes folders, keeping notes consistent", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "bootstrapLoaded",
+      payload: {
+        folders: [
+          { id: "folder-1", name: "Inbox", createdAt: now, updatedAt: now },
+          { id: "folder-2", name: "Archive", createdAt: now, updatedAt: now },
+        ],
+        notes: [
+          { ...note({ id: "note-1", title: "A" }), folderIds: ["folder-1"] },
+          {
+            ...note({ id: "note-2", title: "B" }),
+            folderIds: ["folder-1", "folder-2"],
+          },
+        ],
+        activeRecoveries: [],
+        providerConfigured: false,
+      },
+    });
+
+    expect(initial.folders.map((folder) => folder.name)).toEqual([
+      "Archive",
+      "Inbox",
+    ]);
+
+    const renamed = notesReducer(initial, {
+      type: "folderRenamed",
+      folder: {
+        id: "folder-1",
+        name: "Triage",
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    expect(renamed.folders.map((folder) => folder.name)).toEqual([
+      "Archive",
+      "Triage",
+    ]);
+
+    const deleted = notesReducer(renamed, {
+      type: "folderDeleted",
+      folderId: "folder-1",
+    });
+    expect(deleted.folders.map((folder) => folder.id)).toEqual(["folder-2"]);
+    expect(
+      deleted.notes.find((item) => item.id === "note-2")?.folderIds,
+    ).toEqual(["folder-2"]);
+    expect(
+      deleted.notes.find((item) => item.id === "note-1")?.folderIds,
+    ).toEqual([]);
+  });
+
   it("clears recording status after finish processing starts", () => {
     const status: RecordingStatusDto = {
       sessionId: "session-1",

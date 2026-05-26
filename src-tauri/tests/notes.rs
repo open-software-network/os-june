@@ -37,7 +37,7 @@ async fn updates_title_body_and_active_tab() {
 #[tokio::test]
 async fn deleting_note_removes_it_from_all_note_lists() {
     let repos = repos().await;
-    let folder = repos.create_folder("Work").await.expect("folder");
+    let folder = repos.create_folder("Work", None).await.expect("folder");
     let note = repos
         .create_note(Some(folder.id.clone()))
         .await
@@ -527,7 +527,7 @@ async fn get_note_returns_transcript_and_audio_metadata() {
             &audio.id,
             "Raw transcript text",
             Some("en".into()),
-            "mock",
+            "venice",
         )
         .await
         .expect("transcript");
@@ -575,7 +575,7 @@ async fn get_note_returns_only_timed_source_transcript_rows() {
             &audio.id,
             "Standalone transcript should not be displayed as a turn.",
             Some("en".into()),
-            "mock",
+            "venice",
         )
         .await
         .expect("standalone transcript");
@@ -588,7 +588,7 @@ async fn get_note_returns_only_timed_source_transcript_rows() {
             "microphone",
             "Timed source transcript",
             Some("en".into()),
-            "mock",
+            "venice",
             Some(1_000),
             Some(2_000),
             Some(0),

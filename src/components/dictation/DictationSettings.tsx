@@ -1,17 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  dictationHelperCommand,
   dictationHotkeyStatus,
   dictationSettings,
-  setDictationMicrophone,
   setDictationShortcut,
 } from "../../lib/tauri";
 import type {
   DictationHelperEvent,
-  DictationMicrophoneDeviceDto,
   DictationSettingsDto,
   DictationShortcutModifiers,
   DictationShortcutSetting,
@@ -86,14 +81,9 @@ type ShortcutCaptureResult =
 export function DictationSettings() {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
-  const [microphones, setMicrophones] = useState<
-    DictationMicrophoneDeviceDto[]
-  >([]);
   const [capturing, setCapturing] = useState(false);
   const [shortcutError, setShortcutError] = useState<string>();
   const [status, setStatus] = useState<string>();
-  const [micOpen, setMicOpen] = useState(false);
-  const micWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,7 +96,6 @@ export function DictationSettings() {
         setSettings(response.settings);
         const hotkey = await dictationHotkeyStatus();
         if (!cancelled) handleHelperEvent(hotkey);
-        await requestMicrophones();
       } catch (error) {
         if (!cancelled) setStatus(messageFromError(error));
       }
@@ -125,24 +114,6 @@ export function DictationSettings() {
       unlisten?.();
     };
   }, []);
-
-  useEffect(() => {
-    if (!micOpen) return;
-    function onPointer(event: MouseEvent) {
-      if (!micWrapRef.current?.contains(event.target as Node)) {
-        setMicOpen(false);
-      }
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setMicOpen(false);
-    }
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [micOpen]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -169,19 +140,7 @@ export function DictationSettings() {
     return () => window.removeEventListener("keydown", onKey);
   }, [capturing]);
 
-  async function requestMicrophones() {
-    try {
-      await dictationHelperCommand({ type: "list_microphones" });
-    } catch (error) {
-      setStatus(messageFromError(error));
-    }
-  }
-
   function handleHelperEvent(helperEvent: DictationHelperEvent) {
-    if (helperEvent.type === "microphone_devices") {
-      setMicrophones(helperEvent.payload?.devices ?? []);
-      return;
-    }
     if (helperEvent.type === "error") {
       setStatus(helperEvent.payload?.message ?? "Dictation helper failed.");
     }
@@ -200,31 +159,6 @@ export function DictationSettings() {
       setStatus(messageFromError(error));
     }
   }
-
-  async function selectMicrophone(id?: string, name?: string) {
-    try {
-      const next = await setDictationMicrophone(id, name);
-      setSettings(next);
-      setMicOpen(false);
-      setStatus(
-        name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.",
-      );
-    } catch (error) {
-      setStatus(messageFromError(error));
-    }
-  }
-
-  const microphoneName = settings.microphone.name ?? "Auto-detect";
-  const microphoneOptions = [
-    { id: undefined, name: "Auto-detect" },
-    ...microphones,
-  ];
-  const selectedMicrophoneIndex = Math.max(
-    0,
-    microphoneOptions.findIndex(
-      (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
-    ),
-  );
 
   return (
     <div className="settings-page">
@@ -269,74 +203,6 @@ export function DictationSettings() {
                 >
                   {capturing ? "Cancel" : "Change"}
                 </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="settings-group" aria-labelledby="audio-heading">
-        <h2 id="audio-heading" className="settings-group-heading">
-          Audio
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Microphone</h3>
-                <p className="settings-row-description">
-                  Input device used when dictating and recording notes.
-                </p>
-              </div>
-              <div className="settings-row-control" ref={micWrapRef}>
-                <button
-                  type="button"
-                  className="select-trigger"
-                  aria-haspopup="listbox"
-                  aria-expanded={micOpen}
-                  onClick={() => {
-                    setMicOpen((value) => !value);
-                    void requestMicrophones();
-                  }}
-                >
-                  <span>{microphoneName}</span>
-                  <IconChevronDownSmall size={14} />
-                </button>
-                {micOpen ? (
-                  <ul
-                    className="select-popover"
-                    role="listbox"
-                    style={{ top: -(4 + selectedMicrophoneIndex * 28) }}
-                  >
-                    {microphoneOptions.map((option) => {
-                      const selected =
-                        (option.id ?? "") === (settings.microphone.id ?? "");
-                      return (
-                        <li key={option.id ?? "auto"}>
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            data-selected={selected}
-                            onClick={() =>
-                              void selectMicrophone(
-                                option.id,
-                                option.id ? option.name : undefined,
-                              )
-                            }
-                          >
-                            <span>{option.name}</span>
-                            <span className="select-check" aria-hidden>
-                              {selected ? (
-                                <IconCheckmark1Small size={14} />
-                              ) : null}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : null}
               </div>
             </div>
           </div>

@@ -47,6 +47,8 @@ pub struct ListNotesResponse {
 pub struct FolderDto {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -127,6 +129,8 @@ pub struct UpdateNoteRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CreateFolderRequest {
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +138,15 @@ pub struct CreateFolderRequest {
 pub struct DeleteFolderRequest {
     pub folder_id: String,
     pub delete_notes: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameFolderRequest {
+    pub folder_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +237,12 @@ pub struct SourceReadinessDto {
     pub capture_available: bool,
     pub recovery_action: Option<String>,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPrivacySettingsRequest {
+    pub pane: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

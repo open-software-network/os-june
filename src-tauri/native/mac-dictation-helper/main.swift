@@ -525,7 +525,7 @@ final class DictationController {
             isListening = true
             startMetering()
             emit("listening_started", [
-                "recognitionMode": "openai_recording",
+                "recognitionMode": "venice_recording",
                 "microphone": preferredMicrophoneName ?? "Auto-detect",
             ])
         } catch {
@@ -555,7 +555,7 @@ final class DictationController {
             isListening = true
             recorder.start()
             emit("listening_started", [
-                "recognitionMode": "openai_recording",
+                "recognitionMode": "venice_recording",
                 "microphone": device.localizedName,
             ])
         } catch {
