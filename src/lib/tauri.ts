@@ -117,6 +117,7 @@ export type DictationHelperEvent = {
 export type ProviderModelMode = "transcription" | "generation";
 
 export type ProviderModelSettingsDto = {
+  transcriptionProvider: string;
   transcriptionModel: string;
   generationModel: string;
 };
@@ -126,6 +127,7 @@ export type ProviderModelSettingsResponse = {
 };
 
 export type VeniceModelDto = {
+  provider: string;
   id: string;
   name: string;
   modelType: string;

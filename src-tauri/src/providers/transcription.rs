@@ -3,7 +3,7 @@ use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_TRANSCRIPTION_PROVIDER: &str = crate::providers::VENICE_PROVIDER;
+pub const DEFAULT_TRANSCRIPTION_PROVIDER: &str = crate::providers::OPENAI_PROVIDER;
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionRequest {
@@ -32,10 +32,11 @@ pub async fn transcribe_saved_audio(
     }
 
     match request.provider.as_str() {
+        crate::providers::OPENAI_PROVIDER => transcribe_with_openai(&request).await,
         crate::providers::VENICE_PROVIDER => transcribe_with_venice(&request).await,
         _ => Err(AppError::new(
             "provider_not_configured",
-            "Unsupported transcription provider. Venice is the only supported provider; set VENICE_API_KEY.",
+            "Unsupported transcription provider. Set OPENAI_API_KEY for OpenAI transcription.",
         )),
     }
 }
@@ -51,6 +52,80 @@ pub fn normalize_transcription_language(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+async fn transcribe_with_openai(
+    request: &TranscriptionRequest,
+) -> Result<TranscriptionProviderResult, AppError> {
+    let api_key = crate::providers::openai_api_key().ok_or_else(|| {
+        AppError::new(
+            "provider_not_configured",
+            "OPENAI_API_KEY is required for OpenAI transcription.",
+        )
+    })?;
+    let audio_bytes = std::fs::read(&request.audio_path)
+        .map_err(|error| AppError::new("audio_artifact_missing", error.to_string()))?;
+    let filename = request
+        .audio_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("recording.wav")
+        .to_string();
+    let model = crate::providers::venice_transcription_model();
+    let audio_part = Part::bytes(audio_bytes)
+        .file_name(filename)
+        .mime_str(transcription_audio_mime(&request.audio_path))
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    let mut form = Form::new()
+        .text("model", model)
+        .text("response_format", "json")
+        .part("file", audio_part);
+    if let Some(language) = transcription_language_override() {
+        form = form.text("language", language);
+    }
+    if let Some(prompt) = request
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("prompt", prompt.to_string());
+    }
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/audio/transcriptions",
+            crate::providers::openai_api_base_url()
+        ))
+        .bearer_auth(api_key)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
+    if !status.is_success() {
+        return Err(AppError::new(
+            "provider_request_failed",
+            format!("OpenAI transcription failed with status {status}: {body}"),
+        ));
+    }
+    let parsed: OpenAiTranscriptionResponse = serde_json::from_str(&body)
+        .map_err(|error| AppError::new("provider_response_invalid", error.to_string()))?;
+    let text = parsed.text.trim().to_string();
+    if text.is_empty() {
+        return Err(AppError::new(
+            "transcription_empty",
+            "OpenAI returned an empty transcript.",
+        ));
+    }
+    Ok(TranscriptionProviderResult {
+        text,
+        language: None,
+        provider: crate::providers::OPENAI_PROVIDER.to_string(),
+    })
 }
 
 async fn transcribe_with_venice(

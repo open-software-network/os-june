@@ -10,6 +10,9 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 
+pub const OPENAI_PROVIDER: &str = "openai";
+pub const DEFAULT_OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_OPENAI_TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
 pub const VENICE_PROVIDER: &str = "venice";
 pub const DEFAULT_VENICE_API_BASE_URL: &str = "https://api.venice.ai/api/v1";
 pub const DEFAULT_VENICE_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
@@ -26,6 +29,8 @@ pub struct ProviderSettingsState {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelSettings {
+    #[serde(default = "default_transcription_provider")]
+    pub transcription_provider: String,
     pub transcription_model: String,
     pub generation_model: String,
 }
@@ -61,6 +66,7 @@ pub struct VeniceModelsResponse {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VeniceModelDto {
+    pub provider: String,
     pub id: String,
     pub name: String,
     pub model_type: String,
@@ -81,6 +87,27 @@ pub fn configured_provider() -> String {
     VENICE_PROVIDER.to_string()
 }
 
+pub fn configured_transcription_provider() -> String {
+    current_provider_model_settings().transcription_provider
+}
+
+pub fn openai_api_key() -> Option<String> {
+    load_local_env();
+    std::env::var("OPENAI_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn openai_api_base_url() -> String {
+    load_local_env();
+    std::env::var("OPENAI_API_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_OPENAI_API_BASE_URL.to_string())
+}
+
 pub fn venice_api_key() -> Option<String> {
     load_local_env();
     std::env::var("VENICE_API_KEY")
@@ -90,7 +117,7 @@ pub fn venice_api_key() -> Option<String> {
 }
 
 pub fn provider_configured() -> bool {
-    venice_api_key().is_some()
+    openai_api_key().is_some() && venice_api_key().is_some()
 }
 
 pub fn venice_api_base_url() -> String {
@@ -137,7 +164,11 @@ pub fn set_venice_model(
         ));
     }
     update_provider_settings(&state, |settings| match mode {
-        ModelMode::Transcription => settings.transcription_model = model_id.to_string(),
+        ModelMode::Transcription => {
+            settings.transcription_provider =
+                transcription_provider_for_model(model_id).to_string();
+            settings.transcription_model = model_id.to_string();
+        }
         ModelMode::Generation => settings.generation_model = model_id.to_string(),
     })
 }
@@ -150,6 +181,14 @@ pub async fn list_venice_models(
     let mode = model_mode(&request.mode)?;
     let model_type = mode.venice_type();
     let selected_model = selected_model_for_mode(&state, mode)?;
+    if mode == ModelMode::Transcription {
+        return Ok(VeniceModelsResponse {
+            mode: mode.as_str().to_string(),
+            model_type: model_type.to_string(),
+            selected_model,
+            models: openai_transcription_models(),
+        });
+    }
     let api_key = venice_api_key().ok_or_else(|| {
         AppError::new(
             "provider_not_configured",
@@ -256,11 +295,18 @@ fn replace_current_provider_model_settings(settings: ProviderModelSettings) {
 fn default_provider_model_settings() -> ProviderModelSettings {
     load_local_env();
     ProviderModelSettings {
-        transcription_model: env_value("VENICE_TRANSCRIPTION_MODEL")
-            .unwrap_or_else(|| DEFAULT_VENICE_TRANSCRIPTION_MODEL.to_string()),
+        transcription_provider: default_transcription_provider(),
+        transcription_model: env_value("OPENAI_TRANSCRIPTION_MODEL")
+            .or_else(|| env_value("VENICE_TRANSCRIPTION_MODEL"))
+            .filter(|model| is_openai_transcription_model(model))
+            .unwrap_or_else(|| DEFAULT_OPENAI_TRANSCRIPTION_MODEL.to_string()),
         generation_model: env_value("VENICE_GENERATION_MODEL")
             .unwrap_or_else(|| DEFAULT_VENICE_GENERATION_MODEL.to_string()),
     }
+}
+
+fn default_transcription_provider() -> String {
+    OPENAI_PROVIDER.to_string()
 }
 
 fn env_value(key: &str) -> Option<String> {
@@ -286,12 +332,20 @@ fn load_provider_settings(app: &AppHandle) -> ProviderModelSettings {
     fs::read_to_string(path)
         .ok()
         .and_then(|settings| serde_json::from_str::<ProviderModelSettings>(&settings).ok())
-        .map(|settings| ProviderModelSettings {
-            transcription_model: non_empty_or(
-                settings.transcription_model,
+        .map(|settings| {
+            let transcription_model = non_empty_or(
+                sanitized_transcription_model(settings.transcription_model),
                 &defaults.transcription_model,
-            ),
-            generation_model: non_empty_or(settings.generation_model, &defaults.generation_model),
+            );
+            ProviderModelSettings {
+                transcription_provider: transcription_provider_for_model(&transcription_model)
+                    .to_string(),
+                transcription_model,
+                generation_model: non_empty_or(
+                    settings.generation_model,
+                    &defaults.generation_model,
+                ),
+            }
         })
         .unwrap_or(defaults)
 }
@@ -303,6 +357,30 @@ fn non_empty_or(value: String, fallback: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn sanitized_transcription_model(model: String) -> String {
+    let model = model.trim();
+    if is_openai_transcription_model(model) {
+        model.to_string()
+    } else {
+        DEFAULT_OPENAI_TRANSCRIPTION_MODEL.to_string()
+    }
+}
+
+fn transcription_provider_for_model(model: &str) -> &'static str {
+    if is_openai_transcription_model(model) {
+        OPENAI_PROVIDER
+    } else {
+        VENICE_PROVIDER
+    }
+}
+
+fn is_openai_transcription_model(model: &str) -> bool {
+    matches!(
+        model.trim(),
+        "gpt-4o-mini-transcribe" | "gpt-4o-transcribe" | "whisper-1"
+    )
 }
 
 fn update_provider_settings(
@@ -447,6 +525,7 @@ fn venice_model_items(response: VeniceModelsApiResponse, model_type: &str) -> Ve
                 .map(capability_names)
                 .unwrap_or_default();
             VeniceModelDto {
+                provider: VENICE_PROVIDER.to_string(),
                 id: model.id,
                 name,
                 model_type: model.model_type,
@@ -459,6 +538,53 @@ fn venice_model_items(response: VeniceModelsApiResponse, model_type: &str) -> Ve
             }
         })
         .collect()
+}
+
+fn openai_transcription_models() -> Vec<VeniceModelDto> {
+    vec![
+        VeniceModelDto {
+            provider: OPENAI_PROVIDER.to_string(),
+            id: "gpt-4o-mini-transcribe".to_string(),
+            name: "GPT-4o mini Transcribe".to_string(),
+            model_type: "asr".to_string(),
+            description: Some("Fast, lower-cost OpenAI speech-to-text model.".to_string()),
+            privacy: Some("OpenAI".to_string()),
+            pricing: Some(serde_json::json!({
+                "display": "$0.003/min audio"
+            })),
+            context_tokens: Some(16_000),
+            traits: vec!["prompt".to_string()],
+            capabilities: vec![],
+        },
+        VeniceModelDto {
+            provider: OPENAI_PROVIDER.to_string(),
+            id: "gpt-4o-transcribe".to_string(),
+            name: "GPT-4o Transcribe".to_string(),
+            model_type: "asr".to_string(),
+            description: Some("Higher-accuracy OpenAI speech-to-text model.".to_string()),
+            privacy: Some("OpenAI".to_string()),
+            pricing: Some(serde_json::json!({
+                "display": "$0.006/min audio"
+            })),
+            context_tokens: Some(16_000),
+            traits: vec!["prompt".to_string()],
+            capabilities: vec![],
+        },
+        VeniceModelDto {
+            provider: OPENAI_PROVIDER.to_string(),
+            id: "whisper-1".to_string(),
+            name: "Whisper".to_string(),
+            model_type: "asr".to_string(),
+            description: Some("Original OpenAI general-purpose transcription model.".to_string()),
+            privacy: Some("OpenAI".to_string()),
+            pricing: Some(serde_json::json!({
+                "display": "$0.006/min audio"
+            })),
+            context_tokens: None,
+            traits: vec!["prompt".to_string()],
+            capabilities: vec![],
+        },
+    ]
 }
 
 fn capability_names(value: &serde_json::Value) -> Vec<String> {
@@ -490,12 +616,28 @@ fn collect_capability_names(value: &serde_json::Value, prefix: &str, names: &mut
 #[cfg(test)]
 mod tests {
     use super::{
-        configured_provider, venice_model_items, VeniceModelsApiResponse, VENICE_PROVIDER,
+        configured_provider, configured_transcription_provider, openai_transcription_models,
+        venice_model_items, VeniceModelsApiResponse, OPENAI_PROVIDER, VENICE_PROVIDER,
     };
 
     #[test]
-    fn venice_is_the_only_configured_provider() {
+    fn venice_remains_the_generation_provider() {
         assert_eq!(configured_provider(), VENICE_PROVIDER);
+    }
+
+    #[test]
+    fn openai_is_the_default_transcription_provider() {
+        assert_eq!(configured_transcription_provider(), OPENAI_PROVIDER);
+    }
+
+    #[test]
+    fn exposes_openai_transcription_models() {
+        let models = openai_transcription_models();
+
+        assert!(models
+            .iter()
+            .any(|model| model.id == "gpt-4o-mini-transcribe"));
+        assert!(models.iter().all(|model| model.provider == OPENAI_PROVIDER));
     }
 
     #[test]

@@ -57,7 +57,8 @@ describe("AppSettings", () => {
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
-        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        transcriptionProvider: "openai",
+        transcriptionModel: "gpt-4o-mini-transcribe",
         generationModel: "zai-org-glm-5",
       },
     });
@@ -65,37 +66,38 @@ describe("AppSettings", () => {
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
       selectedModel:
-        mode === "transcription"
-          ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5",
+        mode === "transcription" ? "gpt-4o-mini-transcribe" : "zai-org-glm-5",
       models:
         mode === "transcription"
           ? [
               {
-                id: "nvidia/parakeet-tdt-0.6b-v3",
-                name: "Parakeet",
+                provider: "openai",
+                id: "gpt-4o-mini-transcribe",
+                name: "GPT-4o mini Transcribe",
                 modelType: "asr",
-                description: "Speech-to-text model for transcribing audio.",
-                privacy: "private",
-                pricing: { input: { usd: 0.002 }, output: { usd: 0.006 } },
-                contextTokens: 8192,
-                traits: ["default"],
+                description: "Fast OpenAI speech-to-text model.",
+                privacy: "OpenAI",
+                pricing: { display: "$0.003/min audio" },
+                contextTokens: 16000,
+                traits: ["prompt"],
                 capabilities: [],
               },
               {
-                id: "transcribe-large",
-                name: "Transcribe Large",
+                provider: "openai",
+                id: "gpt-4o-transcribe",
+                name: "GPT-4o Transcribe",
                 modelType: "asr",
                 description: "Large transcription model.",
-                privacy: "anonymized",
-                pricing: { input: { usd: 0.004 }, output: { usd: 0.008 } },
-                contextTokens: 16384,
-                traits: [],
+                privacy: "OpenAI",
+                pricing: { display: "$0.006/min audio" },
+                contextTokens: 16000,
+                traits: ["prompt"],
                 capabilities: [],
               },
             ]
           : [
               {
+                provider: "venice",
                 id: "zai-org-glm-5",
                 name: "GLM 5",
                 modelType: "text",
@@ -107,6 +109,7 @@ describe("AppSettings", () => {
                 capabilities: ["supportsFunctionCalling"],
               },
               {
+                provider: "venice",
                 id: "venice-uncensored",
                 name: "Venice Uncensored",
                 modelType: "text",
@@ -120,8 +123,9 @@ describe("AppSettings", () => {
             ],
     }));
     mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
+      transcriptionProvider: "openai",
       transcriptionModel:
-        mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
+        mode === "transcription" ? modelId : "gpt-4o-mini-transcribe",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
@@ -295,15 +299,13 @@ describe("AppSettings", () => {
       }),
     );
     expect((await screen.findAllByText("Private")).length).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText("$0.0020 in / $0.0060 out").length,
-    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
     await user.click(
-      await screen.findByRole("option", { name: /Transcribe Large/ }),
+      await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),
     );
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "transcription",
-      "transcribe-large",
+      "gpt-4o-transcribe",
     );
 
     await user.click(

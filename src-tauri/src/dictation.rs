@@ -1,8 +1,8 @@
 use crate::domain::types::AppError;
 use crate::providers::{
-    configured_provider,
+    configured_transcription_provider,
     transcription::{transcribe_saved_audio, TranscriptionProviderResult, TranscriptionRequest},
-    VENICE_PROVIDER,
+    OPENAI_PROVIDER, VENICE_PROVIDER,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
@@ -821,7 +821,7 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 }
 
 async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
-    let provider = match dictation_transcription_provider(configured_provider()) {
+    let provider = match dictation_transcription_provider(configured_transcription_provider()) {
         Ok(provider) => provider,
         Err(error) => {
             let state = app.state::<HelperState>();
@@ -849,10 +849,10 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
 }
 
 fn dictation_transcription_provider(provider: String) -> Result<String, AppError> {
-    if provider != VENICE_PROVIDER {
+    if provider != OPENAI_PROVIDER && provider != VENICE_PROVIDER {
         return Err(AppError::new(
             "dictation_provider_not_configured",
-            "Dictation requires Venice transcription. Set VENICE_API_KEY in .env or in the shell that launches Tauri.",
+            "Dictation requires OpenAI transcription. Set OPENAI_API_KEY in .env or in the shell that launches Tauri.",
         ));
     }
     Ok(provider)
@@ -1352,19 +1352,19 @@ mod tests {
     }
 
     #[test]
-    fn dictation_rejects_non_venice_provider() {
+    fn dictation_rejects_unsupported_provider() {
         let err = dictation_transcription_provider("mock".to_string())
-            .expect_err("dictation should only accept Venice transcripts");
+            .expect_err("dictation should only accept supported transcripts");
 
         assert_eq!(err.code, "dictation_provider_not_configured");
     }
 
     #[test]
-    fn dictation_accepts_venice_provider() {
+    fn dictation_accepts_openai_provider() {
         assert_eq!(
-            dictation_transcription_provider(crate::providers::VENICE_PROVIDER.to_string())
-                .expect("venice should be accepted"),
-            crate::providers::VENICE_PROVIDER
+            dictation_transcription_provider(crate::providers::OPENAI_PROVIDER.to_string())
+                .expect("openai should be accepted"),
+            crate::providers::OPENAI_PROVIDER
         );
     }
 }

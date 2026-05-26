@@ -166,9 +166,9 @@ pub async fn process_saved_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
-    let provider = crate::providers::configured_provider();
+    let transcription_provider = crate::providers::configured_transcription_provider();
     let transcript = match transcribe_saved_audio(TranscriptionRequest {
-        provider: provider.clone(),
+        provider: transcription_provider.clone(),
         audio_path,
         title: title.clone(),
         context: None,
@@ -201,7 +201,7 @@ pub async fn process_saved_audio(
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider,
+        provider: crate::providers::configured_provider(),
         title,
         existing_generated_note,
         transcript: transcript.text,
@@ -256,7 +256,7 @@ pub async fn process_saved_source_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
-    let provider = crate::providers::configured_provider();
+    let transcription_provider = crate::providers::configured_transcription_provider();
     let mut first_transcript_id = None;
     let turns = detect_turns(
         &sources
@@ -315,7 +315,7 @@ pub async fn process_saved_source_audio(
     }
     let transcript_candidates = transcribe_turn_jobs_by_source_lane(
         transcription_jobs,
-        provider.clone(),
+        transcription_provider.clone(),
         title.clone(),
         default_turn_transcriber(),
     )
@@ -367,7 +367,7 @@ pub async fn process_saved_source_audio(
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
     let generated = match generate_note_from_transcript(GenerationRequest {
-        provider,
+        provider: crate::providers::configured_provider(),
         title,
         existing_generated_note,
         transcript: labeled_transcript,

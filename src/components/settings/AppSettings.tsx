@@ -59,7 +59,8 @@ const ACTIVATION_MODE_OPTIONS = [
 ] as const;
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
-  transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+  transcriptionProvider: "openai",
+  transcriptionModel: "gpt-4o-mini-transcribe",
   generationModel: "zai-org-glm-5",
 };
 
@@ -604,7 +605,7 @@ export function AppSettings({
       <section className="settings-group" aria-labelledby="models-heading">
         <div className="settings-group-header">
           <h2 id="models-heading" className="settings-group-heading">
-            Venice models
+            AI models
           </h2>
           <button
             type="button"
@@ -624,7 +625,7 @@ export function AppSettings({
           <div className="settings-rows">
             <ModelRow
               title="Transcription"
-              description="Used for note recordings and dictation."
+              description="OpenAI speech-to-text for note recordings and dictation."
               value={providerSettings.transcriptionModel}
               options={transcriptionOptions}
               onOpen={() => openModelPicker("transcription")}
@@ -792,6 +793,7 @@ function ModelPickerDialog({
 function selectedModel(options: VeniceModelDto[], value: string) {
   return (
     options.find((model) => model.id === value) ?? {
+      provider: "",
       id: value,
       name: value,
       modelType: "",
@@ -878,6 +880,8 @@ function privacyLabel(value: string) {
 function pricingLabel(model: VeniceModelDto) {
   const pricing = model.pricing;
   if (!pricing || typeof pricing !== "object") return "Pricing unavailable";
+  const display = (pricing as Record<string, unknown>).display;
+  if (typeof display === "string" && display.trim()) return display.trim();
   const input = priceForPath(pricing, ["input", "usd"]);
   const output = priceForPath(pricing, ["output", "usd"]);
   if (input !== undefined && output !== undefined) {
@@ -949,6 +953,7 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
   }
   return [
     {
+      provider: "",
       id: selectedModel,
       name: selectedModel,
       modelType: "",
