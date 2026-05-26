@@ -157,18 +157,6 @@ export function Sidebar({
         <button
           type="button"
           className="sidebar-nav-item"
-          data-active={activeView === "settings"}
-          aria-current={activeView === "settings" ? "page" : undefined}
-          onClick={() => onChangeView("settings")}
-        >
-          <span className="sidebar-nav-icon">
-            <IconSettingsGear1 size={16} />
-          </span>
-          <span className="sidebar-nav-label">Settings</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
           data-active={activeView === "folders"}
           aria-current={activeView === "folders" ? "page" : undefined}
           onClick={() => onChangeView("folders")}
@@ -226,6 +214,22 @@ export function Sidebar({
           </div>
         </div>
       </section>
+
+      <footer className="sidebar-footer">
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "settings"}
+          aria-current={activeView === "settings" ? "page" : undefined}
+          aria-label="Settings"
+          onClick={() => onChangeView("settings")}
+        >
+          <span className="sidebar-nav-icon">
+            <IconSettingsGear1 size={16} />
+          </span>
+          <span className="sidebar-nav-label">Settings</span>
+        </button>
+      </footer>
 
       {menu ? (
         <div

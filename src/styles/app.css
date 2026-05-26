@@ -474,6 +474,20 @@ input:focus-visible,
   padding: 0;
 }
 
+.sidebar-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: var(--sp-2);
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+}
+
+.sidebar[data-collapsed="true"] .sidebar-footer {
+  padding-top: 0;
+  border-top: 0;
+}
+
 /* Sidebar section --------------------------------------------------- */
 
 .sidebar-section {

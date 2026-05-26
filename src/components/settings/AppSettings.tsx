@@ -29,7 +29,7 @@ import type {
 } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
 import { Switch } from "../ui/Switch";
-import packageJson from "../../../package.json";
+import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
   command: false,
@@ -641,12 +641,19 @@ export function AppSettings({
           <div className="settings-rows">
             <div className="settings-row">
               <div className="settings-row-info">
-                <h3 className="settings-row-title">Version</h3>
+                <h3 className="settings-row-title">Release version</h3>
               </div>
               <div className="settings-row-control">
-                <span className="settings-version-text">
-                  {packageJson.version}
-                </span>
+                <span className="settings-version-text">{APP_VERSION}</span>
+              </div>
+            </div>
+
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Commit</h3>
+              </div>
+              <div className="settings-row-control">
+                <span className="settings-version-text">{APP_COMMIT_HASH}</span>
               </div>
             </div>
 

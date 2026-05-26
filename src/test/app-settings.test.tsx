@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
-import packageJson from "../../package.json";
+import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -406,7 +406,7 @@ describe("AppSettings", () => {
     );
   });
 
-  it("shows app version and can reopen onboarding", async () => {
+  it("shows app build metadata and can reopen onboarding", async () => {
     const user = userEvent.setup();
     const onOpenOnboarding = vi.fn();
     render(
@@ -418,8 +418,10 @@ describe("AppSettings", () => {
       />,
     );
 
-    expect(await screen.findByText("Version")).toBeInTheDocument();
-    expect(screen.getByText(packageJson.version)).toBeInTheDocument();
+    expect(await screen.findByText("Release version")).toBeInTheDocument();
+    expect(screen.getByText(APP_VERSION)).toBeInTheDocument();
+    expect(screen.getByText("Commit")).toBeInTheDocument();
+    expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Run onboarding" }));
     expect(onOpenOnboarding).toHaveBeenCalledTimes(1);
