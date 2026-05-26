@@ -2100,6 +2100,88 @@ input:focus-visible,
   color: var(--destructive);
 }
 
+/* First-run permissions onboarding ---------------------------------- */
+
+.onboarding-dialog .dialog-description {
+  max-width: 520px;
+}
+
+.onboarding-permissions {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+.onboarding-permission-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.onboarding-permission-row:first-child {
+  padding-top: 0;
+}
+
+.onboarding-permission-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.onboarding-permission-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-permission-copy h3,
+.onboarding-permission-copy p {
+  margin: 0;
+}
+
+.onboarding-permission-copy h3 {
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.onboarding-permission-copy p {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.onboarding-permission-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  min-width: 225px;
+}
+
+.onboarding-status {
+  margin: var(--sp-4) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .onboarding-permission-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: var(--sp-3);
+  }
+
+  .onboarding-permission-control {
+    min-width: 0;
+    justify-content: space-between;
+  }
+}
+
 /* Keycap frame — wraps one or more keycaps in a 28px-tall container with a
  * subtle border so the group reads as one shortcut display while each
  * keycap inside keeps its own filled bg. Matches macOS shortcut UI. */

@@ -5,6 +5,7 @@ import { DictationSettings } from "../components/dictation/DictationSettings";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
+import { PermissionsOnboarding } from "../components/onboarding/PermissionsOnboarding";
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
 import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
@@ -38,6 +39,8 @@ import type {
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
 
+const ONBOARDING_COMPLETE_KEY = "os-scribe:onboarding:permissions:v1";
+
 export function App() {
   const [state, dispatch] = useReducer(
     notesReducer,
@@ -54,6 +57,9 @@ export function App() {
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => !onboardingComplete(),
+  );
   const selectedNote = state.selectedNote;
 
   useEffect(() => {
@@ -316,6 +322,11 @@ export function App() {
     }
   }
 
+  function handleOnboardingComplete() {
+    markOnboardingComplete();
+    setShowOnboarding(false);
+  }
+
   return (
     <main
       className="app-shell"
@@ -326,6 +337,10 @@ export function App() {
         aria-hidden
         data-tauri-drag-region
         onPointerDown={handleTitlebarPointerDown}
+      />
+      <PermissionsOnboarding
+        open={showOnboarding}
+        onComplete={handleOnboardingComplete}
       />
       <Sidebar
         folders={state.folders}
@@ -538,6 +553,22 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     .catch((error: unknown) =>
       console.warn("Failed to start window drag", error),
     );
+}
+
+function onboardingComplete() {
+  try {
+    return localStorage.getItem(ONBOARDING_COMPLETE_KEY) === "complete";
+  } catch {
+    return false;
+  }
+}
+
+function markOnboardingComplete() {
+  try {
+    localStorage.setItem(ONBOARDING_COMPLETE_KEY, "complete");
+  } catch {
+    // If storage is unavailable, keep the app usable for this session.
+  }
 }
 
 function recordingToStatus(recording: {
