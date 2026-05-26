@@ -213,11 +213,7 @@ pub async fn create_dictionary_entry(
     }
     Ok(repositories(&app)
         .await?
-        .create_dictionary_entry(
-            phrase,
-            request.pronunciation.as_deref(),
-            request.description.as_deref(),
-        )
+        .create_dictionary_entry(phrase)
         .await?)
 }
 
@@ -235,12 +231,7 @@ pub async fn update_dictionary_entry(
     }
     repositories(&app)
         .await?
-        .update_dictionary_entry(
-            &request.entry_id,
-            phrase,
-            request.pronunciation.as_deref(),
-            request.description.as_deref(),
-        )
+        .update_dictionary_entry(&request.entry_id, phrase)
         .await
 }
 

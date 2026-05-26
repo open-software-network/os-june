@@ -26,8 +26,6 @@ describe("DictionaryWorkspace", () => {
       {
         id: "entry-1",
         phrase: "Junho Hong",
-        pronunciation: "joon-ho hong",
-        description: "User name",
         createdAt: now,
         updatedAt: now,
       },
@@ -41,8 +39,6 @@ describe("DictionaryWorkspace", () => {
     mocks.updateDictionaryEntry.mockImplementation(async (input) => ({
       id: input.entryId,
       phrase: input.phrase,
-      pronunciation: input.pronunciation,
-      description: input.description,
       createdAt: now,
       updatedAt: now,
     }));
@@ -54,33 +50,33 @@ describe("DictionaryWorkspace", () => {
     render(<DictionaryWorkspace />);
 
     expect(await screen.findByText("Junho Hong")).toBeInTheDocument();
-    expect(screen.getByText("Sounds like joon-ho hong")).toBeInTheDocument();
+    expect(screen.queryByText(/Sounds like/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Notes")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Word or phrase"), "OSS");
-    await user.type(screen.getByLabelText("Sounds like"), "oh ess ess");
-    await user.type(screen.getByLabelText("Notes"), "Acronym");
     await user.click(screen.getByRole("button", { name: "Add" }));
 
     expect(mocks.createDictionaryEntry).toHaveBeenCalledWith({
       phrase: "OSS",
-      pronunciation: "oh ess ess",
-      description: "Acronym",
     });
     expect(await screen.findByText("OSS")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Edit OSS" }));
-    await user.clear(screen.getByLabelText("Notes"));
-    await user.type(screen.getByLabelText("Notes"), "Open Source Software");
+    await user.clear(screen.getByLabelText("Word or phrase"));
+    await user.type(
+      screen.getByLabelText("Word or phrase"),
+      "Open Source Software",
+    );
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(mocks.updateDictionaryEntry).toHaveBeenCalledWith({
       entryId: "entry-2",
-      phrase: "OSS",
-      pronunciation: "oh ess ess",
-      description: "Open Source Software",
+      phrase: "Open Source Software",
     });
 
-    await user.click(screen.getByRole("button", { name: "Delete OSS" }));
+    await user.click(
+      screen.getByRole("button", { name: "Delete Open Source Software" }),
+    );
     await waitFor(() =>
       expect(mocks.deleteDictionaryEntry).toHaveBeenCalledWith("entry-2"),
     );

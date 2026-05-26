@@ -168,10 +168,6 @@ pub struct RemoveNoteFromFolderRequest {
 pub struct DictionaryEntryDto {
     pub id: String,
     pub phrase: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pronunciation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -180,10 +176,6 @@ pub struct DictionaryEntryDto {
 #[serde(rename_all = "camelCase")]
 pub struct CreateDictionaryEntryRequest {
     pub phrase: String,
-    #[serde(default)]
-    pub pronunciation: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,10 +183,6 @@ pub struct CreateDictionaryEntryRequest {
 pub struct UpdateDictionaryEntryRequest {
     pub entry_id: String,
     pub phrase: String,
-    #[serde(default)]
-    pub pronunciation: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

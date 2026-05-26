@@ -127,20 +127,7 @@ pub fn build_dictionary_context(entries: &[DictionaryEntryDto]) -> Option<String
         .iter()
         .filter(|entry| !entry.phrase.trim().is_empty())
         .take(DICTIONARY_CONTEXT_MAX_ENTRIES)
-        .map(|entry| {
-            let mut line = format!("- {}", entry.phrase.trim());
-            if let Some(pronunciation) = entry.pronunciation.as_deref().map(str::trim) {
-                if !pronunciation.is_empty() {
-                    line.push_str(&format!(" (sounds like: {pronunciation})"));
-                }
-            }
-            if let Some(description) = entry.description.as_deref().map(str::trim) {
-                if !description.is_empty() {
-                    line.push_str(&format!(" — {description}"));
-                }
-            }
-            line
-        })
+        .map(|entry| format!("- {}", entry.phrase.trim()))
         .collect::<Vec<_>>();
     if lines.is_empty() {
         return None;

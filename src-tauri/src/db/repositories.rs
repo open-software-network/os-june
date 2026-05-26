@@ -257,7 +257,7 @@ impl Repositories {
 
     pub async fn list_dictionary_entries(&self) -> Result<Vec<DictionaryEntryDto>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, phrase, pronunciation, description, created_at, updated_at
+            "SELECT id, phrase, created_at, updated_at
              FROM dictionary_entries
              WHERE deleted_at IS NULL
              ORDER BY lower(phrase) ASC, created_at ASC",
@@ -270,26 +270,20 @@ impl Repositories {
     pub async fn create_dictionary_entry(
         &self,
         phrase: &str,
-        pronunciation: Option<&str>,
-        description: Option<&str>,
     ) -> Result<DictionaryEntryDto, sqlx::Error> {
         let now = timestamp();
         let entry = DictionaryEntryDto {
             id: Uuid::new_v4().to_string(),
             phrase: phrase.trim().to_string(),
-            pronunciation: clean_optional_text(pronunciation),
-            description: clean_optional_text(description),
             created_at: now.clone(),
             updated_at: now,
         };
         sqlx::query(
-            "INSERT INTO dictionary_entries (id, phrase, pronunciation, description, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO dictionary_entries (id, phrase, created_at, updated_at)
+             VALUES (?, ?, ?, ?)",
         )
         .bind(&entry.id)
         .bind(&entry.phrase)
-        .bind(&entry.pronunciation)
-        .bind(&entry.description)
         .bind(&entry.created_at)
         .bind(&entry.updated_at)
         .execute(&self.pool)
@@ -301,18 +295,14 @@ impl Repositories {
         &self,
         entry_id: &str,
         phrase: &str,
-        pronunciation: Option<&str>,
-        description: Option<&str>,
     ) -> Result<DictionaryEntryDto, AppError> {
         let now = timestamp();
         let result = sqlx::query(
             "UPDATE dictionary_entries
-             SET phrase = ?, pronunciation = ?, description = ?, updated_at = ?
+             SET phrase = ?, updated_at = ?
              WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(phrase.trim())
-        .bind(clean_optional_text(pronunciation))
-        .bind(clean_optional_text(description))
         .bind(&now)
         .bind(entry_id)
         .execute(&self.pool)
@@ -324,7 +314,7 @@ impl Repositories {
             ));
         }
         let row = sqlx::query(
-            "SELECT id, phrase, pronunciation, description, created_at, updated_at
+            "SELECT id, phrase, created_at, updated_at
              FROM dictionary_entries
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -1604,23 +1594,9 @@ fn dictionary_entry_from_row(row: sqlx::sqlite::SqliteRow) -> DictionaryEntryDto
     DictionaryEntryDto {
         id: row.get("id"),
         phrase: row.get("phrase"),
-        pronunciation: row
-            .try_get::<Option<String>, _>("pronunciation")
-            .unwrap_or(None)
-            .and_then(|value| clean_optional_text(Some(value.as_str()))),
-        description: row
-            .try_get::<Option<String>, _>("description")
-            .unwrap_or(None)
-            .and_then(|value| clean_optional_text(Some(value.as_str()))),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
-}
-
-fn clean_optional_text(value: Option<&str>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn preview_for(title: &str, content: &str) -> String {

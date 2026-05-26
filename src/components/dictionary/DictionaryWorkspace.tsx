@@ -12,14 +12,10 @@ import type { DictionaryEntryDto } from "../../lib/tauri";
 
 type Draft = {
   phrase: string;
-  pronunciation: string;
-  description: string;
 };
 
 const EMPTY_DRAFT: Draft = {
   phrase: "",
-  pronunciation: "",
-  description: "",
 };
 
 export function DictionaryWorkspace() {
@@ -37,11 +33,7 @@ export function DictionaryWorkspace() {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return entries;
     return entries.filter((entry) =>
-      [entry.phrase, entry.pronunciation, entry.description]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(normalized),
+      entry.phrase.toLowerCase().includes(normalized),
     );
   }, [entries, query]);
 
@@ -61,8 +53,6 @@ export function DictionaryWorkspace() {
     }
     const input = {
       phrase,
-      pronunciation: cleanOptional(draft.pronunciation),
-      description: cleanOptional(draft.description),
     };
     try {
       const entry = editingId
@@ -101,8 +91,6 @@ export function DictionaryWorkspace() {
     setEditingId(entry.id);
     setDraft({
       phrase: entry.phrase,
-      pronunciation: entry.pronunciation ?? "",
-      description: entry.description ?? "",
     });
   }
 
@@ -112,7 +100,7 @@ export function DictionaryWorkspace() {
         <div>
           <h1 className="dictionary-title">Dictionary</h1>
           <p className="dictionary-description">
-            Custom words and names to prefer during transcription.
+            Custom words and phrases to prefer during transcription.
           </p>
         </div>
         <input
@@ -127,7 +115,7 @@ export function DictionaryWorkspace() {
       {status ? <p className="dictionary-status">{status}</p> : null}
 
       <section className="dictionary-card" aria-label="Add dictionary entry">
-        <div className="dictionary-form">
+        <div className="dictionary-form dictionary-form-simple">
           <label>
             <span>Word or phrase</span>
             <input
@@ -140,34 +128,6 @@ export function DictionaryWorkspace() {
                 }));
               }}
               placeholder="Junho Hong"
-            />
-          </label>
-          <label>
-            <span>Sounds like</span>
-            <input
-              value={draft.pronunciation}
-              onChange={(event) => {
-                const pronunciation = event.currentTarget.value;
-                setDraft((current) => ({
-                  ...current,
-                  pronunciation,
-                }));
-              }}
-              placeholder="joon-ho hong"
-            />
-          </label>
-          <label className="dictionary-form-wide">
-            <span>Notes</span>
-            <input
-              value={draft.description}
-              onChange={(event) => {
-                const description = event.currentTarget.value;
-                setDraft((current) => ({
-                  ...current,
-                  description,
-                }));
-              }}
-              placeholder="Person, company, product, acronym..."
             />
           </label>
           <div className="dictionary-actions">
@@ -201,10 +161,6 @@ export function DictionaryWorkspace() {
             <article key={entry.id} className="dictionary-entry">
               <div className="dictionary-entry-main">
                 <h2>{entry.phrase}</h2>
-                {entry.pronunciation ? (
-                  <p>Sounds like {entry.pronunciation}</p>
-                ) : null}
-                {entry.description ? <p>{entry.description}</p> : null}
               </div>
               <div className="dictionary-entry-actions">
                 <button
@@ -234,10 +190,6 @@ export function DictionaryWorkspace() {
       </section>
     </div>
   );
-}
-
-function cleanOptional(value: string) {
-  return value.trim() || undefined;
 }
 
 function compareEntries(left: DictionaryEntryDto, right: DictionaryEntryDto) {

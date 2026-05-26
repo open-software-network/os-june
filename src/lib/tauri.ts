@@ -21,8 +21,6 @@ export type FolderDto = {
 export type DictionaryEntryDto = {
   id: string;
   phrase: string;
-  pronunciation?: string;
-  description?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -379,11 +377,7 @@ export async function listDictionaryEntries() {
   return invoke<DictionaryEntryDto[]>("list_dictionary_entries");
 }
 
-export async function createDictionaryEntry(input: {
-  phrase: string;
-  pronunciation?: string;
-  description?: string;
-}) {
+export async function createDictionaryEntry(input: { phrase: string }) {
   return invoke<DictionaryEntryDto>("create_dictionary_entry", {
     request: input,
   });
@@ -392,8 +386,6 @@ export async function createDictionaryEntry(input: {
 export async function updateDictionaryEntry(input: {
   entryId: string;
   phrase: string;
-  pronunciation?: string;
-  description?: string;
 }) {
   return invoke<DictionaryEntryDto>("update_dictionary_entry", {
     request: input,
