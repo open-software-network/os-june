@@ -52,6 +52,7 @@ const FN_SPACE_SHORTCUT: Pick<
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   shortcut: BARE_FN_SHORTCUT,
+  activationMode: "push_to_talk",
   microphone: {},
 };
 

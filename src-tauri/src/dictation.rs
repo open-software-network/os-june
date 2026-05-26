@@ -52,10 +52,11 @@ pub struct HotkeyManager {
 const FN_HOLD_THRESHOLD_MS: u64 = 175;
 const FN_DOUBLE_TAP_WINDOW_MS: u64 = 350;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSettings {
     pub shortcut: DictationShortcutSetting,
+    pub activation_mode: DictationActivationMode,
     pub microphone: DictationMicrophoneSetting,
 }
 
@@ -63,8 +64,40 @@ impl Default for DictationSettings {
     fn default() -> Self {
         Self {
             shortcut: DictationShortcutSetting::bare_fn(),
+            activation_mode: DictationActivationMode::default(),
             microphone: DictationMicrophoneSetting::default(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for DictationSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SettingsValue {
+            shortcut: Option<DictationShortcutSetting>,
+            activation_mode: Option<DictationActivationMode>,
+            microphone: Option<DictationMicrophoneSetting>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let has_activation_mode = value.get("activationMode").is_some();
+        let settings: SettingsValue = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+
+        Ok(Self {
+            shortcut: if has_activation_mode {
+                settings
+                    .shortcut
+                    .unwrap_or_else(DictationShortcutSetting::bare_fn)
+            } else {
+                DictationShortcutSetting::bare_fn()
+            },
+            activation_mode: settings.activation_mode.unwrap_or_default(),
+            microphone: settings.microphone.unwrap_or_default(),
+        })
     }
 }
 
@@ -139,6 +172,14 @@ pub struct DictationShortcutInput {
     pub code: String,
     pub modifiers: DictationShortcutModifiers,
     pub label: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictationActivationMode {
+    #[default]
+    PushToTalk,
+    Toggle,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -531,6 +572,19 @@ pub fn set_dictation_microphone(
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
     apply_microphone_setting(&helper_state, &settings.microphone)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn set_dictation_activation_mode(
+    app: AppHandle,
+    state: State<'_, DictationSettingsState>,
+    activation_mode: DictationActivationMode,
+) -> Result<DictationSettings, AppError> {
+    let settings = update_settings(&state, |settings| {
+        settings.activation_mode = activation_mode;
+    })?;
+    reset_fn_activation(&app);
     Ok(settings)
 }
 
@@ -1553,25 +1607,41 @@ mod tests {
         assert_eq!(settings.shortcut.code, "Fn");
         assert_eq!(settings.shortcut.key_code, 0);
         assert!(settings.shortcut.modifiers.function);
+        assert_eq!(settings.activation_mode, DictationActivationMode::PushToTalk);
     }
 
     #[test]
     fn deserializes_shortcut_preset() {
         let settings: DictationSettings = serde_json::from_str(
-            r#"{"shortcut":"control_option_space","microphone":{"id":null,"name":null}}"#,
+            r#"{"shortcut":"control_option_space","activationMode":"toggle","microphone":{"id":null,"name":null}}"#,
         )
         .expect("preset should deserialize");
 
         assert_eq!(settings.shortcut.label, "Ctrl+Opt+Space");
         assert!(settings.shortcut.modifiers.control);
         assert!(settings.shortcut.modifiers.option);
+        assert_eq!(settings.activation_mode, DictationActivationMode::Toggle);
+    }
+
+    #[test]
+    fn old_settings_without_activation_mode_migrate_to_fn_push_to_talk() {
+        let settings: DictationSettings = serde_json::from_str(
+            r#"{"shortcut":"control_option_space","microphone":{"id":"usb","name":"USB Mic"}}"#,
+        )
+        .expect("legacy settings should deserialize");
+
+        assert_eq!(settings.shortcut, DictationShortcutSetting::bare_fn());
+        assert_eq!(settings.activation_mode, DictationActivationMode::PushToTalk);
+        assert_eq!(settings.microphone.id.as_deref(), Some("usb"));
+        assert_eq!(settings.microphone.name.as_deref(), Some("USB Mic"));
     }
 
     #[test]
     fn deserializes_bare_fn_shortcut_preset() {
-        let settings: DictationSettings =
-            serde_json::from_str(r#"{"shortcut":"bare_fn","microphone":{"id":null,"name":null}}"#)
-                .expect("preset should deserialize");
+        let settings: DictationSettings = serde_json::from_str(
+            r#"{"shortcut":"bare_fn","activationMode":"push_to_talk","microphone":{"id":null,"name":null}}"#,
+        )
+        .expect("preset should deserialize");
 
         assert_eq!(settings.shortcut, DictationShortcutSetting::bare_fn());
         assert!(is_bare_fn_shortcut(&settings.shortcut));

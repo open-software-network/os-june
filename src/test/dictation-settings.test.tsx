@@ -38,6 +38,7 @@ const baseSettings: DictationSettingsDto = {
       function: true,
     },
   },
+  activationMode: "push_to_talk",
   microphone: {},
 };
 

@@ -80,6 +80,8 @@ export type DictationShortcutSetting = {
   label: string;
 };
 
+export type DictationActivationMode = "push_to_talk" | "toggle";
+
 export type DictationMicrophoneSetting = {
   id?: string;
   name?: string;
@@ -87,6 +89,7 @@ export type DictationMicrophoneSetting = {
 
 export type DictationSettingsDto = {
   shortcut: DictationShortcutSetting;
+  activationMode: DictationActivationMode;
   microphone: DictationMicrophoneSetting;
 };
 
@@ -417,6 +420,14 @@ export async function setDictationShortcut(
   shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label">,
 ) {
   return invoke<DictationSettingsDto>("set_dictation_shortcut", { shortcut });
+}
+
+export async function setDictationActivationMode(
+  activationMode: DictationActivationMode,
+) {
+  return invoke<DictationSettingsDto>("set_dictation_activation_mode", {
+    activationMode,
+  });
 }
 
 export async function setDictationMicrophone(id?: string, name?: string) {

@@ -34,6 +34,7 @@ pub fn run() {
             commands::recover_recording,
             dictation::dictation_settings,
             dictation::set_dictation_shortcut,
+            dictation::set_dictation_activation_mode,
             dictation::set_dictation_microphone,
             dictation::dictation_helper_command,
             dictation::dictation_hotkey_status,
