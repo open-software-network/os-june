@@ -58,7 +58,8 @@
     "targets": ["app"],
     "resources": {
       "../.tauri-helper/OS Scribe.app": "native/bin/OS Scribe.app",
-      "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app"
+      "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app",
+      "../.tauri-helper/OS Scribe Meeting Detector.app": "native/bin/OS Scribe Meeting Detector.app"
     },
     "macOS": {
       "bundleName": "OS Scribe",

@@ -4,6 +4,7 @@ pub mod commands;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod meeting_detection;
 pub mod providers;
 
 pub fn run() {
@@ -46,6 +47,11 @@ pub fn run() {
             dictation::dictation_hud_set_pill_bounds,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,
+            meeting_detection::latest_meeting_detection_event,
+            meeting_detection::dismiss_detected_meeting,
+            meeting_detection::start_detected_meeting_recording,
+            meeting_detection::meeting_detection_hud_prepare_prompt,
+            meeting_detection::meeting_detection_hud_restore_compact,
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model
@@ -53,6 +59,7 @@ pub fn run() {
         .setup(|app| {
             providers::setup(app);
             dictation::setup(app);
+            meeting_detection::setup(app);
             Ok(())
         })
         .build(context)
@@ -60,6 +67,7 @@ pub fn run() {
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 dictation::stop_helper(app);
+                meeting_detection::stop_helper(app);
             }
         });
 }

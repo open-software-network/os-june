@@ -306,9 +306,21 @@ pub async fn start_recording(
     app: AppHandle,
     request: StartRecordingRequest,
 ) -> Result<RecordingSessionDto, AppError> {
+    start_recording_for_note(
+        &app,
+        request.note_id,
+        request.source_mode.unwrap_or_default(),
+    )
+    .await
+}
+
+pub(crate) async fn start_recording_for_note(
+    app: &AppHandle,
+    note_id: String,
+    source_mode: RecordingSourceMode,
+) -> Result<RecordingSessionDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
-    let source_mode = request.source_mode.unwrap_or_default();
     let readiness = recording_source_readiness(source_mode);
     if !readiness.ready {
         let message = readiness
@@ -319,10 +331,10 @@ pub async fn start_recording(
             .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
         return Err(AppError::new("source_not_ready", message));
     }
-    let started = start_capture(&paths, request.note_id.clone(), source_mode)?;
+    let started = start_capture(&paths, note_id.clone(), source_mode)?;
     repos
         .create_recording_session(
-            &request.note_id,
+            &note_id,
             &started.session_id,
             source_mode,
             &started.partial_path.to_string_lossy(),
@@ -333,7 +345,7 @@ pub async fn start_recording(
     for source in &started.sources {
         repos
             .create_pending_source_artifact(
-                &request.note_id,
+                &note_id,
                 &started.session_id,
                 source.source.as_db(),
                 &source.partial_path.to_string_lossy(),
@@ -343,7 +355,7 @@ pub async fn start_recording(
     }
     Ok(RecordingSessionDto {
         id: started.session_id,
-        note_id: request.note_id,
+        note_id,
         source_mode,
         state: started.status.state,
         started_at: crate::db::repositories::timestamp(),
@@ -588,7 +600,9 @@ pub async fn finish_recording(
     })
 }
 
-fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
+pub(crate) fn recording_source_readiness(
+    source_mode: RecordingSourceMode,
+) -> RecordingSourceReadinessDto {
     let (microphone_state, microphone_hint) = microphone_permission_state();
     let microphone_ready = microphone_state == "granted";
     let mut sources = vec![SourceReadinessDto {

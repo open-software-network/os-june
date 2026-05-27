@@ -326,6 +326,13 @@ pub fn capture_status(session_id: &str) -> Result<RecordingStatusDto, AppError> 
     Ok(recording.status())
 }
 
+pub fn has_active_recording() -> bool {
+    ACTIVE_RECORDING
+        .lock()
+        .map(|active| active.is_some())
+        .unwrap_or(false)
+}
+
 pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
     let mut active = lock_active()?;
     let Some(recording) = active.take() else {
