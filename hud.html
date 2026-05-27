@@ -39,6 +39,32 @@
         class="hud-error-text"
         aria-hidden="true"
       ></span>
+      <div id="hud-meeting" class="hud-meeting" aria-live="polite">
+        <div class="hud-meeting-copy">
+          <span id="hud-meeting-app" class="hud-meeting-app">Meeting app</span>
+          <span class="hud-meeting-question">Transcribe this meeting?</span>
+        </div>
+        <div class="hud-meeting-actions">
+          <button
+            id="hud-meeting-start"
+            class="hud-meeting-button hud-meeting-start"
+            type="button"
+            aria-label="Start meeting transcription"
+            title="Start"
+          >
+            <span class="hud-meeting-start-glyph" aria-hidden="true"></span>
+          </button>
+          <button
+            id="hud-meeting-dismiss"
+            class="hud-meeting-button hud-meeting-dismiss"
+            type="button"
+            aria-label="Dismiss meeting prompt"
+            title="Dismiss"
+          >
+            <span class="hud-meeting-dismiss-glyph" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
       <button
         id="hud-stop"
         class="hud-stop"

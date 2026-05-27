@@ -125,6 +125,26 @@ export type DictationHelperEvent = {
   };
 };
 
+export type MeetingDetectionPayload = {
+  detectionId: string;
+  appName: string;
+  bundleId: string;
+  pid: number;
+  windowTitle?: string;
+  message?: string;
+  code?: string;
+};
+
+export type MeetingDetectionEvent = {
+  type: "detected" | "ended" | "dismissed" | "started" | "error" | string;
+  payload?: MeetingDetectionPayload;
+};
+
+export type MeetingRecordingStartedResponse = {
+  note: NoteDto;
+  recording: RecordingSessionDto;
+};
+
 export type ProviderModelMode = "transcription" | "generation";
 
 export type ProviderModelSettingsDto = {
@@ -542,4 +562,29 @@ export async function dictationHotkeyStatus() {
 export async function latestDictationEvent() {
   const payload = await invoke<string | undefined>("latest_dictation_event");
   return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
+}
+
+export async function latestMeetingDetectionEvent() {
+  return invoke<MeetingDetectionEvent | undefined>(
+    "latest_meeting_detection_event",
+  );
+}
+
+export async function dismissDetectedMeeting(detectionId: string) {
+  return invoke<void>("dismiss_detected_meeting", { detectionId });
+}
+
+export async function startDetectedMeetingRecording(detectionId: string) {
+  return invoke<MeetingRecordingStartedResponse>(
+    "start_detected_meeting_recording",
+    { detectionId },
+  );
+}
+
+export async function prepareMeetingHudPrompt() {
+  return invoke<void>("meeting_detection_hud_prepare_prompt");
+}
+
+export async function restoreCompactHud() {
+  return invoke<void>("meeting_detection_hud_restore_compact");
 }

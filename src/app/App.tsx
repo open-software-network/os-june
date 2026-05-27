@@ -40,6 +40,7 @@ import {
 import type {
   BootstrapResponse,
   DictationHelperEvent,
+  MeetingRecordingStartedResponse,
   NoteDto,
   RecordingStatusDto,
 } from "../lib/tauri";
@@ -105,6 +106,35 @@ export function App() {
 
   useEffect(() => {
     preloadRecordingSounds();
+  }, []);
+
+  useEffect(() => {
+    let unlistenStarted: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    void listen<MeetingRecordingStartedResponse>(
+      "meeting-recording-started",
+      (event) => {
+        dispatch({ type: "noteLoaded", note: event.payload.note });
+        dispatch({
+          type: "recordingStatusChanged",
+          status: recordingToStatus(event.payload.recording),
+        });
+        setActiveView("notes");
+        setOriginFolderId(undefined);
+        playRecordingSound("start");
+      },
+    ).then((cleanup) => {
+      unlistenStarted = cleanup;
+    });
+    void listen("meeting-detection-error", (event) => {
+      setError(messageFromError(event.payload));
+    }).then((cleanup) => {
+      unlistenError = cleanup;
+    });
+    return () => {
+      unlistenStarted?.();
+      unlistenError?.();
+    };
   }, []);
 
   useEffect(() => {

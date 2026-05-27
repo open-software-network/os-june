@@ -218,6 +218,109 @@ body {
   transform: translateY(-0.5px);
 }
 
+/* Meeting prompt ------------------------------------------------------ */
+.hud-meeting {
+  display: none;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.hud-meeting-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.hud-meeting-app,
+.hud-meeting-question {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-meeting-app {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.hud-meeting-question {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.hud-meeting-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.hud-meeting-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--foreground);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.hud-meeting-button:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 42%, transparent);
+  outline-offset: 1px;
+}
+
+.hud-meeting-start {
+  background: color-mix(in oklch, var(--accent) 88%, var(--foreground) 12%);
+}
+
+.hud-meeting-start:hover {
+  background: color-mix(in oklch, var(--accent) 78%, var(--foreground) 22%);
+}
+
+.hud-meeting-dismiss {
+  background: color-mix(in oklch, var(--foreground) 7%, transparent);
+}
+
+.hud-meeting-dismiss:hover {
+  background: color-mix(in oklch, var(--foreground) 13%, transparent);
+}
+
+.hud-meeting-start-glyph {
+  width: 0;
+  height: 0;
+  margin-left: 2px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid currentColor;
+}
+
+.hud-meeting-dismiss-glyph,
+.hud-meeting-dismiss-glyph::before {
+  position: absolute;
+  width: 12px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+
+.hud-meeting-dismiss-glyph::before {
+  content: "";
+  inset: 0;
+  transform: rotate(90deg);
+}
+
 /* Stop button ---------------------------------------------------------- */
 .hud-stop {
   position: relative;
@@ -293,7 +396,9 @@ body {
 
 /* State machine ------------------------------------------------------- */
 .hud[data-state="silent-error"] .hud-handle,
-.hud[data-state="error"] .hud-handle {
+.hud[data-state="error"] .hud-handle,
+.hud[data-state="meeting-prompt"] .hud-handle,
+.hud[data-state="meeting-error"] .hud-handle {
   display: none;
 }
 
@@ -318,6 +423,26 @@ body {
   background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
 }
 
+.hud[data-state="meeting-prompt"] {
+  width: min(360px, calc(100vw - 24px));
+  height: 50px;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--r-lg);
+  pointer-events: auto;
+}
+
+.hud[data-state="meeting-error"] {
+  min-width: min(320px, calc(100vw - 24px));
+  height: 42px;
+  justify-content: center;
+  padding-inline: var(--sp-4);
+  border-color: color-mix(in oklch, var(--hud-danger) 28%, var(--border));
+  background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
+  animation: hud-shake 380ms var(--ease-out);
+}
+
 .hud[data-state="transcribing"] .hud-viz,
 .hud[data-state="pasting"] .hud-viz {
   /* Braille replaces the bars + stop-button footprint while the handle stays
@@ -326,14 +451,18 @@ body {
 }
 
 .hud[data-state="silent-error"] .hud-viz,
-.hud[data-state="error"] .hud-viz {
+.hud[data-state="error"] .hud-viz,
+.hud[data-state="meeting-prompt"] .hud-viz,
+.hud[data-state="meeting-error"] .hud-viz {
   display: none;
 }
 
 .hud[data-state="transcribing"] .hud-bars,
 .hud[data-state="pasting"] .hud-bars,
 .hud[data-state="silent-error"] .hud-bars,
-.hud[data-state="error"] .hud-bars {
+.hud[data-state="error"] .hud-bars,
+.hud[data-state="meeting-prompt"] .hud-bars,
+.hud[data-state="meeting-error"] .hud-bars {
   display: none;
 }
 
@@ -343,15 +472,22 @@ body {
 }
 
 .hud[data-state="silent-error"] .hud-error-text,
-.hud[data-state="error"] .hud-error-text {
+.hud[data-state="error"] .hud-error-text,
+.hud[data-state="meeting-error"] .hud-error-text {
   display: block;
+}
+
+.hud[data-state="meeting-prompt"] .hud-meeting {
+  display: flex;
 }
 
 /* Stop button only matters while we're still capturing audio. */
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
 .hud[data-state="silent-error"] .hud-stop,
-.hud[data-state="error"] .hud-stop {
+.hud[data-state="error"] .hud-stop,
+.hud[data-state="meeting-prompt"] .hud-stop,
+.hud[data-state="meeting-error"] .hud-stop {
   display: none;
 }
 

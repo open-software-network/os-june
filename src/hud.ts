@@ -15,6 +15,17 @@ type DictationHudEvent = {
   };
 };
 
+type MeetingHudEvent = {
+  type: string;
+  payload?: {
+    detectionId?: string;
+    appName?: string;
+    message?: string;
+    code?: string;
+    [key: string]: unknown;
+  };
+};
+
 const appWindow = getCurrentWindow();
 const hud = document.querySelector<HTMLDivElement>("#hud");
 const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
@@ -23,10 +34,17 @@ const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
 const statusText = document.querySelector<HTMLElement>("#hud-status");
+const meetingApp = document.querySelector<HTMLElement>("#hud-meeting-app");
+const meetingStartButton =
+  document.querySelector<HTMLButtonElement>("#hud-meeting-start");
+const meetingDismissButton = document.querySelector<HTMLButtonElement>(
+  "#hud-meeting-dismiss",
+);
 
 let hideTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
+let currentMeetingDetectionId: string | undefined;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -110,6 +128,14 @@ function setHud(state: string, status: string) {
     hud.offsetWidth;
     pushPillBoundsToNative();
   }
+}
+
+async function prepareMeetingHud() {
+  await invoke("meeting_detection_hud_prepare_prompt").catch(() => {});
+}
+
+async function restoreCompactHud() {
+  await invoke("meeting_detection_hud_restore_compact").catch(() => {});
 }
 
 function startBarLoop() {
@@ -239,6 +265,7 @@ async function hideHud() {
   clearHideTimer();
   clearStopHover();
   clearPillBounds();
+  const wasMeeting = hud?.dataset.state?.startsWith("meeting") ?? false;
   if (hud) {
     hud.dataset.state = "exiting";
     stopBraille();
@@ -247,6 +274,10 @@ async function hideHud() {
     );
   }
   await appWindow.hide();
+  if (wasMeeting) {
+    currentMeetingDetectionId = undefined;
+    await restoreCompactHud();
+  }
 }
 
 async function showHud() {
@@ -268,6 +299,10 @@ function hideSoon(delay = 900) {
 async function handleDictationEventPayload(payload: unknown) {
   const dictationEvent = parseEvent(payload);
   if (!dictationEvent) return;
+
+  if (hud?.dataset.state?.startsWith("meeting")) {
+    await hideHud();
+  }
 
   if (dictationEvent.type === "listening_started") {
     resetBars();
@@ -323,6 +358,46 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 }
 
+async function handleMeetingEventPayload(payload: unknown) {
+  const meetingEvent = parseEvent(payload) as MeetingHudEvent | undefined;
+  if (!meetingEvent) return;
+
+  if (meetingEvent.type === "detected") {
+    const detectionId = stringValue(meetingEvent.payload?.detectionId);
+    if (!detectionId) return;
+    currentMeetingDetectionId = detectionId;
+    if (meetingApp) {
+      meetingApp.textContent =
+        stringValue(meetingEvent.payload?.appName) || "Meeting app";
+    }
+    await prepareMeetingHud();
+    setHud("meeting-prompt", "Transcribe this meeting?");
+    await showHud();
+    return;
+  }
+
+  if (
+    meetingEvent.type === "ended" ||
+    meetingEvent.type === "dismissed" ||
+    meetingEvent.type === "started"
+  ) {
+    if (hud?.dataset.state?.startsWith("meeting")) {
+      await hideHud();
+    }
+    return;
+  }
+
+  if (meetingEvent.type === "error") {
+    const message =
+      stringValue(meetingEvent.payload?.message) || "Meeting recording failed";
+    currentMeetingDetectionId = undefined;
+    await prepareMeetingHud();
+    setHud("meeting-error", message);
+    await showHud();
+    hideSoon(2200);
+  }
+}
+
 function parseEvent(payload: unknown): DictationHudEvent | undefined {
   try {
     if (typeof payload === "string") {
@@ -335,6 +410,10 @@ function parseEvent(payload: unknown): DictationHudEvent | undefined {
     return undefined;
   }
   return undefined;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : undefined;
 }
 
 dragHandle?.addEventListener("pointerdown", (event) => {
@@ -359,8 +438,44 @@ stopButton?.addEventListener("click", async (event) => {
   }
 });
 
+meetingStartButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  const detectionId = currentMeetingDetectionId;
+  if (!detectionId) return;
+  meetingStartButton.disabled = true;
+  meetingDismissButton?.setAttribute("disabled", "true");
+  try {
+    await invoke("start_detected_meeting_recording", { detectionId });
+    await hideHud();
+  } catch (error) {
+    const message =
+      error && typeof error === "object" && "message" in error
+        ? String((error as { message: unknown }).message)
+        : "Meeting recording failed";
+    setHud("meeting-error", message);
+    hideSoon(2200);
+  } finally {
+    meetingStartButton.disabled = false;
+    meetingDismissButton?.removeAttribute("disabled");
+  }
+});
+
+meetingDismissButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  const detectionId = currentMeetingDetectionId;
+  currentMeetingDetectionId = undefined;
+  if (detectionId) {
+    await invoke("dismiss_detected_meeting", { detectionId }).catch(() => {});
+  }
+  await hideHud();
+});
+
 void listen("dictation-event", async (event) => {
   await handleDictationEventPayload(event.payload);
+});
+
+void listen("meeting-detection-event", async (event) => {
+  await handleMeetingEventPayload(event.payload);
 });
 
 void listen<boolean>("hud-stop-hover", (event) => {
@@ -371,6 +486,14 @@ void invoke<string | undefined>("latest_dictation_event")
   .then((payload) => {
     if (payload) {
       return handleDictationEventPayload(payload);
+    }
+  })
+  .catch(() => {});
+
+void invoke<MeetingHudEvent | undefined>("latest_meeting_detection_event")
+  .then((payload) => {
+    if (payload) {
+      return handleMeetingEventPayload(payload);
     }
   })
   .catch(() => {});
