@@ -1,6 +1,8 @@
 import { IconBooks } from "central-icons/IconBooks";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
+import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconFolders } from "central-icons/IconFolders";
 import { IconFontStyle } from "central-icons/IconFontStyle";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -9,7 +11,8 @@ import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconSidebarHiddenLeftWide } from "central-icons/IconSidebarHiddenLeftWide";
 import { IconSidebarSimpleLeftWide } from "central-icons/IconSidebarSimpleLeftWide";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { NOTE_DND_MIME } from "../../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
 export type SidebarView =
@@ -32,6 +35,8 @@ type SidebarProps = {
   onSelectFolder: (folderId: string) => void;
   onSelectNote: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
+  onOpenMoveDialog: (noteId: string) => void;
+  onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   recoverableNoteIds?: ReadonlySet<string>;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
@@ -52,6 +57,8 @@ export function Sidebar({
   onCreateNote,
   onSelectNote,
   onDeleteNote,
+  onOpenMoveDialog,
+  onRemoveNoteFromFolder,
   recoverableNoteIds,
   collapsed = false,
   onToggleCollapsed,
@@ -266,25 +273,16 @@ export function Sidebar({
       </footer>
 
       {menu ? (
-        <div
-          className="context-menu"
-          style={{ right: menu.right, top: menu.top }}
-          role="menu"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            className="destructive"
-            onClick={() => {
-              onDeleteNote(menu.noteId);
-              setMenu(null);
-            }}
-          >
-            <IconTrashCan size={14} />
-            Delete note
-          </button>
-        </div>
+        <NoteContextMenu
+          noteId={menu.noteId}
+          right={menu.right}
+          top={menu.top}
+          notes={notes}
+          onOpenMoveDialog={onOpenMoveDialog}
+          onRemoveNoteFromFolder={onRemoveNoteFromFolder}
+          onDeleteNote={onDeleteNote}
+          onClose={() => setMenu(null)}
+        />
       ) : null}
     </aside>
   );
@@ -305,19 +303,53 @@ function NoteRow({
 }) {
   const title = note.title.trim() || "New note";
   const menuRef = useRef<HTMLButtonElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  function handleDragStart(event: DragEvent<HTMLElement>) {
+    event.dataTransfer.effectAllowed = "link";
+    event.dataTransfer.setData(NOTE_DND_MIME, note.id);
+    event.dataTransfer.setData("text/plain", note.id);
+
+    const node = event.currentTarget;
+    const clone = node.cloneNode(true) as HTMLElement;
+    clone.classList.add("note-row-drag-image");
+    clone.removeAttribute("data-selected");
+    clone.removeAttribute("data-dragging");
+    clone.style.width = `${node.offsetWidth}px`;
+    document.body.appendChild(clone);
+    event.dataTransfer.setDragImage(clone, 16, 16);
+    window.setTimeout(() => clone.remove(), 0);
+
+    setDragging(true);
+  }
 
   return (
     <article
       className="note-row"
       data-selected={selected}
       data-recoverable={recoverable || undefined}
+      data-dragging={dragging || undefined}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={() => setDragging(false)}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
         if (menuRef.current) onOpenMenu(menuRef.current);
       }}
     >
-      <button type="button" className="note-row-main" onClick={onSelect}>
+      <div
+        className="note-row-main"
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
+      >
         <span className="note-row-icon">
           <IconFileText size={15} />
         </span>
@@ -331,12 +363,13 @@ function NoteRow({
             />
           ) : null}
         </span>
-      </button>
+      </div>
       <button
         ref={menuRef}
         type="button"
         className="note-row-menu"
         aria-label={`Actions for ${title}`}
+        draggable={false}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -346,5 +379,76 @@ function NoteRow({
         <IconDotGrid1x3Vertical size={14} />
       </button>
     </article>
+  );
+}
+
+function NoteContextMenu({
+  noteId,
+  right,
+  top,
+  notes,
+  onOpenMoveDialog,
+  onRemoveNoteFromFolder,
+  onDeleteNote,
+  onClose,
+}: {
+  noteId: string;
+  right: number;
+  top: number;
+  notes: NoteListItemDto[];
+  onOpenMoveDialog: (noteId: string) => void;
+  onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
+  onDeleteNote: (noteId: string) => void;
+  onClose: () => void;
+}) {
+  const note = notes.find((item) => item.id === noteId);
+  const currentFolderId = note?.folderIds[0];
+  const hasFolder = Boolean(currentFolderId);
+
+  return (
+    <div
+      className="context-menu"
+      style={{ right, top }}
+      role="menu"
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onOpenMoveDialog(noteId);
+          onClose();
+        }}
+      >
+        <IconFolderAddRight size={14} />
+        {hasFolder ? "Move to folder" : "Add to folder"}
+      </button>
+      {hasFolder && currentFolderId ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onRemoveNoteFromFolder(noteId, currentFolderId);
+            onClose();
+          }}
+        >
+          <IconFolderDelete size={14} />
+          Remove from folder
+        </button>
+      ) : null}
+      <div className="context-menu-separator" role="separator" />
+      <button
+        type="button"
+        role="menuitem"
+        className="destructive"
+        onClick={() => {
+          onDeleteNote(noteId);
+          onClose();
+        }}
+      >
+        <IconTrashCan size={14} />
+        Delete note
+      </button>
+    </div>
   );
 }

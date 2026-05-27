@@ -133,17 +133,14 @@ export function NoteEditor({
   // microphone itself isn't ready. handleStartRecording re-checks on
   // click and silently falls back to mic-only if system audio is denied.
   const recordDisabled = processingLock || !!recovery;
+  const updatedAtLabel = formatFullDate(note.updatedAt);
 
   return (
     <article className="note-editor">
       <header className="editor-header">
         <div className="note-overline">
-          <span className="note-overline-date">
-            {formatFullDate(note.updatedAt)}
-          </span>
-          <span className="note-overline-dot" aria-hidden>
-            ·
-          </span>
+          <span className="note-overline-date">{updatedAtLabel}</span>
+          <span className="note-overline-dot" aria-hidden="true" />
           <FolderChip
             folders={folders}
             folderIds={note.folderIds}
@@ -433,7 +430,8 @@ function FolderChip({
     };
   }, [open]);
 
-  const assigned = folders.filter((folder) => folderIds.includes(folder.id));
+  const currentFolderId = folderIds[0];
+  const currentFolder = folders.find((folder) => folder.id === currentFolderId);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return folders;
@@ -453,20 +451,18 @@ function FolderChip({
       <button
         type="button"
         className="move-to-folder-trigger"
-        data-assigned={assigned.length > 0}
+        data-assigned={currentFolder !== undefined}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <IconFolder1 size={13} />
-        {assigned.length > 0
-          ? assigned.map((folder) => folder.name).join(", ")
-          : "Folder"}
+        <IconFolder1 size={14} />
+        {currentFolder?.name ?? "Folder"}
       </button>
       {open ? (
         <div className="move-to-folder-popover" role="menu">
           <div className="move-to-folder-search">
-            <IconMagnifyingGlass size={12} />
+            <IconMagnifyingGlass size={13} />
             <input
               ref={searchRef}
               type="search"
@@ -492,7 +488,7 @@ function FolderChip({
                   setOpen(false);
                 }}
               >
-                <IconPlusMedium size={12} />
+                <IconPlusMedium size={14} />
                 <span className="move-to-folder-item-name">
                   Create “{trimmed}”
                 </span>
@@ -504,7 +500,7 @@ function FolderChip({
           <div className="move-to-folder-list">
             {filtered.length > 0 ? (
               filtered.map((folder) => {
-                const isAssigned = folderIds.includes(folder.id);
+                const isAssigned = folder.id === currentFolderId;
                 return (
                   <button
                     key={folder.id}
@@ -516,7 +512,7 @@ function FolderChip({
                       isAssigned ? onRemove(folder.id) : onAssign(folder.id)
                     }
                   >
-                    <IconFolder1 size={12} />
+                    <IconFolder1 size={14} />
                     <span className="move-to-folder-item-name">
                       {folder.name}
                     </span>

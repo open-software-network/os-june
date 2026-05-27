@@ -11,8 +11,17 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type DragEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { NOTE_DND_MIME } from "../../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
@@ -31,11 +40,15 @@ type FoldersWorkspaceProps = {
     name: string,
     description?: string,
   ) => void;
-  onDeleteFolder: (folderId: string, deleteNotes: boolean) => void;
+  onDeleteFolder: (
+    folderId: string,
+    deleteNotes: boolean,
+  ) => Promise<unknown> | void;
   onCreateNote: (folderId?: string) => void;
   onSelectNote: (noteId: string) => void;
   onAssignNoteToFolder: (noteId: string, folderId: string) => Promise<unknown>;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
+  onOpenMoveDialog: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
 };
 
@@ -69,11 +82,14 @@ function FolderList({
   onSelectFolder,
   onCreateFolder,
   onDeleteFolder,
+  onAssignNoteToFolder,
 }: FoldersWorkspaceProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("updated");
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const deleteFolderTarget = folders.find((f) => f.id === deleteId);
 
   useEffect(() => {
     if (!menu) return;
@@ -178,6 +194,17 @@ function FolderList({
               notes={notes}
               menuOpen={menu?.folderId === folder.id}
               onOpen={() => onSelectFolder(folder.id)}
+              onDropNote={(noteId) => {
+                const note = notes.find((item) => item.id === noteId);
+                if (
+                  !note ||
+                  (note.folderIds.length === 1 &&
+                    note.folderIds[0] === folder.id)
+                ) {
+                  return;
+                }
+                void onAssignNoteToFolder(noteId, folder.id);
+              }}
               onOpenMenu={(anchor) => {
                 if (menu?.folderId === folder.id) {
                   setMenu(null);
@@ -207,11 +234,22 @@ function FolderList({
             onSelectFolder(folderId);
             setMenu(null);
           }}
-          onDelete={(folderId, deleteNotes) =>
-            onDeleteFolder(folderId, deleteNotes)
-          }
+          onRequestDelete={(folderId) => setDeleteId(folderId)}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={deleteFolderTarget !== undefined}
+        onClose={() => setDeleteId(null)}
+        onConfirm={() => {
+          if (!deleteFolderTarget) return;
+          return onDeleteFolder(deleteFolderTarget.id, false);
+        }}
+        title={`Delete "${deleteFolderTarget?.name ?? ""}"?`}
+        description="Notes inside this folder will stay in your library."
+        confirmLabel="Delete folder"
+        destructive
+      />
 
       <CreateFolderDialog
         open={createOpen}
@@ -299,23 +337,51 @@ function FolderCard({
   menuOpen,
   onOpen,
   onOpenMenu,
+  onDropNote,
 }: {
   folder: FolderDto;
   notes: NoteListItemDto[];
   menuOpen: boolean;
   onOpen: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
+  onDropNote: (noteId: string) => void;
 }) {
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dragDepth = useRef(0);
+  const [dropActive, setDropActive] = useState(false);
   const folderNotes = notes.filter((note) =>
     note.folderIds.includes(folder.id),
   );
   const lastUpdated = folderNotes[0]?.updatedAt ?? folder.updatedAt;
 
+  function hasNoteData(event: DragEvent<HTMLElement>) {
+    const types = event.dataTransfer.types;
+    for (let i = 0; i < types.length; i += 1) {
+      if (types[i] === NOTE_DND_MIME) return true;
+    }
+    return false;
+  }
+
+  function resetDropState() {
+    dragDepth.current = 0;
+    setDropActive(false);
+  }
+
+  useEffect(() => {
+    if (!dropActive) return;
+    document.addEventListener("dragend", resetDropState);
+    document.addEventListener("drop", resetDropState);
+    return () => {
+      document.removeEventListener("dragend", resetDropState);
+      document.removeEventListener("drop", resetDropState);
+    };
+  }, [dropActive]);
+
   return (
     <article
       className="folder-card"
       data-menu-open={menuOpen}
+      data-drop-active={dropActive || undefined}
       role="button"
       tabIndex={0}
       aria-label={`Open ${folder.name}`}
@@ -329,6 +395,29 @@ function FolderCard({
       onContextMenu={(event) => {
         event.preventDefault();
         if (menuButtonRef.current) onOpenMenu(menuButtonRef.current);
+      }}
+      onDragEnter={(event) => {
+        if (!hasNoteData(event)) return;
+        event.preventDefault();
+        dragDepth.current += 1;
+        setDropActive(true);
+      }}
+      onDragOver={(event) => {
+        if (!hasNoteData(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "link";
+      }}
+      onDragLeave={(event) => {
+        if (!hasNoteData(event)) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) resetDropState();
+      }}
+      onDrop={(event) => {
+        if (!hasNoteData(event)) return;
+        event.preventDefault();
+        const noteId = event.dataTransfer.getData(NOTE_DND_MIME);
+        resetDropState();
+        if (noteId) onDropNote(noteId);
       }}
     >
       <div className="folder-card-icon" aria-hidden>
@@ -378,7 +467,7 @@ function FolderCardMenu({
   folders,
   onClose,
   onOpen,
-  onDelete,
+  onRequestDelete,
 }: {
   right: number;
   top: number;
@@ -387,7 +476,7 @@ function FolderCardMenu({
   notes: NoteListItemDto[];
   onClose: () => void;
   onOpen: (folderId: string) => void;
-  onDelete: (folderId: string, deleteNotes: boolean) => void;
+  onRequestDelete: (folderId: string) => void;
 }) {
   const folder = folders.find((item) => item.id === folderId);
   if (!folder) return null;
@@ -408,14 +497,8 @@ function FolderCardMenu({
         role="menuitem"
         className="destructive"
         onClick={() => {
-          if (
-            window.confirm(
-              `Delete "${folder.name}"? Notes inside this folder will stay in your library.`,
-            )
-          ) {
-            onDelete(folder.id, false);
-          }
           onClose();
+          onRequestDelete(folder.id);
         }}
       >
         <IconTrashCan size={14} />
@@ -429,6 +512,7 @@ function FolderCardMenu({
 
 function FolderDetail({
   folder,
+  folders,
   notes,
   onSelectFolder,
   onRenameFolder,
@@ -437,6 +521,7 @@ function FolderDetail({
   onSelectNote,
   onAssignNoteToFolder,
   onRemoveNoteFromFolder,
+  onOpenMoveDialog,
   onDeleteNote,
 }: FoldersWorkspaceProps & { folder: FolderDto }) {
   const [editingTitle, setEditingTitle] = useState(false);
@@ -444,6 +529,7 @@ function FolderDetail({
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement | null>(null);
 
   useLayoutEffect(() => {
@@ -605,6 +691,7 @@ function FolderDetail({
             onSelectNote={onSelectNote}
             onCreateNote={() => onCreateNote(folder.id)}
             onAddExisting={() => setAddOpen(true)}
+            onOpenMoveDialog={onOpenMoveDialog}
             onRemoveNoteFromFolder={onRemoveNoteFromFolder}
             onDeleteNote={onDeleteNote}
           />
@@ -643,13 +730,7 @@ function FolderDetail({
             className="destructive"
             onClick={() => {
               setMenu(null);
-              if (
-                window.confirm(
-                  `Delete "${folder.name}"? Notes inside this folder will stay in your library.`,
-                )
-              ) {
-                onDeleteFolder(folder.id, false);
-              }
+              setDeleteOpen(true);
             }}
           >
             <IconTrashCan size={14} />
@@ -666,6 +747,15 @@ function FolderDetail({
         onAdd={async (noteId) => {
           await onAssignNoteToFolder(noteId, folder.id);
         }}
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => onDeleteFolder(folder.id, false)}
+        title={`Delete "${folder.name}"?`}
+        description="Notes inside this folder will stay in your library."
+        confirmLabel="Delete folder"
+        destructive
       />
       <EditFolderDialog
         open={editOpen}
@@ -686,6 +776,7 @@ function FolderNotesPanel({
   onSelectNote,
   onCreateNote,
   onAddExisting,
+  onOpenMoveDialog,
   onRemoveNoteFromFolder,
   onDeleteNote,
 }: {
@@ -695,6 +786,7 @@ function FolderNotesPanel({
   onSelectNote: (noteId: string) => void;
   onCreateNote: () => void;
   onAddExisting: () => void;
+  onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   onDeleteNote: (noteId: string) => void;
 }) {
@@ -712,6 +804,7 @@ function FolderNotesPanel({
             note={note}
             folder={folder}
             onSelect={() => onSelectNote(note.id)}
+            onOpenMove={() => onOpenMoveDialog(note.id)}
             onRemoveFromFolder={() =>
               onRemoveNoteFromFolder(note.id, folder.id)
             }
@@ -757,14 +850,16 @@ function FolderActions({
 
 function FolderNoteRow({
   note,
-  folder,
+  folder: _folder,
   onSelect,
+  onOpenMove,
   onRemoveFromFolder,
   onDelete,
 }: {
   note: NoteListItemDto;
   folder: FolderDto;
   onSelect: () => void;
+  onOpenMove: () => void;
   onRemoveFromFolder: () => void;
   onDelete: () => void;
 }) {
@@ -841,12 +936,24 @@ function FolderNoteRow({
               role="menuitem"
               onClick={() => {
                 setMenu(null);
+                onOpenMove();
+              }}
+            >
+              <IconFolderAddRight size={14} />
+              Move to folder
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenu(null);
                 onRemoveFromFolder();
               }}
             >
               <IconFolderDelete size={14} />
               Remove from folder
             </button>
+            <div className="context-menu-separator" role="separator" />
             <button
               type="button"
               role="menuitem"

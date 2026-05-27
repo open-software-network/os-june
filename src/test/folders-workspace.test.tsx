@@ -1,8 +1,15 @@
-import { render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
+import { NOTE_DND_MIME } from "../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../lib/tauri";
 
 const now = "2026-05-19T10:00:00Z";
@@ -52,6 +59,7 @@ function baseProps() {
     onSelectNote: vi.fn(),
     onAssignNoteToFolder: vi.fn(async () => undefined),
     onRemoveNoteFromFolder: vi.fn(),
+    onOpenMoveDialog: vi.fn(),
     onDeleteNote: vi.fn(),
   };
 }
@@ -74,6 +82,8 @@ describe("Sidebar — Folders nav item", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 
@@ -96,6 +106,8 @@ describe("Sidebar — Folders nav item", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 
@@ -120,6 +132,8 @@ describe("Sidebar — Folders nav item", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 
@@ -144,6 +158,8 @@ describe("Sidebar — Folders nav item", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 
@@ -169,6 +185,8 @@ describe("Sidebar — Folders nav item", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 
@@ -237,6 +255,92 @@ describe("FoldersWorkspace — list view", () => {
     const ideasCard = screen.getByText("Ideas").closest("article");
     await user.click(within(ideasCard as HTMLElement).getByText("Ideas"));
     expect(props.onSelectFolder).toHaveBeenCalledWith("folder-1");
+  });
+
+  it("normalizes legacy multi-folder notes when dropped on an assigned folder", () => {
+    const props = baseProps();
+    render(
+      <FoldersWorkspace
+        {...props}
+        notes={[{ ...notes[0], folderIds: ["folder-1", "folder-2"] }]}
+      />,
+    );
+
+    fireEvent.drop(screen.getByRole("button", { name: "Open Ideas" }), {
+      dataTransfer: {
+        types: [NOTE_DND_MIME],
+        getData: () => "note-1",
+      },
+    });
+
+    expect(props.onAssignNoteToFolder).toHaveBeenCalledWith(
+      "note-1",
+      "folder-1",
+    );
+  });
+
+  it("clears drop highlight when a drag is cancelled", async () => {
+    render(<FoldersWorkspace {...baseProps()} />);
+    const card = screen.getByRole("button", { name: "Open Ideas" });
+
+    fireEvent.dragEnter(card, {
+      dataTransfer: {
+        types: [NOTE_DND_MIME],
+      },
+    });
+    expect(card).toHaveAttribute("data-drop-active", "true");
+
+    fireEvent.dragEnd(document);
+
+    await waitFor(() => expect(card).not.toHaveAttribute("data-drop-active"));
+  });
+
+  it("keeps delete confirmation open until async delete resolves", async () => {
+    const user = userEvent.setup();
+    let resolveDelete: (() => void) | undefined;
+    const props = {
+      ...baseProps(),
+      onDeleteFolder: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveDelete = resolve;
+          }),
+      ),
+    };
+    render(<FoldersWorkspace {...props} />);
+
+    await user.click(screen.getByRole("button", { name: /Actions for Ideas/ }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete folder" }));
+
+    expect(
+      screen.getByRole("dialog", { name: /Delete "Ideas"/ }),
+    ).toBeInTheDocument();
+
+    resolveDelete?.();
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /Delete "Ideas"/ }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps delete confirmation open when async delete fails", async () => {
+    const user = userEvent.setup();
+    const props = {
+      ...baseProps(),
+      onDeleteFolder: vi.fn(() => Promise.reject(new Error("Nope"))),
+    };
+    render(<FoldersWorkspace {...props} />);
+
+    await user.click(screen.getByRole("button", { name: /Actions for Ideas/ }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete folder" }));
+
+    expect(
+      screen.getByRole("dialog", { name: /Delete "Ideas"/ }),
+    ).toBeInTheDocument();
   });
 });
 

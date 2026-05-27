@@ -51,6 +51,8 @@ describe("folders UI", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={onSelectNote}
         onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 
@@ -81,6 +83,8 @@ describe("folders UI", () => {
         onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={onDeleteNote}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
       />,
     );
 

@@ -519,7 +519,6 @@ input:focus-visible,
 .section-count {
   color: var(--muted-foreground);
   font-weight: 400;
-  font-variant-numeric: tabular-nums;
 }
 
 .section-add {
@@ -630,11 +629,33 @@ input:focus-visible,
   align-items: center;
   padding-right: var(--sp-1);
   border-radius: var(--r-md);
+  user-select: none;
+  -webkit-user-drag: element;
 }
 
 .note-row:hover,
 .note-row[data-selected="true"] {
   background: var(--sidebar-accent);
+}
+
+.note-row[data-dragging="true"] {
+  opacity: 0.4;
+}
+
+.note-row-drag-image {
+  position: absolute;
+  top: -9999px;
+  left: -9999px;
+  pointer-events: none;
+  background: var(--popover);
+  border: 1px solid var(--focus-ring);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  opacity: 1;
+}
+
+.note-row-drag-image .note-row-menu {
+  display: none;
 }
 
 .note-row-main {
@@ -780,6 +801,12 @@ input:focus-visible,
 
 .context-menu .destructive:hover {
   background: var(--destructive-soft);
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: var(--sp-1) calc(var(--sp-1) * -1);
+  background: var(--border);
 }
 
 .sidebar-empty {
@@ -1074,18 +1101,21 @@ input:focus-visible,
 .note-overline {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
 
 .note-overline-date {
-  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .note-overline-dot {
-  color: var(--muted-foreground);
-  opacity: 0.5;
+  width: 2px;
+  height: 2px;
+  margin: 0 var(--sp-4);
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.45;
 }
 
 .folder-chip-wrap {
@@ -1349,7 +1379,6 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   font-weight: 500;
-  font-variant-numeric: tabular-nums;
 }
 
 .source-transcripts p {
@@ -2922,6 +2951,17 @@ input:focus-visible,
   cursor: not-allowed;
 }
 
+.primary-action.primary-destructive {
+  border-color: transparent;
+  background: var(--destructive);
+  color: oklch(100% 0 none);
+}
+
+.primary-action.primary-destructive:hover {
+  background: color-mix(in oklch, var(--destructive) 92%, var(--foreground));
+  border-color: transparent;
+}
+
 /* Ghost icon button — back-arrow style header chip ------------------ */
 
 .ghost-icon-button {
@@ -3204,6 +3244,12 @@ input:focus-visible,
   outline-offset: 2px;
 }
 
+.folder-card[data-drop-active="true"] {
+  background: color-mix(in oklch, var(--muted) 80%, transparent);
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 1px var(--focus-ring) inset;
+}
+
 /* Quiet folder icon — same subtle pill as the meta row. */
 .folder-card-icon {
   display: inline-grid;
@@ -3347,7 +3393,6 @@ input:focus-visible,
   flex-direction: column;
 }
 
-.folder-detail-header > h1,
 .folder-detail-header > form,
 .folder-detail-header > .folder-detail-description,
 .folder-detail-header > .folder-detail-meta {
@@ -3523,7 +3568,6 @@ input:focus-visible,
 .folder-note-time {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -3600,6 +3644,12 @@ input:focus-visible,
   flex-direction: column;
   gap: var(--sp-3);
   min-height: 320px;
+}
+
+.move-note-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
 }
 
 .add-notes-search {
@@ -3910,7 +3960,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   height: 22px;
-  margin: 0 calc(-1 * var(--sp-1));
+  margin: 0 calc(-1 * var(--sp-2));
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -3925,7 +3975,7 @@ input:focus-visible,
 
 .move-to-folder-trigger:hover,
 .move-to-folder-trigger[aria-expanded="true"] {
-  background: var(--muted);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
 }
 

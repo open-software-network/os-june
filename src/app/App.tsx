@@ -4,6 +4,7 @@ import { useEffect, useMemo, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { DictionaryWorkspace } from "../components/dictionary/DictionaryWorkspace";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
+import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
@@ -60,6 +61,7 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
+  const [moveDialogNoteId, setMoveDialogNoteId] = useState<string | null>(null);
   // User's intent for system audio. Defaults true ("record everything").
   // The actual sourceMode is derived below so that granting/revoking
   // permission in System Settings flips the toggle without losing intent.
@@ -303,24 +305,7 @@ export function App() {
       dispatch({ type: "folderDeleted", folderId });
     } catch (err) {
       setError(messageFromError(err));
-    }
-  }
-
-  async function handleAssignNoteToFolder(
-    noteId: string,
-    folderId: string,
-    options?: { rethrow?: boolean },
-  ) {
-    try {
-      const note = await assignNoteToFolder(noteId, folderId);
-      dispatch({ type: "noteUpdated", note });
-      return note;
-    } catch (err) {
-      setError(messageFromError(err));
-      if (options?.rethrow) {
-        throw err;
-      }
-      return undefined;
+      throw err;
     }
   }
 
@@ -330,6 +315,33 @@ export function App() {
       dispatch({ type: "noteUpdated", note });
     } catch (err) {
       setError(messageFromError(err));
+    }
+  }
+
+  // Single-folder semantics: a note belongs to at most one folder. Strip any
+  // existing folder assignments before adding the target. Legacy notes with
+  // multiple folders get normalized on the next move.
+  async function handleSetNoteFolder(
+    noteId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
+    const note = state.notes.find((n) => n.id === noteId);
+    if (!note) return;
+    if (note.folderIds.length === 1 && note.folderIds[0] === folderId) return;
+    try {
+      for (const existing of note.folderIds) {
+        if (existing === folderId) continue;
+        const updated = await removeNoteFromFolder(noteId, existing);
+        dispatch({ type: "noteUpdated", note: updated });
+      }
+      if (!note.folderIds.includes(folderId)) {
+        const updated = await assignNoteToFolder(noteId, folderId);
+        dispatch({ type: "noteUpdated", note: updated });
+      }
+    } catch (err) {
+      setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -522,6 +534,10 @@ export function App() {
         onSelectFolder={(folderId) => handleSelectFolder(folderId)}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+        onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+        onRemoveNoteFromFolder={(noteId, folderId) =>
+          void handleRemoveNoteFromFolder(noteId, folderId)
+        }
         recoverableNoteIds={recoverableNoteIds}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
@@ -557,7 +573,7 @@ export function App() {
                 onRenameFolder={(folderId, name, description) =>
                   void handleRenameFolder(folderId, name, description)
                 }
-                onDeleteFolder={(folderId) => void handleDeleteFolder(folderId)}
+                onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}
                 onCreateNote={(folderId) => void handleCreateNote(folderId)}
                 onSelectNote={(noteId) => {
                   const folderId = state.selectedFolderId;
@@ -570,13 +586,12 @@ export function App() {
                   }
                 }}
                 onAssignNoteToFolder={(noteId, folderId) =>
-                  handleAssignNoteToFolder(noteId, folderId, {
-                    rethrow: true,
-                  })
+                  handleSetNoteFolder(noteId, folderId, { rethrow: true })
                 }
                 onRemoveNoteFromFolder={(noteId, folderId) =>
                   void handleRemoveNoteFromFolder(noteId, folderId)
                 }
+                onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
               />
             ) : selectedNote ? (
@@ -654,21 +669,16 @@ export function App() {
                       : undefined
                   }
                   onAssignFolder={(folderId) =>
-                    void handleAssignNoteToFolder(selectedNote.id, folderId)
+                    void handleSetNoteFolder(selectedNote.id, folderId)
                   }
                   onRemoveFolder={(folderId) =>
-                    void removeNoteFromFolder(selectedNote.id, folderId).then(
-                      (note) => dispatch({ type: "noteUpdated", note }),
-                    )
+                    void handleRemoveNoteFromFolder(selectedNote.id, folderId)
                   }
                   onCreateAndAssignFolder={(name) => {
                     void (async () => {
                       const folder = await handleCreateFolder(name);
                       if (folder) {
-                        await handleAssignNoteToFolder(
-                          selectedNote.id,
-                          folder.id,
-                        );
+                        await handleSetNoteFolder(selectedNote.id, folder.id);
                       }
                     })();
                   }}
@@ -688,6 +698,19 @@ export function App() {
           </div>
         </div>
       </section>
+      <MoveNoteToFolderDialog
+        open={moveDialogNoteId !== null}
+        onClose={() => setMoveDialogNoteId(null)}
+        note={
+          moveDialogNoteId
+            ? (state.notes.find((n) => n.id === moveDialogNoteId) ?? null)
+            : null
+        }
+        folders={state.folders}
+        onSetFolder={(noteId, folderId) =>
+          handleSetNoteFolder(noteId, folderId)
+        }
+      />
     </main>
   );
 }

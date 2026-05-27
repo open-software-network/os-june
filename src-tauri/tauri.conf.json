@@ -21,7 +21,8 @@
         "minHeight": 620,
         "resizable": true,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "dragDropEnabled": false
       },
       {
         "label": "hud",
