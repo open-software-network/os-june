@@ -1730,61 +1730,11 @@ input:focus-visible,
  * chevron popover when microphone access is denied. Mirrors the
  * .record-options-row shape so it feels like part of the same family
  * of inline status surfaces. */
-/* Persistent banner that sits above the recorder when microphone access
- * is blocked. flex-basis 100% with width 100% forces the editor-footer
- * to wrap so the recorder lands on its own row beneath. Mirrors the
- * shape of .note-recovery-prompt so the two banners feel like part of
- * the same family. */
+/* Inline notice layout slot for the editor footer — forces the notice
+ * onto its own row so the recorder shell (if rendered) sits below. */
 .record-mic-blocked {
   flex: 0 0 100%;
   width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-5);
-  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-}
-
-.record-mic-blocked-message {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2) var(--sp-3);
-  margin: 0;
-  min-width: 0;
-  font-size: var(--fs-md);
-}
-
-.record-mic-blocked-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  color: var(--destructive);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.record-mic-blocked-body {
-  color: var(--muted-foreground);
-}
-
-.record-mic-blocked-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex-shrink: 0;
-}
-
-.record-mic-blocked-enable {
-  color: var(--destructive);
-}
-
-.record-mic-blocked-enable:hover {
-  background: color-mix(in oklch, var(--destructive) 10%, transparent);
 }
 
 /* Blur + fade + slide reveal. Row resolves out of a soft blur as the
@@ -2170,18 +2120,24 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.note-recovery-prompt {
+/* Inline notice — shared shape used by NoteRecoveryPrompt and the
+ * mic-blocked banner. Tone-aware via the [data-tone] attribute so the
+ * eyebrow color reflects the severity without changing the surrounding
+ * surface. Layout slot overrides (spacing, flex-basis) live on a
+ * consumer class passed through via the InlineNotice `className` prop. */
+.inline-notice {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-5);
-  margin: 0 0 var(--sp-5);
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
 }
 
-.note-recovery-prompt-message {
+.inline-notice-message {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2191,24 +2147,37 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.note-recovery-prompt-eyebrow {
+.inline-notice-eyebrow {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  color: var(--warm-strong);
   font-weight: 500;
   white-space: nowrap;
 }
 
-.note-recovery-prompt-body {
+.inline-notice[data-tone="warning"] .inline-notice-eyebrow {
+  color: var(--warm-strong);
+}
+
+.inline-notice[data-tone="destructive"] .inline-notice-eyebrow {
+  color: var(--destructive);
+}
+
+.inline-notice-body {
   color: var(--muted-foreground);
 }
 
-.note-recovery-prompt-actions {
+.inline-notice-actions {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
   flex-shrink: 0;
+}
+
+/* Layout slot for the recovery prompt — sits in editor-content with
+ * spacing below it before the editor body begins. */
+.note-recovery-prompt {
+  margin: 0 0 var(--sp-5);
 }
 
 .editor-empty,

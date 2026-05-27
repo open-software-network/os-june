@@ -1,4 +1,5 @@
 import { IconRecord } from "central-icons/IconRecord";
+import { InlineNotice } from "../ui/InlineNotice";
 import type { RecoverableRecordingDto } from "../../lib/tauri";
 
 type NoteRecoveryPromptProps = {
@@ -15,38 +16,33 @@ export function NoteRecoveryPrompt({
   disabled,
 }: NoteRecoveryPromptProps) {
   return (
-    <section
+    <InlineNotice
       className="note-recovery-prompt"
       aria-label="Recoverable recording"
-    >
-      <p className="note-recovery-prompt-message">
-        <span className="note-recovery-prompt-eyebrow">
-          <IconRecord size={14} aria-hidden />
-          Interrupted recording
-        </span>
-        <span className="note-recovery-prompt-body">
-          We saved {formatBytes(recovery.bytesFound)} before this note stopped.
-        </span>
-      </p>
-      <div className="note-recovery-prompt-actions">
-        <button
-          type="button"
-          className="btn btn-ghost"
-          disabled={disabled}
-          onClick={() => onDiscard(recovery.sessionId)}
-        >
-          Discard
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          disabled={disabled}
-          onClick={() => onRecover(recovery.sessionId)}
-        >
-          Recover
-        </button>
-      </div>
-    </section>
+      icon={<IconRecord size={14} aria-hidden />}
+      eyebrow="Interrupted recording"
+      body={`We saved ${formatBytes(recovery.bytesFound)} before this note stopped.`}
+      actions={
+        <>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={disabled}
+            onClick={() => onDiscard(recovery.sessionId)}
+          >
+            Discard
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={disabled}
+            onClick={() => onRecover(recovery.sessionId)}
+          >
+            Recover
+          </button>
+        </>
+      }
+    />
   );
 }
 

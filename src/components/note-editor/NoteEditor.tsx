@@ -18,6 +18,7 @@ import type {
   RecordingStatusDto,
   RecoverableRecordingDto,
 } from "../../lib/tauri";
+import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
@@ -244,27 +245,23 @@ export function NoteEditor({
 
       <div className="editor-footer">
         {micDenied && !recordingForNote ? (
-          <section className="record-mic-blocked" role="alert">
-            <p className="record-mic-blocked-message">
-              <span className="record-mic-blocked-eyebrow">
-                <IconMicrophoneOff size={14} aria-hidden />
-                Microphone access is blocked
-              </span>
-              <span className="record-mic-blocked-body">
-                Enable it in System Settings to record audio. You can still
-                write notes here.
-              </span>
-            </p>
-            <div className="record-mic-blocked-actions">
+          <InlineNotice
+            className="record-mic-blocked"
+            role="alert"
+            aria-label="Microphone access required"
+            icon={<IconMicrophoneOff size={14} aria-hidden />}
+            eyebrow="Microphone access is blocked"
+            body="Enable it in System Settings to record audio. You can still write notes here."
+            actions={
               <button
                 type="button"
-                className="btn btn-ghost record-mic-blocked-enable"
+                className="btn btn-secondary"
                 onClick={onEnableMicrophone}
               >
                 Enable
               </button>
-            </div>
-          </section>
+            }
+          />
         ) : (
         <div
           className="record-shell"
