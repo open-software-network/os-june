@@ -1,8 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
-import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
+import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconFire1 } from "central-icons/IconFire1";
+import { IconGhost2 } from "central-icons/IconGhost2";
+import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   dictationHelperCommand,
   dictationSettings,
@@ -28,6 +33,7 @@ import type {
 import { Dialog } from "../ui/Dialog";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
+import { ProviderLogo } from "./ProviderLogo";
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
   command: false,
@@ -366,7 +372,6 @@ export function AppSettings({
         <p className="settings-description">
           Manage audio, dictation, and AI models for notes.
         </p>
-        {status ? <p className="settings-status">{status}</p> : null}
       </header>
 
       <section className="settings-group" aria-labelledby="dictation-heading">
@@ -512,9 +517,6 @@ export function AppSettings({
         search={modelSearch}
         onSearchChange={setModelSearch}
         onClose={() => setPickerMode(undefined)}
-        onRefresh={() =>
-          pickerMode ? void requestVeniceModels(pickerMode) : undefined
-        }
         onSelect={(modelId) => {
           if (!pickerMode) return;
           void selectVeniceModel(pickerMode, modelId);
@@ -523,24 +525,9 @@ export function AppSettings({
       />
 
       <section className="settings-group" aria-labelledby="models-heading">
-        <div className="settings-group-header">
-          <h2 id="models-heading" className="settings-group-heading">
-            AI models
-          </h2>
-          <button
-            type="button"
-            className="btn btn-ghost settings-group-action"
-            onClick={() =>
-              void Promise.all([
-                requestVeniceModels("transcription"),
-                requestVeniceModels("generation"),
-              ])
-            }
-          >
-            <IconArrowRotateClockwise size={14} />
-            Refresh
-          </button>
-        </div>
+        <h2 id="models-heading" className="settings-group-heading">
+          AI models
+        </h2>
         <div className="settings-card">
           <div className="settings-rows">
             <ModelRow
@@ -567,24 +554,29 @@ export function AppSettings({
         </h2>
         <div className="settings-card">
           <div className="settings-rows">
-            <div className="settings-row">
+            <div className="settings-row settings-row-meta">
               <div className="settings-row-info">
-                <h3 className="settings-row-title">Release version</h3>
+                <h3 className="settings-row-title settings-meta-label">
+                  Release version
+                </h3>
               </div>
               <div className="settings-row-control">
-                <span className="settings-version-text">{APP_VERSION}</span>
+                <span className="settings-meta-value">{APP_VERSION}</span>
               </div>
             </div>
 
-            <div className="settings-row">
+            <div className="settings-row settings-row-meta">
               <div className="settings-row-info">
-                <h3 className="settings-row-title">Commit</h3>
+                <h3 className="settings-row-title settings-meta-label">
+                  Commit
+                </h3>
               </div>
               <div className="settings-row-control">
-                <span className="settings-version-text">{APP_COMMIT_HASH}</span>
+                <span className="settings-meta-value settings-meta-value-mono">
+                  {APP_COMMIT_HASH}
+                </span>
               </div>
             </div>
-
           </div>
         </div>
       </section>
@@ -619,19 +611,85 @@ function ModelRow({
           onClick={onOpen}
           aria-label={`Change ${title.toLowerCase()} model`}
         >
-          <span className="model-summary-main">
-            <span className="model-summary-name">{model.name}</span>
-            <span className="model-summary-id">{model.id}</span>
+          <span className="model-summary-logo" aria-hidden>
+            <ProviderLogo
+              provider={model.provider}
+              id={model.id}
+              name={model.name}
+            />
           </span>
-          <span className="model-summary-meta">
-            <ModelBadges model={model} compact />
-            <span className="model-summary-price">{pricingLabel(model)}</span>
-          </span>
+          <span className="model-summary-name">{model.name}</span>
           <IconChevronDownSmall size={14} />
+          <span className="model-summary-meta">
+            <ModelMeta model={model} />
+          </span>
         </button>
       </div>
     </div>
   );
+}
+
+function ModelMeta({ model }: { model: VeniceModelDto }) {
+  const flags = traitFlags(model);
+  const context = contextLabel(model);
+  const items: ReactNode[] = [
+    <span className="model-meta-price">{pricingLabel(model)}</span>,
+  ];
+  if (context) items.push(<span>{context}</span>);
+  if (flags.private) {
+    items.push(
+      <span className="model-trait-icon" title="Private">
+        <IconGhost2 size={14} />
+        <span>Private</span>
+      </span>,
+    );
+  }
+  if (flags.anon) {
+    items.push(
+      <span className="model-trait-icon" title="Anonymous">
+        <IconAnonymous size={14} />
+        <span>Anon</span>
+      </span>,
+    );
+  }
+  if (flags.uncensored) {
+    items.push(
+      <span className="model-trait-icon" title="Uncensored">
+        <IconFire1 size={14} />
+        <span>Uncensored</span>
+      </span>,
+    );
+  }
+  return (
+    <span className="model-meta-items">
+      {items.map((item, index) => (
+        <span className="model-meta-item" key={index}>
+          {index > 0 ? (
+            <span className="model-meta-sep" aria-hidden>
+              ·
+            </span>
+          ) : null}
+          {item}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function traitFlags(model: VeniceModelDto) {
+  const privacy = (model.privacy ?? "").toLowerCase();
+  const traits = model.traits.map((trait) => trait.toLowerCase());
+  return {
+    private: privacy === "private",
+    anon:
+      privacy.includes("anonymous") ||
+      privacy.includes("anonymized") ||
+      traits.some(
+        (trait) =>
+          trait.includes("anonymous") || trait.includes("anonymized"),
+      ),
+    uncensored: traits.some((trait) => trait.includes("uncensored")),
+  };
 }
 
 function ShortcutRow({
@@ -683,7 +741,6 @@ function ModelPickerDialog({
   search,
   onSearchChange,
   onClose,
-  onRefresh,
   onSelect,
 }: {
   open: boolean;
@@ -693,7 +750,6 @@ function ModelPickerDialog({
   search: string;
   onSearchChange: (value: string) => void;
   onClose: () => void;
-  onRefresh: () => void;
   onSelect: (modelId: string) => void;
 }) {
   const filteredOptions = useMemo(() => {
@@ -718,22 +774,17 @@ function ModelPickerDialog({
       width={760}
       className="model-picker-dialog"
       initialFocusSelector=".model-picker-search"
-      footer={
-        <button type="button" className="btn btn-ghost" onClick={onRefresh}>
-          <IconArrowRotateClockwise size={14} />
-          Refresh
-        </button>
-      }
     >
-      <div className="model-picker-toolbar">
+      <label className="model-picker-search">
+        <IconMagnifyingGlass size={15} />
         <input
-          className="model-picker-search"
+          className="model-picker-search-input"
           value={search}
           onChange={(event) => onSearchChange(event.currentTarget.value)}
           placeholder="Search models"
           aria-label="Search models"
         />
-      </div>
+      </label>
       <div className="model-picker-list" role="listbox" aria-label={title}>
         {filteredOptions.map((model) => {
           const selected = model.id === value;
@@ -747,30 +798,22 @@ function ModelPickerDialog({
               data-selected={selected}
               onClick={() => onSelect(model.id)}
             >
-              <span className="model-picker-option-header">
-                <span className="model-picker-title-group">
-                  <span className="model-picker-name">{model.name}</span>
-                  <span className="model-picker-id">{model.id}</span>
-                </span>
-                <span className="model-picker-selected" aria-hidden>
-                  {selected ? <IconCheckmark1Small size={15} /> : null}
-                </span>
+              <span className="model-picker-logo" aria-hidden>
+                <ProviderLogo
+                  provider={model.provider}
+                  id={model.id}
+                  name={model.name}
+                />
               </span>
-              {model.description ? (
-                <span className="model-picker-description">
-                  {model.description}
-                </span>
-              ) : null}
-              {(() => {
-                const context = contextLabel(model);
-                return (
-                  <span className="model-picker-facts">
-                    <span>{pricingLabel(model)}</span>
-                    {context ? <span>{context}</span> : null}
-                  </span>
-                );
-              })()}
-              <ModelBadges model={model} />
+              <span className="model-picker-name" title={model.description}>
+                {model.name}
+              </span>
+              <span className="model-picker-selected" aria-hidden>
+                {selected ? <IconCheckmark2Small size={14} /> : null}
+              </span>
+              <span className="model-picker-meta">
+                <ModelMeta model={model} />
+              </span>
             </button>
           );
         })}
@@ -790,80 +833,6 @@ function selectedModel(options: VeniceModelDto[], value: string) {
       capabilities: [],
     }
   );
-}
-
-function ModelBadges({
-  model,
-  compact = false,
-}: {
-  model: VeniceModelDto;
-  compact?: boolean;
-}) {
-  const badges = modelBadges(model);
-  const visible = compact ? badges.slice(0, 2) : badges.slice(0, 6);
-  if (visible.length === 0) {
-    return compact ? null : (
-      <span className="model-badge" data-kind="neutral">
-        Standard
-      </span>
-    );
-  }
-  return (
-    <span className="model-badges">
-      {visible.map((badge) => (
-        <span
-          key={`${badge.kind}-${badge.label}`}
-          className="model-badge"
-          data-kind={badge.kind}
-        >
-          {badge.label}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-function modelBadges(model: VeniceModelDto) {
-  const badges: Array<{ label: string; kind: string }> = [];
-  if (model.privacy) {
-    badges.push({
-      label: privacyLabel(model.privacy),
-      kind: model.privacy.toLowerCase().includes("private")
-        ? "private"
-        : "privacy",
-    });
-  }
-  for (const trait of model.traits) {
-    const normalized = trait.toLowerCase();
-    if (normalized.includes("uncensored")) {
-      badges.push({ label: "Uncensored", kind: "uncensored" });
-    } else if (
-      normalized.includes("anonymous") ||
-      normalized.includes("anonymized")
-    ) {
-      badges.push({ label: "Anon", kind: "anon" });
-    }
-  }
-  return uniqueBadges(badges);
-}
-
-function uniqueBadges(badges: Array<{ label: string; kind: string }>) {
-  const seen = new Set<string>();
-  return badges.filter((badge) => {
-    const key = `${badge.kind}:${badge.label}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function privacyLabel(value: string) {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "private") return "Private";
-  if (normalized.includes("anonymous") || normalized.includes("anonymized")) {
-    return "Anon";
-  }
-  return titleCase(value);
 }
 
 function pricingLabel(model: VeniceModelDto) {
@@ -926,14 +895,6 @@ function contextLabel(model: VeniceModelDto) {
 
 function trimNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-function titleCase(value: string) {
-  return value
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function modelOptions(models: VeniceModelDto[], selectedModel: string) {

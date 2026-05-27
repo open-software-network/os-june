@@ -2312,7 +2312,11 @@ input:focus-visible,
 .settings-group {
   display: grid;
   gap: var(--sp-2);
-  margin-bottom: var(--sp-6);
+  margin-bottom: var(--sp-10);
+}
+
+.settings-group:last-of-type {
+  margin-bottom: 0;
 }
 
 .settings-group-header {
@@ -2320,15 +2324,20 @@ input:focus-visible,
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  padding: 0 var(--sp-1);
+  padding: 0 var(--sp-3);
 }
 
 .settings-group-heading {
   margin: 0;
+  padding-left: var(--sp-3);
   color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
   font-size: var(--fs-md);
   font-weight: 500;
   letter-spacing: 0;
+}
+
+.settings-group-header .settings-group-heading {
+  padding-left: 0;
 }
 
 /* Granola-style settings card — quiet rounded container, no heavy chrome. */
@@ -2394,6 +2403,22 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-md);
+}
+
+/* About / metadata rows — label is the muted side, value carries the
+ * body weight. Inverts the usual title-bright / description-muted rhythm. */
+.settings-meta-label {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.settings-meta-value {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.settings-meta-value-mono {
+  font-family: var(--font-mono);
 }
 
 .settings-permission-control {
@@ -2670,13 +2695,19 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* Trigger button mirrors a picker row: stacked name/meta with a subtle
+ * border so it reads as the "current selection" card. */
 .model-summary-button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 14px;
-  gap: var(--sp-2);
+  grid-template-columns: 28px minmax(0, 1fr) 14px;
+  grid-template-areas:
+    "logo name chev"
+    "logo meta chev";
+  row-gap: 2px;
+  column-gap: var(--sp-3);
   width: 100%;
   min-width: 300px;
-  padding: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: transparent;
@@ -2684,33 +2715,40 @@ input:focus-visible,
   text-align: left;
   cursor: pointer;
   transition:
-    border-color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
 }
 
 .model-summary-button:hover {
-  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
-  background: color-mix(in oklch, var(--muted) 28%, transparent);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.model-summary-button[aria-expanded="true"] {
+  border-color: color-mix(in oklch, var(--foreground) 22%, transparent);
 }
 
 .model-summary-button > svg {
-  grid-row: 1 / span 2;
-  grid-column: 2;
+  grid-area: chev;
   align-self: center;
+  justify-self: center;
   color: var(--muted-foreground);
 }
 
-.model-summary-main,
-.model-summary-meta {
-  min-width: 0;
-}
-
-.model-summary-main {
-  display: grid;
-  gap: 1px;
+.model-summary-logo {
+  grid-area: logo;
+  display: inline-grid;
+  place-items: center;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--foreground);
 }
 
 .model-summary-name {
+  grid-area: name;
+  align-self: end;
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
@@ -2719,103 +2757,100 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.model-summary-id {
-  overflow: hidden;
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .model-summary-meta {
+  grid-area: meta;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-2);
-  overflow: hidden;
-}
-
-.model-summary-price {
-  overflow: hidden;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  text-overflow: ellipsis;
+}
+
+.model-meta-items,
+.model-meta-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.model-meta-items {
+  flex-wrap: wrap;
+  gap: 0 var(--sp-2);
+}
+
+.model-meta-price {
+  color: var(--muted-foreground);
   white-space: nowrap;
 }
 
-.model-badges {
+.model-meta-sep {
   display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-width: 0;
+  margin-right: var(--sp-2);
+  color: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
 }
 
-.model-badge {
+/* Tag-style chip wrapping each trait icon + label. Squared-off corners
+ * match the keycap / kbd chips used elsewhere in the app. */
+.model-trait-icon {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 0;
-  height: 20px;
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-pill);
-  background: var(--muted);
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
   line-height: 1;
-  white-space: nowrap;
-}
-
-.model-badge[data-kind="private"] {
-  background: color-mix(in oklch, oklch(0.58 0.08 285) 18%, transparent);
-  color: oklch(0.42 0.12 285);
-}
-
-.model-badge[data-kind="anon"],
-.model-badge[data-kind="privacy"] {
-  background: color-mix(in oklch, oklch(0.58 0.08 220) 16%, transparent);
-  color: oklch(0.42 0.12 220);
-}
-
-.model-badge[data-kind="uncensored"] {
-  background: color-mix(in oklch, oklch(0.62 0.14 45) 16%, transparent);
-  color: oklch(0.46 0.14 45);
+  font-size: var(--fs-sm);
 }
 
 .model-picker-dialog {
   gap: var(--sp-4);
 }
 
-.model-picker-toolbar {
+.model-picker-search {
   display: flex;
   align-items: center;
-}
-
-.model-picker-search {
-  width: 100%;
+  gap: var(--sp-2);
   height: var(--control-xl);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--muted-foreground);
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 60%),
+    0 1px 2px 0 oklch(0% 0 none / 4%),
+    0 0 0 1px oklch(0% 0 none / 6%);
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
+
+.model-picker-search:focus-within {
+  box-shadow:
+    0 0 0 1px var(--ring),
+    0 0 0 4px var(--focus-ring);
+}
+
+.model-picker-search input,
+.model-picker-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
   background: transparent;
   color: var(--foreground);
   font: inherit;
   font-size: var(--fs-md);
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
+  outline: 0;
 }
 
-.model-picker-search:focus,
-.model-picker-search:focus-visible {
-  outline: none;
-  border-color: var(--ring);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+.model-picker-search input:focus-visible,
+.model-picker-search-input:focus-visible {
+  outline: 0;
 }
 
 .model-picker-list {
   display: grid;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   max-height: min(520px, calc(100vh - 260px));
   min-height: 0;
   overflow-y: auto;
@@ -2824,86 +2859,80 @@ input:focus-visible,
 }
 
 .model-picker-option {
+  /* Check spans both rows so it sits vertically centered against the
+   * logo + name + meta stack. Transparent border reserves space so the
+   * selected state's visible border doesn't reflow other rows. */
   display: grid;
-  gap: var(--sp-2);
+  grid-template-columns: 28px minmax(0, 1fr) 22px;
+  grid-template-areas:
+    "logo name  check"
+    "logo meta  check";
+  row-gap: 2px;
+  column-gap: var(--sp-3);
   width: 100%;
-  padding: var(--sp-4);
-  border: 1px solid var(--border);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
   border-radius: var(--r-md);
   background: transparent;
   color: var(--foreground);
   text-align: left;
   cursor: pointer;
   transition:
-    border-color var(--t-fast) var(--ease-out),
     background-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
+    border-color var(--t-fast) var(--ease-out);
 }
 
 .model-picker-option:hover {
-  border-color: color-mix(in oklch, var(--foreground) 22%, transparent);
-  background: color-mix(in oklch, var(--muted) 30%, transparent);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
 }
 
+/* Selected gets the system surface-subtle wash. Hover stacks darker so
+ * both states remain distinguishable. */
 .model-picker-option[data-selected="true"] {
-  border-color: color-mix(in oklch, var(--foreground) 28%, transparent);
-  background: color-mix(in oklch, var(--muted) 38%, transparent);
-  box-shadow: var(--shadow-sm);
+  background: var(--surface-subtle);
 }
 
-.model-picker-option-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 18px;
-  align-items: start;
-  gap: var(--sp-3);
+.model-picker-option[data-selected="true"]:hover {
+  background: color-mix(in oklch, var(--muted) 80%, transparent);
 }
 
-.model-picker-title-group {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
+.model-picker-logo {
+  grid-area: logo;
+  display: inline-grid;
+  place-items: center;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--foreground);
 }
 
 .model-picker-name {
+  grid-area: name;
   overflow: hidden;
-  font-size: var(--fs-lg);
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-picker-id {
-  overflow: hidden;
+.model-picker-meta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .model-picker-selected {
+  grid-area: check;
   display: inline-grid;
   place-items: center;
-  color: var(--foreground);
-}
-
-.model-picker-description {
-  display: -webkit-box;
-  overflow: hidden;
+  align-self: stretch;
+  width: 22px;
   color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.model-picker-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2) var(--sp-4);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
 }
 
 /* Primary solid button (Granola / Claude style) -------------------- */

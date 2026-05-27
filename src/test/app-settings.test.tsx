@@ -143,7 +143,7 @@ describe("AppSettings", () => {
                 privacy: "private",
                 pricing: { input: { usd: 0.2 }, output: { usd: 0.8 } },
                 contextTokens: 65536,
-                traits: ["uncensored"],
+                traits: ["anonymized", "uncensored"],
                 capabilities: [],
               },
             ],
@@ -338,7 +338,6 @@ describe("AppSettings", () => {
         name: "Change transcription model",
       }),
     );
-    expect((await screen.findAllByText("Private")).length).toBeGreaterThan(0);
     expect(
       await screen.findByRole("option", { name: /Parakeet/ }),
     ).toBeInTheDocument();
@@ -356,11 +355,7 @@ describe("AppSettings", () => {
         name: "Change note generation model",
       }),
     );
-    expect((await screen.findAllByText("Uncensored")).length).toBeGreaterThan(
-      0,
-    );
-    expect(screen.queryByText("Tools")).not.toBeInTheDocument();
-    expect(screen.queryByText("Reasoning")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Anon").length).toBeGreaterThan(0);
     await user.click(
       await screen.findByRole("option", { name: /Venice Uncensored/ }),
     );

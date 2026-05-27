@@ -45,8 +45,8 @@ const BAR_WEIGHTS = [0.64, 0.86, 0.7, 0.84, 0.58];
 const BAR_HISTORY_OFFSETS = [1, 0, 1, 0, 1];
 const LEVEL_HISTORY_LENGTH = 8;
 const LIVE_LEVEL_MIX = 0.7;
-const ATTACK_ALPHA = 0.44;
-const RELEASE_ALPHA = 0.48;
+const ATTACK_ALPHA = 0.7;
+const RELEASE_ALPHA = 0.55;
 const IDLE_SNAP_DELTA = 0.004;
 
 const levelHistory: number[] = new Array(LEVEL_HISTORY_LENGTH).fill(IDLE_LEVEL);
@@ -313,10 +313,11 @@ async function handleDictationEventPayload(payload: unknown) {
     // Rust pre-classifies via payload.silent so the HUD has one source of
     // truth for what counts as a "Nothing recorded" case.
     if (dictationEvent.payload?.silent === true) {
-      setHud("silent-error", "Nothing recorded");
-    } else {
-      setHud("error", "Error");
+      // Silent (nothing recorded) shouldn't look like a failure — just dismiss.
+      void hideHud();
+      return;
     }
+    setHud("error", "Error");
     await showHud();
     // Hold long enough for the shake to finish and the message to read.
     hideSoon(1800);

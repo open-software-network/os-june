@@ -5,7 +5,7 @@ import { IconFolders } from "central-icons/IconFolders";
 import { IconFontStyle } from "central-icons/IconFontStyle";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
-import { IconSettingsGear1 } from "central-icons/IconSettingsGear1";
+import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconSidebarHiddenLeftWide } from "central-icons/IconSidebarHiddenLeftWide";
 import { IconSidebarSimpleLeftWide } from "central-icons/IconSidebarSimpleLeftWide";
 import { IconTrashCan } from "central-icons/IconTrashCan";
@@ -259,7 +259,7 @@ export function Sidebar({
           onClick={() => onChangeView("settings")}
         >
           <span className="sidebar-nav-icon">
-            <IconSettingsGear1 size={16} />
+            <IconSettingsGear4 size={16} />
           </span>
           <span className="sidebar-nav-label">Settings</span>
         </button>

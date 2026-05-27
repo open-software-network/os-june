@@ -51,9 +51,11 @@ body {
   --hud-bar: var(--foreground);
   --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
   --hud-stop-bg: color-mix(in oklch, var(--foreground) 5%, transparent);
-  --hud-stop-bg-hover: var(--accent);
+  /* Pin hover to a foreground-tinted overlay so the highlight reads the
+   * same regardless of OS color scheme — --accent here would leak the
+   * light-mode (near-white) value into the always-dark HUD. */
+  --hud-stop-bg-hover: color-mix(in oklch, var(--foreground) 16%, transparent);
   --hud-danger: var(--destructive);
-  --hud-warning: var(--warm-strong);
   --hud-alert: var(--hud-danger);
 
   display: flex;
@@ -159,7 +161,7 @@ body {
   border-radius: 999px;
   background: var(--hud-bar);
   transform: translateY(50%);
-  transition: height 80ms ease-out;
+  transition: height 40ms linear;
 }
 
 .hud-braille,
@@ -292,30 +294,18 @@ body {
 }
 
 /* State machine ------------------------------------------------------- */
-.hud[data-state="silent-error"] .hud-handle,
 .hud[data-state="error"] .hud-handle {
   display: none;
 }
 
-/* Text-only shaking pill shared by both error states. Tint differs:
- * warm for "Nothing recorded", red for hard errors. */
-.hud[data-state="silent-error"],
-.hud[data-state="error"] {
-  gap: var(--sp-2);
-  padding-inline: var(--sp-3) var(--sp-4);
-  animation: hud-shake 380ms var(--ease-out);
-}
-
-.hud[data-state="silent-error"] {
-  --hud-alert: var(--hud-warning);
-  border-color: color-mix(in oklch, var(--hud-warning) 28%, var(--border));
-  background: color-mix(in oklch, var(--popover) 78%, var(--hud-warning) 22%);
-}
-
+/* Text-only shaking pill for hard errors. */
 .hud[data-state="error"] {
   --hud-alert: var(--hud-danger);
+  gap: var(--sp-2);
+  padding-inline: var(--sp-3) var(--sp-4);
   border-color: color-mix(in oklch, var(--hud-danger) 28%, var(--border));
   background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
+  animation: hud-shake 380ms var(--ease-out);
 }
 
 .hud[data-state="transcribing"] .hud-viz,
@@ -325,14 +315,12 @@ body {
   width: 88px;
 }
 
-.hud[data-state="silent-error"] .hud-viz,
 .hud[data-state="error"] .hud-viz {
   display: none;
 }
 
 .hud[data-state="transcribing"] .hud-bars,
 .hud[data-state="pasting"] .hud-bars,
-.hud[data-state="silent-error"] .hud-bars,
 .hud[data-state="error"] .hud-bars {
   display: none;
 }
@@ -342,7 +330,6 @@ body {
   display: flex;
 }
 
-.hud[data-state="silent-error"] .hud-error-text,
 .hud[data-state="error"] .hud-error-text {
   display: block;
 }
@@ -350,7 +337,6 @@ body {
 /* Stop button only matters while we're still capturing audio. */
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
-.hud[data-state="silent-error"] .hud-stop,
 .hud[data-state="error"] .hud-stop {
   display: none;
 }
@@ -410,7 +396,6 @@ body {
     transition: none;
   }
 
-  .hud[data-state="silent-error"],
   .hud[data-state="error"] {
     animation: none;
   }
