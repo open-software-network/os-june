@@ -57,7 +57,7 @@
     ],
     "targets": ["app"],
     "resources": {
-      "../.tauri-helper/OS Notetaker Audio Capture.app": "native/bin/OS Notetaker Audio Capture.app",
+      "../.tauri-helper/OS Scribe.app": "native/bin/OS Scribe.app",
       "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app"
     },
     "macOS": {

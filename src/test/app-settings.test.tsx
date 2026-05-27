@@ -183,7 +183,7 @@ describe("AppSettings", () => {
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
         onSourceModeChange={onSourceModeChange}
-        onOpenOnboarding={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
       />,
     );
 
@@ -219,7 +219,7 @@ describe("AppSettings", () => {
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
         onSourceModeChange={vi.fn()}
-        onOpenOnboarding={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
       />,
     );
 
@@ -319,43 +319,6 @@ describe("AppSettings", () => {
     );
   });
 
-  it("shows permission status and opens matching privacy panes", async () => {
-    const user = userEvent.setup();
-    render(
-      <AppSettings
-        sourceMode="microphoneOnly"
-        checkingSourceReadiness={false}
-        onSourceModeChange={vi.fn()}
-        onOpenOnboarding={vi.fn()}
-      />,
-    );
-
-    await waitFor(() =>
-      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
-        type: "get_permission_status",
-      }),
-    );
-    mocks.eventHandler?.({
-      payload: JSON.stringify({
-        type: "permission_status",
-        payload: { microphone: "authorized", accessibility: "denied" },
-      }),
-    });
-
-    expect(await screen.findByText("Allowed")).toBeInTheDocument();
-    expect(screen.getByText("Needs permission")).toBeInTheDocument();
-
-    const openButtons = screen.getAllByRole("button", { name: /Open/ });
-    await user.click(openButtons[0]);
-    await user.click(openButtons[1]);
-
-    expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(1, "microphone");
-    expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(
-      2,
-      "accessibility",
-    );
-  });
-
   it("loads Venice model options and saves selected models", async () => {
     const user = userEvent.setup();
     render(
@@ -363,7 +326,7 @@ describe("AppSettings", () => {
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
         onSourceModeChange={vi.fn()}
-        onOpenOnboarding={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
       />,
     );
 
@@ -407,15 +370,13 @@ describe("AppSettings", () => {
     );
   });
 
-  it("shows app build metadata and can reopen onboarding", async () => {
-    const user = userEvent.setup();
-    const onOpenOnboarding = vi.fn();
+  it("shows app build metadata", async () => {
     render(
       <AppSettings
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
         onSourceModeChange={vi.fn()}
-        onOpenOnboarding={onOpenOnboarding}
+        onEnableSystemAudio={vi.fn()}
       />,
     );
 
@@ -423,8 +384,5 @@ describe("AppSettings", () => {
     expect(screen.getByText(APP_VERSION)).toBeInTheDocument();
     expect(screen.getByText("Commit")).toBeInTheDocument();
     expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Run onboarding" }));
-    expect(onOpenOnboarding).toHaveBeenCalledTimes(1);
   });
 });

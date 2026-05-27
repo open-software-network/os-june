@@ -1,14 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
-import { IconSettingsGear1 } from "central-icons/IconSettingsGear1";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
-  openPrivacySettings,
   providerModelSettings,
   setDictationMicrophone,
   setDictationShortcut,
@@ -74,12 +72,7 @@ type AppSettingsProps = {
   sourceReadiness?: RecordingSourceReadinessDto;
   checkingSourceReadiness: boolean;
   onSourceModeChange: (mode: RecordingSourceMode) => void;
-  onOpenOnboarding: () => void;
-};
-
-type DictationPermissionStatus = {
-  microphone?: string;
-  accessibility?: string;
+  onEnableSystemAudio: () => void;
 };
 
 export function AppSettings({
@@ -87,7 +80,7 @@ export function AppSettings({
   sourceReadiness,
   checkingSourceReadiness,
   onSourceModeChange,
-  onOpenOnboarding,
+  onEnableSystemAudio,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -102,7 +95,6 @@ export function AppSettings({
   const [microphones, setMicrophones] = useState<
     DictationMicrophoneDeviceDto[]
   >([]);
-  const [permissions, setPermissions] = useState<DictationPermissionStatus>({});
   const [capturingShortcut, setCapturingShortcut] =
     useState<DictationShortcutKind>();
   const capturingShortcutRef = useRef<DictationShortcutKind>();
@@ -116,7 +108,9 @@ export function AppSettings({
   const systemReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "system",
   );
-  const systemBlocked = !!(systemReadiness && !systemReadiness.ready);
+  const systemState = systemReadiness?.permissionState;
+  const systemDenied = systemState === "denied" || systemState === "restricted";
+  const systemUnsupported = systemState === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
@@ -135,7 +129,6 @@ export function AppSettings({
         if (cancelled) return;
         setProviderSettings(modelResponse.settings);
         await requestMicrophones();
-        await requestPermissionStatus();
         await Promise.all([
           requestVeniceModels("transcription"),
           requestVeniceModels("generation"),
@@ -197,14 +190,6 @@ export function AppSettings({
     }
   }
 
-  async function requestPermissionStatus() {
-    try {
-      await dictationHelperCommand({ type: "get_permission_status" });
-    } catch (error) {
-      setStatus(messageFromError(error));
-    }
-  }
-
   async function requestVeniceModels(mode: ProviderModelMode) {
     try {
       const response = await listVeniceModels(mode);
@@ -220,16 +205,6 @@ export function AppSettings({
   function handleHelperEvent(helperEvent: DictationHelperEvent) {
     if (helperEvent.type === "microphone_devices") {
       setMicrophones(helperEvent.payload?.devices ?? []);
-      return;
-    }
-    if (
-      helperEvent.type === "permission_status" ||
-      helperEvent.type === "dictation_diagnostics"
-    ) {
-      setPermissions({
-        microphone: stringPayloadValue(helperEvent.payload?.microphone),
-        accessibility: stringPayloadValue(helperEvent.payload?.accessibility),
-      });
       return;
     }
     if (helperEvent.type === "fn_monitor_unavailable") {
@@ -346,18 +321,6 @@ export function AppSettings({
     }
   }
 
-  async function openPermissionPane(
-    pane: "microphone" | "accessibility",
-    label: string,
-  ) {
-    try {
-      await openPrivacySettings(pane);
-      setStatus(`Opened ${label} settings.`);
-    } catch (error) {
-      setStatus(messageFromError(error));
-    }
-  }
-
   const microphoneName = settings.microphone.name ?? "Auto-detect";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
@@ -401,7 +364,7 @@ export function AppSettings({
       <header className="settings-header">
         <h1 className="settings-title">Settings</h1>
         <p className="settings-description">
-          Manage audio and permissions used by notes and dictation.
+          Manage audio, dictation, and AI models for notes.
         </p>
         {status ? <p className="settings-status">{status}</p> : null}
       </header>
@@ -506,34 +469,37 @@ export function AppSettings({
               </div>
             </div>
 
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Note recording audio</h3>
-                <p className="settings-row-description">
-                  Include system audio when creating notes.
-                  {systemBlocked ? (
-                    <span className="settings-row-inline-error">
-                      {systemReadiness?.message ??
-                        "System audio is unavailable."}
-                    </span>
+            {systemUnsupported ? null : (
+              <div className="settings-row">
+                <div className="settings-row-info">
+                  <h3 className="settings-row-title">System audio</h3>
+                  <p className="settings-row-description">
+                    Capture audio from other apps along with your microphone.
+                  </p>
+                </div>
+                <div className="settings-row-control">
+                  {systemDenied ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={onEnableSystemAudio}
+                    >
+                      Enable
+                    </button>
                   ) : null}
-                </p>
+                  <Switch
+                    checked={systemOn}
+                    disabled={checkingSourceReadiness || systemDenied}
+                    aria-label="Capture system audio for notes"
+                    onCheckedChange={(next) =>
+                      onSourceModeChange(
+                        next ? "microphonePlusSystem" : "microphoneOnly",
+                      )
+                    }
+                  />
+                </div>
               </div>
-              <div className="settings-row-control">
-                <Switch
-                  checked={systemOn}
-                  disabled={
-                    checkingSourceReadiness || (systemBlocked && !systemOn)
-                  }
-                  aria-label="Capture system audio for notes"
-                  onCheckedChange={(next) =>
-                    onSourceModeChange(
-                      next ? "microphonePlusSystem" : "microphoneOnly",
-                    )
-                  }
-                />
-              </div>
-            </div>
+            )}
           </div>
         </div>
       </section>
@@ -555,45 +521,6 @@ export function AppSettings({
           setPickerMode(undefined);
         }}
       />
-
-      <section
-        className="settings-group"
-        aria-labelledby="app-permissions-heading"
-      >
-        <div className="settings-group-header">
-          <h2 id="app-permissions-heading" className="settings-group-heading">
-            Permissions
-          </h2>
-          <button
-            type="button"
-            className="btn btn-ghost settings-group-action"
-            onClick={() => void requestPermissionStatus()}
-          >
-            <IconArrowRotateClockwise size={14} />
-            Check again
-          </button>
-        </div>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <PermissionRow
-              title="Microphone"
-              description="Required to capture dictation and note audio."
-              status={permissions.microphone}
-              onOpenSettings={() =>
-                void openPermissionPane("microphone", "Microphone")
-              }
-            />
-            <PermissionRow
-              title="Accessibility"
-              description="Required to paste dictated text into the active app."
-              status={permissions.accessibility}
-              onOpenSettings={() =>
-                void openPermissionPane("accessibility", "Accessibility")
-              }
-            />
-          </div>
-        </div>
-      </section>
 
       <section className="settings-group" aria-labelledby="models-heading">
         <div className="settings-group-header">
@@ -658,24 +585,6 @@ export function AppSettings({
               </div>
             </div>
 
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Onboarding</h3>
-                <p className="settings-row-description">
-                  Review microphone, accessibility, and audio setup.
-                </p>
-              </div>
-              <div className="settings-row-control">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={onOpenOnboarding}
-                >
-                  <IconArrowRotateClockwise size={14} />
-                  Run onboarding
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       </section>
@@ -1044,41 +953,6 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
   ];
 }
 
-function PermissionRow({
-  title,
-  description,
-  status,
-  onOpenSettings,
-}: {
-  title: string;
-  description: string;
-  status?: string;
-  onOpenSettings: () => void;
-}) {
-  const display = permissionDisplay(status);
-  return (
-    <div className="settings-row">
-      <div className="settings-row-info">
-        <h3 className="settings-row-title">{title}</h3>
-        <p className="settings-row-description">{description}</p>
-      </div>
-      <div className="settings-row-control settings-permission-control">
-        <span className="permission-pill" data-state={display.state}>
-          {display.label}
-        </span>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={onOpenSettings}
-        >
-          <IconSettingsGear1 size={14} />
-          Open
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function KeycapShortcut({
   label,
   capturing,
@@ -1174,22 +1048,6 @@ function shortcutForKind(
 
 function stringPayloadValue(value: unknown) {
   return typeof value === "string" ? value : undefined;
-}
-
-function permissionDisplay(status?: string) {
-  switch (status) {
-    case "authorized":
-    case "granted":
-      return { label: "Allowed", state: "allowed" };
-    case "denied":
-      return { label: "Needs permission", state: "blocked" };
-    case "restricted":
-      return { label: "Restricted", state: "blocked" };
-    case "not_determined":
-      return { label: "Not requested", state: "waiting" };
-    default:
-      return { label: "Checking", state: "waiting" };
-  }
 }
 
 function messageFromError(error: unknown) {

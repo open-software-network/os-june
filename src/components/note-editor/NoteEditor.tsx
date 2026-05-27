@@ -2,6 +2,7 @@ import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
@@ -28,11 +29,13 @@ type NoteEditorProps = {
   recordingStatus?: RecordingStatusDto;
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
-  checkingSourceReadiness: boolean;
   recovery?: RecoverableRecordingDto;
   onTitleChange: (title: string) => void;
   onContentChange: (noteId: string, content: string) => void;
   onSourceModeChange: (mode: RecordingSourceMode) => void;
+  onEnableSystemAudio: () => void;
+  onEnableMicrophone: () => void;
+  microphoneBlocked: boolean;
   onStartRecording: () => void;
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
@@ -73,11 +76,13 @@ export function NoteEditor({
   recordingStatus,
   sourceMode,
   sourceReadiness,
-  checkingSourceReadiness,
   recovery,
   onTitleChange,
   onContentChange,
   onSourceModeChange,
+  onEnableSystemAudio,
+  onEnableMicrophone,
+  microphoneBlocked,
   onStartRecording,
   onPauseRecording,
   onResumeRecording,
@@ -95,10 +100,16 @@ export function NoteEditor({
   const recordingForNote = recordingStatus;
   const [optionsOpen, setOptionsOpen] = useState(false);
   const systemOn = sourceMode === "microphonePlusSystem";
-  const systemReadiness = sourceReadiness?.sources.find(
+  const systemSource = sourceReadiness?.sources.find(
     (source) => source.source === "system",
   );
-  const systemBlocked = !!(systemReadiness && !systemReadiness.ready);
+  const systemDenied =
+    systemSource?.permissionState === "denied" ||
+    systemSource?.permissionState === "restricted";
+  const systemUnsupported = systemSource?.permissionState === "unsupported";
+  // Mic denial is sourced from App via the dictation helper, not from
+  // sourceReadiness — the Rust cpal-based check can't see TCC denials.
+  const micDenied = microphoneBlocked;
 
   // Auto-close the options panel whenever a recording starts so the
   // shell can transition into the recorder bar cleanly.
@@ -117,17 +128,10 @@ export function NoteEditor({
   const canRetry =
     note.processingStatus === "failed" &&
     !!(note.audio || note.audioSources?.length);
-  // Don't gate the record button on the background readiness check —
-  // a quick toggle would briefly disable it and feel glitchy.
-  // handleStartRecording re-runs a fresh check on click and surfaces any
-  // error, so background readiness only informs the popover hint.
-  const recordDisabled =
-    processingLock ||
-    !!recovery ||
-    (sourceReadiness?.sources.some(
-      (source) => source.required && !source.ready,
-    ) ??
-      false);
+  // System audio is optional — the record button only blocks when the
+  // microphone itself isn't ready. handleStartRecording re-checks on
+  // click and silently falls back to mic-only if system audio is denied.
+  const recordDisabled = processingLock || !!recovery || micDenied;
 
   return (
     <article className="note-editor">
@@ -239,43 +243,79 @@ export function NoteEditor({
       </section>
 
       <div className="editor-footer">
+        {!recordingForNote && !processingLock && micDenied ? (
+          <section className="record-mic-blocked" role="alert">
+            <p className="record-mic-blocked-message">
+              <span className="record-mic-blocked-eyebrow">
+                <IconMicrophoneOff size={14} aria-hidden />
+                Microphone access is blocked
+              </span>
+              <span className="record-mic-blocked-body">
+                Enable it in System Settings to record notes.
+              </span>
+            </p>
+            <div className="record-mic-blocked-actions">
+              <button
+                type="button"
+                className="btn btn-ghost record-mic-blocked-enable"
+                onClick={onEnableMicrophone}
+              >
+                Enable
+              </button>
+            </div>
+          </section>
+        ) : null}
         <div
           className="record-shell"
           data-state={shellState}
+          data-mic-blocked={micDenied || undefined}
           data-options-open={
-            !recordingForNote && !processingLock && optionsOpen
+            !recordingForNote && !processingLock && optionsOpen && !micDenied
           }
         >
-          {!recordingForNote && !processingLock ? (
+          {!recordingForNote && !processingLock && !micDenied ? (
             <div
               className="record-options-panel"
               data-open={optionsOpen}
               aria-hidden={!optionsOpen}
             >
               <div className="record-options-panel-inner">
-                <div className="record-options-row">
-                  <Switch
-                    checked={systemOn}
-                    disabled={systemBlocked && !systemOn}
-                    aria-labelledby="record-options-system"
-                    onCheckedChange={(next) =>
-                      onSourceModeChange(
-                        next ? "microphonePlusSystem" : "microphoneOnly",
-                      )
-                    }
-                  />
-                  <span
-                    id="record-options-system"
-                    className="record-options-label"
+                {systemUnsupported ? (
+                  <p className="record-options-unsupported">
+                    System audio requires macOS 14.2 or later.
+                  </p>
+                ) : (
+                  <div
+                    className="record-options-row"
+                    data-locked={systemDenied || undefined}
                   >
-                    Capture system audio
-                    {systemBlocked ? (
-                      <span className="record-options-hint">
-                        {systemReadiness?.message ?? "Not available"}
-                      </span>
+                    <Switch
+                      checked={systemOn}
+                      disabled={systemDenied}
+                      aria-labelledby="record-options-system"
+                      onCheckedChange={(next) =>
+                        onSourceModeChange(
+                          next ? "microphonePlusSystem" : "microphoneOnly",
+                        )
+                      }
+                    />
+                    <span
+                      id="record-options-system"
+                      className="record-options-label"
+                    >
+                      Capture system audio
+                    </span>
+                    {systemDenied ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost record-options-enable"
+                        onClick={onEnableSystemAudio}
+                      >
+                        Enable
+                      </button>
                     ) : null}
-                  </span>
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           ) : null}
@@ -344,6 +384,7 @@ export function NoteEditor({
                       aria-label="Recording options"
                       aria-expanded={optionsOpen}
                       data-rotated={optionsOpen}
+                      disabled={micDenied}
                       onClick={() => setOptionsOpen((value) => !value)}
                     >
                       <IconChevronBottom size={16} />

@@ -30,7 +30,7 @@ fn build_system_audio_helper() {
         .parent()
         .expect("src-tauri should have a repository parent")
         .join(".tauri-helper");
-    let app_dir = helper_dir.join("OS Notetaker Audio Capture.app");
+    let app_dir = helper_dir.join("OS Scribe.app");
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     std::fs::create_dir_all(&macos_dir).expect("system audio helper app dir should be created");
@@ -82,7 +82,7 @@ fn build_system_audio_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>OS Notetaker Audio Capture</string>
+  <string>OS Scribe</string>
   <key>CFBundleExecutable</key>
   <string>os-notetaker-system-audio-recorder</string>
   <key>CFBundleIdentifier</key>
@@ -90,7 +90,7 @@ fn build_system_audio_helper() {
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>OS Notetaker Audio Capture</string>
+  <string>OS Scribe</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -102,7 +102,7 @@ fn build_system_audio_helper() {
   <key>LSUIElement</key>
   <true/>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>OS Notetaker records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
+  <string>OS Scribe records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
 </dict>
 </plist>
 "#;

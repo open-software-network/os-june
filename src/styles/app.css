@@ -1658,6 +1658,16 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+.record-options-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.record-options-trigger:disabled:hover {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
 /* Only the icon spins — the button bg/hit area stays put. */
 .record-options-trigger svg {
   transition: transform 360ms var(--ease-out);
@@ -1691,6 +1701,92 @@ input:focus-visible,
   overflow: hidden;
 }
 
+.record-options-unsupported {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* "Enable" call-to-action that sits inline with the toggle row when
+ * system audio is denied. Pushed to the right via margin-left:auto so
+ * the label flows naturally next to the disabled toggle. Uses the
+ * warm-accent token so the action reads as call-out without becoming
+ * an error/destructive red. */
+.record-options-enable {
+  margin-left: auto;
+  padding-inline: var(--sp-2);
+  height: var(--control-sm);
+  color: var(--warm-strong);
+  background: transparent;
+}
+
+.record-options-enable:hover {
+  background: color-mix(in oklch, var(--warm-strong) 12%, transparent);
+}
+
+/* Mic-blocked strip — persistent inline notice that sits above the
+ * chevron popover when microphone access is denied. Mirrors the
+ * .record-options-row shape so it feels like part of the same family
+ * of inline status surfaces. */
+/* Persistent banner that sits above the recorder when microphone access
+ * is blocked. flex-basis 100% with width 100% forces the editor-footer
+ * to wrap so the recorder lands on its own row beneath. Mirrors the
+ * shape of .note-recovery-prompt so the two banners feel like part of
+ * the same family. */
+.record-mic-blocked {
+  flex: 0 0 100%;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.record-mic-blocked-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-md);
+}
+
+.record-mic-blocked-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--destructive);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.record-mic-blocked-body {
+  color: var(--muted-foreground);
+}
+
+.record-mic-blocked-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+.record-mic-blocked-enable {
+  color: var(--destructive);
+}
+
+.record-mic-blocked-enable:hover {
+  background: color-mix(in oklch, var(--destructive) 10%, transparent);
+}
+
 /* Blur + fade + slide reveal. Row resolves out of a soft blur as the
  * height opens, then crisps up — feels seamless rather than snapping
  * into focus. Filter duration runs long past the opacity so the focus
@@ -1719,8 +1815,7 @@ input:focus-visible,
 /* Settings row sits inside an inner muted card, mirroring the Granola
  * pattern — a quiet surface within the white pill. */
 .record-options-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: var(--sp-3);
   margin-bottom: var(--sp-2);
@@ -1731,12 +1826,14 @@ input:focus-visible,
 }
 
 .record-options-label {
-  display: grid;
-  gap: 2px;
   min-width: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
   font-weight: 500;
+}
+
+.record-options-row[data-locked] .record-options-label {
+  color: var(--muted-foreground);
 }
 
 .record-options-hint {
@@ -1865,12 +1962,13 @@ input:focus-visible,
 }
 
 .record-button:disabled {
-  cursor: default;
+  cursor: not-allowed;
   opacity: 0.48;
 }
 
 .record-button:disabled:hover {
   background: transparent;
+  color: var(--foreground);
 }
 
 .record-button .record-dot {
@@ -1992,6 +2090,75 @@ input:focus-visible,
 }
 
 /* Banners ----------------------------------------------------------- */
+
+/* Floating message — overlays content at the top of a positioned
+ * surface (e.g. .main-panel). Use for transient status that should sit
+ * above content without taking up layout space. Pairs with a content
+ * class (e.g. .permission-banner) for the inner layout. */
+/* Floating message — overlays content at the top of a positioned
+ * surface (e.g. .main-panel). Use for transient status that should sit
+ * above content without taking up layout space. Pairs with a content
+ * class (e.g. .permission-banner) for the inner layout. */
+.message-card {
+  position: absolute;
+  top: var(--sp-3);
+  left: 50%;
+  z-index: 3;
+  width: min(720px, calc(100% - var(--sp-8)));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  box-shadow: var(--shadow-md);
+  animation: message-card-enter var(--t-med) var(--ease-out) both;
+}
+
+@keyframes message-card-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.permission-banner-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-md);
+}
+
+.permission-banner-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--warm-strong);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.permission-banner-body {
+  color: var(--muted-foreground);
+}
+
+.permission-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
 
 .error-banner {
   margin: 0 0 var(--sp-5);
@@ -2119,12 +2286,25 @@ input:focus-visible,
   color: var(--destructive);
 }
 
-.settings-row-inline-error {
-  display: block;
-  margin-top: 2px;
-  color: var(--destructive);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
+.settings-row-action {
+  justify-self: start;
+  margin-top: var(--sp-1);
+  padding-inline: 0;
+  height: auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  text-decoration: underline;
+  text-decoration-color: color-mix(
+    in oklch,
+    var(--muted-foreground) 30%,
+    transparent
+  );
+  text-underline-offset: 3px;
+}
+
+.settings-row-action:hover {
+  color: var(--foreground);
+  text-decoration-color: var(--foreground);
 }
 
 /* Group label sits outside the card so multiple cards can sit under one
@@ -2305,113 +2485,6 @@ input:focus-visible,
 
   .style-option-sample {
     font-size: var(--fs-lg);
-  }
-}
-
-.permission-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 112px;
-  height: 24px;
-  padding: 0 var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.permission-pill[data-state="allowed"] {
-  background: color-mix(in oklch, var(--success) 14%, transparent);
-  color: var(--success);
-}
-
-.permission-pill[data-state="blocked"] {
-  background: color-mix(in oklch, var(--destructive) 12%, transparent);
-  color: var(--destructive);
-}
-
-/* First-run permissions onboarding ---------------------------------- */
-
-.onboarding-dialog .dialog-description {
-  max-width: 520px;
-}
-
-.onboarding-permissions {
-  display: grid;
-  gap: var(--sp-1);
-  margin-top: var(--sp-2);
-}
-
-.onboarding-permission-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-5);
-  padding: var(--sp-4) 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.onboarding-permission-row:first-child {
-  padding-top: 0;
-}
-
-.onboarding-permission-row:last-child {
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-.onboarding-permission-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.onboarding-permission-copy h3,
-.onboarding-permission-copy p {
-  margin: 0;
-}
-
-.onboarding-permission-copy h3 {
-  color: var(--foreground);
-  font-size: var(--fs-lg);
-  font-weight: 500;
-  letter-spacing: 0;
-}
-
-.onboarding-permission-copy p {
-  color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.45;
-}
-
-.onboarding-permission-control {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-3);
-  min-width: 225px;
-}
-
-.onboarding-status {
-  margin: var(--sp-4) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
-}
-
-@media (max-width: 720px) {
-  .onboarding-permission-row {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-    gap: var(--sp-3);
-  }
-
-  .onboarding-permission-control {
-    min-width: 0;
-    justify-content: space-between;
   }
 }
 
