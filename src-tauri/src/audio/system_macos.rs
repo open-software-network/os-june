@@ -331,7 +331,7 @@ pub fn helper_app_path() -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
         .join(".tauri-helper")
-        .join("OS Notetaker Audio Capture.app");
+        .join("OS Scribe.app");
     if dev_path.exists() {
         return dev_path;
     }
@@ -344,7 +344,7 @@ pub fn helper_app_path() -> PathBuf {
                 .join("Resources")
                 .join("native")
                 .join("bin")
-                .join("OS Notetaker Audio Capture.app");
+                .join("OS Scribe.app");
             if resource_path.exists() {
                 return resource_path;
             }

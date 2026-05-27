@@ -418,7 +418,7 @@ private func ensureSystemAudioPermission(logURL: URL?) throws {
     case .authorized:
         return
     case .denied:
-        throw "System Audio Recording permission is denied. Enable OS Notetaker Audio Capture in System Settings > Privacy & Security > Screen & System Audio Recording."
+        throw "System Audio Recording permission is denied. Enable OS Scribe in System Settings > Privacy & Security > Screen & System Audio Recording."
     case .unknown:
         break
     }
@@ -448,7 +448,7 @@ private func ensureSystemAudioPermission(logURL: URL?) throws {
     }
     writeLog("system audio permission request granted=\(granted)", logURL: logURL)
     guard granted else {
-        throw "System Audio Recording permission was not granted. Enable OS Notetaker Audio Capture in System Settings > Privacy & Security > Screen & System Audio Recording."
+        throw "System Audio Recording permission was not granted. Enable OS Scribe in System Settings > Privacy & Security > Screen & System Audio Recording."
     }
 }
 

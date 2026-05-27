@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
@@ -5,7 +6,7 @@ import { DictionaryWorkspace } from "../components/dictionary/DictionaryWorkspac
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
-import { PermissionsOnboarding } from "../components/onboarding/PermissionsOnboarding";
+import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { StylesWorkspace } from "../components/styles/StylesWorkspace";
@@ -17,10 +18,12 @@ import {
   createNote,
   deleteFolder,
   deleteNote,
+  dictationHelperCommand,
   finishRecording,
   getRecordingStatus,
   getNote,
   listNotes,
+  openPrivacySettings,
   pauseRecording,
   removeNoteFromFolder,
   recoverRecording,
@@ -36,6 +39,7 @@ import {
 } from "../lib/recording-sounds";
 import type {
   BootstrapResponse,
+  DictationHelperEvent,
   NoteDto,
   RecordingStatusDto,
 } from "../lib/tauri";
@@ -45,10 +49,6 @@ import type {
 } from "../lib/tauri";
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
-
-const ONBOARDING_COMPLETE_KEY = "os-scribe:onboarding:permissions:v1";
-const ONBOARDING_ROUTE_PARAM = "onboarding";
-const ONBOARDING_ROUTE_HASH = "#onboarding";
 
 export function App() {
   const [state, dispatch] = useReducer(
@@ -60,15 +60,22 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
-  const [sourceMode, setSourceMode] = useState<RecordingSourceMode>(
-    "microphonePlusSystem",
-  );
+  // User's intent for system audio. Defaults true ("record everything").
+  // The actual sourceMode is derived below so that granting/revoking
+  // permission in System Settings flips the toggle without losing intent.
+  const [userWantsSystemAudio, setUserWantsSystemAudio] = useState(true);
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(
-    () => !onboardingComplete() || onboardingRouteRequested(),
-  );
+  const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [microphoneStatus, setMicrophoneStatus] = useState<string>();
+  const systemGranted = !!sourceReadiness?.sources.find(
+    (source) => source.source === "system",
+  )?.ready;
+  const sourceMode: RecordingSourceMode =
+    userWantsSystemAudio && systemGranted
+      ? "microphonePlusSystem"
+      : "microphoneOnly";
   const selectedNote = state.selectedNote;
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
@@ -101,16 +108,36 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    function showOnboardingFromRoute() {
-      if (onboardingRouteRequested()) setShowOnboarding(true);
-    }
-    window.addEventListener("hashchange", showOnboardingFromRoute);
-    window.addEventListener("popstate", showOnboardingFromRoute);
+    let unlisten: (() => void) | undefined;
+    void listen<string>("dictation-event", (event) => {
+      const helperEvent = parseDictationEvent(event.payload);
+      if (!helperEvent) return;
+      if (
+        helperEvent.type !== "permission_status" &&
+        helperEvent.type !== "dictation_diagnostics"
+      ) {
+        return;
+      }
+      const microphone = stringPayloadValue(helperEvent.payload?.microphone);
+      const accessibility = stringPayloadValue(
+        helperEvent.payload?.accessibility,
+      );
+      if (microphone) setMicrophoneStatus(microphone);
+      if (accessibility) setAccessibilityStatus(accessibility);
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
     return () => {
-      window.removeEventListener("hashchange", showOnboardingFromRoute);
-      window.removeEventListener("popstate", showOnboardingFromRoute);
+      unlisten?.();
     };
   }, []);
+
+  const accessibilityBlocked = isDeniedPermission(accessibilityStatus);
+  // The Rust readiness check probes mic via cpal, which doesn't reflect
+  // TCC denial. Trust the dictation helper's AVCaptureDevice status
+  // instead — that's the authoritative macOS API for the mic privacy
+  // entry.
+  const microphoneBlocked = isDeniedPermission(microphoneStatus);
 
   useEffect(() => {
     bootstrapApp()
@@ -132,10 +159,13 @@ export function App() {
       .catch((err: unknown) => setError(messageFromError(err)));
   }, []);
 
+  // Probe with "microphonePlusSystem" on mount so sourceReadiness always
+  // has the system source. The helper's preflight surfaces the native
+  // TCC prompt on first install as a side-effect of this call.
   useEffect(() => {
     let cancelled = false;
     setCheckingSourceReadiness(true);
-    checkRecordingSourceReadiness(sourceMode)
+    checkRecordingSourceReadiness("microphonePlusSystem")
       .then((readiness) => {
         if (!cancelled) setSourceReadiness(readiness);
       })
@@ -145,10 +175,51 @@ export function App() {
       .finally(() => {
         if (!cancelled) setCheckingSourceReadiness(false);
       });
+    // Eagerly request mic from the helper. This fires the native TCC
+    // prompt for fresh installs (matching the system-audio eager prompt),
+    // and for already-denied users it immediately emits the current
+    // status so the mic-blocked strip renders without further user
+    // action. For granted users it's a no-op.
+    void dictationHelperCommand({
+      type: "request_microphone_permission",
+    }).catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [sourceMode]);
+  }, []);
+
+  // Refresh permission state whenever the app regains focus — covers the
+  // common case where the user flipped a toggle in System Settings and
+  // returns to OS Scribe. The helper poll is what surfaces fresh mic /
+  // accessibility state via the dictation-event listener above.
+  useEffect(() => {
+    function refresh() {
+      void checkRecordingSourceReadiness("microphonePlusSystem")
+        .then(setSourceReadiness)
+        .catch(() => undefined);
+      void dictationHelperCommand({ type: "get_permission_status" }).catch(
+        () => undefined,
+      );
+    }
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+
+  function handleSourceModeChange(next: RecordingSourceMode) {
+    setUserWantsSystemAudio(next === "microphonePlusSystem");
+  }
+
+  // Explicit "Enable" action when system audio is denied. Sets intent on
+  // (so the toggle auto-flips ON once permission is granted) and routes
+  // the user to the System Settings pane.
+  function handleEnableSystemAudio() {
+    setUserWantsSystemAudio(true);
+    void openPrivacySettings("systemAudio");
+  }
+
+  function handleEnableMicrophone() {
+    void openPrivacySettings("microphone");
+  }
 
   useEffect(() => {
     if (
@@ -337,15 +408,29 @@ export function App() {
       setCheckingSourceReadiness(true);
       const readiness = await checkRecordingSourceReadiness(sourceMode);
       setSourceReadiness(readiness);
-      if (!readiness.ready) {
+
+      const micSource = readiness.sources.find(
+        (source) => source.source === "microphone",
+      );
+      if (!micSource?.ready) {
         dispatch({ type: "recordingStatusCleared" });
-        setError(
-          readiness.sources.find((source) => source.required && !source.ready)
-            ?.message ?? "The selected recording sources are not ready.",
-        );
+        setError(micSource?.message ?? "Microphone is not ready.");
         return;
       }
-      const recording = await startRecording(selectedNote.id, sourceMode);
+
+      // System audio is optional. If the fresh probe shows it isn't
+      // available, fall back to mic-only for this take — the derived
+      // sourceMode will follow automatically next render via
+      // setSourceReadiness above.
+      const systemSource = readiness.sources.find(
+        (source) => source.source === "system",
+      );
+      const effectiveMode: RecordingSourceMode =
+        sourceMode === "microphonePlusSystem" && !systemSource?.ready
+          ? "microphoneOnly"
+          : sourceMode;
+
+      const recording = await startRecording(selectedNote.id, effectiveMode);
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
@@ -402,11 +487,6 @@ export function App() {
     }
   }
 
-  function handleOnboardingComplete() {
-    markOnboardingComplete();
-    setShowOnboarding(false);
-  }
-
   return (
     <main
       className="app-shell"
@@ -417,10 +497,6 @@ export function App() {
         aria-hidden
         data-tauri-drag-region
         onPointerDown={handleTitlebarPointerDown}
-      />
-      <PermissionsOnboarding
-        open={showOnboarding}
-        onComplete={handleOnboardingComplete}
       />
       <Sidebar
         folders={state.folders}
@@ -451,6 +527,7 @@ export function App() {
         onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
       />
       <section className="main-panel">
+        {accessibilityBlocked ? <PermissionBanner /> : null}
         <div className="main-panel-body">
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
@@ -459,8 +536,8 @@ export function App() {
                 sourceMode={sourceMode}
                 sourceReadiness={sourceReadiness}
                 checkingSourceReadiness={checkingSourceReadiness}
-                onSourceModeChange={setSourceMode}
-                onOpenOnboarding={() => setShowOnboarding(true)}
+                onSourceModeChange={handleSourceModeChange}
+                onEnableSystemAudio={handleEnableSystemAudio}
               />
             ) : activeView === "styles" ? (
               <StylesWorkspace />
@@ -534,7 +611,6 @@ export function App() {
                   recordingStatus={state.recordingStatus}
                   sourceMode={sourceMode}
                   sourceReadiness={sourceReadiness}
-                  checkingSourceReadiness={checkingSourceReadiness}
                   recovery={selectedRecovery}
                   onRecoverRecording={(sessionId) =>
                     handleRecovery(sessionId, "validate")
@@ -550,7 +626,10 @@ export function App() {
                     if (sourceNoteId !== selectedNote.id) return;
                     void handleUpdateNote({ editedContent });
                   }}
-                  onSourceModeChange={setSourceMode}
+                  onSourceModeChange={handleSourceModeChange}
+                  onEnableSystemAudio={handleEnableSystemAudio}
+                  onEnableMicrophone={handleEnableMicrophone}
+                  microphoneBlocked={microphoneBlocked}
                   onTabChange={(activeTab) =>
                     void updateNote({
                       noteId: selectedNote.id,
@@ -623,35 +702,28 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     );
 }
 
-function onboardingComplete() {
-  try {
-    return localStorage.getItem(ONBOARDING_COMPLETE_KEY) === "complete";
-  } catch {
-    return false;
-  }
+function isDeniedPermission(state?: string) {
+  return state === "denied" || state === "restricted";
 }
 
-function markOnboardingComplete() {
+function parseDictationEvent(
+  payload: unknown,
+): DictationHelperEvent | undefined {
   try {
-    localStorage.setItem(ONBOARDING_COMPLETE_KEY, "complete");
+    if (typeof payload === "string") {
+      return JSON.parse(payload) as DictationHelperEvent;
+    }
+    if (payload && typeof payload === "object") {
+      return payload as DictationHelperEvent;
+    }
   } catch {
-    // If storage is unavailable, keep the app usable for this session.
+    return undefined;
   }
+  return undefined;
 }
 
-function onboardingRouteRequested() {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const value = params.get(ONBOARDING_ROUTE_PARAM)?.toLowerCase();
-    return (
-      value === "1" ||
-      value === "true" ||
-      value === "permissions" ||
-      window.location.hash.toLowerCase() === ONBOARDING_ROUTE_HASH
-    );
-  } catch {
-    return false;
-  }
+function stringPayloadValue(value: unknown) {
+  return typeof value === "string" ? value : undefined;
 }
 
 function recordingToStatus(recording: {
