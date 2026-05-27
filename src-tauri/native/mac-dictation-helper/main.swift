@@ -848,7 +848,6 @@ final class FocusTargetController {
 
     private var lastExternalApp: NSRunningApplication?
     private let ignoredBundleIdentifiers: Set<String> = [
-        "network.opensoftware.os-notetaker",
         "network.opensoftware.os-notetaker.dictation-helper",
     ]
 
@@ -896,7 +895,7 @@ final class FocusTargetController {
         guard !ignoredBundleIdentifiers.contains(bundleIdentifier) else {
             return
         }
-        guard !appName.localizedCaseInsensitiveContains("OS Scribe") else {
+        guard !appName.localizedCaseInsensitiveContains("dictation-helper") else {
             return
         }
         lastExternalApp = app

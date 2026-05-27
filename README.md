@@ -31,6 +31,7 @@ Optional initial model defaults:
 ```sh
 export VENICE_TRANSCRIPTION_MODEL=nvidia/parakeet-tdt-0.6b-v3
 export VENICE_GENERATION_MODEL=zai-org-glm-5
+export VENICE_TITLE_SUGGESTION_MODEL=nvidia-nemotron-3-nano-30b-a3b
 ```
 
 The Settings tab can load available Venice models and save separate selections for transcription/dictation and note generation. Saved selections are stored in the app config directory and take effect for new provider requests.

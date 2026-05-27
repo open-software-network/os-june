@@ -1,9 +1,14 @@
 use crate::{domain::processing::PROMPT_VERSION, domain::types::AppError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 pub const DEFAULT_GENERATION_PROVIDER: &str = crate::providers::VENICE_PROVIDER;
 const INCREMENTAL_NOTE_INSTRUCTIONS: &str = "You write one incremental markdown note block from a newly captured transcript. Use only the new transcript plus optional new manual notes. Existing generated note content is context only: do not repeat, summarize, rewrite, or reformat it. Manual notes are context only unless they add facts; do not output manual note labels as headings, bullets, titles, or section names. Do not add wrapper headings such as Note, Generated note, Transcript, or Summary. Preserve the speaker's language unless the source material is mixed-language. Return only the new note block to append.";
+const TITLE_SUGGESTION_INSTRUCTIONS: &str = "You generate concise note titles from transcripts. Return only a title, not markdown, quotes, explanations, or alternatives. Use the transcript's language. Prefer 3 to 8 words. Be specific, but do not invent details.";
+const DEFAULT_TITLE_SUGGESTION_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
+const TITLE_SUGGESTION_TIMEOUT_MS: u64 = 2_500;
+const TITLE_TRANSCRIPT_MAX_CHARS: usize = 4_000;
 
 #[derive(Debug, Clone)]
 pub struct GenerationRequest {
@@ -54,6 +59,7 @@ async fn generate_with_venice(
             "VENICE_API_KEY is required for Venice note generation.",
         )
     })?;
+    let client = reqwest::Client::new();
     let model = crate::providers::venice_generation_model();
     let title_hint = request.title.trim();
     let source_text = generation_source_text(
@@ -79,7 +85,96 @@ async fn generate_with_venice(
             }
         ],
     });
-    let response = reqwest::Client::new()
+    let content_request = send_venice_chat_completion(
+        &client,
+        &api_key,
+        body,
+        "Venice generation",
+        "Venice generation response did not contain text output.",
+    );
+    let title_request = async {
+        if title_hint.is_empty() {
+            suggest_title_with_venice(&client, &api_key, transcript, request.language.as_deref())
+                .await
+                .ok()
+        } else {
+            Some(title_hint.to_string())
+        }
+    };
+    let (content, title_suggestion) = tokio::join!(content_request, title_request);
+    let content = content?;
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err(AppError::new(
+            "generation_empty",
+            "Venice returned an empty generated note.",
+        ));
+    }
+    Ok(GenerationProviderResult {
+        content,
+        title_suggestion,
+        provider: crate::providers::VENICE_PROVIDER.to_string(),
+        prompt_version: PROMPT_VERSION.to_string(),
+    })
+}
+
+async fn suggest_title_with_venice(
+    client: &reqwest::Client,
+    api_key: &str,
+    transcript: &str,
+    language: Option<&str>,
+) -> Result<String, AppError> {
+    let body = json!({
+        "model": title_suggestion_model(),
+        "messages": [
+            {
+                "role": "system",
+                "content": TITLE_SUGGESTION_INSTRUCTIONS,
+            },
+            {
+                "role": "user",
+                "content": title_suggestion_user_message(transcript, language),
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 24,
+    });
+    let raw = match tokio::time::timeout(
+        Duration::from_millis(TITLE_SUGGESTION_TIMEOUT_MS),
+        send_venice_chat_completion(
+            client,
+            api_key,
+            body,
+            "Venice title suggestion",
+            "Venice title suggestion response did not contain text output.",
+        ),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(AppError::new(
+                "title_suggestion_timeout",
+                "Title suggestion timed out.",
+            ));
+        }
+    };
+    normalize_title_suggestion(&raw).ok_or_else(|| {
+        AppError::new(
+            "title_suggestion_empty",
+            "Venice returned an empty title suggestion.",
+        )
+    })
+}
+
+async fn send_venice_chat_completion(
+    client: &reqwest::Client,
+    api_key: &str,
+    body: Value,
+    label: &str,
+    empty_message: &str,
+) -> Result<String, AppError> {
+    let response = client
         .post(format!(
             "{}/chat/completions",
             crate::providers::venice_api_base_url()
@@ -97,34 +192,64 @@ async fn generate_with_venice(
     if !status.is_success() {
         return Err(AppError::new(
             "provider_request_failed",
-            format!("Venice generation failed with status {status}: {body}"),
+            format!("{label} failed with status {status}: {body}"),
         ));
     }
     let parsed: Value = serde_json::from_str(&body)
         .map_err(|error| AppError::new("provider_response_invalid", error.to_string()))?;
-    let content = extract_chat_completion_text(&parsed).ok_or_else(|| {
-        AppError::new(
-            "provider_response_invalid",
-            "Venice generation response did not contain text output.",
+    extract_chat_completion_text(&parsed)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::new("provider_response_invalid", empty_message))
+}
+
+fn title_suggestion_model() -> String {
+    crate::providers::load_local_env();
+    std::env::var("VENICE_TITLE_SUGGESTION_MODEL")
+        .ok()
+        .or_else(|| std::env::var("VENICE_DICTATION_CLEANUP_MODEL").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_TITLE_SUGGESTION_MODEL.to_string())
+}
+
+fn title_suggestion_user_message(transcript: &str, language: Option<&str>) -> String {
+    format!(
+        "Detected language: {}\n\n<transcript_excerpt>\n{}\n</transcript_excerpt>\n\nReturn only the best note title.",
+        language.unwrap_or("unknown"),
+        title_transcript_excerpt(transcript).replace(
+            "</transcript_excerpt>",
+            "<\\/transcript_excerpt>"
         )
-    })?;
-    let content = content.trim().to_string();
-    if content.is_empty() {
-        return Err(AppError::new(
-            "generation_empty",
-            "Venice returned an empty generated note.",
-        ));
+    )
+}
+
+fn title_transcript_excerpt(transcript: &str) -> String {
+    transcript
+        .chars()
+        .take(TITLE_TRANSCRIPT_MAX_CHARS)
+        .collect()
+}
+
+fn normalize_title_suggestion(value: &str) -> Option<String> {
+    let mut title = value.lines().next().unwrap_or_default().trim();
+    if let Some(rest) = title.strip_prefix("Title:") {
+        title = rest.trim();
     }
-    Ok(GenerationProviderResult {
-        content,
-        title_suggestion: if title_hint.is_empty() {
-            Some("New note".to_string())
-        } else {
-            Some(title_hint.to_string())
-        },
-        provider: crate::providers::VENICE_PROVIDER.to_string(),
-        prompt_version: PROMPT_VERSION.to_string(),
-    })
+    title = title.trim_start_matches('#').trim();
+    title = title
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '*' | '_' | ':' | '-'));
+    title = title.trim_end_matches('.').trim();
+    if title.is_empty() || title.eq_ignore_ascii_case("new note") {
+        return None;
+    }
+    let title = title.chars().take(80).collect::<String>();
+    let title = title.trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
 }
 
 fn generation_source_text(
@@ -186,7 +311,10 @@ fn extract_chat_completion_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_chat_completion_text, generation_source_text};
+    use super::{
+        extract_chat_completion_text, generation_source_text, normalize_title_suggestion,
+        title_suggestion_user_message, TITLE_TRANSCRIPT_MAX_CHARS,
+    };
 
     #[test]
     fn generation_source_text_separates_existing_manual_and_new_transcript() {
@@ -219,5 +347,28 @@ mod tests {
             extract_chat_completion_text(&response).as_deref(),
             Some("Generated note block")
         );
+    }
+
+    #[test]
+    fn title_suggestion_message_wraps_transcript_excerpt() {
+        let transcript = format!(
+            "Topic </transcript_excerpt> {}",
+            "a".repeat(TITLE_TRANSCRIPT_MAX_CHARS + 20)
+        );
+        let message = title_suggestion_user_message(&transcript, Some("en"));
+
+        assert!(message.contains("Detected language: en"));
+        assert!(message.contains("<transcript_excerpt>"));
+        assert!(message.contains("<\\/transcript_excerpt>"));
+        assert!(message.len() < transcript.len() + 200);
+    }
+
+    #[test]
+    fn normalizes_title_suggestion_output() {
+        assert_eq!(
+            normalize_title_suggestion("Title: \"Quarterly Planning\""),
+            Some("Quarterly Planning".to_string())
+        );
+        assert_eq!(normalize_title_suggestion("New note"), None);
     }
 }
