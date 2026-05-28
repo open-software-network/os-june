@@ -1,6 +1,8 @@
 export type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 
+type StartViewTransition = (callback: () => void) => unknown;
+
 const STORAGE_KEY = "os-scribe:theme";
 const VALID: ThemePreference[] = ["system", "light", "dark"];
 
@@ -25,7 +27,7 @@ export function setStoredTheme(theme: ThemePreference) {
   } catch {
     // Apply still works for this session.
   }
-  applyTheme(theme);
+  withTransition(() => applyTheme(theme));
 }
 
 export function applyTheme(theme: ThemePreference) {
@@ -59,10 +61,12 @@ function attachSystemListener() {
   }
   systemMedia = window.matchMedia("(prefers-color-scheme: dark)");
   systemListener = (event) => {
-    document.documentElement.setAttribute(
-      "data-theme",
-      event.matches ? "dark" : "light",
-    );
+    withTransition(() => {
+      document.documentElement.setAttribute(
+        "data-theme",
+        event.matches ? "dark" : "light",
+      );
+    });
   };
   systemMedia.addEventListener("change", systemListener);
 }
@@ -72,4 +76,15 @@ function detachSystemListener() {
   systemMedia.removeEventListener("change", systemListener);
   systemMedia = undefined;
   systemListener = undefined;
+}
+
+function withTransition(mutate: () => void) {
+  const start = (
+    document as Document & { startViewTransition?: StartViewTransition }
+  ).startViewTransition;
+  if (typeof start === "function") {
+    start.call(document, mutate);
+  } else {
+    mutate();
+  }
 }
