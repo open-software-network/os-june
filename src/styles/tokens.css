@@ -131,9 +131,13 @@
 }
 
 /* Dark theme — port of Fellow's .dark sheet. Applied on
- * <html data-theme="dark"> or system pref. -------------------------- */
+ * <html data-theme="dark"> or system pref.
+ *
+ * The @media block is scoped to `:root:not([data-theme])` so an explicit
+ * user choice (set via the Appearance setting) wins over the OS preference
+ * in either direction. -------------------------------------------------- */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --background: oklch(0.165 0.0015 84.59);
     --foreground: oklch(0.985 0.0015 84.59);
     --card: oklch(0.195 0.0015 84.59);
