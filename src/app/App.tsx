@@ -733,7 +733,7 @@ export function App() {
                     dispatch({ type: "folderSelected", folderId });
                     setFolderReturnTarget({
                       noteId: selectedNote.id,
-                      label: selectedNote.title.trim() || "note",
+                      label: selectedNote.title.trim() || "New note",
                     });
                     setOriginFolderId(undefined);
                   }}
