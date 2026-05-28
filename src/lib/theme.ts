@@ -1,7 +1,11 @@
 export type ThemePreference = "system" | "light" | "dark";
+type ResolvedTheme = "light" | "dark";
 
 const STORAGE_KEY = "os-scribe:theme";
 const VALID: ThemePreference[] = ["system", "light", "dark"];
+
+let systemMedia: MediaQueryList | undefined;
+let systemListener: ((event: MediaQueryListEvent) => void) | undefined;
 
 export function getStoredTheme(): ThemePreference {
   try {
@@ -25,14 +29,47 @@ export function setStoredTheme(theme: ThemePreference) {
 }
 
 export function applyTheme(theme: ThemePreference) {
-  const root = document.documentElement;
+  const resolved = resolveTheme(theme);
+  document.documentElement.setAttribute("data-theme", resolved);
   if (theme === "system") {
-    root.removeAttribute("data-theme");
+    attachSystemListener();
   } else {
-    root.setAttribute("data-theme", theme);
+    detachSystemListener();
   }
 }
 
 export function initTheme() {
   applyTheme(getStoredTheme());
+}
+
+function resolveTheme(theme: ThemePreference): ResolvedTheme {
+  if (theme === "light" || theme === "dark") return theme;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return "light";
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+function attachSystemListener() {
+  if (systemListener) return;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return;
+  }
+  systemMedia = window.matchMedia("(prefers-color-scheme: dark)");
+  systemListener = (event) => {
+    document.documentElement.setAttribute(
+      "data-theme",
+      event.matches ? "dark" : "light",
+    );
+  };
+  systemMedia.addEventListener("change", systemListener);
+}
+
+function detachSystemListener() {
+  if (!systemMedia || !systemListener) return;
+  systemMedia.removeEventListener("change", systemListener);
+  systemMedia = undefined;
+  systemListener = undefined;
 }

@@ -130,65 +130,13 @@
   --shadow-inset: 0 0 0 1px oklch(0% 0 none / 4%);
 }
 
-/* Dark theme — port of Fellow's .dark sheet. Applied on
- * <html data-theme="dark"> or system pref.
- *
- * The @media block is scoped to `:root:not([data-theme])` so an explicit
- * user choice (set via the Appearance setting) wins over the OS preference
- * in either direction. -------------------------------------------------- */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --background: oklch(0.165 0.0015 84.59);
-    --foreground: oklch(0.985 0.0015 84.59);
-    --card: oklch(0.195 0.0015 84.59);
-    --card-foreground: oklch(0.985 0.0015 84.59);
-    --popover: oklch(0.195 0.0015 84.59);
-    --popover-foreground: oklch(0.985 0.0015 84.59);
-    --primary: oklch(0.86 0.008 84.59);
-    --primary-foreground: oklch(0.216 0.0015 84.59);
-    --secondary: oklch(0.268 0.0015 84.59);
-    --secondary-foreground: oklch(0.985 0.0015 84.59);
-    --muted: oklch(0.268 0.0015 84.59);
-    --muted-foreground: oklch(0.709 0.0015 84.59);
-    --accent: oklch(0.268 0.0015 84.59);
-    --accent-foreground: oklch(0.985 0.0015 84.59);
-    --destructive: oklch(0.704 0.191 22.216);
-    --destructive-soft: oklch(0.3 0.08 22 / 40%);
-    --success: oklch(0.72 0.14 150);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(1 0 0 / 18%);
-
-    --sidebar: oklch(0.14 0.0015 84.59);
-    --sidebar-foreground: oklch(0.985 0.0015 84.59);
-    --sidebar-accent: oklch(0.22 0.0015 84.59);
-    --sidebar-border: oklch(1 0 0 / 8%);
-
-    /* Dark --border is already an 8-10% white alpha, so the light-mode
-     * 55% mix would dilute it below the visibility floor. Bump to 80%
-     * so the subtle border still reads against the dark card. */
-    --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
-
-    --record: oklch(0.6 0.22 27);
-    --warm-soft: oklch(0.42 0.12 50);
-    --warm-strong: oklch(0.86 0.16 60);
-    --focus-ring: oklch(0.6 0.04 250 / 40%);
-    --selection: oklch(0.68 0.0015 84.59 / 72%);
-    --selection-foreground: oklch(0.16 0.0015 84.59);
-
-    --shadow-sm: 0 1px 2px oklch(0% 0 none / 30%);
-    --shadow-md:
-      0 4px 12px oklch(0% 0 none / 32%), 0 1px 2px oklch(0% 0 none / 24%);
-    --shadow-lg:
-      0 18px 40px oklch(0% 0 none / 40%), 0 2px 6px oklch(0% 0 none / 28%);
-    --shadow-inset: 0 0 0 1px oklch(100% 0 none / 5%);
-  }
-}
-
 [data-theme="light"] {
   color-scheme: light;
 }
 
+/* Dark theme — port of Fellow's .dark sheet. Always applied via the
+ * `data-theme` attribute (set by src/lib/theme.ts and by the inline
+ * pre-paint script in index.html), regardless of system preference. */
 [data-theme="dark"] {
   color-scheme: dark;
 
@@ -217,6 +165,9 @@
   --sidebar-foreground: oklch(0.985 0.0015 84.59);
   --sidebar-accent: oklch(0.22 0.0015 84.59);
   --sidebar-border: oklch(1 0 0 / 8%);
+  /* Dark --border is already an 8-10% white alpha, so the light-mode
+   * 55% mix would dilute it below the visibility floor. Bump to 80%
+   * so the subtle border still reads against the dark card. */
   --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
   --selection: oklch(0.68 0.0015 84.59 / 72%);
   --selection-foreground: oklch(0.16 0.0015 84.59);

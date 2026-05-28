@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Notetaker</title>
+    <script>
+      // Pre-paint theme bootstrap. Keep in sync with src/lib/theme.ts; the
+      // storage key is duplicated here so the attribute is set before the
+      // module bundle runs, avoiding a light-mode flash on dark systems.
+      (function () {
+        try {
+          var stored = localStorage.getItem("os-scribe:theme");
+          var resolved =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
