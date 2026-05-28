@@ -67,11 +67,11 @@
 
   /* Color — light theme.  Mirrors Fellow's globals.css so the two apps
    * read like siblings. ------------------------------------------------ */
-  /* Border color for focused inputs. Defaults to --ring so the light
-   * theme keeps its quiet warm-grey hairline; the dark theme overrides
-   * this with something brighter since the dark --ring (white at 18%)
-   * disappears next to the focus halo. */
-  --ring-focus: var(--ring);
+  /* Border color for focused inputs. Mixes 30% of the foreground in so
+   * the focused border carries the emphasis and the halo plays support,
+   * instead of both reading as one flat band. Theme-aware via
+   * --foreground; dark theme inherits the same recipe. */
+  --ring-focus: color-mix(in oklch, var(--foreground) 30%, transparent);
 
   --background: oklch(95.13% 0.0015 84.59);
   --foreground: oklch(27.24% 0.0015 84.59);
@@ -114,7 +114,7 @@
   --warm-strong: oklch(52% 0.16 38);
   /* Focus ring lives in the warm-grey family so it never reads as a cool
    * macOS-blue glow next to the rest of the palette. */
-  --focus-ring: oklch(60% 0.03 84.59 / 35%);
+  --focus-ring: oklch(60% 0.03 84.59 / 22%);
   /* Warm-gray text selection — neutral to the warm palette, never blue. */
   --selection: oklch(86% 0.0015 84.59);
   --selection-foreground: var(--foreground);
@@ -185,7 +185,6 @@
   --warm-soft: oklch(0.42 0.12 50);
   --warm-strong: oklch(0.86 0.16 60);
   --focus-ring: oklch(0.78 0.025 84.59 / 22%);
-  --ring-focus: color-mix(in oklch, var(--foreground) 30%, transparent);
   --scrim: oklch(0% 0 none / 55%);
   /* Selection keeps the foreground white (no contrast flip) and lays a
    * translucent warm-grey wash on top, matching the light-mode pattern
