@@ -2,6 +2,18 @@
 
 macOS-first Tauri MVP for local notes, reliable local audio recording, saved audio validation, batch transcription, and generated notes.
 
+[![Phala Trust Center — TEE verified](https://img.shields.io/badge/Phala%20Trust%20Center-TEE%20verified-success)](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c)
+
+## Privacy
+
+The `scribe-api` backend runs in an Intel TDX confidential VM on Phala Cloud. Neither Phala (the platform) nor Open Software (us) can read your audio, transcripts, or logs at runtime. The chain of trust is independently verifiable:
+
+- **Source** — this repository. The commit running in production is recoverable from the image's OCI `revision` label.
+- **Image** — built by [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml) and published to [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-scribe/pkgs/container/scribe-api) with SBOM + provenance. Production deploys are pinned by `@sha256:<digest>`, not mutable tags.
+- **Attestation** — the [Phala Trust Center report](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c) is a third-party-verifiable proof that the image hash above is what's actually running inside a real Intel TDX enclave.
+
+Audio still leaves the TEE when forwarded to OpenAI or Venice for transcription — those providers receive your audio under their own privacy policies. End-to-end private STT is a separate workstream.
+
 ## Development
 
 ```sh
