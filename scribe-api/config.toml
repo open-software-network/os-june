@@ -6,7 +6,9 @@ max_audio_bytes = 26214400
 max_json_bytes = 524288
 
 [os_accounts]
-api_url = "https://os-accounts-api-staging.up.railway.app"
+# api_url has no default — must come from SCRIBE__OS_ACCOUNTS__API_URL
+# per environment so a missing override fails loud against the dev
+# fallback in AppConfig::default rather than silently hitting staging.
 # iss is the canonical OS Accounts site URL used in the JWT's `iss` claim
 # — the same value on staging and prod. JWKS lives on the API origin, but
 # the issuer claim points at the canonical site. Confirmed by decoding a

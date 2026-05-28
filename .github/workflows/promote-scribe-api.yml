@@ -3,14 +3,11 @@ name: promote-scribe-api
 on:
   workflow_dispatch:
     inputs:
-      source_tag:
-        description: "Existing tag in ghcr.io/<owner>/scribe-api to promote (e.g. a1b2c3d, staging)"
-        required: true
+      from-tag:
+        description: Source tag to promote. Use `staging` for normal release or a short SHA for rollback.
+        required: false
         default: staging
-      destination_tag:
-        description: "Destination tag to write (production | staging | rollback-<sha>)"
-        required: true
-        default: production
+        type: string
 
 permissions:
   contents: read
@@ -20,38 +17,95 @@ concurrency:
   group: promote-scribe-api
   cancel-in-progress: false
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository_owner }}/scribe-api
+
 jobs:
-  promote:
+  verify:
+    name: Verify source image
     runs-on: ubuntu-latest
+    env:
+      FROM_TAG: ${{ inputs.from-tag }}
     steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify source manifest exists
-        env:
-          OWNER: ${{ github.repository_owner }}
-          SRC: ${{ inputs.source_tag }}
+      - name: Verify source image exists
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "ghcr.io/${OWNER}/scribe-api:${SRC}"
+          image="${{ env.IMAGE }}:${FROM_TAG}"
+          if ! docker buildx imagetools inspect "$image" --raw > /dev/null 2>&1; then
+            echo "::error::Image $image was not found in GHCR. Build the staging image first, then rerun promotion."
+            exit 1
+          fi
+          echo "Found $image"
 
-      - name: Re-tag source as destination
-        env:
-          OWNER: ${{ github.repository_owner }}
-          SRC: ${{ inputs.source_tag }}
-          DEST: ${{ inputs.destination_tag }}
+  deploy:
+    name: Deploy to production
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      FROM_TAG: ${{ inputs.from-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve digest and commit SHA
+        id: image
         run: |
           set -euo pipefail
-          docker buildx imagetools create \
-            "ghcr.io/${OWNER}/scribe-api:${SRC}" \
-            --tag "ghcr.io/${OWNER}/scribe-api:${DEST}"
+          source="${{ env.IMAGE }}:${FROM_TAG}"
 
-      - name: Confirm destination tag
-        env:
-          OWNER: ${{ github.repository_owner }}
-          DEST: ${{ inputs.destination_tag }}
-        run: docker buildx imagetools inspect "ghcr.io/${OWNER}/scribe-api:${DEST}"
+          digest=$(docker buildx imagetools inspect "$source" \
+            --format '{{ json .Manifest }}' | jq -r '.digest')
+          if [[ -z "$digest" || "$digest" == "null" ]]; then
+            echo "::error::Could not resolve manifest digest for $source."
+            exit 1
+          fi
+
+          rev=$(docker buildx imagetools inspect "$source" --format '{{json .Image}}' \
+            | jq -r 'first(.. | objects | select(.config?.Labels?["org.opencontainers.image.revision"] != null) | .config.Labels["org.opencontainers.image.revision"]) // empty')
+
+          if [[ -z "$rev" && "$FROM_TAG" =~ ^[0-9a-f]{7,40}$ ]]; then
+            rev="$FROM_TAG"
+          fi
+
+          if [[ -z "$rev" ]]; then
+            echo "::error::Could not resolve commit SHA for $source. Use an image built by this repository, or pass a SHA tag directly."
+            exit 1
+          fi
+
+          sha_short="${rev:0:7}"
+          echo "sha_short=${sha_short}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Resolved $source → digest=${digest} sha=${sha_short}"
+
+      - id: phala
+        uses: ./.github/actions/phala-deploy
+        with:
+          cvm-name: os-scribe-api-production
+          compose-file: iac/phala/docker-compose.production.yml
+          image-ref: ${{ env.IMAGE }}@${{ steps.image.outputs.digest }}
+          api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
+
+      - name: Retag digest as :production
+        if: steps.phala.outputs.deployed == 'true'
+        run: |
+          set -euo pipefail
+          target="${{ env.IMAGE }}:production"
+          docker buildx imagetools create --tag "$target" "${{ env.IMAGE }}@${{ steps.image.outputs.digest }}"
+          echo "Retagged ${{ env.IMAGE }}@${{ steps.image.outputs.digest }} as $target"

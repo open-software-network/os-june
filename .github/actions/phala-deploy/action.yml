@@ -1,0 +1,116 @@
+name: Phala Cloud deploy
+description: >
+  Substitute an image ref into a docker-compose file and deploy or update a
+  Phala Cloud CVM. Skips silently when api-key is empty so the workflow can
+  ship before the secret is bound.
+
+inputs:
+  cvm-name:
+    description: Phala CVM name. Acts as the upsert key — same name updates in place.
+    required: true
+  compose-file:
+    description: Path to docker-compose.yml containing the literal placeholder ${SCRIBE_IMAGE}.
+    required: true
+  image-ref:
+    description: Full GHCR image ref (tag or @sha256:digest) to substitute for ${SCRIBE_IMAGE}.
+    required: true
+  api-key:
+    description: Phala Cloud API key (PHALA_CLOUD_API_KEY).
+    required: false
+    default: ""
+  cli-version:
+    description: phala npm package version to install. Pinned for reproducibility.
+    required: false
+    default: "1.1.19"
+
+outputs:
+  cvm-url:
+    description: Public HTTPS URL of the deployed CVM on port 8080.
+    value: ${{ steps.deploy.outputs.cvm-url }}
+  deployed:
+    description: '"true" when a deploy ran, "false" when skipped.'
+    value: ${{ steps.deploy.outputs.deployed || 'false' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Skip when Phala not configured
+      if: inputs.api-key == ''
+      shell: bash
+      env:
+        CVM_NAME: ${{ inputs.cvm-name }}
+      run: |
+        echo "::notice::api-key input empty; skipping Phala deploy for $CVM_NAME."
+
+    - name: Install Phala CLI
+      if: inputs.api-key != ''
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+      run: npm install -g "phala@${CLI_VERSION}"
+
+    - name: Render compose with pinned image
+      id: render
+      if: inputs.api-key != ''
+      shell: bash
+      env:
+        COMPOSE_FILE: ${{ inputs.compose-file }}
+        IMAGE_REF: ${{ inputs.image-ref }}
+      run: |
+        set -euo pipefail
+        if [[ ! -f "$COMPOSE_FILE" ]]; then
+          echo "::error::compose-file not found: $COMPOSE_FILE"
+          exit 1
+        fi
+        if ! grep -q '\${SCRIBE_IMAGE}' "$COMPOSE_FILE"; then
+          echo "::error::compose-file is missing the \${SCRIBE_IMAGE} placeholder."
+          exit 1
+        fi
+        rendered="${RUNNER_TEMP}/$(basename "$COMPOSE_FILE")"
+        sed "s|\${SCRIBE_IMAGE}|${IMAGE_REF}|g" "$COMPOSE_FILE" > "$rendered"
+        echo "Rendered compose for $IMAGE_REF:"
+        echo "----"
+        cat "$rendered"
+        echo "----"
+        echo "rendered=${rendered}" >> "$GITHUB_OUTPUT"
+
+    - name: Deploy CVM
+      id: deploy
+      if: inputs.api-key != ''
+      shell: bash
+      env:
+        PHALA_CLOUD_API_KEY: ${{ inputs.api-key }}
+        CVM_NAME: ${{ inputs.cvm-name }}
+        RENDERED: ${{ steps.render.outputs.rendered }}
+      run: |
+        set -euo pipefail
+        phala deploy -c "$RENDERED" -n "$CVM_NAME" --wait
+        url=$(phala cvms get "$CVM_NAME" --json | jq -r '.public_urls[0].app // empty')
+        echo "deployed=true" >> "$GITHUB_OUTPUT"
+        if [[ -n "$url" ]]; then
+          echo "cvm-url=${url}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Summary
+      if: always()
+      shell: bash
+      env:
+        CVM_NAME: ${{ inputs.cvm-name }}
+        IMAGE_REF: ${{ inputs.image-ref }}
+        CVM_URL: ${{ steps.deploy.outputs.cvm-url }}
+        DEPLOYED: ${{ steps.deploy.outputs.deployed }}
+      run: |
+        {
+          if [[ "$DEPLOYED" == "true" ]]; then
+            echo "### Phala Cloud deploy"
+            echo "- **CVM:** \`${CVM_NAME}\`"
+            echo "- **Image:** \`${IMAGE_REF}\`"
+            if [[ -n "$CVM_URL" ]]; then
+              echo "- **URL:** ${CVM_URL}"
+            fi
+            echo "- **Attestation:** \`phala cvms attestation ${CVM_NAME}\`"
+          else
+            echo "### Phala Cloud deploy skipped"
+            echo "PHALA_CLOUD_API_KEY not bound. Set it in the GitHub environment, then re-run."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

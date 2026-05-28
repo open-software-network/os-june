@@ -1,0 +1,14 @@
+services:
+  scribe-api:
+    image: ${SCRIBE_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      RUST_LOG: scribe=warn,scribe_api=warn,scribe_services=warn,scribe_providers=warn,tower_http=warn
+      SCRIBE__OS_ACCOUNTS__API_URL:
+      SCRIBE__OS_ACCOUNTS__APP_API_KEY:
+      SCRIBE__UPSTREAMS__OPENAI__API_KEY:
+      SCRIBE__UPSTREAMS__VENICE__API_KEY:
