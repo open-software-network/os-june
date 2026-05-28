@@ -106,10 +106,17 @@
    * "live/recording" primary action that wants a warmer feel. */
   --warm-soft: oklch(90% 0.07 55);
   --warm-strong: oklch(52% 0.16 38);
-  --focus-ring: oklch(60% 0.04 250 / 32%);
+  /* Focus ring lives in the warm-grey family so it never reads as a cool
+   * macOS-blue glow next to the rest of the palette. */
+  --focus-ring: oklch(60% 0.03 84.59 / 35%);
   /* Warm-gray text selection — neutral to the warm palette, never blue. */
   --selection: oklch(86% 0.0015 84.59);
   --selection-foreground: var(--foreground);
+
+  /* Scrim behind modal dialogs. In light mode this layers a translucent
+   * foreground tint; in dark mode the rule below switches to a darkening
+   * black wash so the backdrop actually dims what's behind it. */
+  --scrim: color-mix(in oklch, var(--foreground) 12%, transparent);
 
   /* Motion ----------------------------------------------------------- */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -173,7 +180,8 @@
   --selection-foreground: oklch(0.16 0.0015 84.59);
   --warm-soft: oklch(0.42 0.12 50);
   --warm-strong: oklch(0.86 0.16 60);
-  --focus-ring: oklch(0.6 0.04 250 / 40%);
+  --focus-ring: oklch(0.78 0.025 84.59 / 28%);
+  --scrim: oklch(0% 0 none / 55%);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 30%);
   --shadow-md:

@@ -3774,7 +3774,7 @@ input:focus-visible,
   display: grid;
   place-items: center;
   padding: var(--sp-8);
-  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  background: var(--scrim);
   backdrop-filter: saturate(140%) blur(8px);
   -webkit-backdrop-filter: saturate(140%) blur(8px);
   animation: dialog-backdrop-in var(--t-med) var(--ease-out);
