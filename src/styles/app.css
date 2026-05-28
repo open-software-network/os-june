@@ -1243,6 +1243,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: var(--sp-2);
   height: 100%;
   padding: 0 var(--sp-4);
   border: 0;
@@ -1253,6 +1254,16 @@ input:focus-visible,
   font-weight: 500;
   cursor: pointer;
   transition: color var(--t-fast) var(--ease-out);
+}
+
+.segmented button > svg {
+  color: var(--muted-foreground);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.segmented button[aria-pressed="true"] > svg,
+.segmented button:hover > svg {
+  color: var(--foreground);
 }
 
 .segmented button[aria-pressed="true"] {

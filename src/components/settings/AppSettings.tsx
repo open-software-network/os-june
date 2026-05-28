@@ -6,6 +6,9 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconFire1 } from "central-icons/IconFire1";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconMoonStar } from "central-icons/IconMoonStar";
+import { IconSun } from "central-icons/IconSun";
+import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -43,12 +46,39 @@ import { ProviderLogo } from "./ProviderLogo";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
-  label: string;
+  label: ReactNode;
   ariaLabel: string;
 }[] = [
-  { value: "system", label: "System", ariaLabel: "Match system theme" },
-  { value: "light", label: "Light", ariaLabel: "Use light theme" },
-  { value: "dark", label: "Dark", ariaLabel: "Use dark theme" },
+  {
+    value: "system",
+    label: (
+      <>
+        <IconTelevision size={14} />
+        System
+      </>
+    ),
+    ariaLabel: "Match system theme",
+  },
+  {
+    value: "light",
+    label: (
+      <>
+        <IconSun size={14} />
+        Light
+      </>
+    ),
+    ariaLabel: "Use light theme",
+  },
+  {
+    value: "dark",
+    label: (
+      <>
+        <IconMoonStar size={14} />
+        Dark
+      </>
+    ),
+    ariaLabel: "Use dark theme",
+  },
 ];
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
