@@ -437,9 +437,6 @@ function FolderCard({
           <span>
             {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
           </span>
-          <span className="folder-card-footer-dot" aria-hidden>
-            ·
-          </span>
           <span>Updated {formatRelative(lastUpdated)}</span>
         </p>
       </div>

@@ -3209,7 +3209,7 @@ input:focus-visible,
 .folders-grid {
   display: grid;
   gap: var(--sp-3);
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 }
 
 /* Slim, click-anywhere card. The article itself is `role=button`, so
@@ -3309,11 +3309,16 @@ input:focus-visible,
  * space-between flex. Subtle file icon + count + updated date. */
 .folder-card-footer {
   margin: 0;
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-1) var(--sp-3);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+}
+
+.folder-card-footer > span {
+  white-space: nowrap;
 }
 
 .folder-card-footer-icon {
@@ -3323,10 +3328,6 @@ input:focus-visible,
   height: 14px;
   color: var(--muted-foreground);
   opacity: 0.85;
-}
-
-.folder-card-footer-dot {
-  opacity: 0.5;
 }
 
 .folder-card-menu {
