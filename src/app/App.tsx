@@ -3,10 +3,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { AccountGate } from "../components/account/AccountGate";
-import {
-  SignInPrompt,
-  type SignInPromptReason,
-} from "../components/account/SignInPrompt";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
@@ -96,10 +92,6 @@ export function App() {
     setAccount,
   } = useAccountStatus();
   const appBlocked = accountLoading || shouldBlockOnSignIn(account);
-  const [signInPrompt, setSignInPrompt] = useState<{
-    reason: SignInPromptReason;
-    pendingAction?: () => void;
-  } | null>(null);
   const selectedNote = state.selectedNote;
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
@@ -469,13 +461,6 @@ export function App() {
 
   async function handleStartRecording() {
     if (!selectedNote) return;
-    if (shouldBlockOnSignIn(account)) {
-      setSignInPrompt({
-        reason: "record",
-        pendingAction: () => void handleStartRecording(),
-      });
-      return;
-    }
     dispatch({
       type: "recordingStatusChanged",
       status: startingRecordingStatus(sourceMode),
@@ -592,17 +577,6 @@ export function App() {
         aria-hidden
         data-tauri-drag-region
         onPointerDown={handleTitlebarPointerDown}
-      />
-      <SignInPrompt
-        open={signInPrompt !== null}
-        reason={signInPrompt?.reason ?? "record"}
-        onClose={() => setSignInPrompt(null)}
-        onSignedIn={(next) => {
-          setAccount(next);
-          const pending = signInPrompt?.pendingAction;
-          setSignInPrompt(null);
-          pending?.();
-        }}
       />
       <Sidebar
         folders={state.folders}

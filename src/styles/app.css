@@ -2227,59 +2227,6 @@ input:focus-visible,
   background: var(--background);
 }
 
-.account-gate {
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
-  padding: calc(var(--sp-10) + 20px) var(--sp-6) var(--sp-10);
-}
-
-.account-gate-panel {
-  width: min(100%, 560px);
-}
-
-.account-gate-header {
-  margin-bottom: var(--sp-6);
-}
-
-.account-gate-brand {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-}
-
-.account-gate-logo {
-  display: block;
-  height: 22px;
-  width: auto;
-}
-
-.account-gate-logo.dark {
-  display: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  .account-gate-logo.light {
-    display: none;
-  }
-  .account-gate-logo.dark {
-    display: block;
-  }
-}
-
-[data-theme="dark"] .account-gate-logo.light {
-  display: none;
-}
-[data-theme="dark"] .account-gate-logo.dark {
-  display: block;
-}
-[data-theme="light"] .account-gate-logo.light {
-  display: block;
-}
-[data-theme="light"] .account-gate-logo.dark {
-  display: none;
-}
-
 .settings-page {
   width: 100%;
   max-width: 720px;
@@ -4389,4 +4336,181 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   text-align: center;
+}
+
+/* Welcome (sign-in gate) ---------------------------------------------- */
+
+.welcome-screen {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-8);
+  /* Sits on the design-system background; the only pop of color is the
+   * app icon inside the card. */
+  background: var(--background);
+}
+
+.welcome-card {
+  width: min(100%, 380px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-5);
+  padding: var(--sp-10) var(--sp-8) var(--sp-8);
+  border-radius: var(--r-2xl);
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+}
+
+/* The Scribe connector glyph, sitting flat in the card foreground. */
+.welcome-mark {
+  display: inline-flex;
+  align-self: center;
+  color: var(--foreground);
+}
+
+.welcome-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+  text-align: center;
+}
+
+.welcome-subtitle {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.welcome-providers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.welcome-provider {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  width: 100%;
+  height: var(--control-xl);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.welcome-provider:hover:not(:disabled) {
+  background: var(--muted);
+  border-color: color-mix(in oklch, var(--border) 60%, var(--foreground) 8%);
+}
+
+.welcome-provider:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.welcome-provider:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.welcome-provider:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: var(--ring-focus);
+}
+
+.welcome-provider svg {
+  flex-shrink: 0;
+  height: 13px;
+  width: auto;
+}
+
+.welcome-busy {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.welcome-busy p {
+  margin: 0;
+}
+
+.welcome-spinner {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  border-top-color: var(--foreground);
+  animation: welcome-spin 0.9s linear infinite;
+}
+
+@keyframes welcome-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-spinner {
+    animation: welcome-spin 1.8s linear infinite;
+  }
+}
+
+.welcome-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--foreground);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.welcome-status {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--destructive-soft);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.welcome-terms {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.welcome-terms a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

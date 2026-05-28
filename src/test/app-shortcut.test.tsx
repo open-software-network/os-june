@@ -220,13 +220,13 @@ describe("App shortcuts", () => {
     render(<App />);
 
     expect(
-      await screen.findByRole("heading", { name: "Sign in to Scribe" }),
+      await screen.findByRole("heading", { name: "Welcome to Scribe" }),
     ).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
 
     await user.click(
-      screen.getByRole("button", { name: "Sign in with Open Software" }),
+      screen.getByRole("button", { name: "Sign in with OpenSoftware" }),
     );
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
