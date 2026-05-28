@@ -3667,7 +3667,7 @@ input:focus-visible,
 }
 
 .add-notes-search:focus-within {
-  border-color: var(--ring);
+  border-color: color-mix(in oklch, var(--foreground) 30%, transparent);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
@@ -3917,7 +3917,7 @@ input:focus-visible,
 .dialog-input:focus-visible,
 .dialog-textarea:focus-visible {
   outline: none;
-  border-color: var(--ring);
+  border-color: color-mix(in oklch, var(--foreground) 30%, transparent);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 

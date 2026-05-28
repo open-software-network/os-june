@@ -178,7 +178,7 @@
   --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
   --warm-soft: oklch(0.42 0.12 50);
   --warm-strong: oklch(0.86 0.16 60);
-  --focus-ring: oklch(0.78 0.025 84.59 / 18%);
+  --focus-ring: oklch(0.78 0.025 84.59 / 22%);
   --scrim: oklch(0% 0 none / 55%);
   /* Selection keeps the foreground white (no contrast flip) and lays a
    * translucent warm-grey wash on top, matching the light-mode pattern
