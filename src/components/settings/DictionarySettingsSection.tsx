@@ -106,6 +106,9 @@ export function DictionarySettingsSection() {
       <h2 id="dictionary-heading" className="settings-group-heading">
         Dictionary
       </h2>
+      <p className="settings-group-description">
+        Words or phrases Scribe should preserve during transcription.
+      </p>
       <div className="settings-card dictionary-card">
         <div className="dictionary-toolbar">
           <label className="folders-search">
@@ -198,7 +201,6 @@ function DictionaryEntryDialog({
       open={open}
       onClose={onClose}
       title={editing ? "Edit dictionary entry" : "Add dictionary entry"}
-      description="Words or phrases Scribe should preserve during transcription."
       initialFocusSelector='input[name="dictionary-phrase"]'
       footer={
         <>
@@ -228,7 +230,7 @@ function DictionaryEntryDialog({
             className="dialog-input"
             value={phrase}
             onChange={(event) => onChange(event.currentTarget.value)}
-            placeholder="Junho Hong"
+            placeholder="e.g. Anthropic, ARR, Junho Hong"
             autoComplete="off"
             maxLength={160}
           />

@@ -2278,6 +2278,14 @@ input:focus-visible,
   letter-spacing: 0;
 }
 
+.settings-group-description {
+  margin: 0 0 var(--sp-1);
+  padding-left: var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
 .settings-group-header .settings-group-heading {
   padding-left: 0;
 }
