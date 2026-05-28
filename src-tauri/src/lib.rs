@@ -6,6 +6,9 @@ pub mod dictation;
 pub mod domain;
 pub mod providers;
 
+#[cfg(target_os = "macos")]
+use tauri::Manager;
+
 pub fn run() {
     providers::load_local_env();
     let context = tauri::generate_context!();
@@ -53,13 +56,62 @@ pub fn run() {
         .setup(|app| {
             providers::setup(app);
             dictation::setup(app);
+            #[cfg(target_os = "macos")]
+            setup_main_window_lifecycle(app);
             Ok(())
         })
         .build(context)
         .expect("failed to build OS Notetaker")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                dictation::stop_helper(app);
-            }
+        .run(|app, event| match event {
+            tauri::RunEvent::Exit => dictation::stop_helper(app),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => show_main_window(app),
+            _ => {}
         });
+}
+
+#[cfg(target_os = "macos")]
+fn setup_main_window_lifecycle(app: &mut tauri::App) {
+    if let Some(main_window) = app.get_webview_window("main") {
+        register_main_window_lifecycle(&main_window);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn register_main_window_lifecycle(window: &tauri::WebviewWindow) {
+    let close_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = close_window.hide();
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return;
+    }
+
+    let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+    else {
+        return;
+    };
+
+    if let Ok(window) =
+        tauri::WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build())
+    {
+        register_main_window_lifecycle(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
