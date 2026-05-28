@@ -3312,7 +3312,7 @@ input:focus-visible,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px var(--sp-2);
+  gap: var(--sp-1) var(--sp-3);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
 }
@@ -3328,10 +3328,6 @@ input:focus-visible,
   height: 14px;
   color: var(--muted-foreground);
   opacity: 0.85;
-}
-
-.folder-card-footer-dot {
-  opacity: 0.5;
 }
 
 .folder-card-menu {
