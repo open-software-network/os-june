@@ -199,7 +199,7 @@ func firstWindowTitle(_ app: AXUIElement) -> String? {
 
 func isRelatedBrowserProcess(_ bundleID: String?, foregroundBundleID: String?) -> Bool {
     guard let bundleID, let foregroundBundleID else { return false }
-    if bundleID == foregroundBundleID {
+    if bundleID.caseInsensitiveCompare(foregroundBundleID) == .orderedSame {
         return true
     }
     return bundleID.lowercased().hasPrefix("\(foregroundBundleID).".lowercased())
@@ -207,17 +207,38 @@ func isRelatedBrowserProcess(_ bundleID: String?, foregroundBundleID: String?) -
 
 func isBrowserBundle(_ bundleID: String?) -> Bool {
     guard let bundleID else { return false }
+    let normalized = bundleID.lowercased()
     return [
-        "com.google.Chrome",
-        "com.google.Chrome.canary",
-        "org.chromium.Chromium",
-        "com.brave.Browser",
+        "com.google.chrome",
+        "com.google.chrome.canary",
+        "org.chromium.chromium",
+        "com.brave.browser",
         "com.microsoft.edgemac",
-        "com.apple.Safari",
-        "com.apple.SafariTechnologyPreview",
-        "com.operasoftware.Opera",
-        "company.thebrowser.Browser",
-    ].contains(bundleID)
+        "com.apple.safari",
+        "com.apple.safaritechnologypreview",
+        "com.operasoftware.opera",
+        "company.thebrowser.browser",
+    ].contains(normalized)
+}
+
+func browserAppForHelper(bundleID: String?, runningApplications: [NSRunningApplication]) -> NSRunningApplication? {
+    guard let bundleID else { return nil }
+    let normalized = bundleID.lowercased()
+    let roots = [
+        "com.google.chrome",
+        "com.google.chrome.canary",
+        "org.chromium.chromium",
+        "com.brave.browser",
+        "com.microsoft.edgemac",
+        "com.operasoftware.opera",
+        "company.thebrowser.browser",
+    ]
+    guard let root = roots.first(where: { normalized == $0 || normalized.hasPrefix("\($0).") }) else {
+        return nil
+    }
+    return runningApplications.first { app in
+        app.bundleIdentifier?.caseInsensitiveCompare(root) == .orderedSame
+    }
 }
 
 func meetingTitleLike(_ title: String?) -> Bool {
@@ -297,17 +318,22 @@ func collectSnapshots() throws -> [ProcessSnapshot] {
         }
         let app = NSRunningApplication(processIdentifier: pid)
         let bundleID = objectID.readBundleID() ?? app?.bundleIdentifier
+        let owningBrowser = browserAppForHelper(bundleID: bundleID, runningApplications: runningApplications)
         let isForeground = foregroundPID == pid
         let isRelatedBrowser = isRelatedBrowserProcess(bundleID, foregroundBundleID: foregroundBundleID)
-        let effectiveForeground = isForeground || isRelatedBrowser
+        let ownerTitle = owningBrowser.map {
+            activeWindowTitle(pid: $0.processIdentifier, accessibilityTrusted: accessibilityTrusted)
+        } ?? nil
+        let helperHasMeetingTitle = meetingTitleLike(ownerTitle)
+        let effectiveForeground = isForeground || isRelatedBrowser || helperHasMeetingTitle
         return ProcessSnapshot(
             pid: pid,
             bundleId: bundleID,
-            appName: isRelatedBrowser ? (foregroundAppName ?? app?.localizedName) : app?.localizedName,
+            appName: owningBrowser?.localizedName ?? (isRelatedBrowser ? (foregroundAppName ?? app?.localizedName) : app?.localizedName),
             isRunningInput: true,
             isForeground: effectiveForeground,
             accessibilityTrusted: accessibilityTrusted,
-            windowTitle: effectiveForeground ? foregroundTitle : nil
+            windowTitle: ownerTitle ?? (effectiveForeground ? foregroundTitle : nil)
         )
     }
     let hasForegroundBrowserCandidate = snapshots.contains {

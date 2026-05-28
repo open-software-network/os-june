@@ -703,22 +703,23 @@ fn should_ignore_bundle(bundle_id: &str) -> bool {
 }
 
 fn is_browser_bundle(bundle_id: &str) -> bool {
+    let bundle_id = bundle_id.to_ascii_lowercase();
     matches!(
-        bundle_id,
-        "com.google.Chrome"
-            | "com.google.Chrome.canary"
-            | "org.chromium.Chromium"
-            | "com.brave.Browser"
+        bundle_id.as_str(),
+        "com.google.chrome"
+            | "com.google.chrome.canary"
+            | "org.chromium.chromium"
+            | "com.brave.browser"
             | "com.microsoft.edgemac"
-            | "com.apple.Safari"
-            | "com.apple.SafariTechnologyPreview"
-            | "com.operasoftware.Opera"
-            | "company.thebrowser.Browser"
-    ) || bundle_id.starts_with("com.google.Chrome.")
-        || bundle_id.starts_with("org.chromium.Chromium.")
-        || bundle_id.starts_with("com.brave.Browser.")
+            | "com.apple.safari"
+            | "com.apple.safaritechnologypreview"
+            | "com.operasoftware.opera"
+            | "company.thebrowser.browser"
+    ) || bundle_id.starts_with("com.google.chrome.")
+        || bundle_id.starts_with("org.chromium.chromium.")
+        || bundle_id.starts_with("com.brave.browser.")
         || bundle_id.starts_with("com.microsoft.edgemac.")
-        || bundle_id.starts_with("company.thebrowser.Browser.")
+        || bundle_id.starts_with("company.thebrowser.browser.")
 }
 
 fn is_meeting_bundle(bundle_id: &str) -> bool {
@@ -830,7 +831,7 @@ mod tests {
 
     #[test]
     fn arc_browser_helper_can_match_google_meet_title() {
-        let mut snapshot = process("company.thebrowser.Browser.helper");
+        let mut snapshot = process("company.thebrowser.browser.helper");
         snapshot.app_name = Some("Arc".to_string());
         snapshot.is_foreground = true;
         snapshot.accessibility_trusted = true;
