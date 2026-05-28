@@ -579,7 +579,6 @@ export function App() {
           account={account}
           loading={accountLoading}
           onAccountChanged={setAccount}
-          onRefresh={refreshAccount}
         />
       </main>
     );

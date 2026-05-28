@@ -4494,6 +4494,11 @@ input:focus-visible,
   text-align: center;
 }
 
+.welcome-status-info {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
 .welcome-terms {
   margin: var(--sp-3) 0 0;
   font-size: var(--fs-xs);

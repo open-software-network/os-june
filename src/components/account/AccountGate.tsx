@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
@@ -7,7 +7,6 @@ type Props = {
   account: AccountStatus;
   loading: boolean;
   onAccountChanged: (next: AccountStatus) => void;
-  onRefresh: () => Promise<AccountStatus | undefined>;
 };
 
 export function AccountGate({ account, loading, onAccountChanged }: Props) {
@@ -22,6 +21,12 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
       // catch surfaces the message, so there's nothing to do here.
     }
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (busy) void cancelInFlight();
+    };
+  }, [busy, cancelInFlight]);
 
   async function handleSignIn() {
     setBusy(true);
@@ -85,7 +90,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
             )}
           </div>
         ) : (
-          <p className="welcome-status">
+          <p className="welcome-status welcome-status-info">
             OpenSoftware sign-in is not configured for this build.
           </p>
         )}
