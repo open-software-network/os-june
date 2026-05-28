@@ -673,7 +673,11 @@ fn is_browser_bundle(bundle_id: &str) -> bool {
             | "com.apple.SafariTechnologyPreview"
             | "com.operasoftware.Opera"
             | "company.thebrowser.Browser"
-    )
+    ) || bundle_id.starts_with("com.google.Chrome.")
+        || bundle_id.starts_with("org.chromium.Chromium.")
+        || bundle_id.starts_with("com.brave.Browser.")
+        || bundle_id.starts_with("com.microsoft.edgemac.")
+        || bundle_id.starts_with("company.thebrowser.Browser.")
 }
 
 fn is_meeting_bundle(bundle_id: &str) -> bool {
@@ -698,6 +702,9 @@ fn meeting_title_like(title: &str) -> bool {
     [
         "google meet",
         "meet.google",
+        "meet.google.com",
+        "meet -",
+        "meet |",
         "zoom meeting",
         "zoom webinar",
         "microsoft teams",
@@ -778,6 +785,19 @@ mod tests {
         snapshot.is_foreground = true;
         snapshot.window_title = Some("Inbox".to_string());
         assert!(candidate_from_snapshot(&snapshot).is_none());
+    }
+
+    #[test]
+    fn arc_browser_helper_can_match_google_meet_title() {
+        let mut snapshot = process("company.thebrowser.Browser.helper");
+        snapshot.app_name = Some("Arc".to_string());
+        snapshot.is_foreground = true;
+        snapshot.accessibility_trusted = true;
+        snapshot.window_title = Some("Meet - abc-defg-hij".to_string());
+
+        let candidate = candidate_from_snapshot(&snapshot).expect("Arc Meet should match");
+
+        assert_eq!(candidate.app_name, "Arc");
     }
 
     #[test]

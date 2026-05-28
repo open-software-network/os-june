@@ -121,10 +121,16 @@ func frontmostPID() -> pid_t? {
 func activeWindowTitle(pid: pid_t, accessibilityTrusted: Bool) -> String? {
     guard accessibilityTrusted else { return nil }
     let app = AXUIElementCreateApplication(pid)
+    return titleForAttribute(app, kAXFocusedWindowAttribute)
+        ?? titleForAttribute(app, kAXMainWindowAttribute)
+        ?? firstWindowTitle(app)
+}
+
+func titleForAttribute(_ app: AXUIElement, _ attribute: String) -> String? {
     var focusedWindow: CFTypeRef?
     let focusedErr = AXUIElementCopyAttributeValue(
         app,
-        kAXFocusedWindowAttribute as CFString,
+        attribute as CFString,
         &focusedWindow
     )
     guard focusedErr == .success, let focusedWindow else {
@@ -140,25 +146,58 @@ func activeWindowTitle(pid: pid_t, accessibilityTrusted: Bool) -> String? {
     return title as? String
 }
 
+func firstWindowTitle(_ app: AXUIElement) -> String? {
+    var windowsRef: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
+    guard err == .success, let windows = windowsRef as? [AXUIElement] else {
+        return nil
+    }
+    for window in windows {
+        var title: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success,
+           let value = title as? String,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+    }
+    return nil
+}
+
+func isRelatedBrowserProcess(_ bundleID: String?, foregroundBundleID: String?) -> Bool {
+    guard let bundleID, let foregroundBundleID else { return false }
+    if bundleID == foregroundBundleID {
+        return true
+    }
+    return bundleID.lowercased().hasPrefix("\(foregroundBundleID).".lowercased())
+}
+
 func collectSnapshots() throws -> [ProcessSnapshot] {
     let processObjects = try AudioObjectID.system.readProcessList()
-    let foreground = frontmostPID()
+    let foreground = NSWorkspace.shared.frontmostApplication
+    let foregroundPID = foreground?.processIdentifier
+    let foregroundBundleID = foreground?.bundleIdentifier
+    let foregroundAppName = foreground?.localizedName
     let accessibilityTrusted = AXIsProcessTrusted()
+    let foregroundTitle = foregroundPID.map {
+        activeWindowTitle(pid: $0, accessibilityTrusted: accessibilityTrusted)
+    } ?? nil
     return processObjects.compactMap { objectID in
         guard objectID.readRunningInput(), let pid = objectID.readPID() else {
             return nil
         }
         let app = NSRunningApplication(processIdentifier: pid)
         let bundleID = objectID.readBundleID() ?? app?.bundleIdentifier
-        let isForeground = foreground == pid
+        let isForeground = foregroundPID == pid
+        let isRelatedBrowser = isRelatedBrowserProcess(bundleID, foregroundBundleID: foregroundBundleID)
+        let effectiveForeground = isForeground || isRelatedBrowser
         return ProcessSnapshot(
             pid: pid,
             bundleId: bundleID,
-            appName: app?.localizedName,
+            appName: isRelatedBrowser ? (foregroundAppName ?? app?.localizedName) : app?.localizedName,
             isRunningInput: true,
-            isForeground: isForeground,
+            isForeground: effectiveForeground,
             accessibilityTrusted: accessibilityTrusted,
-            windowTitle: isForeground ? activeWindowTitle(pid: pid, accessibilityTrusted: accessibilityTrusted) : nil
+            windowTitle: effectiveForeground ? foregroundTitle : nil
         )
     }
 }
