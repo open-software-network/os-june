@@ -322,7 +322,7 @@ describe("FoldersWorkspace — detail view", () => {
   it("renders the folder via sticky header and surfaces description + meta", () => {
     render(<FoldersWorkspace {...baseProps()} selectedFolderId="folder-2" />);
 
-    // Folder name shows in the breadcrumb and as the editable title.
+    // Folder name shows as the editable title.
     expect(
       screen.getByRole("button", { name: /Rename folder/ }),
     ).toHaveTextContent("Work");
@@ -345,8 +345,24 @@ describe("FoldersWorkspace — detail view", () => {
     const props = baseProps();
     render(<FoldersWorkspace {...props} selectedFolderId="folder-1" />);
 
-    await user.click(screen.getByRole("button", { name: /^Folders$/ }));
+    await user.click(screen.getByRole("button", { name: /back to folders/i }));
     expect(props.onSelectFolder).toHaveBeenCalledWith(undefined);
+  });
+
+  it("returns to the provided source when opened from a note", async () => {
+    const user = userEvent.setup();
+    const props = {
+      ...baseProps(),
+      folderBackTarget: {
+        label: "Back to Test",
+        onBack: vi.fn(),
+      },
+    };
+    render(<FoldersWorkspace {...props} selectedFolderId="folder-1" />);
+
+    await user.click(screen.getByRole("button", { name: /back to test/i }));
+    expect(props.folderBackTarget.onBack).toHaveBeenCalled();
+    expect(props.onSelectFolder).not.toHaveBeenCalled();
   });
 
   it("renders empty-state actions and triggers create-note", async () => {

@@ -21,6 +21,7 @@ import {
 } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
+import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
@@ -30,6 +31,10 @@ type FoldersWorkspaceProps = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
   selectedFolderId?: string;
+  folderBackTarget?: {
+    label: string;
+    onBack: () => void;
+  };
   onSelectFolder: (folderId?: string) => void;
   onCreateFolder: (
     name: string,
@@ -509,6 +514,7 @@ function FolderCardMenu({
 
 function FolderDetail({
   folder,
+  folderBackTarget,
   folders,
   notes,
   onSelectFolder,
@@ -586,19 +592,14 @@ function FolderDetail({
 
   return (
     <section className="folder-detail" aria-label={folder.name}>
-      <div className="crumb-bar" data-tauri-drag-region>
-        <button
-          type="button"
-          className="crumb-link"
-          onClick={() => onSelectFolder(undefined)}
-        >
-          Folders
-        </button>
-        <span className="crumb-sep" aria-hidden>
-          /
-        </span>
-        <span className="crumb-current">{folder.name}</span>
-        <div className="crumb-actions">
+      <BreadcrumbBar
+        backLabel={folderBackTarget?.label ?? "Back to folders"}
+        onBack={folderBackTarget?.onBack ?? (() => onSelectFolder(undefined))}
+        items={[
+          { label: "Folders", onClick: () => onSelectFolder(undefined) },
+          { label: folder.name },
+        ]}
+        actions={
           <button
             type="button"
             className="ghost-icon-button"
@@ -616,8 +617,8 @@ function FolderDetail({
           >
             <IconDotGrid1x3Horizontal size={14} />
           </button>
-        </div>
-      </div>
+        }
+      />
 
       <div className="folder-detail-content">
         <header className="folder-detail-header">

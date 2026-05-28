@@ -72,6 +72,25 @@ describe("Folder chip — move-to-folder popover", () => {
     expect(screen.getByText("Work")).toBeInTheDocument();
   });
 
+  it("opens the assigned folder without opening the assignment popover", async () => {
+    const user = userEvent.setup();
+    const onNavigateToFolder = vi.fn();
+    render(
+      <NoteEditor
+        {...baseProps([
+          { id: "f1", name: "Ideas", createdAt: now, updatedAt: now },
+        ])}
+        note={{ ...note(), folderIds: ["f1"] }}
+        onNavigateToFolder={onNavigateToFolder}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open Ideas" }));
+
+    expect(onNavigateToFolder).toHaveBeenCalledWith("f1");
+    expect(screen.queryByPlaceholderText("Search or create folder")).toBeNull();
+  });
+
   it("offers 'Create' when no existing folder matches", async () => {
     const user = userEvent.setup();
     const props = baseProps([

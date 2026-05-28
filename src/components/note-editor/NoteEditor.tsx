@@ -1,5 +1,6 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconClipboard } from "central-icons/IconClipboard";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
@@ -47,6 +48,7 @@ type NoteEditorProps = {
   onAssignFolder: (folderId: string) => void;
   onRemoveFolder: (folderId: string) => void;
   onCreateAndAssignFolder: (name: string) => void;
+  onNavigateToFolder?: (folderId: string) => void;
   onTabChange: (tab: "notes" | "transcription") => void;
 };
 
@@ -94,6 +96,7 @@ export function NoteEditor({
   onAssignFolder,
   onRemoveFolder,
   onCreateAndAssignFolder,
+  onNavigateToFolder,
   onTabChange,
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
@@ -147,6 +150,7 @@ export function NoteEditor({
             onAssign={onAssignFolder}
             onRemove={onRemoveFolder}
             onCreateAndAssign={onCreateAndAssignFolder}
+            onNavigateToFolder={onNavigateToFolder}
           />
         </div>
         <input
@@ -400,12 +404,14 @@ function FolderChip({
   onAssign,
   onRemove,
   onCreateAndAssign,
+  onNavigateToFolder,
 }: {
   folders: FolderDto[];
   folderIds: string[];
   onAssign: (folderId: string) => void;
   onRemove: (folderId: string) => void;
   onCreateAndAssign: (name: string) => void;
+  onNavigateToFolder?: (folderId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -459,6 +465,20 @@ function FolderChip({
         <IconFolder1 size={14} />
         {currentFolder?.name ?? "Folder"}
       </button>
+      {currentFolder && onNavigateToFolder ? (
+        <button
+          type="button"
+          className="move-to-folder-open"
+          aria-label={`Open ${currentFolder.name}`}
+          title={`Open ${currentFolder.name}`}
+          onClick={() => {
+            setOpen(false);
+            onNavigateToFolder(currentFolder.id);
+          }}
+        >
+          <IconChevronRightSmall size={13} />
+        </button>
+      ) : null}
       {open ? (
         <div className="move-to-folder-popover" role="menu">
           <div className="move-to-folder-search">

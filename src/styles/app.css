@@ -981,11 +981,9 @@ input:focus-visible,
   min-width: 0;
 }
 
-/* When a note is opened from a folder we render a sticky crumb bar
- * above the same NoteEditor used everywhere else. Wrapping both in a
- * flex column with min-height: 100% means the editor still gets a real
- * height to grow into — its internal grid (auto / 1fr / auto) keeps
- * the recorder pinned at the bottom and the header flush at the top. */
+/* Wrapper gives the editor a real height to grow into — its internal
+ * grid (auto / 1fr / auto) keeps the recorder pinned at the bottom and
+ * the header flush at the top. */
 .note-shell {
   display: flex;
   flex-direction: column;
@@ -998,10 +996,7 @@ input:focus-visible,
   min-height: 0;
 }
 
-.note-shell[data-with-crumb="true"] > .note-editor {
-  /* The crumb bar already provides top breathing room; tighten the
-   * editor's own padding so the title sits where it would in the
-   * regular notes view, minus the crumb. */
+.note-shell > .detail-bar + .note-editor {
   padding-top: var(--sp-7);
 }
 
@@ -1053,6 +1048,10 @@ input:focus-visible,
 
 .folder-chip-wrap {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 calc(-1 * var(--sp-2));
 }
 
 .folder-chip {
@@ -2916,15 +2915,15 @@ input:focus-visible,
   outline-offset: 2px;
 }
 
-/* Shared sticky crumb bar (folder detail + note-from-folder editor) - */
+/* Sticky detail bar — quiet back affordance on folder and note detail */
 
-.crumb-bar {
+.detail-bar {
   position: sticky;
   top: 0;
   z-index: 4;
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   height: 40px;
   margin: 0 calc(-1 * var(--sp-8));
   padding: 0 var(--sp-4);
@@ -2934,52 +2933,116 @@ input:focus-visible,
   -webkit-backdrop-filter: saturate(140%) blur(14px);
 }
 
-.crumb-link {
+.detail-breadcrumb {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.detail-breadcrumb ol {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.detail-breadcrumb li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.detail-breadcrumb-link {
   height: var(--control-md);
-  padding: 0 var(--sp-2);
+  min-width: 0;
+  max-width: 220px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.detail-breadcrumb-link:hover {
+  color: var(--foreground);
+}
+
+.detail-breadcrumb-label,
+.detail-breadcrumb-current {
+  min-width: 0;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-breadcrumb-current {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.detail-breadcrumb-separator {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  opacity: 0.65;
+}
+
+.detail-bar-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--control-md);
+  max-width: min(320px, 70%);
+  padding: 0 var(--sp-2) 0 var(--sp-1);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   cursor: pointer;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
 }
 
-.crumb-link:hover {
-  background: var(--muted);
-  color: var(--foreground);
+.back-button-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  padding: 0;
 }
 
-.crumb-sep {
-  color: var(--muted-foreground);
-  opacity: 0.5;
-  font-size: var(--fs-md);
-}
-
-.crumb-current {
-  color: var(--foreground);
-  font-weight: 500;
-  font-size: var(--fs-md);
+.back-button-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 320px;
 }
 
-.crumb-actions {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
+.back-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.back-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* Folders workspace ------------------------------------------------- */
@@ -3906,7 +3969,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   height: 22px;
-  margin: 0 calc(-1 * var(--sp-2));
+  margin: 0;
   padding: 0 var(--sp-2);
   border: 0;
   border-radius: var(--r-sm);
@@ -3926,6 +3989,38 @@ input:focus-visible,
 }
 
 .move-to-folder-trigger[data-assigned="true"] {
+  color: var(--foreground);
+}
+
+.move-to-folder-open {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-2px);
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.folder-chip-wrap:hover .move-to-folder-open,
+.folder-chip-wrap:focus-within .move-to-folder-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.move-to-folder-open:hover {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
 }
 
