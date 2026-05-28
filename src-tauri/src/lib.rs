@@ -73,14 +73,19 @@ pub fn run() {
 #[cfg(target_os = "macos")]
 fn setup_main_window_lifecycle(app: &mut tauri::App) {
     if let Some(main_window) = app.get_webview_window("main") {
-        let window = main_window.clone();
-        main_window.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        });
+        register_main_window_lifecycle(&main_window);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn register_main_window_lifecycle(window: &tauri::WebviewWindow) {
+    let close_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = close_window.hide();
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -105,6 +110,7 @@ fn show_main_window(app: &tauri::AppHandle) {
     if let Ok(window) =
         tauri::WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build())
     {
+        register_main_window_lifecycle(&window);
         let _ = window.show();
         let _ = window.set_focus();
     }
