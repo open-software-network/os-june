@@ -1,4 +1,5 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import type { BootstrapResponse, NoteDto } from "../lib/tauri";
@@ -137,5 +138,44 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),
     );
+  });
+
+  it("returns to the note after opening its folder from the note header", async () => {
+    const user = userEvent.setup();
+    const first = note({
+      title: "First note",
+      folderIds: ["folder-1"],
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [
+        {
+          id: "folder-1",
+          name: "Testing folder",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      notes: [first],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockResolvedValue(first);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("First note");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Testing folder" }),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Rename folder/ }),
+    ).toHaveTextContent("Testing folder");
+
+    await user.click(
+      screen.getByRole("button", { name: /back to first note/i }),
+    );
+
+    expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
   });
 });
