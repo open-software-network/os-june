@@ -3668,7 +3668,8 @@ input:focus-visible,
 
 .add-notes-search:focus-within {
   border-color: var(--ring);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .add-notes-search input {
@@ -3916,9 +3917,10 @@ input:focus-visible,
 .dialog-textarea:focus,
 .dialog-input:focus-visible,
 .dialog-textarea:focus-visible {
-  outline: none;
   border-color: var(--ring);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 .dialog-textarea {
