@@ -91,7 +91,8 @@ export function App() {
     refresh: refreshAccount,
     setAccount,
   } = useAccountStatus();
-  const appBlocked = accountLoading || shouldBlockOnSignIn(account);
+  const signInRequired = shouldBlockOnSignIn(account);
+  const appBlocked = accountLoading || signInRequired;
   const selectedNote = state.selectedNote;
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
@@ -548,7 +549,24 @@ export function App() {
     }
   }
 
-  if (appBlocked) {
+  if (accountLoading) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <div
+          className="welcome-screen welcome-screen-loading"
+          aria-label="Loading account"
+        />
+      </main>
+    );
+  }
+
+  if (signInRequired) {
     return (
       <main className="account-gate-shell">
         <div

@@ -2532,11 +2532,28 @@ input:focus-visible,
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
+.spinner {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  animation: spinner-spin 0.9s linear infinite;
+}
+
+@keyframes spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .sign-in-prompt-spinner {
+  .sign-in-prompt-spinner,
+  .spinner {
     animation: none;
-    border-top-color: var(--border);
     opacity: 0.6;
+  }
+
+  .sign-in-prompt-spinner {
+    border-top-color: var(--border);
   }
 }
 
@@ -4346,28 +4363,36 @@ input:focus-visible,
   display: grid;
   place-items: center;
   padding: var(--sp-8);
-  /* Sits on the design-system background; the only pop of color is the
-   * app icon inside the card. */
-  background: var(--background);
+  --welcome-bg-start: color-mix(in oklch, var(--background) 78%, var(--warm-soft));
+  --welcome-bg-end: color-mix(in oklch, var(--background) 92%, var(--warm-soft));
+  background: linear-gradient(
+    180deg,
+    var(--welcome-bg-start) 0%,
+    var(--background) 52%,
+    var(--welcome-bg-end) 100%
+  );
 }
 
 .welcome-card {
-  width: min(100%, 380px);
+  width: min(100%, 320px);
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--sp-5);
-  padding: var(--sp-10) var(--sp-8) var(--sp-8);
-  border-radius: var(--r-2xl);
-  background: var(--card);
-  border: 1px solid var(--border-subtle);
+  gap: var(--sp-4);
 }
 
-/* The Scribe connector glyph, sitting flat in the card foreground. */
 .welcome-mark {
   display: inline-flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
   align-self: center;
-  color: var(--foreground);
+  border-radius: var(--r-xl);
+  background: linear-gradient(135deg, #dbc1a3 0%, #9d7355 100%);
+  color: var(--primary-foreground);
+  line-height: 0;
+  margin-bottom: var(--sp-2);
 }
 
 .welcome-title {
@@ -4394,101 +4419,69 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-.welcome-provider {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-3);
+.welcome-providers .primary-action {
   width: 100%;
   height: var(--control-xl);
-  padding: 0 var(--sp-5);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--card);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: var(--fs-md);
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out);
 }
 
-.welcome-provider:hover:not(:disabled) {
-  background: var(--muted);
-  border-color: color-mix(in oklch, var(--border) 60%, var(--foreground) 8%);
-}
-
-.welcome-provider:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.welcome-provider:disabled {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-.welcome-provider:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--focus-ring);
-  border-color: var(--ring-focus);
-}
-
-.welcome-provider svg {
+.welcome-providers .primary-action svg {
   flex-shrink: 0;
-  height: 13px;
+  height: 10px;
   width: auto;
+  opacity: 0.9;
 }
 
-.welcome-busy {
+.welcome-auth-progress {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  justify-content: space-between;
+  gap: var(--sp-4);
+  height: var(--control-xl);
   margin: 0;
-  padding: var(--sp-3) var(--sp-4);
+  padding: 0 var(--sp-2) 0 var(--sp-4);
+  border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: var(--surface-subtle);
+  background: var(--card);
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
 
-.welcome-busy p {
-  margin: 0;
+.welcome-progress-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.welcome-cancel-btn {
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.welcome-cancel-btn:hover {
+  background: var(--muted);
+  border-color: var(--border-subtle);
+}
+
+.welcome-cancel-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .welcome-spinner {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  border: 2px solid color-mix(in oklch, var(--muted-foreground) 30%, transparent);
-  border-top-color: var(--foreground);
-  animation: welcome-spin 0.9s linear infinite;
-}
-
-@keyframes welcome-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .welcome-spinner {
-    animation: welcome-spin 1.8s linear infinite;
-  }
-}
-
-.welcome-link-btn {
-  background: none;
-  border: none;
-  padding: 0;
+  width: 15px;
+  height: 15px;
   color: var(--foreground);
-  font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
 }
 
 .welcome-status {

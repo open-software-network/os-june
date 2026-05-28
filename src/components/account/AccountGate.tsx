@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
+import { Spinner } from "../ui/Spinner";
 
 type Props = {
   account: AccountStatus;
@@ -47,48 +48,52 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
         </span>
         <h1 className="welcome-title">Welcome to Scribe</h1>
         <p className="welcome-subtitle">
-          Sign in with your Open Software account to transcribe, generate notes,
-          and dictate.
+          Record conversations, turn them into notes, and dictate with your
+          OpenSoftware account.
         </p>
 
         {account.configured ? (
           <div className="welcome-providers">
-            <button
-              type="button"
-              className="welcome-provider"
-              disabled={busy || loading}
-              onClick={() => void handleSignIn()}
-            >
-              <OsMark />
-              <span>Sign in with OpenSoftware</span>
-            </button>
+            {busy ? (
+              <div
+                className="welcome-auth-progress"
+                role="status"
+                aria-live="polite"
+              >
+                <span className="welcome-progress-label">
+                  <Spinner className="welcome-spinner" aria-hidden />
+                  <span>Complete sign-in in browser</span>
+                </span>
+                <button
+                  type="button"
+                  className="welcome-cancel-btn"
+                  onClick={() => void cancelInFlight()}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="primary-action"
+                disabled={loading}
+                onClick={() => void handleSignIn()}
+              >
+                <OsMark />
+                <span>Continue with OpenSoftware</span>
+              </button>
+            )}
           </div>
         ) : (
           <p className="welcome-status">
-            Open Software sign-in is not configured for this build.
+            OpenSoftware sign-in is not configured for this build.
           </p>
         )}
 
-        {busy ? (
-          <div className="welcome-busy" role="status" aria-live="polite">
-            <span className="welcome-spinner" aria-hidden />
-            <p>
-              Waiting for sign-in to complete in your browser.{" "}
-              <button
-                type="button"
-                className="welcome-link-btn"
-                onClick={() => void cancelInFlight()}
-              >
-                Cancel
-              </button>
-            </p>
-          </div>
-        ) : status ? (
-          <p className="welcome-status">{status}</p>
-        ) : null}
+        {status ? <p className="welcome-status">{status}</p> : null}
 
         <p className="welcome-terms">
-          By signing in, you agree to the{" "}
+          By continuing, you agree to the{" "}
           <a
             href="https://opensoftware.network/terms"
             target="_blank"
@@ -111,13 +116,11 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
   );
 }
 
-// The Scribe connector glyph, drawn in currentColor so it inherits the
-// card's foreground across light/dark.
 function ScribeMark() {
   return (
     <svg
-      width="26"
-      height="30"
+      width="24"
+      height="28"
       viewBox="0 0 12 14"
       fill="currentColor"
       aria-hidden
@@ -138,7 +141,7 @@ function OsMark() {
     <svg
       width="28"
       height="16"
-      viewBox="0 0 28 16"
+      viewBox="-1 -1 30 18"
       fill="currentColor"
       aria-hidden
     >
