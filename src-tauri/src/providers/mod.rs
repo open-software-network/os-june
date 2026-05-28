@@ -86,14 +86,15 @@ pub struct VeniceModelDto {
 
 impl From<crate::scribe_api::ModelDto> for VeniceModelDto {
     fn from(value: crate::scribe_api::ModelDto) -> Self {
+        let pricing = serde_json::json!({ "display": value.price_description });
         Self {
-            description: Some(value.price_description),
+            description: None,
             provider: value.provider,
             id: value.id,
             name: value.name,
             model_type: value.model_type,
             privacy: None,
-            pricing: None,
+            pricing: Some(pricing),
             context_tokens: None,
             traits: Vec::new(),
             capabilities: Vec::new(),
