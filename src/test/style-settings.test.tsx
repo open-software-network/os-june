@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { StylesWorkspace } from "../components/styles/StylesWorkspace";
+import { StyleSettingsSection } from "../components/settings/StyleSettingsSection";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -13,7 +13,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationStyle: mocks.setDictationStyle,
 }));
 
-describe("StylesWorkspace", () => {
+describe("StyleSettingsSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.dictationSettings.mockResolvedValue({
@@ -51,20 +51,17 @@ describe("StylesWorkspace", () => {
     }));
   });
 
-  it("loads and saves the selected dictation style", async () => {
+  it("loads the active style and switches via the segmented control", async () => {
     const user = userEvent.setup();
-    render(<StylesWorkspace />);
+    render(<StyleSettingsSection />);
 
-    const casual = await screen.findByRole("radio", {
-      name: /Casual lowercase/i,
-    });
-    expect(casual).toHaveAttribute("aria-checked", "true");
+    const casual = await screen.findByRole("button", { name: "Casual" });
+    await waitFor(() => expect(casual).toHaveAttribute("aria-pressed", "true"));
 
-    await user.click(screen.getByRole("radio", { name: /Formal/i }));
+    await user.click(screen.getByRole("button", { name: "Formal" }));
 
     await waitFor(() =>
       expect(mocks.setDictationStyle).toHaveBeenCalledWith("formal"),
     );
-    expect(screen.queryByText(/style selected/i)).not.toBeInTheDocument();
   });
 });

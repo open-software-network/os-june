@@ -864,129 +864,15 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-/* Dictionary -------------------------------------------------------- */
-
-.dictionary-status {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
+/* Destructive variant of .icon-button — stays destructive on hover with a
+ * soft destructive wash so the intent is preserved instead of flattening
+ * to the neutral hover treatment. */
+.icon-button-destructive {
+  color: var(--destructive);
 }
 
-.dictionary-form input {
-  width: 100%;
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  padding: 0 var(--sp-3);
-  outline: 0;
-}
-
-.dictionary-form input:focus {
-  border-color: color-mix(in oklch, var(--ring) 70%, var(--border));
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 18%, transparent);
-}
-
-.dictionary-card,
-.dictionary-entry,
-.dictionary-empty {
-  border: 1px solid transparent;
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--muted) 28%, transparent);
-}
-
-.dictionary-card {
-  padding: var(--sp-4);
-}
-
-.dictionary-form {
-  display: flex;
-  align-items: end;
-  gap: var(--sp-3);
-}
-
-.dictionary-form label {
-  display: grid;
-  gap: var(--sp-2);
-  width: min(420px, 100%);
-  min-width: 0;
-}
-
-.dictionary-form label > span {
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-}
-
-.dictionary-form-wide {
-  grid-column: 1 / 3;
-}
-
-.dictionary-actions,
-.dictionary-entry-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
-.dictionary-list {
-  display: grid;
-  gap: var(--sp-3);
-}
-
-.dictionary-entry {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--sp-4);
-  align-items: center;
-  min-height: 68px;
-  padding: var(--sp-4);
-}
-
-.dictionary-entry-main {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.dictionary-entry h2 {
-  margin: 0;
-  color: var(--foreground);
-  font-size: var(--fs-lg);
-  font-weight: 500;
-  letter-spacing: 0;
-}
-
-.dictionary-entry p {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.45;
-}
-
-.dictionary-empty {
-  display: grid;
-  place-items: center;
-  min-height: 160px;
-  color: var(--muted-foreground);
-  font-size: var(--fs-md);
-}
-
-@media (max-width: 720px) {
-  .dictionary-form {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .dictionary-actions {
-    justify-content: flex-end;
-  }
-}
-
-.destructive-icon {
+.icon-button-destructive:hover {
+  background: color-mix(in oklch, var(--destructive) 14%, transparent);
   color: var(--destructive);
 }
 
@@ -2493,80 +2379,54 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.styles-section {
-  display: grid;
-  gap: var(--sp-3);
+/* Style preview — sits below the toggle row inside the Style settings
+ * card. Serif sample rewrites in place when the segmented control changes. */
+.style-preview {
+  margin-top: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
 }
 
-.style-options {
-  display: grid;
-  gap: var(--sp-3);
-}
-
-.style-option {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
-  align-items: center;
-  gap: var(--sp-5);
-  width: 100%;
-  padding: var(--sp-4);
-  border: 1px solid transparent;
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--muted) 28%, transparent);
+.style-preview-text {
+  margin: 0;
   color: var(--foreground);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
-}
-
-.style-option:hover {
-  background: color-mix(in oklch, var(--muted) 55%, transparent);
-}
-
-.style-option[data-selected="true"] {
-  border-color: color-mix(in oklch, var(--ring) 68%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 12%, transparent);
-}
-
-.style-option-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.style-option-title {
-  font-size: var(--fs-lg);
-  font-weight: 500;
-  line-height: 1.35;
-}
-
-.style-option-description {
-  color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.45;
-}
-
-.style-option-sample {
-  min-width: 0;
-  color: var(--muted-foreground);
   font-family: var(--font-serif);
   font-size: var(--fs-xl);
-  line-height: 1.35;
+  font-weight: 400;
+  line-height: 1.32;
+  letter-spacing: -0.005em;
 }
 
-@media (max-width: 720px) {
-  .style-option {
-    grid-template-columns: 1fr;
-    align-items: start;
-    gap: var(--sp-3);
-  }
+/* Compact row variant — tighter vertical rhythm for list-style content
+ * like dictionary entries where each row is a single short label. */
+.settings-row-compact {
+  padding-top: var(--sp-3);
+  padding-bottom: var(--sp-3);
+}
 
-  .style-option-sample {
-    font-size: var(--fs-lg);
-  }
+.settings-empty {
+  margin: 0;
+  padding: var(--sp-2) 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+/* Dictionary toolbar — small search left (reuses .folders-search), primary
+ * add action right. Sits at the top of the dictionary settings card. */
+.dictionary-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+
+.dictionary-toolbar .folders-search {
+  width: 200px;
+  max-width: 60%;
 }
 
 /* Keycap frame — wraps one or more keycaps in a 28px-tall container with a

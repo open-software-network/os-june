@@ -1,10 +1,8 @@
-import { IconBooks } from "central-icons/IconBooks";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconFolders } from "central-icons/IconFolders";
-import { IconFontStyle } from "central-icons/IconFontStyle";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
@@ -15,13 +13,7 @@ import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
-export type SidebarView =
-  | "notes"
-  | "all-notes"
-  | "settings"
-  | "folders"
-  | "dictionary"
-  | "styles";
+export type SidebarView = "notes" | "all-notes" | "settings" | "folders";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -195,30 +187,6 @@ export function Sidebar({
             <IconFolders size={16} />
           </span>
           <span className="sidebar-nav-label">Folders</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "dictionary"}
-          aria-current={activeView === "dictionary" ? "page" : undefined}
-          onClick={() => onChangeView("dictionary")}
-        >
-          <span className="sidebar-nav-icon">
-            <IconBooks size={16} />
-          </span>
-          <span className="sidebar-nav-label">Dictionary</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "styles"}
-          aria-current={activeView === "styles" ? "page" : undefined}
-          onClick={() => onChangeView("styles")}
-        >
-          <span className="sidebar-nav-icon">
-            <IconFontStyle size={16} />
-          </span>
-          <span className="sidebar-nav-label">Styles</span>
         </button>
       </nav>
 

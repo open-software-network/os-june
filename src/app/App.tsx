@@ -2,7 +2,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { DictionaryWorkspace } from "../components/dictionary/DictionaryWorkspace";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
@@ -11,7 +10,6 @@ import { NotesList } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
-import { StylesWorkspace } from "../components/styles/StylesWorkspace";
 import {
   assignNoteToFolder,
   bootstrapApp,
@@ -573,10 +571,6 @@ export function App() {
                 onSourceModeChange={handleSourceModeChange}
                 onEnableSystemAudio={handleEnableSystemAudio}
               />
-            ) : activeView === "styles" ? (
-              <StylesWorkspace />
-            ) : activeView === "dictionary" ? (
-              <DictionaryWorkspace />
             ) : activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}

@@ -1,0 +1,252 @@
+import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconPencilLine } from "central-icons/IconPencilLine";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
+import type { FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  createDictionaryEntry,
+  deleteDictionaryEntry,
+  listDictionaryEntries,
+  updateDictionaryEntry,
+} from "../../lib/tauri";
+import type { DictionaryEntryDto } from "../../lib/tauri";
+import { Dialog, DialogField } from "../ui/Dialog";
+
+type Draft = {
+  phrase: string;
+};
+
+const EMPTY_DRAFT: Draft = {
+  phrase: "",
+};
+
+export function DictionarySettingsSection() {
+  const [entries, setEntries] = useState<DictionaryEntryDto[]>([]);
+  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [editingId, setEditingId] = useState<string>();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const visibleEntries = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return entries;
+    return entries.filter((entry) =>
+      entry.phrase.toLowerCase().includes(normalized),
+    );
+  }, [entries, query]);
+
+  async function refresh() {
+    try {
+      setEntries(await listDictionaryEntries());
+    } catch (caught) {
+      setError(messageFromError(caught));
+    }
+  }
+
+  async function saveEntry() {
+    const phrase = draft.phrase.trim();
+    if (!phrase) return;
+    try {
+      const entry = editingId
+        ? await updateDictionaryEntry({ entryId: editingId, phrase })
+        : await createDictionaryEntry({ phrase });
+      setEntries((current) =>
+        editingId
+          ? current.map((item) => (item.id === entry.id ? entry : item))
+          : [...current, entry].sort(compareEntries),
+      );
+      closeDialog();
+      setError(undefined);
+    } catch (caught) {
+      setError(messageFromError(caught));
+    }
+  }
+
+  async function removeEntry(entryId: string) {
+    try {
+      await deleteDictionaryEntry(entryId);
+      setEntries((current) => current.filter((entry) => entry.id !== entryId));
+      setError(undefined);
+    } catch (caught) {
+      setError(messageFromError(caught));
+    }
+  }
+
+  function startCreating() {
+    setEditingId(undefined);
+    setDraft(EMPTY_DRAFT);
+    setDialogOpen(true);
+  }
+
+  function startEditing(entry: DictionaryEntryDto) {
+    setEditingId(entry.id);
+    setDraft({ phrase: entry.phrase });
+    setDialogOpen(true);
+  }
+
+  function closeDialog() {
+    setDialogOpen(false);
+    setDraft(EMPTY_DRAFT);
+    setEditingId(undefined);
+  }
+
+  const emptyMessage =
+    entries.length === 0
+      ? "No entries yet. Add words or phrases for transcription to preserve."
+      : `No entries match "${query.trim()}".`;
+
+  return (
+    <section className="settings-group" aria-labelledby="dictionary-heading">
+      <h2 id="dictionary-heading" className="settings-group-heading">
+        Dictionary
+      </h2>
+      <div className="settings-card dictionary-card">
+        <div className="dictionary-toolbar">
+          <label className="folders-search">
+            <IconMagnifyingGlass size={14} />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Search"
+              aria-label="Search dictionary"
+            />
+          </label>
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            onClick={startCreating}
+          >
+            <IconPlusMedium size={14} />
+            Add entry
+          </button>
+        </div>
+        {visibleEntries.length === 0 ? (
+          <p className="settings-empty">{emptyMessage}</p>
+        ) : (
+          <div className="settings-rows">
+            {visibleEntries.map((entry) => (
+              <div key={entry.id} className="settings-row settings-row-compact">
+                <div className="settings-row-info">
+                  <h3 className="settings-row-title">{entry.phrase}</h3>
+                </div>
+                <div className="settings-row-control">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={`Edit ${entry.phrase}`}
+                    onClick={() => startEditing(entry)}
+                  >
+                    <IconPencilLine size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button icon-button-destructive"
+                    aria-label={`Delete ${entry.phrase}`}
+                    onClick={() => void removeEntry(entry.id)}
+                  >
+                    <IconTrashCanSimple size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {error ? <p className="settings-row-error">{error}</p> : null}
+
+      <DictionaryEntryDialog
+        open={dialogOpen}
+        phrase={draft.phrase}
+        editing={editingId !== undefined}
+        onChange={(phrase) => setDraft({ phrase })}
+        onClose={closeDialog}
+        onSave={() => void saveEntry()}
+      />
+    </section>
+  );
+}
+
+function DictionaryEntryDialog({
+  open,
+  phrase,
+  editing,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  phrase: string;
+  editing: boolean;
+  onChange: (phrase: string) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (phrase.trim()) onSave();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={editing ? "Edit dictionary entry" : "Add dictionary entry"}
+      description="Words or phrases Scribe should preserve during transcription."
+      initialFocusSelector='input[name="dictionary-phrase"]'
+      footer={
+        <>
+          <button type="button" className="primary-action" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="submit"
+            form="dictionary-entry-form"
+            className="primary-action primary-solid"
+            disabled={phrase.trim().length === 0}
+          >
+            {editing ? "Save changes" : "Add entry"}
+          </button>
+        </>
+      }
+    >
+      <form
+        id="dictionary-entry-form"
+        className="dialog-body"
+        onSubmit={handleSubmit}
+      >
+        <DialogField label="Word or phrase" htmlFor="dictionary-phrase">
+          <input
+            id="dictionary-phrase"
+            name="dictionary-phrase"
+            className="dialog-input"
+            value={phrase}
+            onChange={(event) => onChange(event.currentTarget.value)}
+            placeholder="Junho Hong"
+            autoComplete="off"
+            maxLength={160}
+          />
+        </DialogField>
+      </form>
+    </Dialog>
+  );
+}
+
+function compareEntries(left: DictionaryEntryDto, right: DictionaryEntryDto) {
+  return left.phrase.localeCompare(right.phrase, undefined, {
+    sensitivity: "base",
+  });
+}
+
+function messageFromError(caught: unknown) {
+  if (caught && typeof caught === "object" && "message" in caught) {
+    return String((caught as { message: unknown }).message);
+  }
+  return String(caught);
+}

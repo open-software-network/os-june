@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DictionaryWorkspace } from "../components/dictionary/DictionaryWorkspace";
+import { DictionarySettingsSection } from "../components/settings/DictionarySettingsSection";
 
 const mocks = vi.hoisted(() => ({
   listDictionaryEntries: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock("../lib/tauri", () => ({
 
 const now = "2026-05-26T00:00:00Z";
 
-describe("DictionaryWorkspace", () => {
+describe("DictionarySettingsSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listDictionaryEntries.mockResolvedValue([
@@ -47,14 +47,18 @@ describe("DictionaryWorkspace", () => {
 
   it("loads, creates, edits, and deletes dictionary entries", async () => {
     const user = userEvent.setup();
-    render(<DictionaryWorkspace />);
+    render(<DictionarySettingsSection />);
 
     expect(await screen.findByText("Junho Hong")).toBeInTheDocument();
-    expect(screen.queryByText(/Sounds like/)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Notes")).not.toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("Word or phrase"), "OSS");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Add entry" }));
+    const addDialog = screen.getByRole("dialog", {
+      name: "Add dictionary entry",
+    });
+    await user.type(within(addDialog).getByLabelText("Word or phrase"), "OSS");
+    await user.click(
+      within(addDialog).getByRole("button", { name: "Add entry" }),
+    );
 
     expect(mocks.createDictionaryEntry).toHaveBeenCalledWith({
       phrase: "OSS",
@@ -62,12 +66,17 @@ describe("DictionaryWorkspace", () => {
     expect(await screen.findByText("OSS")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Edit OSS" }));
-    await user.clear(screen.getByLabelText("Word or phrase"));
+    const editDialog = screen.getByRole("dialog", {
+      name: "Edit dictionary entry",
+    });
+    await user.clear(within(editDialog).getByLabelText("Word or phrase"));
     await user.type(
-      screen.getByLabelText("Word or phrase"),
+      within(editDialog).getByLabelText("Word or phrase"),
       "Open Source Software",
     );
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(
+      within(editDialog).getByRole("button", { name: "Save changes" }),
+    );
 
     expect(mocks.updateDictionaryEntry).toHaveBeenCalledWith({
       entryId: "entry-2",
@@ -80,5 +89,11 @@ describe("DictionaryWorkspace", () => {
     await waitFor(() =>
       expect(mocks.deleteDictionaryEntry).toHaveBeenCalledWith("entry-2"),
     );
+  });
+
+  it("renders an empty state when there are no entries", async () => {
+    mocks.listDictionaryEntries.mockResolvedValueOnce([]);
+    render(<DictionarySettingsSection />);
+    expect(await screen.findByText(/no entries yet/i)).toBeInTheDocument();
   });
 });

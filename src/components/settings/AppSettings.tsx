@@ -43,6 +43,8 @@ import {
   type ThemePreference,
 } from "../../lib/theme";
 import { ProviderLogo } from "./ProviderLogo";
+import { DictionarySettingsSection } from "./DictionarySettingsSection";
+import { StyleSettingsSection } from "./StyleSettingsSection";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
@@ -488,6 +490,8 @@ export function AppSettings({
         </div>
       </section>
 
+      <StyleSettingsSection />
+
       <section className="settings-group" aria-labelledby="audio-heading">
         <h2 id="audio-heading" className="settings-group-heading">
           Audio
@@ -629,6 +633,8 @@ export function AppSettings({
         </div>
       </section>
 
+      <DictionarySettingsSection />
+
       <section className="settings-group" aria-labelledby="about-heading">
         <h2 id="about-heading" className="settings-group-heading">
           About
@@ -766,8 +772,7 @@ function traitFlags(model: VeniceModelDto) {
       privacy.includes("anonymous") ||
       privacy.includes("anonymized") ||
       traits.some(
-        (trait) =>
-          trait.includes("anonymous") || trait.includes("anonymized"),
+        (trait) => trait.includes("anonymous") || trait.includes("anonymized"),
       ),
     uncensored: traits.some((trait) => trait.includes("uncensored")),
   };
