@@ -321,8 +321,37 @@ pub fn os_accounts_top_up() -> Result<(), AppError> {
     open_in_browser(cfg.accounts_url.trim_end_matches('/'))
 }
 
-const SUCCESS_BODY: &str =
-    "<!doctype html><meta charset=utf-8><title>OS Scribe</title><body style=\"font:16px -apple-system,system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;color:#222\"><p>Signed in to OS Scribe. You can close this tab.</p></body>";
+// Branded loopback success page. Self-contained (the loopback origin can't
+// reach the app's bundled fonts/assets), but mirrors the OS Accounts / Scribe
+// look: warm-grey surface, inset card, OS mark, calm hierarchy — and follows
+// the system light/dark preference.
+const SUCCESS_BODY: &str = r##"<!doctype html>
+<html lang=en>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>OS Scribe</title>
+<style>
+  :root{--bg:#f1f0ed;--card:#fff;--fg:#2b2a28;--muted:#8a8884;--border:#e7e4de;--mark-fg:#fff;--ok:#2c6747;--ok-soft:#e7efe9}
+  @media (prefers-color-scheme:dark){:root{--bg:#181817;--card:#252423;--fg:#fafafa;--muted:#b2b0ac;--border:rgba(255,255,255,.10);--mark-fg:#181817;--ok:#6fbf94;--ok-soft:rgba(111,191,148,.16)}}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  .card{display:flex;flex-direction:column;align-items:center;gap:16px;width:100%;max-width:340px;padding:36px 32px;text-align:center;background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+  .mark{display:grid;place-items:center;width:40px;height:40px;border-radius:11px;background:var(--fg);color:var(--mark-fg);font-weight:700;font-size:15px;letter-spacing:.06em}
+  .check{display:inline-flex;align-items:center;gap:7px;padding:4px 11px 4px 9px;border-radius:999px;background:var(--ok-soft);color:var(--ok);font-size:12.5px;font-weight:600}
+  .check svg{width:13px;height:13px}
+  .title{margin:0;font-size:17px;font-weight:600;letter-spacing:-.01em}
+  .sub{margin:0;font-size:14px;line-height:1.5;color:var(--muted)}
+</style>
+<body>
+  <main class=card>
+    <div class=mark>OS</div>
+    <span class=check><svg viewBox="0 0 14 14" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round><path d="M3 7.5 6 10l5-6"/></svg>Signed in</span>
+    <h1 class=title>Signed in to OS Scribe</h1>
+    <p class=sub>You can close this tab and return to the app.</p>
+  </main>
+</body>
+</html>"##;
 
 /// Accept connections until one hits `/callback`. Every per-socket read is
 /// bounded so a slow-loris client on the loopback port can't stall the
