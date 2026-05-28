@@ -338,7 +338,7 @@ input:focus-visible,
  * kbd hint on the right uses muted/60 bg + mono-ish font. */
 .sidebar-search {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto;
+  grid-template-columns: 14px minmax(0, 1fr);
   align-items: center;
   gap: var(--sp-2);
   height: 32px;
@@ -418,7 +418,7 @@ input:focus-visible,
 
 .sidebar-nav-item {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
   width: 100%;
@@ -465,6 +465,10 @@ input:focus-visible,
   display: none;
 }
 
+.sidebar[data-collapsed="true"] .sidebar-nav-shortcut {
+  display: none;
+}
+
 .sidebar[data-collapsed="true"] .sidebar-nav-item {
   width: 38px;
   height: 38px;
@@ -505,7 +509,7 @@ input:focus-visible,
   gap: var(--sp-2);
   padding: 0 var(--sp-2);
   min-height: var(--control-md);
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font-size: var(--fs-md);
   font-weight: 500;
 }
@@ -516,18 +520,61 @@ input:focus-visible,
   gap: var(--sp-2);
 }
 
+.section-title-with-action {
+  border-radius: var(--r-md);
+}
+
+.section-title-open {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.section-title-with-action:hover .section-title-open,
+.section-title-with-action:focus-within .section-title-open {
+  color: var(--foreground);
+}
+
+.section-view-all {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.section-title-with-action:hover .section-view-all,
+.section-title-with-action:focus-within .section-view-all {
+  opacity: 1;
+}
+
+.section-title-with-action:hover .section-view-all:hover {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--foreground);
+}
+
 .section-count {
   color: var(--muted-foreground);
   font-weight: 400;
 }
 
-.section-add {
-  width: var(--control-sm);
-  height: var(--control-sm);
-}
-
 .sidebar[data-collapsed="true"] .section-title-label,
-.sidebar[data-collapsed="true"] .section-add,
 .sidebar[data-collapsed="true"] .section-title,
 .sidebar[data-collapsed="true"] .notes-nav-wrap {
   /* Collapsed rail = focus mode: hide the note list entirely so only the
@@ -3068,6 +3115,16 @@ input:focus-visible,
   gap: var(--sp-7);
 }
 
+.all-notes-workspace {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--sp-10) 0 var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+}
+
 .folders-header {
   display: flex;
   align-items: flex-start;
@@ -3515,7 +3572,8 @@ input:focus-visible,
 }
 
 .folder-note-row:hover,
-.folder-note-row[data-menu-open="true"] {
+.folder-note-row[data-menu-open="true"],
+.folder-note-row[data-selected="true"] {
   background: color-mix(in oklch, var(--muted) 35%, transparent);
 }
 
@@ -3570,6 +3628,14 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   white-space: nowrap;
+}
+
+.all-notes-list {
+  gap: 2px;
+}
+
+.all-notes-row {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .folder-note-menu {

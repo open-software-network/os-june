@@ -37,6 +37,7 @@ describe("folders UI", () => {
   it("renders notes in the sidebar and filters them", async () => {
     const user = userEvent.setup();
     const onSelectNote = vi.fn();
+    const onCreateNote = vi.fn();
     render(
       <Sidebar
         folders={folders}
@@ -46,7 +47,7 @@ describe("folders UI", () => {
         activeView="notes"
         onChangeView={vi.fn()}
         onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
+        onCreateNote={onCreateNote}
         onSelectAll={vi.fn()}
         onSelectFolder={vi.fn()}
         onSelectNote={onSelectNote}
@@ -59,11 +60,42 @@ describe("folders UI", () => {
     expect(screen.getByText("Scribe")).toBeInTheDocument();
     expect(screen.getByText("Second")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("Jump to…"), "second");
+    await user.type(screen.getByPlaceholderText("Search"), "second");
     await user.click(screen.getAllByRole("button", { name: /Second/ })[0]);
 
-    expect(screen.queryByText("New note")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New note" }));
+
     expect(onSelectNote).toHaveBeenCalledWith("note-2");
+    expect(onCreateNote).toHaveBeenCalled();
+  });
+
+  it("opens the all-notes view from the Notes header actions", async () => {
+    const user = userEvent.setup();
+    const onChangeView = vi.fn();
+    render(
+      <Sidebar
+        folders={folders}
+        notes={notes}
+        selectedNoteId="note-2"
+        selectedFolderId={undefined}
+        activeView="notes"
+        onChangeView={onChangeView}
+        onCreateFolder={vi.fn()}
+        onCreateNote={vi.fn()}
+        onSelectAll={vi.fn()}
+        onSelectFolder={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Notes/ }));
+    await user.click(screen.getByRole("button", { name: "View all" }));
+
+    expect(onChangeView).toHaveBeenCalledWith("all-notes");
+    expect(onChangeView).toHaveBeenCalledTimes(2);
   });
 
   it("opens note actions from right click and deletes", async () => {
@@ -94,21 +126,44 @@ describe("folders UI", () => {
     expect(onDeleteNote).toHaveBeenCalledWith("note-2");
   });
 
-  it("shows notes with placeholders and empty folder action", () => {
+  it("shows notes with placeholders and selects notes", async () => {
+    const user = userEvent.setup();
+    const onSelectNote = vi.fn();
     const { container } = render(
       <NotesList
         notes={notes}
         selectedNoteId="note-2"
+        onSelectNote={onSelectNote}
+        onCreateNote={vi.fn()}
+      />,
+    );
+    const list = within(
+      container.querySelector(".all-notes-list") as HTMLElement,
+    );
+
+    expect(list.getByRole("button", { name: /Second/ })).toBeInTheDocument();
+    expect(screen.queryByText("Ideas")).not.toBeInTheDocument();
+
+    await user.click(list.getByRole("button", { name: /Second/ }));
+    expect(onSelectNote).toHaveBeenCalledWith("note-2");
+  });
+
+  it("labels future-dated notes explicitly", () => {
+    render(
+      <NotesList
+        notes={[
+          {
+            ...notes[0],
+            id: "future-note",
+            updatedAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          },
+        ]}
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
       />,
     );
-    const list = within(container.querySelector(".notes-list") as HTMLElement);
 
-    expect(list.getByRole("button", { name: /Second/ })).toBeInTheDocument();
-    expect(
-      list.getAllByRole("button", { name: /New note/ }).length,
-    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Future")).toBeInTheDocument();
   });
 
   it("shows empty state with create action", () => {
@@ -116,9 +171,9 @@ describe("folders UI", () => {
       <NotesList notes={[]} onSelectNote={vi.fn()} onCreateNote={vi.fn()} />,
     );
 
-    expect(screen.getByText("No notes yet")).toBeInTheDocument();
+    expect(screen.getByText("No notes yet.")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "New note" }),
+      screen.getByRole("button", { name: "Create your first note" }),
     ).toBeInTheDocument();
   });
 });

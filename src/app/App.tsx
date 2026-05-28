@@ -1,12 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { DictionaryWorkspace } from "../components/dictionary/DictionaryWorkspace";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
+import { NotesList } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
@@ -259,15 +260,32 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [selectedNote?.id, selectedNote?.processingStatus]);
 
-  async function handleCreateNote(folderId?: string) {
-    try {
-      const note = await createNote(folderId ?? state.selectedFolderId);
-      dispatch({ type: "noteLoaded", note });
-      setActiveView("notes");
-    } catch (err) {
-      setError(messageFromError(err));
+  const handleCreateNote = useCallback(
+    async (folderId?: string | null) => {
+      try {
+        const targetFolderId =
+          folderId === null ? undefined : (folderId ?? state.selectedFolderId);
+        const note = await createNote(targetFolderId);
+        dispatch({ type: "noteLoaded", note });
+        setActiveView("notes");
+      } catch (err) {
+        setError(messageFromError(err));
+      }
+    },
+    [state.selectedFolderId],
+  );
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!isCreateNoteShortcut(event)) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      event.preventDefault();
+      void handleCreateNote(null);
     }
-  }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleCreateNote]);
 
   function handleSelectFolder(folderId?: string) {
     dispatch({ type: "folderSelected", folderId });
@@ -529,7 +547,7 @@ export function App() {
           setActiveView("folders");
           dispatch({ type: "folderSelected", folderId: undefined });
         }}
-        onCreateNote={() => void handleCreateNote()}
+        onCreateNote={() => void handleCreateNote(null)}
         onSelectAll={() => handleSelectFolder(undefined)}
         onSelectFolder={(folderId) => handleSelectFolder(folderId)}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
@@ -559,6 +577,17 @@ export function App() {
               <StylesWorkspace />
             ) : activeView === "dictionary" ? (
               <DictionaryWorkspace />
+            ) : activeView === "all-notes" ? (
+              <NotesList
+                notes={state.notes}
+                selectedNoteId={state.selectedNoteId}
+                onSelectNote={(noteId) =>
+                  void handleSelectNote(noteId).then(() =>
+                    setActiveView("notes"),
+                  )
+                }
+                onCreateNote={() => void handleCreateNote(null)}
+              />
             ) : activeView === "folders" ? (
               <FoldersWorkspace
                 folders={state.folders}
@@ -689,7 +718,7 @@ export function App() {
                 <button
                   type="button"
                   className="primary-action"
-                  onClick={() => void handleCreateNote()}
+                  onClick={() => void handleCreateNote(null)}
                 >
                   New note
                 </button>
@@ -727,6 +756,16 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
 
 function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
+}
+
+function isCreateNoteShortcut(event: KeyboardEvent) {
+  return (
+    event.key.toLowerCase() === "n" &&
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey
+  );
 }
 
 function parseDictationEvent(

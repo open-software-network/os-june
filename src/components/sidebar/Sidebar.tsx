@@ -17,6 +17,7 @@ import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
 export type SidebarView =
   | "notes"
+  | "all-notes"
   | "settings"
   | "folders"
   | "dictionary"
@@ -150,7 +151,7 @@ export function Sidebar({
         <button
           type="button"
           className="icon-button sidebar-search-collapsed"
-          aria-label="Jump to"
+          aria-label="Search"
           onClick={onToggleCollapsed}
         >
           <IconMagnifyingGlass size={16} />
@@ -161,15 +162,28 @@ export function Sidebar({
           <input
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Jump to…"
+            placeholder="Search"
           />
-          <kbd className="sidebar-search-kbd" aria-hidden>
-            ⌘K
-          </kbd>
         </label>
       )}
 
       <nav className="sidebar-nav" aria-label="Primary">
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          onClick={() => {
+            onChangeView("notes");
+            onCreateNote();
+          }}
+        >
+          <span className="sidebar-nav-icon">
+            <IconPlusMedium size={15} />
+          </span>
+          <span className="sidebar-nav-label">New note</span>
+          <kbd className="sidebar-search-kbd sidebar-nav-shortcut" aria-hidden>
+            ⌘N
+          </kbd>
+        </button>
         <button
           type="button"
           className="sidebar-nav-item"
@@ -213,20 +227,20 @@ export function Sidebar({
         aria-label="Notes"
         data-active={activeView === "notes"}
       >
-        <div className="section-title">
-          <span className="section-title-label">
-            Notes <span className="section-count">{filteredNotes.length}</span>
-          </span>
+        <div className="section-title section-title-with-action">
           <button
             type="button"
-            className="icon-button section-add"
-            aria-label="New note"
-            onClick={() => {
-              onChangeView("notes");
-              onCreateNote();
-            }}
+            className="section-title-label section-title-open"
+            onClick={() => onChangeView("all-notes")}
           >
-            <IconPlusMedium size={14} />
+            Notes <span className="section-count">{notes.length}</span>
+          </button>
+          <button
+            type="button"
+            className="section-view-all"
+            onClick={() => onChangeView("all-notes")}
+          >
+            View all
           </button>
         </div>
         <div className="notes-nav-wrap">
