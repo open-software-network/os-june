@@ -117,7 +117,7 @@
    * macOS-blue glow next to the rest of the palette. */
   --focus-ring: oklch(60% 0.03 84.59 / 22%);
   /* Warm-gray text selection — neutral to the warm palette, never blue. */
-  --selection: oklch(86% 0.0015 84.59);
+  --selection: oklch(93% 0.0015 84.59);
   --selection-foreground: var(--foreground);
 
   /* Scrim behind modal dialogs. In light mode this layers a translucent
@@ -190,7 +190,7 @@
   /* Selection keeps the foreground white (no contrast flip) and lays a
    * translucent warm-grey wash on top, matching the light-mode pattern
    * where the text color stays put through the highlight. */
-  --selection: oklch(0.52 0.015 84.59 / 55%);
+  --selection: oklch(0.52 0.015 84.59 / 38%);
   --selection-foreground: var(--foreground);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 30%);

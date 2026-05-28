@@ -1347,7 +1347,7 @@ input:focus-visible,
   position: relative;
   padding: var(--sp-2) 0 0;
   font-size: var(--fs-lg);
-  line-height: 1.7;
+  line-height: 1.5;
   color: var(--foreground);
 }
 
@@ -1371,7 +1371,7 @@ input:focus-visible,
 }
 
 .note-preview p {
-  margin: 0 0 var(--sp-4);
+  margin: 0 0 var(--sp-3);
   color: var(--foreground);
 }
 
@@ -2419,6 +2419,24 @@ input:focus-visible,
 
 .settings-meta-value-mono {
   font-family: var(--font-mono);
+}
+
+.balance-amount {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.balance-refresh-icon {
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .balance-refresh-icon {
+    transition: none;
+  }
 }
 
 .settings-permission-control {
@@ -4363,8 +4381,16 @@ input:focus-visible,
   display: grid;
   place-items: center;
   padding: var(--sp-8);
-  --welcome-bg-start: color-mix(in oklch, var(--background) 78%, var(--warm-soft));
-  --welcome-bg-end: color-mix(in oklch, var(--background) 92%, var(--warm-soft));
+  --welcome-bg-start: color-mix(
+    in oklch,
+    var(--background) 78%,
+    var(--warm-soft)
+  );
+  --welcome-bg-end: color-mix(
+    in oklch,
+    var(--background) 92%,
+    var(--warm-soft)
+  );
   background: linear-gradient(
     180deg,
     var(--welcome-bg-start) 0%,
