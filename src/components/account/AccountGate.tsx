@@ -37,7 +37,7 @@ export function AccountGate({
           </h1>
           <p className="settings-description">
             Scribe uses your Open Software account for transcription, note
-            generation, dictation, and credits.
+            generation, dictation, and billing.
           </p>
         </header>
         <AccountSettingsSection

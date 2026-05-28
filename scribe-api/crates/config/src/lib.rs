@@ -177,7 +177,12 @@ impl PriceUnit {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelPriceConfig {
     pub unit: PriceUnit,
-    pub credits_per_unit: u64,
+    #[serde(default)]
+    pub credits_per_million_seconds: Option<u64>,
+    #[serde(default)]
+    pub input_credits_per_million_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_credits_per_million_tokens: Option<u64>,
     pub provider: ModelProvider,
     pub model_type: ModelType,
     pub display_name: String,
@@ -190,7 +195,9 @@ impl Default for AppConfig {
             "gpt-4o-mini-transcribe".to_string(),
             ModelPriceConfig {
                 unit: PriceUnit::Seconds,
-                credits_per_unit: 1,
+                credits_per_million_seconds: Some(1_000_000),
+                input_credits_per_million_tokens: None,
+                output_credits_per_million_tokens: None,
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Asr,
                 display_name: "GPT-4o mini transcribe".to_string(),
@@ -200,7 +207,9 @@ impl Default for AppConfig {
             "nvidia/parakeet-tdt-0.6b-v3".to_string(),
             ModelPriceConfig {
                 unit: PriceUnit::Seconds,
-                credits_per_unit: 1,
+                credits_per_million_seconds: Some(100_000),
+                input_credits_per_million_tokens: None,
+                output_credits_per_million_tokens: None,
                 provider: ModelProvider::Venice,
                 model_type: ModelType::Asr,
                 display_name: "Parakeet TDT 0.6B v3".to_string(),
@@ -210,7 +219,9 @@ impl Default for AppConfig {
             "zai-org-glm-5".to_string(),
             ModelPriceConfig {
                 unit: PriceUnit::Tokens,
-                credits_per_unit: 1,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(1_000),
+                output_credits_per_million_tokens: Some(3_200),
                 provider: ModelProvider::Venice,
                 model_type: ModelType::Text,
                 display_name: "GLM 5".to_string(),
@@ -235,7 +246,7 @@ impl Default for AppConfig {
                 authorize_hold_ttl_note_generate_secs: 300,
                 authorize_hold_ttl_dictate_transcribe_secs: 30,
                 authorize_hold_ttl_dictate_cleanup_secs: 30,
-                flat_estimate_credits: 20_000,
+                flat_estimate_credits: 250,
             },
             upstreams: UpstreamsConfig {
                 openai: UpstreamConfig {
@@ -289,14 +300,43 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
                 ),
             });
         }
-        if pricing.credits_per_unit == 0 {
-            return Err(ConfigError::InvalidPricing {
-                model: model_id.clone(),
-                reason: "credits_per_unit must be > 0".to_string(),
-            });
+        match pricing.model_type {
+            ModelType::Asr => {
+                validate_positive_rate(
+                    model_id,
+                    pricing.credits_per_million_seconds,
+                    "credits_per_million_seconds",
+                )?;
+            }
+            ModelType::Text => {
+                validate_positive_rate(
+                    model_id,
+                    pricing.input_credits_per_million_tokens,
+                    "input_credits_per_million_tokens",
+                )?;
+                validate_positive_rate(
+                    model_id,
+                    pricing.output_credits_per_million_tokens,
+                    "output_credits_per_million_tokens",
+                )?;
+            }
         }
     }
     Ok(())
+}
+
+fn validate_positive_rate(
+    model_id: &str,
+    value: Option<u64>,
+    field: &str,
+) -> Result<(), ConfigError> {
+    match value {
+        Some(value) if value > 0 => Ok(()),
+        _ => Err(ConfigError::InvalidPricing {
+            model: model_id.to_string(),
+            reason: format!("{field} must be > 0"),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -328,7 +368,9 @@ mod tests {
             "bad-asr".to_string(),
             ModelPriceConfig {
                 unit: PriceUnit::Tokens,
-                credits_per_unit: 1,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(1),
+                output_credits_per_million_tokens: Some(1),
                 provider: ModelProvider::Venice,
                 model_type: ModelType::Asr,
                 display_name: "bad".to_string(),
@@ -345,13 +387,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_zero_credits_per_unit() {
+    fn validate_rejects_zero_rate() {
         let mut pricing = BTreeMap::new();
         pricing.insert(
             "free-asr".to_string(),
             ModelPriceConfig {
                 unit: PriceUnit::Seconds,
-                credits_per_unit: 0,
+                credits_per_million_seconds: Some(0),
+                input_credits_per_million_tokens: None,
+                output_credits_per_million_tokens: None,
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Asr,
                 display_name: "free".to_string(),

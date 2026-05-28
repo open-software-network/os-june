@@ -139,13 +139,13 @@ describe("App shortcuts", () => {
       signedIn: true,
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
-      balance: { credits: 1200, usdMillis: 1200 },
+      balance: { usdMillis: 1200 },
     });
     mocks.osAccountsLogin.mockResolvedValue({
       signedIn: true,
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
-      balance: { credits: 1200, usdMillis: 1200 },
+      balance: { usdMillis: 1200 },
     });
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);

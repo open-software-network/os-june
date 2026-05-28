@@ -66,10 +66,9 @@ impl NoteGenerateService {
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
             })
             .await?;
-        let actual_tokens = generated.usage.total().ok_or(ServiceError::PriceOverflow)?;
         let actual = self
             .pricing
-            .price_tokens(&params.model_id.0, actual_tokens)?;
+            .price_token_usage(&params.model_id.0, generated.usage)?;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         // Include the action token so retries get a fresh key — see the
         // matching comment in note_transcribe.rs.

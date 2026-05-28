@@ -87,10 +87,7 @@ pub struct VeniceModelDto {
 impl From<crate::scribe_api::ModelDto> for VeniceModelDto {
     fn from(value: crate::scribe_api::ModelDto) -> Self {
         Self {
-            description: Some(format!(
-                "{} credit(s) per {}",
-                value.credits_per_unit, value.price_unit
-            )),
+            description: Some(value.price_description),
             provider: value.provider,
             id: value.id,
             name: value.name,

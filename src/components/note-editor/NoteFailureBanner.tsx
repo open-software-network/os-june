@@ -1,7 +1,7 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
 
-export type FailureKind = "out_of_credits" | "generic";
+export type FailureKind = "balance_low" | "generic";
 
 type Props = {
   errorMessage?: string;
@@ -14,13 +14,13 @@ type Props = {
 // persists only the error message on the note, not the structured code (see
 // commands.rs::finish_recording where set_note_status is called with
 // Some(error.message)). When we start storing the code we can switch to a
-// strict equality check on "insufficient_credits".
+// strict equality check on the backend billing error code.
 export function classifyFailure(message?: string): FailureKind {
   if (!message) return "generic";
-  return /out of credits|insufficient credits|insufficient_credits/i.test(
+  return /out of credits|insufficient credits|insufficient_credits|balance is too low/i.test(
     message,
   )
-    ? "out_of_credits"
+    ? "balance_low"
     : "generic";
 }
 
@@ -31,7 +31,7 @@ export function NoteFailureBanner({
   onTopUp,
 }: Props) {
   const kind = classifyFailure(errorMessage);
-  const isCreditsIssue = kind === "out_of_credits";
+  const isBalanceIssue = kind === "balance_low";
   // Local busy flag so a fast double-click can't fire onRetry twice. The
   // banner unmounts when the note transitions out of `failed` status, so we
   // don't need to reset this state ourselves; the catch covers the case
@@ -54,29 +54,30 @@ export function NoteFailureBanner({
     <aside className="note-failure-banner" role="alert" data-kind={kind}>
       <div className="note-failure-copy">
         <h3 className="note-failure-title">
-          {isCreditsIssue ? "Top up to finish this note" : "Transcription failed"}
+          {isBalanceIssue
+            ? "Add funds to finish this note"
+            : "Transcription failed"}
         </h3>
         <p className="note-failure-message">
-          {isCreditsIssue
+          {isBalanceIssue
             ? audioPreserved
-              ? "Your recording is saved locally. Top up credits and retry to transcribe."
-              : "You're out of credits. Top up to continue."
-            : (errorMessage ??
-              "Scribe couldn't finish processing this note.")}
-          {!isCreditsIssue && audioPreserved
+              ? "Your recording is saved locally. Add funds and retry to transcribe."
+              : "Your balance is too low. Add funds to continue."
+            : (errorMessage ?? "Scribe couldn't finish processing this note.")}
+          {!isBalanceIssue && audioPreserved
             ? " Your recording is saved locally — you can retry."
             : null}
         </p>
       </div>
       <div className="note-failure-actions">
-        {isCreditsIssue ? (
+        {isBalanceIssue ? (
           <button
             type="button"
             className="btn btn-secondary"
             onClick={onTopUp}
             disabled={retrying}
           >
-            Top up credits
+            Add funds
           </button>
         ) : null}
         <button

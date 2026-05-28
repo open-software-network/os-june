@@ -15,9 +15,9 @@ scribe-config.workspace = true
 scribe-domain.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
 pretty_assertions.workspace = true
-tokio.workspace = true

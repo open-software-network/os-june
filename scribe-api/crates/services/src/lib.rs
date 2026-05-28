@@ -41,7 +41,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,16 +142,9 @@ mod tests {
             .await
             .expect("cleanup succeeds with happy path");
 
-        assert_eq!(output.receipt.credits_charged.0, 11);
-        let charge_call = os_accounts
-            .events()
-            .into_iter()
-            .find_map(|call| match call {
-                RecordedCall::Charge {
-                    idempotency_key, ..
-                } => Some(idempotency_key),
-                RecordedCall::Authorize { .. } => None,
-            })
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        let charge_call = wait_for_charge_idempotency_key(&os_accounts)
+            .await
             .unwrap_or_default();
         assert_eq!(
             charge_call,
@@ -170,7 +163,7 @@ mod tests {
                 2,
                 ModelType::Asr,
             )]))),
-            os_accounts,
+            os_accounts: os_accounts.clone(),
             transcriber: transcriber.clone(),
             cleaner: Arc::new(FixedCleaner),
             duration_probe: Arc::new(FixedDurationProbe),
@@ -179,7 +172,7 @@ mod tests {
             flat_estimate_credits: 1024,
         });
 
-        service
+        let output = service
             .transcribe(DictateTranscribeParams {
                 user_id: UserId("usr_123".to_string()),
                 session_id: "session_1".to_string(),
@@ -192,9 +185,18 @@ mod tests {
             .await
             .expect("transcribe succeeds with happy path");
 
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert!(matches!(
+            os_accounts.events().first(),
+            Some(RecordedCall::Authorize { action, .. }) if action == "dictate_transcribe"
+        ));
         assert_eq!(
             transcriber.last_context(),
             Some("Writing style: formal.".to_string())
+        );
+        assert_eq!(
+            wait_for_charge_idempotency_key(&os_accounts).await,
+            Some("dictate_transcribe:usr_123:session_1:utt_2:agt_test".to_string())
         );
     }
 
@@ -234,6 +236,29 @@ mod tests {
         assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
     }
 
+    async fn wait_for_charge_idempotency_key(os_accounts: &RecordingOsAccounts) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Some(idempotency_key) =
+                os_accounts
+                    .events()
+                    .into_iter()
+                    .find_map(|call| match call {
+                        RecordedCall::Charge {
+                            idempotency_key, ..
+                        } => Some(idempotency_key),
+                        RecordedCall::Authorize { .. } => None,
+                    })
+            {
+                return Some(idempotency_key);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     fn models<const N: usize>(
         values: [(&str, PriceUnit, u64, ModelType); N],
     ) -> BTreeMap<String, ModelPriceConfig> {
@@ -244,7 +269,12 @@ mod tests {
                     id.to_string(),
                     ModelPriceConfig {
                         unit,
-                        credits_per_unit,
+                        credits_per_million_seconds: (unit == PriceUnit::Seconds)
+                            .then_some(credits_per_unit.saturating_mul(1_000_000)),
+                        input_credits_per_million_tokens: (unit == PriceUnit::Tokens)
+                            .then_some(credits_per_unit.saturating_mul(1_000_000)),
+                        output_credits_per_million_tokens: (unit == PriceUnit::Tokens)
+                            .then_some(credits_per_unit.saturating_mul(1_000_000)),
                         provider: ModelProvider::Openai,
                         model_type,
                         display_name: id.to_string(),

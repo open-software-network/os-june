@@ -14,7 +14,7 @@ describe("shouldBlockOnSignIn", () => {
         signedIn: true,
         configured: true,
         user: { id: "usr_1", handle: "jakub" },
-        balance: { credits: 0, usdMillis: 0 },
+        balance: { usdMillis: 0 },
       }),
     ).toBe(false);
   });

@@ -79,7 +79,7 @@ const signedInAccount = {
     email: "junho@example.com",
     displayName: "Junho",
   },
-  balance: { credits: 1200, usdMillis: 1200 },
+  balance: { usdMillis: 1200 },
 };
 
 describe("AppSettings", () => {

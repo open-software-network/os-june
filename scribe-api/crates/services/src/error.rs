@@ -21,7 +21,9 @@ pub enum ServiceError {
 impl From<PricingError> for ServiceError {
     fn from(error: PricingError) -> Self {
         match error {
-            PricingError::NotPriced | PricingError::WrongUnit => Self::ModelNotPriced,
+            PricingError::NotPriced | PricingError::WrongUnit | PricingError::MissingRate => {
+                Self::ModelNotPriced
+            }
             PricingError::Overflow => Self::PriceOverflow,
         }
     }

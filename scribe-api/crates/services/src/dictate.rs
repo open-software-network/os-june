@@ -1,6 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        AsyncAuthorizeAndChargeParams, AsyncChargeParams, AuthorizeParams, authorize_or_deny,
+        clamp_to_cap, spawn_authorize_and_charge, spawn_charge,
     },
     error::ServiceError,
     pricing::PricingTable,
@@ -87,19 +88,16 @@ impl DictateService {
             "dictate_transcribe:{}:{}:{}:{}",
             params.user_id.0, params.session_id, params.utterance_id, authorization.action_token
         );
-        let receipt = charge(ChargeParams {
-            os_accounts: self.os_accounts.as_ref(),
+        let receipt = pending_receipt();
+        spawn_charge(AsyncChargeParams {
+            os_accounts: self.os_accounts.clone(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::DictateTranscribe,
+            model_id: Some(params.model_id.0.clone()),
             action_token: authorization.action_token,
             credits: charge_credits,
             idempotency_key,
-        })
-        .await?;
-        log_settled(
-            ActionSlug::DictateTranscribe,
-            &params.user_id,
-            &params.model_id.0,
-            &receipt,
-        );
+        });
         Ok(DictateTranscribeOutput {
             transcript,
             receipt,
@@ -110,18 +108,6 @@ impl DictateService {
         &self,
         params: DictateCleanupParams,
     ) -> Result<DictateCleanupOutput, ServiceError> {
-        // Flat-estimate mode — see note_transcribe.rs. The cleanup actual
-        // charge is still computed from real token usage below, so the only
-        // change here is the Hold size and skipping the input-token guess.
-        let estimate = Credits(self.flat_estimate_credits);
-        let authorization = authorize_or_deny(AuthorizeParams {
-            os_accounts: self.os_accounts.as_ref(),
-            user_id: params.user_id.clone(),
-            action: ActionSlug::DictateCleanup,
-            estimate,
-            hold_ttl_seconds: self.cleanup_hold_ttl_seconds,
-        })
-        .await?;
         let cleaned = self
             .cleaner
             .cleanup(CleanupRequest {
@@ -132,31 +118,32 @@ impl DictateService {
                 system_prompt: prompts::DICTATE_CLEANUP.to_string(),
             })
             .await?;
-        let actual_tokens = cleaned.usage.total().ok_or(ServiceError::PriceOverflow)?;
         let actual = self
             .pricing
-            .price_tokens(&params.model_id.0, actual_tokens)?;
-        let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
-        // Include the action token so retries get a fresh key — see the
-        // matching comment in note_transcribe.rs.
-        let idempotency_key = format!(
-            "dictate_cleanup:{}:{}:{}:{}",
-            params.user_id.0, params.session_id, params.utterance_id, authorization.action_token
-        );
-        let receipt = charge(ChargeParams {
-            os_accounts: self.os_accounts.as_ref(),
-            action_token: authorization.action_token,
-            credits: charge_credits,
-            idempotency_key,
-        })
-        .await?;
-        log_settled(
-            ActionSlug::DictateCleanup,
-            &params.user_id,
-            &params.model_id.0,
-            &receipt,
-        );
+            .price_token_usage(&params.model_id.0, cleaned.usage)?;
+        let receipt = pending_receipt();
+        spawn_authorize_and_charge(AsyncAuthorizeAndChargeParams {
+            os_accounts: self.os_accounts.clone(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::DictateCleanup,
+            estimate: Credits(self.flat_estimate_credits),
+            hold_ttl_seconds: self.cleanup_hold_ttl_seconds,
+            actual,
+            idempotency_key_parts: vec![
+                "dictate_cleanup".to_string(),
+                params.user_id.0.clone(),
+                params.session_id.clone(),
+                params.utterance_id.clone(),
+            ],
+        });
         Ok(DictateCleanupOutput { cleaned, receipt })
+    }
+}
+
+fn pending_receipt() -> Receipt {
+    Receipt {
+        credits_charged: Credits(0),
+        idempotent_replay: false,
     }
 }
 

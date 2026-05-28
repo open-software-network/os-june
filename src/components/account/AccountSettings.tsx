@@ -26,8 +26,8 @@ export function AccountSettings({
       <header className="settings-header">
         <h1 className="settings-title">Account</h1>
         <p className="settings-description">
-          Sign in with Open Software to use your shared identity and credit
-          balance across the network.
+          Sign in with Open Software to use your shared identity and balance
+          across the network.
         </p>
       </header>
 
@@ -130,7 +130,7 @@ export function AccountSettingsSection({
                   ? (account.user?.email ??
                     `@${account.user?.handle ?? "account"}`)
                   : account.configured
-                    ? "Your login and credits are managed by Open Software."
+                    ? "Your login and balance are managed by Open Software."
                     : "Open Software sign-in is not configured for this build."}
               </p>
             </div>
@@ -169,11 +169,10 @@ export function AccountSettingsSection({
             <div className="settings-row">
               <div className="settings-row-info">
                 <h3 className="settings-row-title">
-                  {formatCredits(account.balance?.credits)} credits
+                  {formatUsd(account.balance?.usdMillis)}
                 </h3>
                 <p className="settings-row-description">
-                  {formatUsd(account.balance?.usdMillis)} available. Credits
-                  are added by Open Software after checkout.
+                  Available balance. Open Software updates this after checkout.
                 </p>
               </div>
               <div className="settings-row-control">
@@ -195,7 +194,7 @@ export function AccountSettingsSection({
                   className="btn btn-secondary"
                   onClick={() => void handleTopUp()}
                 >
-                  Top up credits
+                  Add funds
                 </button>
               </div>
             </div>
@@ -211,10 +210,6 @@ function displayName(account: AccountStatus) {
     account.user?.displayName ??
     (account.user?.handle ? `@${account.user.handle}` : "Signed in")
   );
-}
-
-function formatCredits(credits?: number) {
-  return (credits ?? 0).toLocaleString();
 }
 
 function formatUsd(usdMillis?: number) {

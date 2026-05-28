@@ -21,7 +21,10 @@ pub struct ModelDto {
     pub name: String,
     pub model_type: String,
     pub price_unit: String,
-    pub credits_per_unit: u64,
+    pub price_description: String,
+    pub credits_per_million_seconds: Option<u64>,
+    pub input_credits_per_million_tokens: Option<u64>,
+    pub output_credits_per_million_tokens: Option<u64>,
 }
 
 pub(crate) async fn list_models(
@@ -57,6 +60,27 @@ fn to_dto(id: &str, model: &ModelPriceConfig) -> ModelDto {
         name: model.display_name.clone(),
         model_type: model.model_type.as_str().to_string(),
         price_unit: model.unit.as_str().to_string(),
-        credits_per_unit: model.credits_per_unit,
+        price_description: price_description(model),
+        credits_per_million_seconds: model.credits_per_million_seconds,
+        input_credits_per_million_tokens: model.input_credits_per_million_tokens,
+        output_credits_per_million_tokens: model.output_credits_per_million_tokens,
     }
+}
+
+fn price_description(model: &ModelPriceConfig) -> String {
+    match model.unit {
+        scribe_config::PriceUnit::Seconds => format!(
+            "{} per 1M seconds",
+            format_credits_as_usd(model.credits_per_million_seconds.unwrap_or_default())
+        ),
+        scribe_config::PriceUnit::Tokens => format!(
+            "{} input / {} output per 1M tokens",
+            format_credits_as_usd(model.input_credits_per_million_tokens.unwrap_or_default()),
+            format_credits_as_usd(model.output_credits_per_million_tokens.unwrap_or_default())
+        ),
+    }
+}
+
+fn format_credits_as_usd(credits: u64) -> String {
+    format!("${:.2}", credits as f64 / 1_000.0)
 }

@@ -100,7 +100,10 @@ pub struct ModelDto {
     pub name: String,
     pub model_type: String,
     pub price_unit: String,
-    pub credits_per_unit: u64,
+    pub price_description: String,
+    pub credits_per_million_seconds: Option<u64>,
+    pub input_credits_per_million_tokens: Option<u64>,
+    pub output_credits_per_million_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -344,7 +347,7 @@ where
     if envelope.error_code == Some(ERR_INSUFFICIENT_CREDITS) {
         return Err(AppError::new(
             "insufficient_credits",
-            "You're out of credits. Top up to continue.",
+            "Your balance is too low. Add funds to continue.",
         ));
     }
     let _ = path;

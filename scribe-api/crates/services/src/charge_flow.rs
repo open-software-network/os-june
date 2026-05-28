@@ -86,6 +86,106 @@ pub(crate) async fn charge(params: ChargeParams<'_>) -> Result<Receipt, ServiceE
         .map_err(ServiceError::from)
 }
 
+pub(crate) struct AsyncAuthorizeAndChargeParams {
+    pub os_accounts: std::sync::Arc<dyn OsAccountsClient>,
+    pub user_id: UserId,
+    pub action: ActionSlug,
+    pub estimate: Credits,
+    pub hold_ttl_seconds: u64,
+    pub actual: Credits,
+    pub idempotency_key_parts: Vec<String>,
+}
+
+pub(crate) fn spawn_authorize_and_charge(params: AsyncAuthorizeAndChargeParams) {
+    tokio::spawn(async move {
+        let outcome = match authorize_or_deny(AuthorizeParams {
+            os_accounts: params.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: params.action,
+            estimate: params.estimate,
+            hold_ttl_seconds: params.hold_ttl_seconds,
+        })
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::warn!(
+                    user_id = %params.user_id.0,
+                    action = params.action.as_str(),
+                    error = %error,
+                    "async metering authorize failed"
+                );
+                return;
+            }
+        };
+        settle_charge(AsyncChargeParams {
+            os_accounts: params.os_accounts,
+            user_id: params.user_id,
+            action: params.action,
+            model_id: None,
+            action_token: outcome.action_token.clone(),
+            credits: clamp_to_cap(params.actual, outcome.cap_credits),
+            idempotency_key: async_idempotency_key(
+                params.idempotency_key_parts,
+                &outcome.action_token,
+            ),
+        })
+        .await;
+    });
+}
+
+pub(crate) struct AsyncChargeParams {
+    pub os_accounts: std::sync::Arc<dyn OsAccountsClient>,
+    pub user_id: UserId,
+    pub action: ActionSlug,
+    pub model_id: Option<String>,
+    pub action_token: String,
+    pub credits: Credits,
+    pub idempotency_key: String,
+}
+
+pub(crate) fn spawn_charge(params: AsyncChargeParams) {
+    tokio::spawn(async move {
+        settle_charge(params).await;
+    });
+}
+
+async fn settle_charge(params: AsyncChargeParams) {
+    let receipt = match charge(ChargeParams {
+        os_accounts: params.os_accounts.as_ref(),
+        action_token: params.action_token,
+        credits: params.credits,
+        idempotency_key: params.idempotency_key,
+    })
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::warn!(
+                user_id = %params.user_id.0,
+                action = params.action.as_str(),
+                model = params.model_id.as_deref().unwrap_or("unknown"),
+                error = %error,
+                "async metering charge failed"
+            );
+            return;
+        }
+    };
+    tracing::info!(
+        user_id = %params.user_id.0,
+        action = params.action.as_str(),
+        model = params.model_id.as_deref().unwrap_or("unknown"),
+        credits_charged = receipt.credits_charged.0,
+        idempotent_replay = receipt.idempotent_replay,
+        "settled async metered request"
+    );
+}
+
+fn async_idempotency_key(mut parts: Vec<String>, action_token: &str) -> String {
+    parts.push(action_token.to_string());
+    parts.join(":")
+}
+
 pub(crate) fn log_settled(action: ActionSlug, user_id: &UserId, model_id: &str, receipt: &Receipt) {
     tracing::info!(
         user_id = %user_id.0,

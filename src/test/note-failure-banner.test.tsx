@@ -7,14 +7,14 @@ import {
 } from "../components/note-editor/NoteFailureBanner";
 
 describe("classifyFailure", () => {
-  it("treats Scribe's out-of-credits message as a credits issue", () => {
-    expect(classifyFailure("You're out of credits. Top up to continue.")).toBe(
-      "out_of_credits",
-    );
+  it("treats Scribe's low-balance message as a balance issue", () => {
+    expect(
+      classifyFailure("Your balance is too low. Add funds to continue."),
+    ).toBe("balance_low");
   });
 
   it("also matches the structured error code if it leaks through", () => {
-    expect(classifyFailure("insufficient_credits")).toBe("out_of_credits");
+    expect(classifyFailure("insufficient_credits")).toBe("balance_low");
   });
 
   it("falls back to generic for unknown failures", () => {
@@ -24,27 +24,25 @@ describe("classifyFailure", () => {
 });
 
 describe("NoteFailureBanner", () => {
-  it("offers Top up + Retry when the failure is out of credits", async () => {
+  it("offers Add funds + Retry when the balance is too low", async () => {
     const onTopUp = vi.fn();
     const onRetry = vi.fn();
     render(
       <NoteFailureBanner
-        errorMessage="You're out of credits. Top up to continue."
+        errorMessage="Your balance is too low. Add funds to continue."
         audioPreserved
         onRetry={onRetry}
         onTopUp={onTopUp}
       />,
     );
     expect(
-      screen.getByRole("heading", { name: /Top up to finish this note/i }),
+      screen.getByRole("heading", { name: /Add funds to finish this note/i }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/Your recording is saved locally/i),
     ).toBeInTheDocument();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /Top up credits/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /Add funds/i }));
     expect(onTopUp).toHaveBeenCalledOnce();
 
     await userEvent.click(
@@ -66,7 +64,7 @@ describe("NoteFailureBanner", () => {
       screen.getByRole("heading", { name: /Transcription failed/i }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Top up credits/i }),
+      screen.queryByRole("button", { name: /Add funds/i }),
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Retry transcription/i }),
@@ -103,9 +101,7 @@ describe("NoteFailureBanner", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
 
     // A second click while pending must not fire onRetry again.
-    await userEvent.click(
-      screen.getByRole("button", { name: /Retrying…/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /Retrying…/i }));
     expect(onRetry).toHaveBeenCalledTimes(1);
 
     // Resolve so the test doesn't hang on cleanup.

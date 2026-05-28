@@ -509,7 +509,6 @@ export type AccountUser = {
 };
 
 export type AccountBalance = {
-  credits: number;
   usdMillis: number;
 };
 

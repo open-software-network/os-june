@@ -1,7 +1,9 @@
 use scribe_config::{ModelPriceConfig, ModelType, PriceUnit};
-use scribe_domain::{Credits, ModelKind};
+use scribe_domain::{Credits, ModelKind, TokenUsage};
 use std::collections::BTreeMap;
 use thiserror::Error;
+
+const RATE_SCALE: u64 = 1_000_000;
 
 #[derive(Clone, Debug)]
 pub struct PricingTable {
@@ -13,11 +15,6 @@ impl PricingTable {
         Self { models }
     }
 
-    pub fn price_credits(&self, model_id: &str, units: u64) -> Result<Credits, PricingError> {
-        let model = self.models.get(model_id).ok_or(PricingError::NotPriced)?;
-        Self::price_model_units(model, units)
-    }
-
     pub fn price_audio_seconds(
         &self,
         model_id: &str,
@@ -27,15 +24,31 @@ impl PricingTable {
         if model.unit != PriceUnit::Seconds {
             return Err(PricingError::WrongUnit);
         }
-        Self::price_model_units(model, seconds)
+        let rate = model
+            .credits_per_million_seconds
+            .ok_or(PricingError::MissingRate)?;
+        Self::price_scaled([(seconds, rate)])
     }
 
-    pub fn price_tokens(&self, model_id: &str, tokens: u64) -> Result<Credits, PricingError> {
+    pub fn price_token_usage(
+        &self,
+        model_id: &str,
+        usage: TokenUsage,
+    ) -> Result<Credits, PricingError> {
         let model = self.models.get(model_id).ok_or(PricingError::NotPriced)?;
         if model.unit != PriceUnit::Tokens {
             return Err(PricingError::WrongUnit);
         }
-        Self::price_model_units(model, tokens)
+        let input_rate = model
+            .input_credits_per_million_tokens
+            .ok_or(PricingError::MissingRate)?;
+        let output_rate = model
+            .output_credits_per_million_tokens
+            .ok_or(PricingError::MissingRate)?;
+        Self::price_scaled([
+            (usage.prompt_tokens, input_rate),
+            (usage.completion_tokens, output_rate),
+        ])
     }
 
     pub fn has_model(&self, model_id: &str) -> bool {
@@ -55,10 +68,21 @@ impl PricingTable {
             .collect()
     }
 
-    fn price_model_units(model: &ModelPriceConfig, units: u64) -> Result<Credits, PricingError> {
-        let credits = units
-            .checked_mul(model.credits_per_unit)
-            .ok_or(PricingError::Overflow)?;
+    fn price_scaled<const N: usize>(components: [(u64, u64); N]) -> Result<Credits, PricingError> {
+        let numerator = components
+            .into_iter()
+            .try_fold(0_u64, |sum, (units, rate)| {
+                let subtotal = units.checked_mul(rate).ok_or(PricingError::Overflow)?;
+                sum.checked_add(subtotal).ok_or(PricingError::Overflow)
+            })?;
+        let credits = if numerator == 0 {
+            0
+        } else {
+            numerator
+                .checked_add(RATE_SCALE - 1)
+                .ok_or(PricingError::Overflow)?
+                / RATE_SCALE
+        };
         Ok(Credits(credits))
     }
 }
@@ -76,6 +100,8 @@ pub enum PricingError {
     NotPriced,
     #[error("price_unit_mismatch")]
     WrongUnit,
+    #[error("missing_price_rate")]
+    MissingRate,
     #[error("price_overflow")]
     Overflow,
 }
@@ -85,19 +111,25 @@ mod tests {
     use super::{PricingError, PricingTable};
     use pretty_assertions::assert_eq;
     use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
+    use scribe_domain::TokenUsage;
     use std::collections::BTreeMap;
 
     fn models<const N: usize>(
-        values: [(&str, PriceUnit, u64, ModelType); N],
+        values: [(&str, PriceUnit, u64, u64, ModelType); N],
     ) -> BTreeMap<String, ModelPriceConfig> {
         values
             .into_iter()
-            .map(|(id, unit, credits_per_unit, model_type)| {
+            .map(|(id, unit, input_rate, output_rate, model_type)| {
                 (
                     id.to_string(),
                     ModelPriceConfig {
                         unit,
-                        credits_per_unit,
+                        credits_per_million_seconds: (unit == PriceUnit::Seconds)
+                            .then_some(input_rate),
+                        input_credits_per_million_tokens: (unit == PriceUnit::Tokens)
+                            .then_some(input_rate),
+                        output_credits_per_million_tokens: (unit == PriceUnit::Tokens)
+                            .then_some(output_rate),
                         provider: ModelProvider::Openai,
                         model_type,
                         display_name: id.to_string(),
@@ -110,21 +142,27 @@ mod tests {
     #[test]
     fn prices_known_models() {
         let table = PricingTable::new(models([
-            ("priced-asr", PriceUnit::Seconds, 3, ModelType::Asr),
-            ("priced-text", PriceUnit::Tokens, 4, ModelType::Text),
+            ("priced-asr", PriceUnit::Seconds, 250_000, 0, ModelType::Asr),
+            ("priced-text", PriceUnit::Tokens, 70, 300, ModelType::Text),
         ]));
 
         assert_eq!(
             table
-                .price_credits("priced-asr", 9)
+                .price_audio_seconds("priced-asr", 9)
                 .map(|credits| credits.0),
-            Ok(27)
+            Ok(3)
         );
         assert_eq!(
             table
-                .price_tokens("priced-text", 10)
+                .price_token_usage(
+                    "priced-text",
+                    TokenUsage {
+                        prompt_tokens: 1_600,
+                        completion_tokens: 50,
+                    },
+                )
                 .map(|credits| credits.0),
-            Ok(40)
+            Ok(1)
         );
     }
 
@@ -132,7 +170,7 @@ mod tests {
     fn rejects_unknown_models() {
         let table = PricingTable::new(BTreeMap::new());
         assert_eq!(
-            table.price_credits("missing", 1),
+            table.price_audio_seconds("missing", 1),
             Err(PricingError::NotPriced)
         );
     }
@@ -143,10 +181,17 @@ mod tests {
             "too-large",
             PriceUnit::Tokens,
             u64::MAX,
+            u64::MAX,
             ModelType::Text,
         )]));
         assert_eq!(
-            table.price_tokens("too-large", 2),
+            table.price_token_usage(
+                "too-large",
+                TokenUsage {
+                    prompt_tokens: 2,
+                    completion_tokens: 0,
+                },
+            ),
             Err(PricingError::Overflow)
         );
     }
@@ -156,6 +201,7 @@ mod tests {
         let table = PricingTable::new(models([(
             "text-model",
             PriceUnit::Tokens,
+            1,
             1,
             ModelType::Text,
         )]));
@@ -171,17 +217,30 @@ mod tests {
             "asr-model",
             PriceUnit::Seconds,
             1,
+            0,
             ModelType::Asr,
         )]));
         assert_eq!(
-            table.price_tokens("asr-model", 1),
+            table.price_token_usage(
+                "asr-model",
+                TokenUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 0,
+                },
+            ),
             Err(PricingError::WrongUnit)
         );
     }
 
     #[test]
     fn has_model_reports_known_ids() {
-        let table = PricingTable::new(models([("known", PriceUnit::Seconds, 1, ModelType::Asr)]));
+        let table = PricingTable::new(models([(
+            "known",
+            PriceUnit::Seconds,
+            1,
+            0,
+            ModelType::Asr,
+        )]));
         assert!(table.has_model("known"));
         assert!(!table.has_model("unknown"));
     }
