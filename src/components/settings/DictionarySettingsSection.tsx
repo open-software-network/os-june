@@ -28,6 +28,7 @@ export function DictionarySettingsSection() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string>();
+  const [saveError, setSaveError] = useState<string>();
 
   useEffect(() => {
     void refresh();
@@ -62,9 +63,8 @@ export function DictionarySettingsSection() {
           : [...current, entry].sort(compareEntries),
       );
       closeDialog();
-      setError(undefined);
     } catch (caught) {
-      setError(messageFromError(caught));
+      setSaveError(messageFromError(caught));
     }
   }
 
@@ -81,12 +81,14 @@ export function DictionarySettingsSection() {
   function startCreating() {
     setEditingId(undefined);
     setDraft(EMPTY_DRAFT);
+    setSaveError(undefined);
     setDialogOpen(true);
   }
 
   function startEditing(entry: DictionaryEntryDto) {
     setEditingId(entry.id);
     setDraft({ phrase: entry.phrase });
+    setSaveError(undefined);
     setDialogOpen(true);
   }
 
@@ -94,6 +96,7 @@ export function DictionarySettingsSection() {
     setDialogOpen(false);
     setDraft(EMPTY_DRAFT);
     setEditingId(undefined);
+    setSaveError(undefined);
   }
 
   const emptyMessage =
@@ -168,7 +171,11 @@ export function DictionarySettingsSection() {
         open={dialogOpen}
         phrase={draft.phrase}
         editing={editingId !== undefined}
-        onChange={(phrase) => setDraft({ phrase })}
+        error={saveError}
+        onChange={(phrase) => {
+          setDraft({ phrase });
+          if (saveError) setSaveError(undefined);
+        }}
         onClose={closeDialog}
         onSave={() => void saveEntry()}
       />
@@ -180,6 +187,7 @@ function DictionaryEntryDialog({
   open,
   phrase,
   editing,
+  error,
   onChange,
   onClose,
   onSave,
@@ -187,6 +195,7 @@ function DictionaryEntryDialog({
   open: boolean;
   phrase: string;
   editing: boolean;
+  error?: string;
   onChange: (phrase: string) => void;
   onClose: () => void;
   onSave: () => void;
@@ -233,8 +242,15 @@ function DictionaryEntryDialog({
             placeholder="e.g. Anthropic, ARR, Junho Hong"
             autoComplete="off"
             maxLength={160}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "dictionary-phrase-error" : undefined}
           />
         </DialogField>
+        {error ? (
+          <p id="dictionary-phrase-error" className="settings-row-error">
+            {error}
+          </p>
+        ) : null}
       </form>
     </Dialog>
   );
