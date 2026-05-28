@@ -222,4 +222,12 @@
   --selection-foreground: oklch(0.16 0.0015 84.59);
   --warm-soft: oklch(0.42 0.12 50);
   --warm-strong: oklch(0.86 0.16 60);
+  --focus-ring: oklch(0.6 0.04 250 / 40%);
+
+  --shadow-sm: 0 1px 2px oklch(0% 0 none / 30%);
+  --shadow-md:
+    0 4px 12px oklch(0% 0 none / 32%), 0 1px 2px oklch(0% 0 none / 24%);
+  --shadow-lg:
+    0 18px 40px oklch(0% 0 none / 40%), 0 2px 6px oklch(0% 0 none / 28%);
+  --shadow-inset: 0 0 0 1px oklch(100% 0 none / 5%);
 }
