@@ -8,7 +8,7 @@ services:
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
       RUST_LOG: scribe=info,scribe_api=info,scribe_services=info,scribe_providers=info,tower_http=info
-      SCRIBE__OS_ACCOUNTS__API_URL:
-      SCRIBE__OS_ACCOUNTS__APP_API_KEY:
-      SCRIBE__UPSTREAMS__OPENAI__API_KEY:
-      SCRIBE__UPSTREAMS__VENICE__API_KEY:
+      SCRIBE__OS_ACCOUNTS__API_URL: ""
+      SCRIBE__OS_ACCOUNTS__APP_API_KEY: ""
+      SCRIBE__UPSTREAMS__OPENAI__API_KEY: ""
+      SCRIBE__UPSTREAMS__VENICE__API_KEY: ""
