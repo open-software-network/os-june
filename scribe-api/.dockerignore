@@ -1,5 +1,6 @@
 target
 .git
 .github
+deploy
 **/*.md
 !crates/services/src/prompts/*.md

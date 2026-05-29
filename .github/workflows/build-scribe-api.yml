@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - "scribe-api/**"
-      - "iac/phala/docker-compose.staging.yml"
       - ".github/actions/phala-deploy/**"
       - ".github/workflows/build-scribe-api.yml"
   workflow_dispatch:
@@ -100,7 +99,7 @@ jobs:
         uses: ./.github/actions/phala-deploy
         with:
           cvm-name: os-scribe-api-staging
-          compose-file: iac/phala/docker-compose.staging.yml
+          compose-file: scribe-api/deploy/docker-compose.staging.yml
           # Pin by per-commit tag, not @digest: dstack's GHCR prelaunch verify
           # parses image refs as repo:tag and mangles repo@sha256:digest (cuts at
           # the ':' in sha256:), so any digest ref 404s and the CVM never boots.

@@ -101,7 +101,7 @@ jobs:
         uses: ./.github/actions/phala-deploy
         with:
           cvm-name: os-scribe-api-production
-          compose-file: iac/phala/docker-compose.production.yml
+          compose-file: scribe-api/deploy/docker-compose.production.yml
           # Pin by per-commit tag, not @digest: dstack's GHCR prelaunch verify
           # mangles repo@sha256:digest refs (cuts at the ':' in sha256:) → 404 →
           # CVM never boots. The sha_short tag is resolved above and pullable.
