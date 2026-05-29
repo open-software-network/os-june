@@ -13,8 +13,8 @@ services:
     # Docs: https://docs.phala.com/phala-cloud/phala-cloud-user-guides/create-cvm/set-secure-environment-variables
     # DSTACK_DOCKER_* (registry auth) is consumed by the prelaunch, not the app.
     environment:
-      RUST_LOG: scribe=info,scribe_api=info,scribe_services=info,scribe_providers=info,tower_http=info
-      SCRIBE__OS_ACCOUNTS__API_URL: ${SCRIBE__OS_ACCOUNTS__API_URL}
-      SCRIBE__OS_ACCOUNTS__APP_API_KEY: ${SCRIBE__OS_ACCOUNTS__APP_API_KEY}
-      SCRIBE__UPSTREAMS__OPENAI__API_KEY: ${SCRIBE__UPSTREAMS__OPENAI__API_KEY}
-      SCRIBE__UPSTREAMS__VENICE__API_KEY: ${SCRIBE__UPSTREAMS__VENICE__API_KEY}
+      - RUST_LOG=scribe=info,scribe_api=info,scribe_services=info,scribe_providers=info,tower_http=info
+      - SCRIBE__OS_ACCOUNTS__API_URL=${SCRIBE__OS_ACCOUNTS__API_URL}
+      - SCRIBE__OS_ACCOUNTS__APP_API_KEY=${SCRIBE__OS_ACCOUNTS__APP_API_KEY}
+      - SCRIBE__UPSTREAMS__OPENAI__API_KEY=${SCRIBE__UPSTREAMS__OPENAI__API_KEY}
+      - SCRIBE__UPSTREAMS__VENICE__API_KEY=${SCRIBE__UPSTREAMS__VENICE__API_KEY}
