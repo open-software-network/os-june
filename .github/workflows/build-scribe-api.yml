@@ -85,9 +85,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: staging
+    # contents: write lets the post-deploy step push the digest-record git tag
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/phala-deploy
+      - id: deploy
+        uses: ./.github/actions/phala-deploy
         with:
           cvm-name: os-scribe-api-staging
           compose-file: iac/phala/docker-compose.staging.yml
@@ -97,3 +101,23 @@ jobs:
           # The sha_short tag is unique per commit and pullable by that verifier.
           image-ref: ${{ env.IMAGE }}:${{ needs.build.outputs.sha_short }}
           api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
+
+      # Anchor "b": record that commit <sha> deployed image digest <D> as an
+      # annotated git tag. Gives a verifier an in-repo, immutable link from the
+      # attested tag to a content digest, without trusting the registry's
+      # tag→digest mapping. (Pairs with reproducible builds: rebuild <sha> → D.)
+      - name: Record deployed digest
+        if: steps.deploy.outputs.deployed == 'true'
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          IMG: ${{ env.IMAGE }}:${{ needs.build.outputs.sha_short }}
+          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
+          FULL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="deploy/staging/${SHA_SHORT}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "$tag" -m "staging deploy: ${IMG} = ${DIGEST} (commit ${FULL_SHA})"
+          git push -f origin "refs/tags/${tag}"
+          echo "Recorded \`${tag}\` → \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
