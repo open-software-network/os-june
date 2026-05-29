@@ -3,6 +3,7 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconFolders as IconFoldersFilled } from "central-icons-filled/IconFolders";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconFolderOpen } from "central-icons/IconFolderOpen";
@@ -23,6 +24,7 @@ import { NOTE_DND_MIME } from "../../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EmptyState } from "../ui/EmptyState";
 import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
@@ -175,17 +177,12 @@ function FolderList({
       ) : null}
 
       {folders.length === 0 ? (
-        <div className="folders-empty">
-          <p>No folders yet.</p>
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            onClick={() => setCreateOpen(true)}
-          >
-            <IconFolderAddRight size={14} />
-            Create your first folder
-          </button>
-        </div>
+        <EmptyState
+          label="No folders yet"
+          icon={<IconFoldersFilled size={28} />}
+          title="No folders yet"
+          description="Group related notes by project, client, or topic."
+        />
       ) : sortedAndFiltered.length === 0 ? (
         <div className="folders-empty">
           <p>No folders match “{query.trim()}”.</p>

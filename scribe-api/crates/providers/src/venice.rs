@@ -128,8 +128,13 @@ impl Transcriber for VeniceTranscriber {
             })?;
         let text = parsed.text.trim().to_string();
         if text.is_empty() {
-            tracing::error!(%url, model = %model_id, "venice: empty transcript");
-            return Err(DomainError::UpstreamProvider);
+            // No speech detected is an input condition, not an upstream fault —
+            // surface it as a 400 so the client can stay silent ("nothing
+            // captured") instead of flashing a backend error.
+            tracing::info!(%url, model = %model_id, "venice: no speech in audio");
+            return Err(DomainError::InvalidInput {
+                reason: "no_speech".to_string(),
+            });
         }
         Ok(Transcript {
             text,
@@ -237,6 +242,7 @@ impl Cleaner for VeniceCleaner {
             .await?;
         let cleaned = parsed
             .first_choice_text()
+            .map(|text| strip_scaffolding_tags(&text))
             .filter(|text| !text.is_empty())
             .ok_or(DomainError::UpstreamProvider)?;
         Ok(CleanedText {
@@ -584,10 +590,34 @@ fn escape_asr_transcript(text: &str) -> String {
     text.replace("</asr_transcript>", "<\\/asr_transcript>")
 }
 
+/// Defense-in-depth: strip any prompt-scaffolding tags the model echoes back
+/// (e.g. a trailing `/<output_contract></asr_transcript>`) so they never reach
+/// the user. Removes open/close/slash-prefixed variants of our wrapper tags.
+/// Only app-specific tag names are listed — `<style>` is deliberately omitted
+/// since it collides with the HTML element a user might legitimately dictate.
+fn strip_scaffolding_tags(text: &str) -> String {
+    const TAGS: [&str; 3] = ["asr_transcript", "output_contract", "dictionary_context"];
+    let mut out = text.to_string();
+    for tag in TAGS {
+        for token in [
+            format!("/<{tag}>"),
+            format!("</{tag}>"),
+            format!("<{tag}/>"),
+            format!("<{tag}>"),
+        ] {
+            if out.contains(&token) {
+                out = out.replace(&token, "");
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        VeniceGenerator, VeniceModelsApiResponse, cleanup_source_text, venice_priced_model_items,
+        VeniceGenerator, VeniceModelsApiResponse, cleanup_source_text, strip_scaffolding_tags,
+        venice_priced_model_items,
     };
     use crate::http;
     use pretty_assertions::assert_eq;
@@ -650,6 +680,23 @@ mod tests {
                 10,
                 5
             ))
+        );
+    }
+
+    #[test]
+    fn strip_scaffolding_tags_removes_echoed_wrapper_tags() {
+        assert_eq!(
+            strip_scaffolding_tags("Send it to Samir. /<output_contract></asr_transcript>"),
+            "Send it to Samir."
+        );
+        assert_eq!(
+            strip_scaffolding_tags("<asr_transcript>hello there</asr_transcript>"),
+            "hello there"
+        );
+        // Leaves ordinary text (including stray slashes) untouched.
+        assert_eq!(
+            strip_scaffolding_tags("ship it 50/50 with the team"),
+            "ship it 50/50 with the team"
         );
     }
 

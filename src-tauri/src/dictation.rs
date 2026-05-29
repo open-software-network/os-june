@@ -530,6 +530,15 @@ pub async fn list_dictation_history(
 }
 
 #[tauri::command]
+pub async fn delete_dictation_history_item(app: AppHandle, id: String) -> Result<(), AppError> {
+    crate::commands::repositories(&app)
+        .await?
+        .delete_dictation_history_item(&id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
 #[cfg(target_os = "macos")]
 pub fn set_dictation_shortcut(
     app: AppHandle,
@@ -1492,6 +1501,17 @@ fn outcome_from_transcription_result(
     result: Result<TranscriptionProviderResult, AppError>,
 ) -> DictationTranscriptionOutcome {
     match result {
+        // Recorded silence / nothing to type is not a failure — discard quietly
+        // and emit a `no_speech` event (classified silent, so the HUD just
+        // dismisses instead of flashing an error). Don't store an empty item.
+        Ok(transcript) if transcript.text.trim().is_empty() => DictationTranscriptionOutcome {
+            helper_command: serde_json::json!({ "type": "discard_recording" }),
+            event: Some(serde_json::json!({
+                "type": "error",
+                "payload": { "code": "no_speech", "message": "No speech detected." },
+            })),
+            transcript: None,
+        },
         Ok(transcript) => DictationTranscriptionOutcome {
             helper_command: serde_json::json!({
                 "type": "paste_text",
@@ -1653,6 +1673,11 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         || normalized_message.contains("no recorded audio")
         || normalized_message.contains("audio file is too short")
         || normalized_message.contains("did not return any transcript")
+        // Scribe API collapses an empty dictation to a BadRequest whose message
+        // is the service reason (e.g. "no_speech", "dictation_text_empty").
+        // Treat those as "nothing captured", not a fault.
+        || normalized_message.contains("no_speech")
+        || normalized_message.contains("dictation_text_empty")
 }
 
 fn show_hud_window(app: &AppHandle) {
@@ -2178,6 +2203,32 @@ mod tests {
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
             Some("Paste this transcript.")
         );
+    }
+
+    #[test]
+    fn empty_transcription_discards_silently() {
+        let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
+            text: "   ".to_string(),
+            language: None,
+            provider: crate::providers::VENICE_PROVIDER.to_string(),
+        }));
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({ "type": "discard_recording" })
+        );
+        assert!(outcome.transcript.is_none());
+        let event = outcome.event.expect("empty capture emits an event");
+        assert!(is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn dictation_text_empty_error_is_silent() {
+        let event = app_error_event(AppError::new(
+            "scribe_request_failed",
+            "dictation_text_empty",
+        ));
+        assert!(is_silent_transcription_error(&event));
     }
 
     #[test]

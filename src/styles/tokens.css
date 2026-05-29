@@ -66,6 +66,11 @@
   --sidebar-w-collapsed: 56px;
   --titlebar-h: 28px;
 
+  /* Centered content column. Shared by every primary view (notes, folders,
+   * dictation, the editor) so they line up, and steps up on larger displays
+   * so the column doesn't feel marooned in whitespace on big monitors. */
+  --content-max: 760px;
+
   /* Color — light theme.  Mirrors Fellow's globals.css so the two apps
    * read like siblings. ------------------------------------------------ */
   /* Border color for focused inputs. Mixes 30% of the foreground in so
@@ -146,6 +151,20 @@
 
 [data-theme="light"] {
   color-scheme: light;
+}
+
+/* Widen the shared content column on larger displays so the reading area
+ * keeps pace with the viewport instead of stranding it in whitespace. */
+@media (min-width: 1440px) {
+  :root {
+    --content-max: 880px;
+  }
+}
+
+@media (min-width: 1920px) {
+  :root {
+    --content-max: 1000px;
+  }
 }
 
 /* Dark theme — port of Fellow's .dark sheet. Always applied via the

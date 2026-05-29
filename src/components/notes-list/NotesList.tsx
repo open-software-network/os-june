@@ -33,11 +33,13 @@ export function NotesList({
     <section className="all-notes-workspace" aria-label="Notes">
       <header className="folders-header">
         <div className="folders-heading">
-          <h1>Notes</h1>
-          <p className="folders-subtitle">
-            {notes.length} {notes.length === 1 ? "note" : "notes"} across your
-            workspace.
-          </p>
+          <h1>
+            Notes
+            {notes.length > 0 ? (
+              <span className="folders-count">{notes.length}</span>
+            ) : null}
+          </h1>
+          <p className="folders-subtitle">Everything across your workspace.</p>
         </div>
         <button
           type="button"

@@ -35,6 +35,7 @@ import type {
   VeniceModelDto,
 } from "../../lib/tauri";
 import { AccountSettingsSection } from "../account/AccountSettings";
+import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import { Dialog } from "../ui/Dialog";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
@@ -1012,32 +1013,6 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
     },
     ...models,
   ];
-}
-
-function KeycapShortcut({
-  label,
-  capturing,
-}: {
-  label: string;
-  capturing: boolean;
-}) {
-  if (capturing) {
-    return (
-      <span className="keycap-frame keycap-frame-capturing">
-        Press shortcut...
-      </span>
-    );
-  }
-  const keys = label.split("+").filter(Boolean);
-  return (
-    <span className="keycap-frame" aria-label={`Shortcut ${label}`}>
-      {keys.map((key, idx) => (
-        <kbd key={`${key}-${idx}`} className="keycap">
-          {key}
-        </kbd>
-      ))}
-    </span>
-  );
 }
 
 function parseDictationEvent(

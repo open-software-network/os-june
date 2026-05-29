@@ -651,7 +651,18 @@ export function App() {
                 onEnableSystemAudio={handleEnableSystemAudio}
               />
             ) : activeView === "dictation" ? (
-              <DictationHistoryView />
+              <DictationHistoryView
+                onNavigateToSettings={(target) => {
+                  setActiveView("settings");
+                  const headingId =
+                    target === "style" ? "style-heading" : "dictionary-heading";
+                  window.setTimeout(() => {
+                    document
+                      .getElementById(headingId)
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }, 80);
+                }}
+              />
             ) : activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}

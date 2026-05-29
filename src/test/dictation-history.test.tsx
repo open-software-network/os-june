@@ -5,6 +5,7 @@ import { DictationHistoryView } from "../components/dictation/DictationHistoryVi
 
 const mocks = vi.hoisted(() => ({
   listDictationHistory: vi.fn(),
+  deleteDictationHistoryItem: vi.fn(),
   dictationSettings: vi.fn(),
   listen: vi.fn(),
   writeText: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../lib/tauri", () => ({
   listDictationHistory: mocks.listDictationHistory,
+  deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   dictationSettings: mocks.dictationSettings,
 }));
 
@@ -22,8 +24,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 describe("DictationHistoryView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.writeText.mockResolvedValue(undefined);
+    mocks.deleteDictationHistoryItem.mockResolvedValue(undefined);
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -83,13 +87,40 @@ describe("DictationHistoryView", () => {
     await waitFor(() =>
       expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
     );
+    expect(screen.getByText("Push to talk")).toBeInTheDocument();
+    expect(screen.getByText("Hands-free")).toBeInTheDocument();
     expect(
-      screen.getByText(/Hold Fn to dictate, or press Ctrl\+Opt\+Space/),
+      screen.getByLabelText("Shortcut Ctrl+Opt+Space"),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() =>
       expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "),
     );
+  });
+
+  it("deletes a transcription after confirmation", async () => {
+    const user = userEvent.setup();
+    render(<DictationHistoryView />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
+    );
+
+    // Row trash icon opens the confirmation dialog rather than deleting.
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.getByText("Delete this transcription?")).toBeInTheDocument();
+    expect(mocks.deleteDictationHistoryItem).not.toHaveBeenCalled();
+
+    // Confirm: the dialog's destructive button is the last "Delete".
+    const deleteButtons = screen.getAllByRole("button", { name: "Delete" });
+    await user.click(deleteButtons[deleteButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(mocks.deleteDictationHistoryItem).toHaveBeenCalledWith(
+        "dictation-1",
+      ),
+    );
+    expect(screen.queryByText("Send the follow up.")).not.toBeInTheDocument();
   });
 });
