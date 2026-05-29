@@ -36,16 +36,17 @@ export function Waveform({ level }: WaveformProps) {
     ),
   );
 
-  // Feed each new sample's shaped peak into the meter; the rAF loop animates
-  // the bars toward it (fast attack, smooth release, snap-to-zero on silence).
-  const raw =
-    level.recentPeaks.length > 0
-      ? level.recentPeaks[level.recentPeaks.length - 1]
-      : level.peak;
-  const shaped = visualPeakScale(raw);
+  // Feed a sample into the meter on every poll (keyed on the level prop, not the
+  // shaped value — silence collapses to a constant 0, and we still want the
+  // history ring to advance each poll). The rAF loop animates the bars toward
+  // it (fast attack, smooth release, snap-to-zero on silence).
   useEffect(() => {
-    meterRef.current.pushLevel(shaped);
-  }, [shaped]);
+    const raw =
+      level.recentPeaks.length > 0
+        ? level.recentPeaks[level.recentPeaks.length - 1]
+        : level.peak;
+    meterRef.current.pushLevel(visualPeakScale(raw));
+  }, [level]);
 
   useEffect(() => {
     const meter = meterRef.current;

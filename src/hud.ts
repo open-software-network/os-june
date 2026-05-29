@@ -2,7 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { spinners } from "unicode-animations";
-import { clamp, createBarMeter, IDLE_LEVEL } from "./lib/audio-meter";
+import {
+  clamp,
+  createBarMeter,
+  HUD_BAR_HISTORY_OFFSETS,
+  HUD_BAR_WEIGHTS,
+  IDLE_LEVEL,
+} from "./lib/audio-meter";
 import "./styles/hud.css";
 
 type DictationHudEvent = {
@@ -38,7 +44,12 @@ const EXIT_TRANSITION_MS = 160;
 
 // Bar synthesis + ballistics live in the shared meter so the recorder waveform
 // moves identically. The meter holds the level history and the displayed bars.
-const meter = createBarMeter();
+// Sized to the actual bar count so meter.displayed always matches bars.length.
+const meter = createBarMeter(
+  bars.length,
+  HUD_BAR_WEIGHTS,
+  HUD_BAR_HISTORY_OFFSETS,
+);
 
 let rafHandle: number | undefined;
 let lastAudioLevelAt = 0;
