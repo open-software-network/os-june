@@ -91,5 +91,9 @@ jobs:
         with:
           cvm-name: os-scribe-api-staging
           compose-file: iac/phala/docker-compose.staging.yml
-          image-ref: ${{ env.IMAGE }}@${{ needs.build.outputs.digest }}
+          # Pin by per-commit tag, not @digest: dstack's GHCR prelaunch verify
+          # parses image refs as repo:tag and mangles repo@sha256:digest (cuts at
+          # the ':' in sha256:), so any digest ref 404s and the CVM never boots.
+          # The sha_short tag is unique per commit and pullable by that verifier.
+          image-ref: ${{ env.IMAGE }}:${{ needs.build.outputs.sha_short }}
           api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
