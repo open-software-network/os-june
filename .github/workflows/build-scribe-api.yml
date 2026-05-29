@@ -62,8 +62,14 @@ jobs:
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=scribe-api
           cache-to: type=gha,scope=scribe-api,mode=max
-          provenance: true
-          sbom: true
+          # No provenance/SBOM attestations: they make build.outputs.digest an OCI
+          # *index* (image + attestation manifests) that dstack cannot pull by
+          # digest at CVM image-pull time. Disabling them yields a plain single-arch
+          # image manifest whose digest is pullable AND is what the TEE attestation
+          # binds — and it keeps the door open to reproducible (rebuild-and-verify)
+          # digests, the trust model we actually want. We consume neither attestation.
+          provenance: false
+          sbom: false
 
       - name: Summary
         run: |
