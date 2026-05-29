@@ -6,7 +6,7 @@ description: >
 
 inputs:
   cvm-name:
-    description: Phala CVM name. Acts as the upsert key — same name updates in place.
+    description: Phala CVM name. The action probes `phala cvms get <name>` and branches between `phala deploy -n <name>` (create) and `phala deploy --cvm-id <name>` (update) since the CLI doesn't expose an upsert flag.
     required: true
   compose-file:
     description: Path to docker-compose.yml containing the literal placeholder ${SCRIBE_IMAGE}.
@@ -84,7 +84,25 @@ runs:
         RENDERED: ${{ steps.render.outputs.rendered }}
       run: |
         set -euo pipefail
-        phala deploy -c "$RENDERED" -n "$CVM_NAME" --wait
+        # List-based existence probe (not `phala cvms get`). `get` returns
+        # nonzero for "not found" but ALSO for auth/network errors and for
+        # stopped CVMs that don't show in `get` — all three would falsely
+        # route to the create path and reproduce ERR-01-004 with the real
+        # cause hidden. `list` returns the full set including stopped CVMs,
+        # and a list failure (auth/network) propagates visibly instead of
+        # masquerading as "doesn't exist".
+        if ! cvms_json=$(phala cvms list --json 2>&1); then
+          echo "::error::Could not list Phala CVMs (auth, network, or API issue):"
+          printf '%s\n' "$cvms_json" >&2
+          exit 1
+        fi
+        if printf '%s' "$cvms_json" | jq -e --arg name "$CVM_NAME" '.[] | select(.name == $name)' >/dev/null; then
+          echo "CVM $CVM_NAME exists; updating via --cvm-id."
+          phala deploy -c "$RENDERED" --cvm-id "$CVM_NAME" --wait
+        else
+          echo "CVM $CVM_NAME does not exist; creating via -n."
+          phala deploy -c "$RENDERED" -n "$CVM_NAME" --wait
+        fi
         url=$(phala cvms get "$CVM_NAME" --json | jq -r '.public_urls[0].app // empty')
         echo "deployed=true" >> "$GITHUB_OUTPUT"
         if [[ -n "$url" ]]; then

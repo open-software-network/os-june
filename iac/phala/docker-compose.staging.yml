@@ -6,6 +6,12 @@ services:
       - "8080:8080"
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
+    # Note: registry-auth env vars (DSTACK_DOCKER_REGISTRY,
+    # DSTACK_DOCKER_USERNAME, DSTACK_DOCKER_PASSWORD) are NOT declared
+    # here — dstack reads them from the CVM's sealed-env store at image-
+    # pull time, not from compose. Set them once per CVM via
+    # `phala envs encrypt + update`. Required only when the image is
+    # private; harmless to set when it's public.
     environment:
       RUST_LOG: scribe=info,scribe_api=info,scribe_services=info,scribe_providers=info,tower_http=info
       SCRIBE__OS_ACCOUNTS__API_URL: ""
