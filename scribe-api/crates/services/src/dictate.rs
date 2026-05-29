@@ -1,7 +1,6 @@
 use crate::{
     charge_flow::{
-        AsyncAuthorizeAndChargeParams, AsyncChargeParams, AuthorizeParams, authorize_or_deny,
-        clamp_to_cap, spawn_authorize_and_charge, spawn_charge,
+        AsyncChargeParams, AuthorizeParams, authorize_or_deny, clamp_to_cap, spawn_charge,
     },
     error::ServiceError,
     pricing::PricingTable,
@@ -82,11 +81,9 @@ impl DictateService {
             })
             .await?;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
-        // Include the action token so retries get a fresh key — see the
-        // matching comment in note_transcribe.rs.
         let idempotency_key = format!(
-            "dictate_transcribe:{}:{}:{}:{}",
-            params.user_id.0, params.session_id, params.utterance_id, authorization.action_token
+            "dictate_transcribe:{}:{}:{}",
+            params.user_id.0, params.session_id, params.utterance_id
         );
         let receipt = pending_receipt();
         spawn_charge(AsyncChargeParams {
@@ -108,6 +105,14 @@ impl DictateService {
         &self,
         params: DictateCleanupParams,
     ) -> Result<DictateCleanupOutput, ServiceError> {
+        let authorization = authorize_or_deny(AuthorizeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::DictateCleanup,
+            estimate: Credits(self.flat_estimate_credits),
+            hold_ttl_seconds: self.cleanup_hold_ttl_seconds,
+        })
+        .await?;
         let cleaned = self
             .cleaner
             .cleanup(CleanupRequest {
@@ -122,19 +127,17 @@ impl DictateService {
             .pricing
             .price_token_usage(&params.model_id.0, cleaned.usage)?;
         let receipt = pending_receipt();
-        spawn_authorize_and_charge(AsyncAuthorizeAndChargeParams {
+        spawn_charge(AsyncChargeParams {
             os_accounts: self.os_accounts.clone(),
             user_id: params.user_id.clone(),
             action: ActionSlug::DictateCleanup,
-            estimate: Credits(self.flat_estimate_credits),
-            hold_ttl_seconds: self.cleanup_hold_ttl_seconds,
-            actual,
-            idempotency_key_parts: vec![
-                "dictate_cleanup".to_string(),
-                params.user_id.0.clone(),
-                params.session_id.clone(),
-                params.utterance_id.clone(),
-            ],
+            model_id: Some(params.model_id.0.clone()),
+            action_token: authorization.action_token,
+            credits: clamp_to_cap(actual, authorization.cap_credits),
+            idempotency_key: format!(
+                "dictate_cleanup:{}:{}:{}",
+                params.user_id.0, params.session_id, params.utterance_id
+            ),
         });
         Ok(DictateCleanupOutput { cleaned, receipt })
     }

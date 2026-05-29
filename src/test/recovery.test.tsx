@@ -35,5 +35,4 @@ describe("NoteRecoveryPrompt", () => {
     expect(onRecover).toHaveBeenCalledWith("session-1");
     expect(onDiscard).toHaveBeenCalledWith("session-1");
   });
-
 });

@@ -4,20 +4,17 @@
 //! Scribe API, which holds the App API key — never this binary.
 
 use crate::domain::types::AppError;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    sync::OnceLock,
-    time::Duration,
-};
+use std::{sync::OnceLock, time::Duration};
+use tokio::sync::Mutex as AsyncMutex;
 #[cfg(debug_assertions)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use tokio::sync::Mutex as AsyncMutex;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
@@ -35,6 +32,7 @@ const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.accounts";
 const KEYCHAIN_USER: &str = "tokens";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+#[cfg(debug_assertions)]
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const ERR_TOKEN_EXPIRED: i64 = 3001;
@@ -147,9 +145,7 @@ impl Config {
     }
 
     fn configured(&self) -> bool {
-        !self.accounts_url.is_empty()
-            && !self.api_url.is_empty()
-            && !self.client_id.is_empty()
+        !self.accounts_url.is_empty() && !self.api_url.is_empty() && !self.client_id.is_empty()
     }
 
     /// Where OS Accounts redirects after the user signs in. Dev builds use a
@@ -160,7 +156,7 @@ impl Config {
     fn redirect_uri(&self) -> String {
         #[cfg(debug_assertions)]
         {
-            return format!("http://127.0.0.1:{}/callback", self.loopback_port);
+            format!("http://127.0.0.1:{}/callback", self.loopback_port)
         }
         #[cfg(not(debug_assertions))]
         {
@@ -342,9 +338,7 @@ pub fn setup_deep_link(app: &tauri::App) {
         // an unrelated webpage drain the one-shot. CSRF would still reject
         // downstream, but tightening the gate here keeps the in-flight
         // login intact when a stray URL fires the handler.
-        if url.scheme() != "osscribe"
-            || url.host_str() != Some("auth")
-            || url.path() != "/callback"
+        if url.scheme() != "osscribe" || url.host_str() != Some("auth") || url.path() != "/callback"
         {
             return;
         }
@@ -355,11 +349,7 @@ pub fn setup_deep_link(app: &tauri::App) {
         // Extract the sender into an owned `Option` so the MutexGuard is
         // dropped before `flow` falls out of scope at the closure's end —
         // avoids an E0597 drop-order race on the temporary if-let.
-        let tx = flow
-            .callback
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
+        let tx = flow.callback.lock().ok().and_then(|mut slot| slot.take());
         if let Some(tx) = tx {
             let _ = tx.send(url_str);
         }
@@ -669,9 +659,7 @@ fn access_token_is_stale(jwt: &str) -> bool {
         return false;
     };
     use base64::Engine as _;
-    let Ok(decoded) =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)
-    else {
+    let Ok(decoded) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
         return false;
     };
     let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {

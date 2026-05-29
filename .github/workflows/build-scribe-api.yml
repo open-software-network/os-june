@@ -82,6 +82,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/phala-deploy
+        env:
+          SCRIBE__OS_ACCOUNTS__API_URL: ${{ secrets.SCRIBE_OS_ACCOUNTS_API_URL }}
+          SCRIBE__OS_ACCOUNTS__APP_API_KEY: ${{ secrets.SCRIBE_OS_ACCOUNTS_APP_API_KEY }}
+          SCRIBE__UPSTREAMS__OPENAI__API_KEY: ${{ secrets.SCRIBE_OPENAI_API_KEY }}
+          SCRIBE__UPSTREAMS__VENICE__API_KEY: ${{ secrets.SCRIBE_VENICE_API_KEY }}
         with:
           cvm-name: os-scribe-api-staging
           compose-file: iac/phala/docker-compose.staging.yml

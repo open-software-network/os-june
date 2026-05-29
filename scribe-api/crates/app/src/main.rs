@@ -38,7 +38,7 @@ async fn serve() -> anyhow::Result<()> {
     let address: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     let http = default_client();
     let pricing = load_pricing(&config, http.clone()).await;
-    let app = build_router(&config, http, pricing);
+    let app = build_router(&config, &http, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "scribe-api listening");
     axum::serve(listener, app).await?;
@@ -68,7 +68,7 @@ async fn load_pricing(
 
 fn build_router(
     config: &AppConfig,
-    http: reqwest::Client,
+    http: &reqwest::Client,
     pricing_config: BTreeMap<String, ModelPriceConfig>,
 ) -> axum::Router {
     let openai_model_ids = pricing_config

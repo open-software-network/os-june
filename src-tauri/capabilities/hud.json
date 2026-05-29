@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "hud",
+  "description": "Dictation HUD access to only the Tauri APIs used by the overlay.",
+  "windows": ["hud"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-start-dragging"
+  ]
+}

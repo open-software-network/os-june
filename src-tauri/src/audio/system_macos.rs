@@ -185,7 +185,7 @@ pub fn system_audio_readiness() -> SourceReadinessDto {
     #[cfg(target_os = "macos")]
     {
         let capture_available = macos_version_supports_system_audio() && helper_app_path().exists();
-        return SourceReadinessDto {
+        SourceReadinessDto {
             source: RecordingSource::System,
             required: true,
             ready: capture_available,
@@ -209,7 +209,7 @@ pub fn system_audio_readiness() -> SourceReadinessDto {
                         .to_string(),
                 )
             },
-        };
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -235,8 +235,7 @@ pub fn helper_permission_check() -> Result<(), AppError> {
         ));
     }
     terminate_existing_helpers();
-    let temp =
-        std::env::temp_dir().join(format!("os-scribe-audio-check-{}", uuid::Uuid::new_v4()));
+    let temp = std::env::temp_dir().join(format!("os-scribe-audio-check-{}", uuid::Uuid::new_v4()));
     let output_path = temp.with_extension("wav");
     let status_path = temp.with_extension("json");
     let pid_path = temp.with_extension("pid");

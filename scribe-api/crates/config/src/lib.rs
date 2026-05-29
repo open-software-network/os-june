@@ -266,7 +266,7 @@ impl Default for AppConfig {
                 max_json_bytes: 524_288,
             },
             os_accounts: OsAccountsConfig {
-                api_url: "http://127.0.0.1:3000".to_string(),
+                api_url: String::new(),
                 app_api_key: String::new(),
                 iss: "os-accounts-dev".to_string(),
                 aud: "scribe-api-dev".to_string(),
@@ -297,6 +297,13 @@ impl Default for AppConfig {
 pub enum ConfigError {
     #[error(transparent)]
     Figment(#[from] Box<figment::Error>),
+    #[error("missing required config `{field}`")]
+    MissingRequired { field: &'static str },
+    #[error("invalid required config `{field}`: {reason}")]
+    InvalidRequired {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("invalid pricing for model `{model}`: {reason}")]
     InvalidPricing { model: String, reason: String },
 }
@@ -314,6 +321,44 @@ pub fn load() -> Result<AppConfig, ConfigError> {
 }
 
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_required_text("os_accounts.api_url", &config.os_accounts.api_url)?;
+    validate_required_secret(
+        "os_accounts.app_api_key",
+        &config.os_accounts.app_api_key,
+        "osk_REPLACE_ME",
+    )?;
+
+    let uses_openai = config
+        .pricing
+        .values()
+        .any(|pricing| pricing.provider == ModelProvider::Openai);
+    let uses_venice = config
+        .pricing
+        .values()
+        .any(|pricing| pricing.provider == ModelProvider::Venice);
+    if uses_openai {
+        validate_required_text(
+            "upstreams.openai.base_url",
+            &config.upstreams.openai.base_url,
+        )?;
+        validate_required_secret(
+            "upstreams.openai.api_key",
+            &config.upstreams.openai.api_key,
+            "sk_REPLACE_ME",
+        )?;
+    }
+    if uses_venice {
+        validate_required_text(
+            "upstreams.venice.base_url",
+            &config.upstreams.venice.base_url,
+        )?;
+        validate_required_secret(
+            "upstreams.venice.api_key",
+            &config.upstreams.venice.api_key,
+            "VENICE_API_KEY_REPLACE_ME",
+        )?;
+    }
+
     for (model_id, pricing) in &config.pricing {
         let expected_unit = match pricing.model_type {
             ModelType::Asr => PriceUnit::Seconds,
@@ -355,6 +400,28 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_required_text(field: &'static str, value: &str) -> Result<(), ConfigError> {
+    if value.trim().is_empty() {
+        return Err(ConfigError::MissingRequired { field });
+    }
+    Ok(())
+}
+
+fn validate_required_secret(
+    field: &'static str,
+    value: &str,
+    placeholder: &'static str,
+) -> Result<(), ConfigError> {
+    validate_required_text(field, value)?;
+    if value.trim() == placeholder {
+        return Err(ConfigError::InvalidRequired {
+            field,
+            reason: "placeholder value must be replaced",
+        });
+    }
+    Ok(())
+}
+
 fn validate_positive_rate(
     model_id: &str,
     value: Option<u64>,
@@ -374,6 +441,15 @@ mod tests {
     use super::{AppConfig, ModelPriceConfig, ModelProvider, ModelType, PriceUnit, validate};
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
+
+    fn valid_config() -> AppConfig {
+        let mut config = AppConfig::default();
+        config.os_accounts.api_url = "http://127.0.0.1:3000".to_string();
+        config.os_accounts.app_api_key = "osk_test".to_string();
+        config.upstreams.openai.api_key = "sk-test".to_string();
+        config.upstreams.venice.api_key = "venice-test".to_string();
+        config
+    }
 
     #[test]
     fn config_debug_redacts_secrets() {
@@ -414,7 +490,7 @@ mod tests {
         );
         let config = AppConfig {
             pricing,
-            ..AppConfig::default()
+            ..valid_config()
         };
 
         let result = validate(&config);
@@ -445,7 +521,7 @@ mod tests {
         );
         let config = AppConfig {
             pricing,
-            ..AppConfig::default()
+            ..valid_config()
         };
 
         let result = validate(&config);
@@ -454,7 +530,27 @@ mod tests {
     }
 
     #[test]
-    fn validate_passes_for_default() {
-        assert_eq!(validate(&AppConfig::default()).is_ok(), true);
+    fn validate_passes_for_complete_config() {
+        assert_eq!(validate(&valid_config()).is_ok(), true);
+    }
+
+    #[test]
+    fn validate_rejects_missing_os_accounts_key() {
+        let mut config = valid_config();
+        config.os_accounts.app_api_key = String::new();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_provider_placeholder_key() {
+        let mut config = valid_config();
+        config.upstreams.venice.api_key = "VENICE_API_KEY_REPLACE_ME".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
     }
 }

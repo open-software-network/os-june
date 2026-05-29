@@ -70,11 +70,9 @@ impl NoteGenerateService {
             .pricing
             .price_token_usage(&params.model_id.0, generated.usage)?;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
-        // Include the action token so retries get a fresh key — see the
-        // matching comment in note_transcribe.rs.
         let idempotency_key = format!(
-            "note_generate:{}:{}:{}:{}",
-            params.user_id.0, params.note_id, params.prompt_version, authorization.action_token
+            "note_generate:{}:{}:{}",
+            params.user_id.0, params.note_id, params.prompt_version
         );
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),

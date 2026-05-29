@@ -167,7 +167,7 @@ pub fn start_capture(
             &config.clone().into(),
             move |data: &[f32], _| {
                 write_input_data(
-                    data.iter().map(|sample| *sample),
+                    data.iter().copied(),
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,

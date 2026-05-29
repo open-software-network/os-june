@@ -488,17 +488,12 @@ impl From<&str> for ProcessingStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordingSourceMode {
+    #[default]
     MicrophoneOnly,
     MicrophonePlusSystem,
-}
-
-impl Default for RecordingSourceMode {
-    fn default() -> Self {
-        Self::MicrophoneOnly
-    }
 }
 
 impl RecordingSourceMode {

@@ -86,54 +86,6 @@ pub(crate) async fn charge(params: ChargeParams<'_>) -> Result<Receipt, ServiceE
         .map_err(ServiceError::from)
 }
 
-pub(crate) struct AsyncAuthorizeAndChargeParams {
-    pub os_accounts: std::sync::Arc<dyn OsAccountsClient>,
-    pub user_id: UserId,
-    pub action: ActionSlug,
-    pub estimate: Credits,
-    pub hold_ttl_seconds: u64,
-    pub actual: Credits,
-    pub idempotency_key_parts: Vec<String>,
-}
-
-pub(crate) fn spawn_authorize_and_charge(params: AsyncAuthorizeAndChargeParams) {
-    tokio::spawn(async move {
-        let outcome = match authorize_or_deny(AuthorizeParams {
-            os_accounts: params.os_accounts.as_ref(),
-            user_id: params.user_id.clone(),
-            action: params.action,
-            estimate: params.estimate,
-            hold_ttl_seconds: params.hold_ttl_seconds,
-        })
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::warn!(
-                    user_id = %params.user_id.0,
-                    action = params.action.as_str(),
-                    error = %error,
-                    "async metering authorize failed"
-                );
-                return;
-            }
-        };
-        settle_charge(AsyncChargeParams {
-            os_accounts: params.os_accounts,
-            user_id: params.user_id,
-            action: params.action,
-            model_id: None,
-            action_token: outcome.action_token.clone(),
-            credits: clamp_to_cap(params.actual, outcome.cap_credits),
-            idempotency_key: async_idempotency_key(
-                params.idempotency_key_parts,
-                &outcome.action_token,
-            ),
-        })
-        .await;
-    });
-}
-
 pub(crate) struct AsyncChargeParams {
     pub os_accounts: std::sync::Arc<dyn OsAccountsClient>,
     pub user_id: UserId,
@@ -179,11 +131,6 @@ async fn settle_charge(params: AsyncChargeParams) {
         idempotent_replay = receipt.idempotent_replay,
         "settled async metered request"
     );
-}
-
-fn async_idempotency_key(mut parts: Vec<String>, action_token: &str) -> String {
-    parts.push(action_token.to_string());
-    parts.join(":")
 }
 
 pub(crate) fn log_settled(action: ActionSlug, user_id: &UserId, model_id: &str, receipt: &Receipt) {

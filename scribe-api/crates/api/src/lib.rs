@@ -36,11 +36,23 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/livez", get(handlers::health::livez))
         .route("/v1/models", get(handlers::models::list_models))
-        .route("/v1/notes/transcribe", post(handlers::notes::transcribe))
-        .route("/v1/notes/generate", post(handlers::notes::generate))
-        .route("/v1/dictate", post(handlers::dictate::transcribe))
-        .route("/v1/dictate/cleanup", post(handlers::dictate::cleanup))
-        .layer(DefaultBodyLimit::max(limits.max_audio_bytes))
+        .route(
+            "/v1/notes/transcribe",
+            post(handlers::notes::transcribe).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+        )
+        .route(
+            "/v1/notes/generate",
+            post(handlers::notes::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/dictate",
+            post(handlers::dictate::transcribe)
+                .layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+        )
+        .route(
+            "/v1/dictate/cleanup",
+            post(handlers::dictate::cleanup).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
         .layer(timeout)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::new())

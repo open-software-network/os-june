@@ -38,9 +38,7 @@ export function InlineNotice({
         </span>
         <span className="inline-notice-body">{body}</span>
       </p>
-      {actions ? (
-        <div className="inline-notice-actions">{actions}</div>
-      ) : null}
+      {actions ? <div className="inline-notice-actions">{actions}</div> : null}
     </section>
   );
 }

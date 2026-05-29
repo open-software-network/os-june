@@ -630,10 +630,13 @@ fn cursor_position_via_cg() -> Option<(f64, f64)> {
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
         fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
         fn CFRelease(cf: *const std::ffi::c_void);
     }
 

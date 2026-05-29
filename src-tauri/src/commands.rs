@@ -166,10 +166,10 @@ pub async fn rename_folder(
             "Folder name is required.",
         ));
     }
-    Ok(repositories(&app)
+    repositories(&app)
         .await?
         .rename_folder(&request.folder_id, name, request.description.as_deref())
-        .await?)
+        .await
 }
 
 #[tauri::command]

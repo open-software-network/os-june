@@ -440,10 +440,7 @@ export function AppSettings({
         onRefresh={onAccountRefresh}
       />
 
-      <section
-        className="settings-group"
-        aria-labelledby="appearance-heading"
-      >
+      <section className="settings-group" aria-labelledby="appearance-heading">
         <h2 id="appearance-heading" className="settings-group-heading">
           Appearance
         </h2>

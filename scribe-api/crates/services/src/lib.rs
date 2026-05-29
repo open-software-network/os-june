@@ -104,7 +104,7 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 40,
-                    idempotency_key: "note_generate:usr_123:note_1:v7:agt_test".to_string(),
+                    idempotency_key: "note_generate:usr_123:note_1:v7".to_string(),
                 },
             ]
         );
@@ -146,10 +146,7 @@ mod tests {
         let charge_call = wait_for_charge_idempotency_key(&os_accounts)
             .await
             .unwrap_or_default();
-        assert_eq!(
-            charge_call,
-            "dictate_cleanup:usr_123:session_1:utt_2:agt_test"
-        );
+        assert_eq!(charge_call, "dictate_cleanup:usr_123:session_1:utt_2");
     }
 
     #[tokio::test]
@@ -196,7 +193,7 @@ mod tests {
         );
         assert_eq!(
             wait_for_charge_idempotency_key(&os_accounts).await,
-            Some("dictate_transcribe:usr_123:session_1:utt_2:agt_test".to_string())
+            Some("dictate_transcribe:usr_123:session_1:utt_2".to_string())
         );
     }
 

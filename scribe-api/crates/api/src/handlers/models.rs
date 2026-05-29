@@ -93,10 +93,10 @@ fn price_description(model: &ModelPriceConfig) -> String {
     match model.unit {
         scribe_config::PriceUnit::Seconds => format!(
             "{} per second audio",
-            model
-                .credits_per_million_seconds
-                .map(|credits| format_credits_as_usd_per_unit(credits, 1_000_000))
-                .unwrap_or_else(|| "$0.00".to_string())
+            model.credits_per_million_seconds.map_or_else(
+                || "$0.00".to_string(),
+                |credits| format_credits_as_usd_per_unit(credits, 1_000_000)
+            )
         ),
         scribe_config::PriceUnit::Tokens => format!(
             "{} input / {} output per 1M tokens",
@@ -107,14 +107,20 @@ fn price_description(model: &ModelPriceConfig) -> String {
 }
 
 fn format_credits_as_usd(credits: u64) -> String {
-    format!("${:.2}", credits as f64 / 1_000.0)
+    let cents = (u128::from(credits) + 5) / 10;
+    format!("${}.{:02}", cents / 100, cents % 100)
 }
 
 fn format_credits_as_usd_per_unit(credits: u64, units: u64) -> String {
-    let usd = credits as f64 / 1_000.0 / units as f64;
-    if usd >= 1.0 {
-        format!("${usd:.2}")
+    if units == 0 {
+        return "$0.00".to_string();
+    }
+    let micro_usd = (u128::from(credits) * 1_000 + (u128::from(units) / 2)) / u128::from(units);
+    if micro_usd >= 1_000_000 {
+        let cents = (micro_usd + 5_000) / 10_000;
+        format!("${}.{:02}", cents / 100, cents % 100)
     } else {
-        format!("${}", format!("{usd:.6}").trim_end_matches('0'))
+        let decimals = format!("{micro_usd:06}");
+        format!("$0.{}", decimals.trim_end_matches('0'))
     }
 }

@@ -1,6 +1,4 @@
-use os_scribe_lib::{
-    audio::system_macos::system_audio_readiness, domain::types::RecordingSource,
-};
+use os_scribe_lib::{audio::system_macos::system_audio_readiness, domain::types::RecordingSource};
 
 #[test]
 fn system_audio_readiness_reports_system_source() {

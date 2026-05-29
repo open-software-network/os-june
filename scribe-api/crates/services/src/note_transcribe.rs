@@ -102,14 +102,7 @@ impl NoteTranscribeService {
             "note_transcribe: transcriber returned"
         );
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
-        // Include the per-authorize action token so retries (which mint a
-        // fresh token) get a fresh key. Without this, a retry collides with
-        // the previous attempt's key + different token and OS Accounts
-        // returns 4001 idempotency_key_collision.
-        let idempotency_key = format!(
-            "note_transcribe:{}:{}:{}",
-            params.user_id.0, params.note_id, authorization.action_token
-        );
+        let idempotency_key = format!("note_transcribe:{}:{}", params.user_id.0, params.note_id);
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,

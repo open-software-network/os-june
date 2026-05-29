@@ -46,7 +46,10 @@ export function initTheme() {
 
 function resolveTheme(theme: ThemePreference): ResolvedTheme {
   if (theme === "light" || theme === "dark") return theme;
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+  if (
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
     return "light";
   }
   return window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -56,7 +59,10 @@ function resolveTheme(theme: ThemePreference): ResolvedTheme {
 
 function attachSystemListener() {
   if (systemListener) return;
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+  if (
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
     return;
   }
   systemMedia = window.matchMedia("(prefers-color-scheme: dark)");

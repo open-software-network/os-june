@@ -9,22 +9,28 @@ pnpm install
 pnpm tauri:dev
 ```
 
-Real transcription and note generation use Venice AI and require a Venice API key in the shell that launches Tauri:
-
-```sh
-export VENICE_API_KEY="..."
-pnpm tauri:dev
-```
-
-For local development, the Rust backend also loads `.env` from the repository root:
+The desktop app talks to Scribe API for transcription, dictation cleanup,
+model listing, and note generation. Provider API keys belong only in the
+Scribe API server env; never put OpenAI, Venice, or OS Accounts App API keys in
+the root desktop `.env`.
 
 ```sh
 cp .env.example .env
-# edit VENICE_API_KEY in .env
-pnpm tauri:dev
+# edit SCRIBE_API_URL and OS Accounts client settings when needed
 ```
 
-Restart `pnpm tauri:dev` after changing `.env`; the running Tauri process does not reload provider configuration.
+Run the local Scribe API separately when pointing the desktop app at
+`http://127.0.0.1:8080`:
+
+```sh
+cp scribe-api/.env.example scribe-api/.env
+# fill SCRIBE__OS_ACCOUNTS__APP_API_KEY, SCRIBE__UPSTREAMS__OPENAI__API_KEY,
+# and SCRIBE__UPSTREAMS__VENICE__API_KEY in scribe-api/.env
+(cd scribe-api && cargo run -- serve)
+```
+
+Restart `pnpm tauri:dev` after changing the root `.env`; the running Tauri
+process does not reload client configuration.
 
 Optional initial model defaults:
 
@@ -47,13 +53,16 @@ The app data directory is resolved by Tauri at runtime. In development, inspect 
 
 Dictation is paste-only: it does not create notes or store transcript records. Choose a dictation shortcut and an activation mode in Settings. Push-to-talk records while the shortcut is held and stops when it is released. Toggle starts or stops dictation each time the shortcut is pressed. OS Scribe transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
 
-Dictation requires Venice transcription. If `VENICE_API_KEY` is not visible to the Tauri process, dictation reports a configuration error. During development, put the key in `.env` or export it in the shell before running `pnpm tauri:dev`.
+Dictation requires a reachable Scribe API and a signed-in OS Accounts user.
+The selected transcription and cleanup models are executed server-side through
+Scribe API, so missing provider keys surface in the Scribe API logs rather than
+the desktop process.
 
 The default shortcut is bare `Fn`/Globe and the default activation mode is `Push-to-talk`. If macOS opens emoji, input-source, or system dictation UI when pressing Fn, set System Settings > Keyboard > "Press Fn key to" or "Press Globe key to" to `Do Nothing`. Settings records the shortcut you press, including bare `Fn`/Globe, `Fn+Space`, or another shortcut with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Push-to-talk for custom shortcuts depends on macOS exposing both key-down and key-up events for that shortcut.
 
 Manual validation:
 
-1. Launch with `VENICE_API_KEY` configured.
+1. Launch Scribe API with OS Accounts, OpenAI, and Venice env configured.
 2. Grant microphone and Accessibility permissions.
 3. Focus a text field in TextEdit, VS Code, or a browser.
 4. In Settings, press Change, record `Fn`/Globe, and choose `Push-to-talk`.

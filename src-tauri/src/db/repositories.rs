@@ -833,6 +833,7 @@ impl Repositories {
         Ok(row.map(|row| RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str())))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_recording_session(
         &self,
         session_id: &str,
@@ -1000,6 +1001,7 @@ impl Repositories {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn finalize_source_artifact(
         &self,
         artifact_id: &str,
@@ -1269,6 +1271,7 @@ impl Repositories {
         Ok(transcript)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_source_transcript(
         &self,
         note_id: &str,

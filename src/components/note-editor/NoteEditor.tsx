@@ -222,8 +222,7 @@ export function NoteEditor({
                   {processingText ??
                     (note.processingStatus === "failed"
                       ? "No transcript was produced."
-                      : (note.lastError ??
-                        "No transcript is available yet."))}
+                      : (note.lastError ?? "No transcript is available yet."))}
                 </p>
               </div>
             )}

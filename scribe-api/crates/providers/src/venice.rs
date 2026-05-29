@@ -542,9 +542,15 @@ fn credits_per_million_seconds(usd_per_second: f64) -> Option<u64> {
 }
 
 fn ceil_positive_u64(value: f64) -> Option<u64> {
-    if !value.is_finite() || value <= 0.0 || value > u64::MAX as f64 {
+    const MAX_EXACT_U64_AS_F64: f64 = 18_446_744_073_709_551_615.0;
+    if !value.is_finite() || value <= 0.0 || value > MAX_EXACT_U64_AS_F64 {
         return None;
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "value is finite, positive, bounded, and explicitly rounded up"
+    )]
     Some(value.ceil() as u64)
 }
 
@@ -562,7 +568,7 @@ fn collect_capability_names(value: &serde_json::Value, prefix: &str, names: &mut
     };
     for (key, value) in map {
         let name = if prefix.is_empty() {
-            key.to_string()
+            key.clone()
         } else {
             format!("{prefix}.{key}")
         };

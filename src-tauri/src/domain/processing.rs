@@ -187,6 +187,7 @@ pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_saved_audio(
     repos: &Repositories,
     note_id: &str,
@@ -287,6 +288,7 @@ pub async fn process_saved_audio(
         .await?)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_saved_source_audio(
     repos: &Repositories,
     note_id: &str,
