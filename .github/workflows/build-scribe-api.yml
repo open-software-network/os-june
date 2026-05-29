@@ -35,8 +35,11 @@ jobs:
       - name: Compute metadata
         id: meta
         run: |
-          sha_short=$(git rev-parse --short=7 HEAD)
-          echo "sha_short=${sha_short}" >> "$GITHUB_OUTPUT"
+          echo "sha_short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          # Reproducibility: derive timestamps from the commit, not build time,
+          # so a rebuild of the same commit yields the same image bytes.
+          echo "epoch=$(git log -1 --pretty=%ct)" >> "$GITHUB_OUTPUT"
+          echo "created=$(git log -1 --pretty=%cI)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -49,17 +52,20 @@ jobs:
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
+        env:
+          # Normalizes layer/file timestamps to the commit time (with
+          # rewrite-timestamp below) so the image digest is reproducible.
+          SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         with:
           context: scribe-api
           file: scribe-api/Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}
-            ${{ env.IMAGE }}:staging
+          # `outputs` (not push:+tags:) so we can pass rewrite-timestamp, which
+          # applies SOURCE_DATE_EPOCH to layer timestamps. Pushes both tags.
+          outputs: type=image,"name=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }},${{ env.IMAGE }}:staging",push=true,rewrite-timestamp=true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
           cache-from: type=gha,scope=scribe-api
           cache-to: type=gha,scope=scribe-api,mode=max
           # No provenance/SBOM attestations: they make build.outputs.digest an OCI
