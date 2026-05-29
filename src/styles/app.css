@@ -1984,7 +1984,9 @@ input:focus-visible,
   align-items: center;
   justify-content: center;
   min-width: 0;
-  height: 22px;
+  /* Taller than the HUD pill — the recorder bar is 40px, so the waveform fills
+   * more of that vertical space. */
+  height: 30px;
   padding: 0 2px;
 }
 
@@ -1992,7 +1994,7 @@ input:focus-visible,
   position: relative;
   flex: 0 0 auto;
   width: 3px;
-  height: 22px;
+  height: 30px;
   opacity: 0.85;
 }
 
@@ -2002,10 +2004,10 @@ input:focus-visible,
   left: 0;
   bottom: 50%;
   width: 100%;
-  /* Headroom: cap growth below the 22px box so loud peaks don't crowd the
-   * top/bottom edges. The shared meter drives --level per frame; the 40ms
-   * transition just smooths sub-frame steps. */
-  height: calc(3px + var(--level, 0) * 15px);
+  /* Grows toward the 30px box with a little headroom at the edges. The shared
+   * meter drives --level per frame; the 40ms transition smooths sub-frame
+   * steps. */
+  height: calc(3px + var(--level, 0) * 24px);
   border-radius: 999px;
   background: var(--foreground);
   transform: translateY(50%);

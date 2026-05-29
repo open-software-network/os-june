@@ -1,6 +1,13 @@
 import { useEffect, useRef } from "react";
 import type { AudioLevelDto } from "../../lib/tauri";
-import { BAR_COUNT, clamp, createBarMeter, IDLE_LEVEL } from "../../lib/audio-meter";
+import {
+  clamp,
+  createBarMeter,
+  IDLE_LEVEL,
+  RECORDER_BAR_COUNT,
+  RECORDER_BAR_HISTORY_OFFSETS,
+  RECORDER_BAR_WEIGHTS,
+} from "../../lib/audio-meter";
 
 type WaveformProps = {
   level: AudioLevelDto;
@@ -19,8 +26,15 @@ const KNEE = 6;
 
 export function Waveform({ level }: WaveformProps) {
   const refs = useRef<Array<HTMLSpanElement | null>>([]);
-  // Shared with the dictation HUD so both waveforms move identically.
-  const meterRef = useRef(createBarMeter());
+  // Shares the dictation HUD's synthesis + ballistics, with the recorder's own
+  // taller 7-bar layout.
+  const meterRef = useRef(
+    createBarMeter(
+      RECORDER_BAR_COUNT,
+      RECORDER_BAR_WEIGHTS,
+      RECORDER_BAR_HISTORY_OFFSETS,
+    ),
+  );
 
   // Feed each new sample's shaped peak into the meter; the rAF loop animates
   // the bars toward it (fast attack, smooth release, snap-to-zero on silence).
@@ -38,7 +52,7 @@ export function Waveform({ level }: WaveformProps) {
     let raf = 0;
     const tick = () => {
       meter.step();
-      for (let i = 0; i < BAR_COUNT; i++) {
+      for (let i = 0; i < RECORDER_BAR_COUNT; i++) {
         const el = refs.current[i];
         if (el) el.style.setProperty("--level", meter.displayed[i].toFixed(3));
       }
@@ -50,7 +64,7 @@ export function Waveform({ level }: WaveformProps) {
 
   return (
     <div className="waveform" aria-label="Microphone activity">
-      {Array.from({ length: BAR_COUNT }, (_, index) => (
+      {Array.from({ length: RECORDER_BAR_COUNT }, (_, index) => (
         <span
           key={index}
           style={{ ["--level" as string]: IDLE_LEVEL }}
