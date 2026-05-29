@@ -593,13 +593,10 @@ fn escape_asr_transcript(text: &str) -> String {
 /// Defense-in-depth: strip any prompt-scaffolding tags the model echoes back
 /// (e.g. a trailing `/<output_contract></asr_transcript>`) so they never reach
 /// the user. Removes open/close/slash-prefixed variants of our wrapper tags.
+/// Only app-specific tag names are listed — `<style>` is deliberately omitted
+/// since it collides with the HTML element a user might legitimately dictate.
 fn strip_scaffolding_tags(text: &str) -> String {
-    const TAGS: [&str; 4] = [
-        "asr_transcript",
-        "output_contract",
-        "dictionary_context",
-        "style",
-    ];
+    const TAGS: [&str; 3] = ["asr_transcript", "output_contract", "dictionary_context"];
     let mut out = text.to_string();
     for tag in TAGS {
         for token in [

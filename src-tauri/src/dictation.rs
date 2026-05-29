@@ -1678,7 +1678,6 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         // Treat those as "nothing captured", not a fault.
         || normalized_message.contains("no_speech")
         || normalized_message.contains("dictation_text_empty")
-        || normalized_message.contains("text_empty")
 }
 
 fn show_hud_window(app: &AppHandle) {
