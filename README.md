@@ -87,10 +87,10 @@ codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Notet
 If permission is denied during local testing, reset it from macOS Privacy & Security settings or with:
 
 ```sh
-tccutil reset Microphone network.opensoftware.os-notetaker
+tccutil reset Microphone co.opensoftware.scribe
 ```
 
-System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for OS Notetaker or the OS Notetaker Audio Capture helper, then restart the app.
+System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for OS Scribe or the OS Scribe Audio Capture helper, then restart the app.
 
 ## Verification
 

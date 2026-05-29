@@ -14,7 +14,29 @@ use tauri::Manager;
 pub fn run() {
     providers::load_local_env();
     let context = tauri::generate_context!();
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Single-instance MUST register before the deep-link plugin so it owns
+    // the second-launch handoff: when a deep link fires while the app is
+    // already running, the OS launches a new instance, single-instance
+    // forwards argv (which includes the URL on macOS) to the live instance,
+    // and tauri-plugin-single-instance's `deep-link` feature wires that into
+    // the deep-link plugin's `on_open_url` event so we hear one signal in
+    // both cold-launch and warm-launch cases.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,
             commands::create_note,
@@ -65,12 +87,13 @@ pub fn run() {
         .setup(|app| {
             providers::setup(app);
             dictation::setup(app);
+            os_accounts::setup_deep_link(app);
             #[cfg(target_os = "macos")]
             setup_main_window_lifecycle(app);
             Ok(())
         })
         .build(context)
-        .expect("failed to build OS Notetaker")
+        .expect("failed to build OS Scribe")
         .run(|app, event| match event {
             tauri::RunEvent::Exit => dictation::stop_helper(app),
             #[cfg(target_os = "macos")]

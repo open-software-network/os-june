@@ -140,7 +140,7 @@ final class SystemAudioRecorder {
             try? FileManager.default.removeItem(at: outputURL)
             try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
-        cleanupStaleAggregateDevices(named: "OS Notetaker System Audio")
+        cleanupStaleAggregateDevices(named: "OS Scribe System Audio")
 
         let systemOutputID = try AudioObjectID.readDefaultSystemOutputDevice()
         let outputUID = try systemOutputID.readDeviceUID()
@@ -149,7 +149,7 @@ final class SystemAudioRecorder {
         let tapDescription = CATapDescription(excludingProcesses: [], deviceUID: outputUID, stream: 0)
         tapDescription.uuid = UUID()
         tapDescription.muteBehavior = .unmuted
-        tapDescription.name = "OS Notetaker System Audio"
+        tapDescription.name = "OS Scribe System Audio"
 
         var tapID = AudioObjectID.unknown
         var err = AudioHardwareCreateProcessTap(tapDescription, &tapID)
@@ -173,7 +173,7 @@ final class SystemAudioRecorder {
 
         let aggregateUID = UUID().uuidString
         let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "OS Notetaker System Audio",
+            kAudioAggregateDeviceNameKey: "OS Scribe System Audio",
             kAudioAggregateDeviceUIDKey: aggregateUID,
             kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
@@ -522,7 +522,7 @@ let pidPath = argumentValue("--pid", from: CommandLine.arguments)
 let timelineOffsetMs = argumentValue("--timeline-offset-ms", from: CommandLine.arguments).flatMap(Double.init) ?? 0
 if !checkOnly && outputPath == nil {
     writeLog("missing output argument", logURL: logPath.map { URL(fileURLWithPath: $0) })
-    emitProcessStatus(["event": "error", "message": "Usage: os-notetaker-system-audio-recorder --output /path/to/recording.wav"], statusPath: statusPath)
+    emitProcessStatus(["event": "error", "message": "Usage: os-scribe-system-audio-recorder --output /path/to/recording.wav"], statusPath: statusPath)
     exit(2)
 }
 

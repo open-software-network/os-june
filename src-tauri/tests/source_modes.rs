@@ -1,4 +1,4 @@
-use os_notetaker_lib::{
+use os_scribe_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::RecordingSourceMode,
 };

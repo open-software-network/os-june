@@ -1,9 +1,9 @@
-use os_notetaker_lib::domain::processing::{
+use os_scribe_lib::domain::processing::{
     build_dictionary_context, build_transcription_context, coalesce_source_transcripts,
     labeled_transcript_from_sources, merge_transcription_context, valid_sources_for_processing,
     SourceTranscriptInput,
 };
-use os_notetaker_lib::domain::types::DictionaryEntryDto;
+use os_scribe_lib::domain::types::DictionaryEntryDto;
 
 #[test]
 fn labeled_transcript_keeps_microphone_and_system_sections() {

@@ -12,11 +12,12 @@ use std::{
     sync::OnceLock,
     time::Duration,
 };
+#[cfg(debug_assertions)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::Mutex as AsyncMutex,
 };
+use tokio::sync::Mutex as AsyncMutex;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
@@ -24,12 +25,14 @@ const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // credits:spend so Scribe API can authorize-and-charge against the user's
 // wallet for transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
-// Shared OS Accounts token store. Generic on purpose so future Open Software
-// apps land on the same entry — but macOS Keychain ACLs are per-codesign
-// identity by default, so cross-app reads will need an explicit access list
-// (or kSecAttrAccessGroup with matching team-id entitlements) before a second
-// app can actually read what Scribe wrote here.
-const KEYCHAIN_SERVICE: &str = "network.opensoftware.os-accounts";
+// Shared OS Accounts token store. Service name is identity-provider scoped
+// (not consumer-app scoped) so every Open Software app reads/writes the same
+// entry. Cross-app sharing requires both apps to declare the same
+// `keychain-access-groups` entitlement (see src-tauri/Entitlements.plist —
+// $(AppIdentifierPrefix)co.opensoftware.shared). With the entitlement set,
+// new keyring writes default to that access group; a second Open Software
+// app with the matching entitlement can read this entry without re-auth.
+const KEYCHAIN_SERVICE: &str = "co.opensoftware.accounts";
 const KEYCHAIN_USER: &str = "tokens";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -149,8 +152,21 @@ impl Config {
             && !self.client_id.is_empty()
     }
 
+    /// Where OS Accounts redirects after the user signs in. Dev builds use a
+    /// loopback HTTP listener (works in `pnpm tauri:dev`, no installed bundle
+    /// required). Release builds use the `osscribe://` custom URI scheme,
+    /// registered by `tauri-plugin-deep-link` against the signed `.app`
+    /// bundle — no temp HTTP listener, no macOS firewall prompt, cleaner UX.
     fn redirect_uri(&self) -> String {
-        format!("http://127.0.0.1:{}/callback", self.loopback_port)
+        #[cfg(debug_assertions)]
+        {
+            return format!("http://127.0.0.1:{}/callback", self.loopback_port);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = self.loopback_port; // suppress dead_code lint in release builds
+            "osscribe://auth/callback".to_string()
+        }
     }
 }
 
@@ -183,8 +199,15 @@ pub fn load_local_env() {
     });
 }
 
+/// Two slots, both populated only while a login is in flight:
+/// - `cancel`: drained by `os_accounts_cancel_login` to abort the wait.
+/// - `callback`: drained by the deep-link `on_open_url` handler (release
+///   builds only — dev uses a loopback listener, no slot needed).
 #[derive(Default)]
-pub struct LoginFlow(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+pub struct LoginFlow {
+    cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    callback: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
+}
 
 #[tauri::command]
 pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
@@ -238,18 +261,6 @@ pub async fn os_accounts_login(
     let csrf = random_b64url(24);
     let redirect_uri = cfg.redirect_uri();
 
-    let listener = TcpListener::bind(("127.0.0.1", cfg.loopback_port))
-        .await
-        .map_err(|e| {
-            AppError::new(
-                "loopback_bind_failed",
-                format!(
-                    "Could not start the local login listener on port {}: {e}",
-                    cfg.loopback_port
-                ),
-            )
-        })?;
-
     let login_url = format!(
         "{}/login?client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         cfg.accounts_url.trim_end_matches('/'),
@@ -259,26 +270,8 @@ pub async fn os_accounts_login(
         urlencoding::encode(&csrf),
         urlencoding::encode(&challenge),
     );
-    open_in_browser(&login_url)?;
 
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    if let Ok(mut slot) = flow.0.lock() {
-        *slot = Some(cancel_tx);
-    }
-
-    let outcome = tokio::select! {
-        result = tokio::time::timeout(LOGIN_TIMEOUT, await_callback(&listener, &csrf)) => {
-            result.unwrap_or_else(|_| {
-                Err(AppError::new("login_timed_out", "Login timed out. Please try again."))
-            })
-        }
-        _ = cancel_rx => Err(AppError::new("login_canceled", "Sign-in canceled.")),
-    };
-    if let Ok(mut slot) = flow.0.lock() {
-        *slot = None;
-    }
-
-    let code = outcome?;
+    let code = await_authorization_code(&cfg, &flow, &login_url, &csrf).await?;
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
     store_tokens(&pair).await?;
 
@@ -293,10 +286,16 @@ pub async fn os_accounts_login(
 
 #[tauri::command]
 pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(), AppError> {
-    if let Ok(mut slot) = flow.0.lock() {
+    if let Ok(mut slot) = flow.cancel.lock() {
         if let Some(sender) = slot.take() {
             let _ = sender.send(());
         }
+    }
+    // Dropping any pending callback sender causes the deep-link wait in
+    // release builds to resolve with an Err, which the select! arm then
+    // surfaces as the cancel error. In dev the slot is unused.
+    if let Ok(mut slot) = flow.callback.lock() {
+        slot.take();
     }
     Ok(())
 }
@@ -321,10 +320,158 @@ pub fn os_accounts_top_up() -> Result<(), AppError> {
     open_in_browser(cfg.accounts_url.trim_end_matches('/'))
 }
 
+/// Register the deep-link handler at app setup. Drains any in-flight
+/// login's callback slot when an `osscribe://auth/callback?...` URL
+/// arrives — works in both cold-launch (OS starts the app with the URL)
+/// and warm-launch (app already running, OS hands the URL to the existing
+/// instance via tauri-plugin-single-instance's deep-link feature).
+///
+/// Safe to call in dev too; the loopback flow doesn't use the callback
+/// slot, so the handler just never fires there.
+pub fn setup_deep_link(app: &tauri::App) {
+    use tauri::Manager;
+    use tauri_plugin_deep_link::DeepLinkExt;
+
+    let app_handle = app.app_handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        let Some(url) = event.urls().first().cloned() else {
+            return;
+        };
+        // Match on the parsed URL components — `starts_with` would also
+        // accept `osscribe://auth/callback-extra?...` and similar, letting
+        // an unrelated webpage drain the one-shot. CSRF would still reject
+        // downstream, but tightening the gate here keeps the in-flight
+        // login intact when a stray URL fires the handler.
+        if url.scheme() != "osscribe"
+            || url.host_str() != Some("auth")
+            || url.path() != "/callback"
+        {
+            return;
+        }
+        let url_str = url.to_string();
+        let Some(flow) = app_handle.try_state::<LoginFlow>() else {
+            return;
+        };
+        // Extract the sender into an owned `Option` so the MutexGuard is
+        // dropped before `flow` falls out of scope at the closure's end —
+        // avoids an E0597 drop-order race on the temporary if-let.
+        let tx = flow
+            .callback
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(tx) = tx {
+            let _ = tx.send(url_str);
+        }
+    });
+}
+
+/// Dispatch to the loopback (dev) or deep-link (release) variant. Opens
+/// the browser, installs a cancel sender on the LoginFlow, waits for the
+/// callback or timeout, drains the slot before returning.
+async fn await_authorization_code(
+    cfg: &Config,
+    flow: &tauri::State<'_, LoginFlow>,
+    login_url: &str,
+    csrf: &str,
+) -> Result<String, AppError> {
+    #[cfg(debug_assertions)]
+    {
+        let listener = TcpListener::bind(("127.0.0.1", cfg.loopback_port))
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    "loopback_bind_failed",
+                    format!(
+                        "Could not start the local login listener on port {}: {e}",
+                        cfg.loopback_port
+                    ),
+                )
+            })?;
+        open_in_browser(login_url)?;
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        if let Ok(mut slot) = flow.cancel.lock() {
+            *slot = Some(cancel_tx);
+        }
+        let outcome = tokio::select! {
+            result = tokio::time::timeout(LOGIN_TIMEOUT, await_callback(&listener, csrf)) => {
+                result.unwrap_or_else(|_| {
+                    Err(AppError::new("login_timed_out", "Login timed out. Please try again."))
+                })
+            }
+            _ = cancel_rx => Err(AppError::new("login_canceled", "Sign-in canceled.")),
+        };
+        if let Ok(mut slot) = flow.cancel.lock() {
+            *slot = None;
+        }
+        outcome
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = cfg.loopback_port; // unused in release; keep the borrow shape
+        let (callback_tx, callback_rx) = tokio::sync::oneshot::channel::<String>();
+        if let Ok(mut slot) = flow.callback.lock() {
+            *slot = Some(callback_tx);
+        }
+        // Drain the slot if the browser open fails — otherwise we return
+        // Err leaving a sender behind whose receiver was already dropped.
+        // The next login attempt would overwrite it harmlessly, but the
+        // intermediate state is inconsistent.
+        if let Err(e) = open_in_browser(login_url) {
+            if let Ok(mut slot) = flow.callback.lock() {
+                slot.take();
+            }
+            return Err(e);
+        }
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        if let Ok(mut slot) = flow.cancel.lock() {
+            *slot = Some(cancel_tx);
+        }
+
+        let outcome = tokio::select! {
+            result = tokio::time::timeout(LOGIN_TIMEOUT, callback_rx) => {
+                match result {
+                    Ok(Ok(url)) => {
+                        let (code, state) = parse_callback_query(&url);
+                        if state.as_deref() != Some(csrf) {
+                            Err(AppError::new(
+                                "state_mismatch",
+                                "Login response failed verification. Please try again.",
+                            ))
+                        } else {
+                            code.ok_or_else(|| AppError::new(
+                                "missing_code",
+                                "Login response was missing an authorization code.",
+                            ))
+                        }
+                    }
+                    Ok(Err(_)) => Err(AppError::new("login_canceled", "Sign-in canceled.")),
+                    Err(_) => Err(AppError::new(
+                        "login_timed_out",
+                        "Login timed out. Please try again.",
+                    )),
+                }
+            }
+            _ = cancel_rx => Err(AppError::new("login_canceled", "Sign-in canceled.")),
+        };
+        if let Ok(mut slot) = flow.cancel.lock() {
+            *slot = None;
+        }
+        if let Ok(mut slot) = flow.callback.lock() {
+            slot.take();
+        }
+        outcome
+    }
+}
+
 // Branded loopback success page. Self-contained (the loopback origin can't
 // reach the app's bundled fonts/assets), but mirrors the OS Accounts / Scribe
 // look: warm-grey surface, inset card, OS mark, calm hierarchy — and follows
 // the system light/dark preference.
+#[cfg(debug_assertions)]
 const SUCCESS_BODY: &str = r##"<!doctype html>
 <html lang=en>
 <meta charset=utf-8>
@@ -356,6 +503,7 @@ const SUCCESS_BODY: &str = r##"<!doctype html>
 /// Accept connections until one hits `/callback`. Every per-socket read is
 /// bounded so a slow-loris client on the loopback port can't stall the
 /// listener for the full LOGIN_TIMEOUT.
+#[cfg(debug_assertions)]
 async fn await_callback(listener: &TcpListener, expected_state: &str) -> Result<String, AppError> {
     loop {
         let (mut stream, _) = listener
@@ -398,6 +546,7 @@ async fn await_callback(listener: &TcpListener, expected_state: &str) -> Result<
     }
 }
 
+#[cfg(debug_assertions)]
 async fn write_http(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

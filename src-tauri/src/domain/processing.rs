@@ -333,7 +333,7 @@ pub async fn process_saved_source_audio(
         turns
     };
     let turns = coalesce_turns_for_transcription(turns);
-    let segment_dir = std::env::temp_dir().join(format!("os-notetaker-turns-{session_id}"));
+    let segment_dir = std::env::temp_dir().join(format!("os-scribe-turns-{session_id}"));
     let _ = std::fs::remove_dir_all(&segment_dir);
     std::fs::create_dir_all(&segment_dir)
         .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
