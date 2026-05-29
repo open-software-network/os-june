@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { spinners } from "unicode-animations";
+import { clamp, createBarMeter, IDLE_LEVEL } from "./lib/audio-meter";
 import "./styles/hud.css";
 
 type DictationHudEvent = {
@@ -35,52 +36,20 @@ const brailleWave = spinners.waverows;
 // Matches the .hud[data-state="exiting"] transition in hud.css.
 const EXIT_TRANSITION_MS = 160;
 
-// Zero idle plus the CSS 3px base height makes silence read as a dot row.
-const IDLE_LEVEL = 0;
-
-// Per-bar weight + history offset so each bar samples slightly different
-// recent audio. Blending newest level with a nearby recent sample keeps the
-// shape coherent without making every bar move identically.
-const BAR_WEIGHTS = [0.64, 0.86, 0.7, 0.84, 0.58];
-const BAR_HISTORY_OFFSETS = [1, 0, 1, 0, 1];
-const LEVEL_HISTORY_LENGTH = 8;
-const LIVE_LEVEL_MIX = 0.7;
-const ATTACK_ALPHA = 0.7;
-const RELEASE_ALPHA = 0.55;
-const IDLE_SNAP_DELTA = 0.004;
-
-const levelHistory: number[] = new Array(LEVEL_HISTORY_LENGTH).fill(IDLE_LEVEL);
-const displayedLevels: number[] = new Array(bars.length).fill(IDLE_LEVEL);
-const targetLevels: number[] = new Array(bars.length).fill(IDLE_LEVEL);
-let levelHead = 0;
+// Bar synthesis + ballistics live in the shared meter so the recorder waveform
+// moves identically. The meter holds the level history and the displayed bars.
+const meter = createBarMeter();
 
 let rafHandle: number | undefined;
 let lastAudioLevelAt = 0;
 const IDLE_RAF_TIMEOUT_MS = 260;
-const AUDIO_NOISE_GATE = 0.012;
+// Lowered so a whisper crosses into the "voice" regime instead of being capped
+// at the ambient ceiling — quiet speech now reads on the bars. Raise back toward
+// 0.012 if room ambient starts lighting them up.
+const AUDIO_NOISE_GATE = 0.008;
 const AUDIO_VISUAL_GAIN = 16;
 const AMBIENT_VISUAL_GAIN = 4;
 const AMBIENT_MAX_LEVEL = 0.11;
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function setTargetLevels(level: number) {
-  levelHead = (levelHead + 1) % LEVEL_HISTORY_LENGTH;
-  levelHistory[levelHead] = level;
-
-  for (let i = 0; i < bars.length; i++) {
-    const weight = BAR_WEIGHTS[i] ?? 0.5;
-    const offset = BAR_HISTORY_OFFSETS[i] ?? 0;
-    const historyIndex =
-      (levelHead - offset + LEVEL_HISTORY_LENGTH) % LEVEL_HISTORY_LENGTH;
-    const blendedLevel =
-      levelHistory[levelHead] * LIVE_LEVEL_MIX +
-      levelHistory[historyIndex] * (1 - LIVE_LEVEL_MIX);
-    targetLevels[i] = clamp(IDLE_LEVEL + blendedLevel * weight, IDLE_LEVEL, 1);
-  }
-}
 
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
@@ -115,24 +84,9 @@ function setHud(state: string, status: string) {
 function startBarLoop() {
   if (rafHandle !== undefined) return;
   const tick = () => {
-    let stillAnimating = false;
+    const stillAnimating = meter.step();
     for (let i = 0; i < bars.length; i++) {
-      const diff = targetLevels[i] - displayedLevels[i];
-      const alpha = diff > 0 ? ATTACK_ALPHA : RELEASE_ALPHA;
-      displayedLevels[i] = clamp(displayedLevels[i] + diff * alpha, 0, 1);
-
-      if (
-        targetLevels[i] === IDLE_LEVEL &&
-        Math.abs(displayedLevels[i] - IDLE_LEVEL) < IDLE_SNAP_DELTA
-      ) {
-        displayedLevels[i] = IDLE_LEVEL;
-      }
-
-      if (Math.abs(targetLevels[i] - displayedLevels[i]) > 0.004) {
-        stillAnimating = true;
-      }
-
-      bars[i].style.setProperty("--level", displayedLevels[i].toFixed(3));
+      bars[i].style.setProperty("--level", meter.displayed[i].toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
     if (stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS) {
@@ -145,15 +99,10 @@ function startBarLoop() {
 }
 
 function resetBars() {
-  for (let i = 0; i < LEVEL_HISTORY_LENGTH; i++) {
-    levelHistory[i] = IDLE_LEVEL;
-  }
+  meter.reset();
   for (let i = 0; i < bars.length; i++) {
-    targetLevels[i] = IDLE_LEVEL;
-    displayedLevels[i] = IDLE_LEVEL;
     bars[i].style.setProperty("--level", IDLE_LEVEL.toFixed(3));
   }
-  levelHead = 0;
   lastAudioLevelAt = performance.now();
 }
 
@@ -168,7 +117,7 @@ function renderAudioLevel(rawLevel: number) {
           1,
         );
   lastAudioLevelAt = performance.now();
-  setTargetLevels(shaped);
+  meter.pushLevel(shaped);
   startBarLoop();
 }
 

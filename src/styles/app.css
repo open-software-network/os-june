@@ -1975,28 +1975,41 @@ input:focus-visible,
 
 /* Waveform ---------------------------------------------------------- */
 
+/* Mirrors the dictation HUD bars (.hud-bar) so the recorder waveform reads as
+ * the same component — same geometry, center-anchored growth, and ballistics
+ * (driven by the shared meter in src/lib/audio-meter.ts). */
 .waveform {
   display: flex;
-  gap: 2px;
+  gap: 3px;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  height: 24px;
+  height: 22px;
   padding: 0 2px;
 }
 
 .waveform span {
-  display: block;
+  position: relative;
   flex: 0 0 auto;
   width: 3px;
-  /* Animate height directly so the rounded ends stay perfect circles —
-   * scaleY would squash the border-radius into a lozenge at low values. */
-  height: max(3px, calc(20px * var(--bar-fill, 0.15)));
+  height: 22px;
+  opacity: 0.85;
+}
+
+.waveform span::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 50%;
+  width: 100%;
+  /* Headroom: cap growth below the 22px box so loud peaks don't crowd the
+   * top/bottom edges. The shared meter drives --level per frame; the 40ms
+   * transition just smooths sub-frame steps. */
+  height: calc(3px + var(--level, 0) * 15px);
   border-radius: 999px;
   background: var(--foreground);
-  opacity: 0.85;
-  transition: height 200ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: height;
+  transform: translateY(50%);
+  transition: height 40ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {

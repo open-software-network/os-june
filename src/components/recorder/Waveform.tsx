@@ -1,30 +1,59 @@
 import { useEffect, useRef } from "react";
 import type { AudioLevelDto } from "../../lib/tauri";
+import { BAR_COUNT, clamp, createBarMeter, IDLE_LEVEL } from "../../lib/audio-meter";
 
 type WaveformProps = {
   level: AudioLevelDto;
 };
 
-const BAR_COUNT = 8;
-const FLOOR = 0.06;
-const GAIN = 11;
+// Below this the input reads as silence — a soft downward expander that keeps
+// room/ambient hiss pinned to zero (bars collapse to the base dot). Whispers
+// sit just above it. Raise if ambient creeps in; lower if whispers don't show.
+const NOISE_FLOOR = 0.004;
+// Sub-1 power that lifts quiet input (whispers) toward visibility before the
+// knee. Lower = more low-end lift.
+const LOW_LIFT = 0.6;
+// Soft-knee steepness — loud speech approaches the ceiling asymptotically
+// instead of slamming flat. Higher reaches the ceiling sooner.
+const KNEE = 6;
 
 export function Waveform({ level }: WaveformProps) {
   const refs = useRef<Array<HTMLSpanElement | null>>([]);
-  const targets = computeTargetPeaks(level);
+  // Shared with the dictation HUD so both waveforms move identically.
+  const meterRef = useRef(createBarMeter());
+
+  // Feed each new sample's shaped peak into the meter; the rAF loop animates
+  // the bars toward it (fast attack, smooth release, snap-to-zero on silence).
+  const raw =
+    level.recentPeaks.length > 0
+      ? level.recentPeaks[level.recentPeaks.length - 1]
+      : level.peak;
+  const shaped = visualPeakScale(raw);
+  useEffect(() => {
+    meterRef.current.pushLevel(shaped);
+  }, [shaped]);
 
   useEffect(() => {
-    for (let i = 0; i < BAR_COUNT; i++) {
-      const el = refs.current[i];
-      if (el) el.style.setProperty("--bar-fill", targets[i].toFixed(3));
-    }
-  });
+    const meter = meterRef.current;
+    let raf = 0;
+    const tick = () => {
+      meter.step();
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const el = refs.current[i];
+        if (el) el.style.setProperty("--level", meter.displayed[i].toFixed(3));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   return (
     <div className="waveform" aria-label="Microphone activity">
       {Array.from({ length: BAR_COUNT }, (_, index) => (
         <span
           key={index}
+          style={{ ["--level" as string]: IDLE_LEVEL }}
           ref={(el) => {
             refs.current[index] = el;
           }}
@@ -34,29 +63,16 @@ export function Waveform({ level }: WaveformProps) {
   );
 }
 
-function computeTargetPeaks(level: AudioLevelDto) {
-  const source =
-    level.recentPeaks.length > 0
-      ? level.recentPeaks.slice(-BAR_COUNT)
-      : [level.rms, level.peak, level.rms];
-  return Array.from({ length: BAR_COUNT }, (_, index) => {
-    const sourceIndex = Math.floor((index / BAR_COUNT) * source.length);
-    const peak = source[sourceIndex] ?? level.rms;
-    const neighbor = source[sourceIndex - 1] ?? peak;
-    const next = source[sourceIndex + 1] ?? peak;
-    const rolloff = 0.78 + Math.sin(index * 0.85) * 0.12;
-    const blended = Math.max(
-      0,
-      (neighbor * 0.22 + peak * 0.56 + next * 0.22) * rolloff,
-    );
-    return visualPeakScale(blended);
-  });
-}
-
 export function visualPeakScale(peak: number) {
-  const normalized = Math.max(0, Math.min(1, peak));
-  if (normalized <= 0.002) {
-    return FLOOR;
+  const normalized = clamp(peak, 0, 1);
+  // Downward expander: anything at/below the noise floor reads as silence so
+  // the bars can collapse to zero (the base dot) instead of shimmering.
+  const gated = (normalized - NOISE_FLOOR) / (1 - NOISE_FLOOR);
+  if (gated <= 0) {
+    return 0;
   }
-  return Math.min(1, Math.max(FLOOR, Math.sqrt(normalized * GAIN)));
+  // Lift whispers with a sub-1 power, then soft-knee the top so loud speech
+  // approaches the ceiling without ever slamming flat against it.
+  const shaped = 1 - Math.exp(-KNEE * Math.pow(gated, LOW_LIFT));
+  return clamp(shaped, 0, 1);
 }

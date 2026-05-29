@@ -157,7 +157,9 @@ body {
   left: 0;
   bottom: 50%;
   width: 100%;
-  height: calc(3px + var(--level, 0) * 19px);
+  /* Headroom: cap the growth below the 22px box so loud peaks don't crowd the
+   * top/bottom edges of the pill. */
+  height: calc(3px + var(--level, 0) * 15px);
   border-radius: 999px;
   background: var(--hud-bar);
   transform: translateY(50%);

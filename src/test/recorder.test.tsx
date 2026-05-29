@@ -95,9 +95,16 @@ describe("RecorderBar", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("amplifies normal speech peaks for visible meter movement", () => {
-    expect(visualPeakScale(0.02)).toBeGreaterThanOrEqual(0.4);
+  it("keeps quiet speech visible while leaving loud speech headroom", () => {
+    // Near-silence settles to the floor.
     expect(visualPeakScale(0.001)).toBeLessThanOrEqual(0.1);
-    expect(visualPeakScale(0.9)).toBe(1);
+    // Quiet speech is still clearly visible.
+    expect(visualPeakScale(0.02)).toBeGreaterThanOrEqual(0.2);
+    // Loud speech reads high but never pegs the ceiling — there's room above it.
+    const loud = visualPeakScale(0.15);
+    expect(loud).toBeGreaterThan(0.75);
+    expect(loud).toBeLessThan(0.95);
+    // A genuine peak still reaches (effectively) full height.
+    expect(visualPeakScale(0.9)).toBeGreaterThanOrEqual(0.99);
   });
 });
