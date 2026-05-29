@@ -51,6 +51,9 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: write # push the digest-record git tag
+      packages: write # retag :production
     env:
       FROM_TAG: ${{ inputs.from-tag }}
     steps:
@@ -112,3 +115,19 @@ jobs:
           target="${{ env.IMAGE }}:production"
           docker buildx imagetools create --tag "$target" "${{ env.IMAGE }}@${{ steps.image.outputs.digest }}"
           echo "Retagged ${{ env.IMAGE }}@${{ steps.image.outputs.digest }} as $target"
+
+      # Anchor "b": in-repo immutable record that <sha> deployed digest <D>.
+      - name: Record deployed digest
+        if: steps.phala.outputs.deployed == 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          IMG: ${{ env.IMAGE }}:${{ steps.image.outputs.sha_short }}
+          SHA_SHORT: ${{ steps.image.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          tag="deploy/production/${SHA_SHORT}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "$tag" -m "production deploy: ${IMG} = ${DIGEST}"
+          git push -f origin "refs/tags/${tag}"
+          echo "Recorded \`${tag}\` → \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
