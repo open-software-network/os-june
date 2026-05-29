@@ -6,19 +6,9 @@ services:
       - "8080:8080"
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
-    # Note: registry-auth env vars (DSTACK_DOCKER_REGISTRY,
-    # DSTACK_DOCKER_USERNAME, DSTACK_DOCKER_PASSWORD) are NOT declared
-    # here — dstack reads them from the CVM's sealed-env store at image-
-    # pull time, not from compose. Set them once per CVM via
-    # `phala envs encrypt + update`. Required only when the image is
-    # private; harmless to set when it's public.
-    #
-    # The Scribe and upstream secrets below must be supplied by the deploy
-    # environment. They intentionally fail compose rendering when unset so
-    # production cannot boot with empty auth/provider configuration.
+    # Registry auth and app/provider secrets are set directly on the Phala CVM
+    # via sealed env, not in GitHub Actions and not in this compose file.
+    # Keeping them out of `environment` avoids overriding sealed values with
+    # blanks during deploy.
     environment:
       RUST_LOG: scribe=warn,scribe_api=warn,scribe_services=warn,scribe_providers=warn,tower_http=warn
-      SCRIBE__OS_ACCOUNTS__API_URL: "${SCRIBE__OS_ACCOUNTS__API_URL:?set SCRIBE__OS_ACCOUNTS__API_URL}"
-      SCRIBE__OS_ACCOUNTS__APP_API_KEY: "${SCRIBE__OS_ACCOUNTS__APP_API_KEY:?set SCRIBE__OS_ACCOUNTS__APP_API_KEY}"
-      SCRIBE__UPSTREAMS__OPENAI__API_KEY: "${SCRIBE__UPSTREAMS__OPENAI__API_KEY:?set SCRIBE__UPSTREAMS__OPENAI__API_KEY}"
-      SCRIBE__UPSTREAMS__VENICE__API_KEY: "${SCRIBE__UPSTREAMS__VENICE__API_KEY:?set SCRIBE__UPSTREAMS__VENICE__API_KEY}"
