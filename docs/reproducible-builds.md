@@ -20,15 +20,55 @@ models exist:
 
 ## The chain a verifier walks
 
+**Target (cleanest):** the attested compose pins the image by **content digest**,
+so the verifier never trusts the registry:
+
 ```
-git clone @<commit> ──► docker build (deterministic) ──► digest D
-                                                          ║ compare
+git clone @<commit> ──► deterministic build ──► digest D
+                                                  ║ compare
 Trust Center attestation ──► attested compose ──► pins @sha256:D ?  ✅
 ```
 
-A match proves the running enclave is the published code. This chain proves the
-**code only** — it does not prove anything about upstream model providers
-(audio still leaves the TEE to OpenAI/Venice). Keep those claims separate.
+**Current reality:** we pin by **tag**, not digest (see the constraint below), so
+the chain has one extra hop — resolve the tag in the registry:
+
+```
+git clone @<commit> ──► deterministic build ──► digest D
+Trust Center attestation ──► attested compose ──► pins :<sha_short>
+registry: :<sha_short> ──► resolves to digest D' ;  D == D' ?  ✅
+```
+
+A match proves the running enclave is the published code. The tag→digest hop
+trusts the registry hasn't re-pushed the tag (sha tags are immutable by
+convention; close the gap by also committing the digest to a git release record,
+or by reaching the digest-pinned target above). This chain proves the **code
+only** — not the upstream model providers (audio still leaves the TEE to
+OpenAI/Venice). Keep those claims separate.
+
+## Constraint: dstack can't verify digest refs (we deploy by tag)
+
+> Discovered while fixing the deploy (#46). This reshapes the verification anchor.
+
+dstack's stock GHCR prelaunch verify (`Dstack-TEE/dstack-examples`
+`phala-cloud-prelaunch-script/prelaunch.sh`) parses image refs as `repo:tag`:
+
+```sh
+repo="${img#ghcr.io/}"; repo="${repo%%:*}"   # cuts at the FIRST ':'
+tag="${img##*:}"
+curl ".../v2/${repo}/manifests/${tag}"
+```
+
+A `repo@sha256:digest` ref breaks this: `%%:*` cuts at the `:` inside `sha256:`,
+so `repo` becomes `…/scribe-api@sha256`, the manifest URL 404s, the prelaunch
+`exit 1`s, and the CVM never boots. **Any digest-pinned ref fails today; only
+tags work** — which is why #46 deploys `:<sha_short>`.
+
+To reclaim digest-in-compose (the cleanest anchor), one of:
+
+- **Custom `pre_launch_script`** that parses `@sha256:` correctly (`phala deploy`
+  supports supplying one) — viable only if we own the script rather than Phala
+  auto-injecting it. **Investigate who owns it.**
+- **Upstream fix** to dstack's prelaunch parsing — report it; use tags meanwhile.
 
 ## Scope: only the `runtime` stage matters
 
@@ -55,6 +95,9 @@ not the whole build.
 | layer file mtimes | build wall-clock time | `SOURCE_DATE_EPOCH=<commit time>` + buildkit `rewrite-timestamp=true` |
 
 ## Phase A — make the build deterministic
+
+> **Already done in #44:** `provenance: false` + `sbom: false` (plain image, no
+> attestation index). The items below are the remaining build-determinism work.
 
 Concrete changes (all reviewable before any CI run):
 
@@ -119,7 +162,10 @@ stage — no network fetch, no version drift.)
 
 ### 6. Reproducible image export — `.github/workflows/build-scribe-api.yml`
 
-Compute the commit epoch and enable timestamp rewriting:
+`provenance: false`/`sbom: false` already merged (#44). Remaining work: compute
+the commit epoch and enable timestamp rewriting. Note we deploy by **tag**
+(#46), and the build pushes both `:<sha_short>` and `:staging` — the `outputs:`
+form must keep pushing both (`name=img:<sha>,img:staging`):
 
 ```yaml
       - name: Compute metadata
@@ -138,8 +184,8 @@ Compute the commit epoch and enable timestamp rewriting:
           file: scribe-api/Dockerfile
           provenance: false
           sbom: false
-          outputs: type=image,name=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }},push=true,rewrite-timestamp=true
-          # (tags handled via outputs name=…; drop the `tags:`/`push:` keys)
+          outputs: type=image,"name=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }},${{ env.IMAGE }}:staging",push=true,rewrite-timestamp=true
+          # (both tags via outputs name=…; drop the `tags:`/`push:` keys)
           ...
 ```
 
@@ -151,14 +197,20 @@ Compute the commit epoch and enable timestamp rewriting:
 ### `scripts/verify-reproducible.sh` (new)
 
 ```
-Usage: verify-reproducible.sh <git-ref> <expected-digest>
+Usage: verify-reproducible.sh <git-ref>
   1. git worktree add /tmp/verify <git-ref>
   2. SOURCE_DATE_EPOCH=$(git -C /tmp/verify log -1 --pretty=%ct) \
        docker buildx build --provenance=false --sbom=false \
        --output type=image,rewrite-timestamp=true,push=false \
        --metadata-file /tmp/meta.json scribe-api
   3. local=$(jq -r '.["containerimage.digest"]' /tmp/meta.json)
-  4. [ "$local" = "$expected" ] && echo PASS || { echo "FAIL $local != $expected"; exit 1; }
+  # Because we deploy by tag, the "expected" digest comes from resolving the
+  # deployed tag (what the attestation references) — not from the attestation
+  # directly. Optionally also assert against a committed release record.
+  4. sha=$(git -C /tmp/verify rev-parse --short=7 HEAD)
+     expected=$(docker buildx imagetools inspect "ghcr.io/open-software-network/scribe-api:$sha" \
+                  --format '{{.Manifest.digest}}')
+  5. [ "$local" = "$expected" ] && echo PASS || { echo "FAIL $local != $expected"; exit 1; }
 ```
 
 ### CI guard — double-build job
@@ -192,9 +244,14 @@ Only after two independent builds match:
 
 ## Unresolved Questions
 
-- Where do verifiers get the **attested digest** to compare against — scrape the
-  Trust Center attested compose, or pin the digest into a git release manifest
-  for a fully in-repo chain?
+- **Attestation anchor — tag or digest?** Today the attested compose pins a
+  **tag** (digest refs break dstack's prelaunch, see Constraint). Do we (a) live
+  with the tag→digest registry hop, (b) also commit the deployed digest to a git
+  release record to anchor it in-repo, or (c) invest in a custom
+  `pre_launch_script` to reclaim digest-in-compose (cleanest, trustless)?
+- **Who owns the prelaunch script?** Is the GHCR-verify script Phala-injected, or
+  a `pre_launch_script` we supply? Determines whether (c) above is even possible.
+  Report the digest-parsing bug upstream regardless.
 - Pin `ca-certificates` by copying from the base, or commit a vendored bundle in
   the repo (fully self-contained, but we own cert updates)?
 - Toolchain: is locking via the base-image digest enough, or do we also want
