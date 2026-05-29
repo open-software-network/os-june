@@ -217,7 +217,7 @@ export function NoteEditor({
             ) : note.transcript?.text ? (
               <p>{note.transcript.text}</p>
             ) : (
-              <div className="empty-state">
+              <div className="transcript-empty">
                 <p>
                   {processingText ??
                     (note.processingStatus === "failed"

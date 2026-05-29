@@ -1005,7 +1005,7 @@ input:focus-visible,
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: var(--sp-5);
   width: 100%;
-  max-width: 720px;
+  max-width: var(--content-max);
   /* Fill the workspace but don't exceed it — the previous
    * `calc(100vh - 60px)` baked a viewport-tall minimum that overflowed
    * the main-panel-body by a few dozen pixels, letting you scroll past
@@ -1246,7 +1246,7 @@ input:focus-visible,
   justify-content: space-between;
   align-items: center;
   width: 100%;
-  max-width: 720px;
+  max-width: var(--content-max);
   margin-bottom: var(--sp-2);
 }
 
@@ -1283,7 +1283,7 @@ input:focus-visible,
 }
 
 .transcript-view p {
-  max-width: 720px;
+  max-width: var(--content-max);
   margin: 0;
 }
 
@@ -1295,7 +1295,7 @@ input:focus-visible,
 .source-transcripts section {
   display: grid;
   gap: var(--sp-3);
-  max-width: 720px;
+  max-width: var(--content-max);
   padding: var(--sp-5) var(--sp-6);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -2244,7 +2244,7 @@ input:focus-visible,
 
 .settings-page {
   width: 100%;
-  max-width: 720px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--sp-10) 0 var(--sp-12);
 }
@@ -3203,39 +3203,33 @@ input:focus-visible,
 
 .folders-workspace {
   width: 100%;
-  max-width: 960px;
+  /* Match the Notes and Dictation column width so all three views line up. */
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--sp-10) 0 var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-7);
+  gap: var(--sp-5);
 }
 
 .all-notes-workspace {
   width: 100%;
-  max-width: 760px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--sp-10) 0 var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-7);
+  gap: var(--sp-5);
 }
 
 .dictation-history-workspace {
   width: 100%;
-  max-width: 760px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--sp-10) 0 var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-7);
-}
-
-.dictation-shortcut-hint {
-  margin: var(--sp-3) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
+  gap: var(--sp-5);
 }
 
 .folders-header {
@@ -3246,12 +3240,198 @@ input:focus-visible,
 }
 
 .folders-heading h1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
   margin: 0 0 var(--sp-2);
   font-family: var(--font-serif);
   font-weight: 400;
   font-size: var(--fs-display);
   letter-spacing: -0.01em;
   line-height: 1.1;
+}
+
+/* Count trails the title as a quiet tally — small sans body text, muted,
+ * tabular figures — never competing with the serif display title. */
+.folders-count {
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  color: var(--muted-foreground);
+  font-feature-settings: "tnum" 1;
+}
+
+/* Shortcut legend. One row per action (icon · label · keycaps). Lives either
+ * stacked in the header's upper-right (after the hint card is dismissed) or
+ * inline inside the hint card. */
+.dictation-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.dictation-shortcut-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.dictation-shortcut dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.dictation-shortcut dd {
+  margin: 0;
+}
+
+/* Header placement — stacked, right-aligned. */
+.dictation-shortcuts {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+/* "Get more from dictation" card. Carries the shortcuts up top, then spells
+ * out the personalization features. A soft fade + faint grain give it a
+ * distinct surface feel versus the plain transcript feed. */
+.dictation-hint {
+  position: relative;
+  overflow: hidden;
+  padding: var(--sp-5) var(--sp-5) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(
+      130% 120% at 0% 0%,
+      color-mix(in oklch, var(--foreground) 5%, transparent),
+      transparent 55%
+    ),
+    var(--card);
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 color-mix(in oklch, var(--foreground) 4%, transparent);
+}
+
+.dictation-hint::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.dictation-hint > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dictation-hint-dismiss {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  z-index: 2;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.dictation-hint-dismiss:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.dictation-hint-divider {
+  height: 1px;
+  margin: var(--sp-4) 0 var(--sp-3);
+  border: 0;
+  background: var(--border-subtle);
+}
+
+.dictation-hint-title {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
+}
+
+.dictation-hint-items {
+  display: flex;
+  flex-direction: column;
+}
+
+.dictation-hint-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dictation-hint-item + .dictation-hint-item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dictation-hint-chip {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in oklch, var(--card) 70%, transparent);
+  color: var(--foreground);
+}
+
+.dictation-hint-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dictation-hint-item-name {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.dictation-hint-item-desc {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.dictation-hint-setup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.dictation-hint-item:hover .dictation-hint-setup {
+  color: var(--foreground);
 }
 
 .folders-subtitle {
@@ -3550,7 +3730,7 @@ input:focus-visible,
  * the sticky bar. Use the same max-width as the editor. */
 .folder-detail-content {
   width: 100%;
-  max-width: 760px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--sp-8) 0 var(--sp-8);
   display: flex;
@@ -3779,12 +3959,19 @@ input:focus-visible,
   list-style: none;
 }
 
+/* Row mirrors the all-notes row: a leading icon chip, the transcript body,
+ * then the time and an on-hover copy action on the trailing edge. */
 .dictation-history-item {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  /* Top-align so the icon, time, and actions sit level with the first line
+   * of the transcript instead of drifting to the middle of a multi-line
+   * (or expanded) row. */
+  align-items: start;
   gap: var(--sp-3);
   margin: 0 calc(-1 * var(--sp-4));
-  padding: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
   border-radius: var(--r-md);
   transition: background-color var(--t-fast) var(--ease-out);
 }
@@ -3794,53 +3981,270 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 35%, transparent);
 }
 
-.dictation-history-meta {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+.dictation-history-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
 }
 
-.dictation-history-meta span {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-}
-
-.dictation-history-item p {
+.dictation-history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
+}
+
+.dictation-history-body p {
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
-  line-height: 1.5;
+  line-height: 1.45;
+  /* Keep rows tidy: clamp long transcripts to two lines. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   overflow-wrap: anywhere;
 }
 
-.dictation-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-  align-self: start;
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
+.dictation-history-lang {
+  align-self: flex-start;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-transform: capitalize;
 }
 
-.dictation-copy:hover {
+.dictation-history-time {
+  /* Nudge down so the time text sits level with the first transcript line
+   * under top alignment. */
+  padding-top: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+/* Trailing row actions — copy + delete, revealed on hover/focus. */
+.dictation-history-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  align-self: start;
+}
+
+.dictation-row-act {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.dictation-history-item:hover .dictation-row-act,
+.dictation-history-item:focus-within .dictation-row-act,
+.dictation-row-act:focus-visible,
+.dictation-row-act[data-copied="true"] {
+  opacity: 1;
+}
+
+.dictation-row-act:hover {
   background: var(--muted);
-  border-color: var(--ring);
+  color: var(--foreground);
+}
+
+.dictation-row-act[data-copied="true"] {
+  color: var(--success, var(--foreground));
+}
+
+.dictation-row-act-danger:hover {
+  color: var(--destructive);
+  background: var(--destructive-soft);
+}
+
+/* Clipped transcripts become clickable to open the full-text dialog. */
+.dictation-history-item[data-truncated] .dictation-history-text {
+  cursor: pointer;
+}
+
+.dictation-history-item[data-truncated] .dictation-history-text:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* Full transcript dialog — scrollable body that masks (fades) its own content
+ * at whichever edge has hidden text. `data-fade-*` is set from the scroll
+ * position so a fade never shows when the text fits (no phantom fade). The
+ * mask reveals the real text rather than overlaying the card color, so it's
+ * clean in light and dark. */
+.transcript-dialog-scroll {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  --fade: 26px;
+}
+
+.transcript-dialog-scroll[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+}
+
+.transcript-dialog-scroll[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+}
+
+.transcript-dialog-scroll:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+}
+
+.transcript-dialog-scroll p {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The date/time stands in for a title here, so it shouldn't read as a heading
+ * — smaller and lighter than the default dialog title. */
+.transcript-dialog .dialog-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+/* Reusable empty state (see EmptyState.tsx) — a quiet contained surface with a
+ * muted glyph, serif title, supporting copy, and an optional full-width inset
+ * footer (e.g. the dictation shortcut hints). Shared by Dictation, Folders,
+ * etc. so they can't drift. The 3px padding is the inset gutter the footer
+ * sits within. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 3px;
+  border-radius: var(--r-xl);
+  background: var(--surface-subtle);
+  overflow: hidden;
+}
+
+.empty-state-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-12) var(--sp-8);
+  text-align: center;
+}
+
+/* Trim the bottom padding when a footer follows so the two don't double up. */
+.empty-state:has(.empty-state-footer) .empty-state-content {
+  padding-bottom: var(--sp-10);
+}
+
+/* Borderless, muted glyph — no tile. It should whisper. */
+.empty-state-icon {
+  display: inline-grid;
+  place-items: center;
+  margin-bottom: var(--sp-1);
+  color: var(--muted-foreground);
+}
+
+.empty-state-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-xl);
+  letter-spacing: -0.01em;
+}
+
+.empty-state-description {
+  max-width: 420px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+/* Full-width inset footer (e.g. shortcuts) — spans the surface minus the 3px
+ * gutter, sits flush at the bottom edge, and lifts off the muted surface. */
+.empty-state-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--sp-2) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: calc(var(--r-xl) - 3px);
+  background: var(--card);
+  box-shadow: var(--shadow-inset);
+}
+
+/* Inline shortcut cluster (empty-state footer + hint card): two shortcuts side
+ * by side with equal breathing room and a hairline divider. Keycaps inherit
+ * the shared component — no size overrides — so they read identically here, in
+ * the header, and in Settings. */
+.shortcut-legend-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  column-gap: 0;
+  row-gap: var(--sp-2);
+  margin: 0;
+}
+
+.shortcut-legend-inline .dictation-shortcut {
+  padding: 0 var(--sp-5);
+}
+
+.shortcut-legend-inline .dictation-shortcut + .dictation-shortcut {
+  border-left: 1px solid var(--border-subtle);
+}
+
+/* Transcript fallback message in the note editor — a plain muted line, not the
+ * rich empty-state surface. */
+.transcript-empty {
+  color: var(--muted-foreground);
+}
+
+.transcript-empty p {
+  margin: 0;
 }
 
 .folder-note-menu {

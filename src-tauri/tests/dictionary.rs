@@ -46,6 +46,33 @@ async fn dictation_history_keeps_recent_items_and_prunes_old_items() {
 }
 
 #[tokio::test]
+async fn deletes_a_dictation_history_item() {
+    let repos = repos().await;
+    let keep = repos
+        .create_dictation_history_item("Keep this one.", None, "openai")
+        .await
+        .expect("create keep item")
+        .expect("non-empty dictation should be stored");
+    let remove = repos
+        .create_dictation_history_item("Remove this one.", None, "openai")
+        .await
+        .expect("create remove item")
+        .expect("non-empty dictation should be stored");
+
+    repos
+        .delete_dictation_history_item(&remove.id)
+        .await
+        .expect("delete history item");
+
+    let history = repos
+        .list_dictation_history(50)
+        .await
+        .expect("list history after delete");
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].id, keep.id);
+}
+
+#[tokio::test]
 async fn creates_updates_and_soft_deletes_dictionary_entries() {
     let repos = repos().await;
     let created = repos

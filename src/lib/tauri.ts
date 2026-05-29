@@ -547,6 +547,10 @@ export async function listDictationHistory() {
   return invoke<ListDictationHistoryResponse>("list_dictation_history");
 }
 
+export async function deleteDictationHistoryItem(id: string) {
+  return invoke<void>("delete_dictation_history_item", { id });
+}
+
 export async function providerModelSettings() {
   return invoke<ProviderModelSettingsResponse>("provider_model_settings");
 }

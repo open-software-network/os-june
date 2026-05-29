@@ -72,8 +72,13 @@ impl Transcriber for OpenAiTranscriber {
             })?;
         let text = parsed.text.trim().to_string();
         if text.is_empty() {
-            tracing::error!(%url, model = %model_id, "openai: empty transcript");
-            return Err(DomainError::UpstreamProvider);
+            // No speech detected is an input condition, not an upstream fault —
+            // surface it as a 400 so the client can stay silent ("nothing
+            // captured") instead of flashing a backend error.
+            tracing::info!(%url, model = %model_id, "openai: no speech in audio");
+            return Err(DomainError::InvalidInput {
+                reason: "no_speech".to_string(),
+            });
         }
         Ok(Transcript {
             text,
