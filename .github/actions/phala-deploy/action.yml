@@ -122,7 +122,15 @@ runs:
           echo "CVM $CVM_NAME does not exist; creating via -n."
           phala deploy -c "$RENDERED" -n "$CVM_NAME" --wait
         fi
-        url=$(phala cvms get "$CVM_NAME" --json | jq -r '.public_urls[0].app // empty')
+        # cvm-url is a summary nicety, never a gate. `phala cvms get --json` spreads
+        # its detail fields to the top level (no wrapper to unwrap), but the public-
+        # endpoint field is API-version dependent: `public_urls` (v2025-10-28) or
+        # `endpoints` (default) — both arrays of {app, instance}. Walk every nested
+        # object and take the first .app URL so either shape works, and let a get/jq
+        # failure leave the url empty rather than fail an already-successful deploy.
+        url=$(phala cvms get "$CVM_NAME" --json \
+          | jq -r 'first((.. | objects | .app? | select(type == "string" and startswith("http")))) // empty') \
+          || url=""
         echo "deployed=true" >> "$GITHUB_OUTPUT"
         if [[ -n "$url" ]]; then
           echo "cvm-url=${url}" >> "$GITHUB_OUTPUT"
