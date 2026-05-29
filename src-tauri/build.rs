@@ -34,7 +34,7 @@ fn build_system_audio_helper() {
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     std::fs::create_dir_all(&macos_dir).expect("system audio helper app dir should be created");
-    let executable = macos_dir.join("os-notetaker-system-audio-recorder");
+    let executable = macos_dir.join("os-scribe-system-audio-recorder");
 
     let source_modified = std::fs::metadata(&source)
         .and_then(|metadata| metadata.modified())
@@ -84,9 +84,9 @@ fn build_system_audio_helper() {
   <key>CFBundleDisplayName</key>
   <string>OS Scribe</string>
   <key>CFBundleExecutable</key>
-  <string>os-notetaker-system-audio-recorder</string>
+  <string>os-scribe-system-audio-recorder</string>
   <key>CFBundleIdentifier</key>
-  <string>network.opensoftware.os-notetaker.audio-capture</string>
+  <string>co.opensoftware.scribe.audio-capture</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -206,7 +206,7 @@ fn build_dictation_helper() {
   <key>CFBundleExecutable</key>
   <string>os-scribe-dictation-helper</string>
   <key>CFBundleIdentifier</key>
-  <string>network.opensoftware.os-notetaker.dictation-helper</string>
+  <string>co.opensoftware.scribe.dictation-helper</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

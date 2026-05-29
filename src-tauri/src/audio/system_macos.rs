@@ -236,7 +236,7 @@ pub fn helper_permission_check() -> Result<(), AppError> {
     }
     terminate_existing_helpers();
     let temp =
-        std::env::temp_dir().join(format!("os-notetaker-audio-check-{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("os-scribe-audio-check-{}", uuid::Uuid::new_v4()));
     let output_path = temp.with_extension("wav");
     let status_path = temp.with_extension("json");
     let pid_path = temp.with_extension("pid");
@@ -361,7 +361,7 @@ fn send_signal(pid: u32, signal: &str) {
 }
 
 fn terminate_existing_helpers() {
-    let helper_name = "os-notetaker-system-audio-recorder";
+    let helper_name = "os-scribe-system-audio-recorder";
     let Ok(output) = Command::new("pgrep").arg("-f").arg(helper_name).output() else {
         return;
     };

@@ -9,10 +9,10 @@ metered AI usage.
 
 **Scribe (the app)**:
 The user-facing Tauri desktop product — the macOS `.app` users install. The
-binary on disk is named `os-scribe`; the Cargo package is `os-notetaker` for
-historical reasons.
-_Avoid_: notetaker, OS Notetaker (legacy names — still in `Cargo.toml`, do not
-spread them).
+binary on disk is named `os-scribe`, the Cargo package is `os-scribe`, the
+bundle identifier is `co.opensoftware.scribe`.
+_Avoid_: notetaker, OS Notetaker (legacy names — fully removed from code as of
+the bundle rename; don't reintroduce).
 
 **Scribe API**:
 The confidential backend service that holds the App API key and the upstream

@@ -1,4 +1,4 @@
-use os_notetaker_lib::domain::{
+use os_scribe_lib::domain::{
     processing::manual_notes_for_generation,
     types::{NoteDto, ProcessingStatus},
 };
@@ -68,8 +68,8 @@ fn manual_notes_for_generation_uses_new_tail_after_manual_preface() {
 
 #[tokio::test]
 async fn generation_rejects_empty_transcript() {
-    let err = os_notetaker_lib::scribe_api::generate_note_from_transcript(
-        os_notetaker_lib::scribe_api::GenerationRequest {
+    let err = os_scribe_lib::scribe_api::generate_note_from_transcript(
+        os_scribe_lib::scribe_api::GenerationRequest {
             provider: "venice".to_string(),
             operation_id: None,
             title: "Empty".to_string(),

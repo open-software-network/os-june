@@ -1,4 +1,4 @@
-use os_notetaker_lib::db::{migrations::run_migrations, repositories::Repositories};
+use os_scribe_lib::db::{migrations::run_migrations, repositories::Repositories};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 use tempfile::tempdir;

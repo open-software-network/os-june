@@ -848,7 +848,7 @@ final class FocusTargetController {
 
     private var lastExternalApp: NSRunningApplication?
     private let ignoredBundleIdentifiers: Set<String> = [
-        "network.opensoftware.os-notetaker.dictation-helper",
+        "co.opensoftware.scribe.dictation-helper",
     ]
 
     private init() {}
@@ -929,7 +929,7 @@ enum SelectedDeviceRecorderError: LocalizedError {
 final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "network.opensoftware.os-notetaker.dictation-recorder")
+    private let queue = DispatchQueue(label: "co.opensoftware.scribe.dictation-recorder")
     private let writer: AVAssetWriter
     private let writerInput: AVAssetWriterInput
     private var didStartWriting = false
