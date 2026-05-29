@@ -6,7 +6,7 @@ description: >
 
 inputs:
   cvm-name:
-    description: Phala CVM name. The action probes `phala cvms get <name>` and branches between `phala deploy -n <name>` (create) and `phala deploy --cvm-id <name>` (update) since the CLI doesn't expose an upsert flag.
+    description: Phala CVM name. The action probes `phala cvms list --json` and branches between `phala deploy -n <name>` (create) and `phala deploy --cvm-id <name>` (update) since the CLI doesn't expose an upsert flag.
     required: true
   compose-file:
     description: Path to docker-compose.yml containing the literal placeholder ${SCRIBE_IMAGE}.
@@ -96,7 +96,26 @@ runs:
           printf '%s\n' "$cvms_json" >&2
           exit 1
         fi
-        if printf '%s' "$cvms_json" | jq -e --arg name "$CVM_NAME" '.[] | select(.name == $name)' >/dev/null; then
+        # `phala cvms list --json` is NOT a top-level array. The CLI wraps every
+        # --json payload as `{success: true, ...data}` and nests the CVMs under
+        # `.items[]` keyed by `cvmName` (not `name`):
+        #   {"success": true, "items": [{"cvmName": "...", "appId": "..."}], ...}
+        # The old `.[] | select(.name==...)` iterated the wrapper's values, hit the
+        # `success` boolean and errored ("Cannot index boolean"); because that jq
+        # ran inside an `if` condition, set -e could not catch it and the step fell
+        # through to create on an existing CVM (ERR-01-004). `any(.. | objects; ...)`
+        # walks every nested object so it survives the wrapper and matches cvmName
+        # (current) or name (older CLIs). Read the -e exit code directly: 0 found,
+        # 1 absent, >=2 a real parse/auth failure that must hard-fail, not create.
+        exists=$(printf '%s' "$cvms_json" | jq -e --arg name "$CVM_NAME" \
+          'any(.. | objects; (.cvmName? == $name) or (.name? == $name))' 2>&1) \
+          && jq_status=0 || jq_status=$?
+        if [[ "$jq_status" -ge 2 ]]; then
+          echo "::error::Could not parse 'phala cvms list --json' output:"
+          printf '%s\n' "$exists" >&2
+          exit 1
+        fi
+        if [[ "$jq_status" -eq 0 ]]; then
           echo "CVM $CVM_NAME exists; updating via --cvm-id."
           phala deploy -c "$RENDERED" --cvm-id "$CVM_NAME" --wait
         else
