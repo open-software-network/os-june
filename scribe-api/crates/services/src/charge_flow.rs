@@ -37,11 +37,22 @@ fn action_token_or_error(
     authorization: Authorization,
 ) -> Result<AuthorizationOutcome, ServiceError> {
     if !authorization.allowed {
+        // Only a genuine balance shortfall should tell the user to add funds.
+        // Other denials (e.g. concurrency_cap_exceeded) are transient and must
+        // NOT surface as "insufficient credits" — that's how a user with a
+        // healthy balance ends up staring at an "Add funds" banner.
+        if is_insufficient_balance(authorization.reason.as_deref()) {
+            tracing::warn!(
+                reason = ?authorization.reason,
+                "authorization denied — insufficient balance"
+            );
+            return Err(ServiceError::InsufficientCredits);
+        }
         tracing::warn!(
             reason = ?authorization.reason,
-            "authorization denied — mapping to insufficient_credits"
+            "authorization denied — transient/non-balance reason"
         );
-        return Err(ServiceError::InsufficientCredits);
+        return Err(ServiceError::AuthorizationDenied);
     }
     let token = authorization
         .action_token
@@ -57,6 +68,19 @@ fn action_token_or_error(
     Ok(AuthorizationOutcome {
         action_token: token,
         cap_credits: authorization.cap_credits,
+    })
+}
+
+/// True only for denial reasons that mean the user is actually out of money.
+/// The OS Accounts provider normalizes a 4301 to `insufficient_available_balance`;
+/// we also accept the raw reasons in case they ever reach us unmapped. Anything
+/// else (concurrency caps, rate limits, etc.) is treated as transient.
+fn is_insufficient_balance(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| {
+        let reason = reason.to_ascii_lowercase();
+        reason.contains("insufficient_available_balance")
+            || reason.contains("insufficient_credits")
+            || reason.contains("insufficient_balance")
     })
 }
 
@@ -142,4 +166,50 @@ pub(crate) fn log_settled(action: ActionSlug, user_id: &UserId, model_id: &str, 
         idempotent_replay = receipt.idempotent_replay,
         "settled metered request",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{action_token_or_error, is_insufficient_balance};
+    use crate::error::ServiceError;
+    use scribe_domain::Authorization;
+
+    fn denied(reason: Option<&str>) -> Authorization {
+        Authorization {
+            allowed: false,
+            action_token: None,
+            cap_credits: None,
+            reason: reason.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn insufficient_balance_denial_maps_to_insufficient_credits() {
+        let result = action_token_or_error(denied(Some("insufficient_available_balance")));
+        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+    }
+
+    #[test]
+    fn concurrency_cap_denial_is_not_a_balance_problem() {
+        // Regression: a user with funds hit concurrency_cap_exceeded and was
+        // shown an "Add funds" banner. Transient denials must stay transient.
+        let result = action_token_or_error(denied(Some("concurrency_cap_exceeded")));
+        assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
+    }
+
+    #[test]
+    fn unknown_denial_reason_is_treated_as_transient() {
+        let result = action_token_or_error(denied(None));
+        assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
+    }
+
+    #[test]
+    fn balance_reason_matcher_is_case_insensitive_and_specific() {
+        assert!(is_insufficient_balance(Some(
+            "Insufficient_Available_Balance"
+        )));
+        assert!(is_insufficient_balance(Some("insufficient_credits")));
+        assert!(!is_insufficient_balance(Some("concurrency_cap_exceeded")));
+        assert!(!is_insufficient_balance(None));
+    }
 }
