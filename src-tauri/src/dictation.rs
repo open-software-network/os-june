@@ -1440,13 +1440,16 @@ fn looks_like_instruction_response(value: &str) -> bool {
     normalized.starts_with("sure")
         || normalized.starts_with("here")
         || normalized.starts_with("the transcript ")
-        || normalized.starts_with("the user ")
-        || normalized.starts_with("user ")
+        || normalized.starts_with("the user expresses")
+        || normalized.starts_with("the user did")
+        || normalized.starts_with("the user asks")
         || normalized.starts_with("i can")
         || normalized.starts_with("i'll")
         || normalized.starts_with("i will")
         || normalized.contains(" the transcript ")
-        || normalized.contains(" the user ")
+        || normalized.contains(" the user expresses")
+        || normalized.contains(" the user did")
+        || normalized.contains(" the user asks")
         || normalized.contains(" did not ask ")
         || normalized.contains(" only shared ")
         || normalized.contains(" writing style ")
@@ -2385,6 +2388,14 @@ mod tests {
             "the user expresses passion for solving an issue related to dictation layout."
         ));
         assert!(!looks_like_instruction_response("Hello, \"testing\"."));
+        // Legitimate dictated speech beginning with "user" must survive — the
+        // meta-commentary filter keys off specific verb phrases, not the prefix.
+        assert!(!looks_like_instruction_response(
+            "User authentication flow needs a retry button."
+        ));
+        assert!(!looks_like_instruction_response(
+            "The user story for this sprint covers the dictation page."
+        ));
     }
 
     #[test]

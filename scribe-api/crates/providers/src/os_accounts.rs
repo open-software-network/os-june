@@ -162,7 +162,18 @@ impl OsAccountsHttpClient {
             // attempt settled before a transient failure). Treat it as an
             // idempotent replay: the user already paid, so return success and
             // let the transcript through rather than failing the whole call.
-            tracing::info!(%url, body = %raw, "os_accounts: charge replayed — idempotency key already settled");
+            //
+            // The 4001 reply carries `data: null`, so we cannot recover the
+            // amount actually settled — we report this request's `credits` as
+            // an approximation. Logged at WARN so any discrepancy between this
+            // value and the original settlement is visible to accounting/audit.
+            tracing::warn!(
+                %url,
+                body = %raw,
+                reported_credits = body.credits,
+                "os_accounts: charge replayed — idempotency key already settled; \
+                 credits_charged reflects the requested estimate, not the settled amount"
+            );
             return Ok(Receipt {
                 credits_charged: Credits(body.credits),
                 idempotent_replay: true,

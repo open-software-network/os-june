@@ -106,6 +106,7 @@ export function NoteEditor({
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
+  const sourceTranscripts = visibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
   const [optionsOpen, setOptionsOpen] = useState(false);
   const systemOn = sourceMode === "microphonePlusSystem";
@@ -194,9 +195,9 @@ export function NoteEditor({
                 <CopyTranscriptButton text={transcriptToText(note)} />
               </div>
             ) : null}
-            {visibleSourceTranscripts(note).length ? (
+            {sourceTranscripts.length ? (
               <div className="source-transcripts">
-                {visibleSourceTranscripts(note).map((transcript) => {
+                {sourceTranscripts.map((transcript) => {
                   const turnTime = formatTurnTime(
                     transcript.startMs,
                     transcript.endMs,
