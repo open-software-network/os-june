@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "run": "pnpm tauri:dev"
+  },
+  "runScriptMode": "nonconcurrent"
+}
