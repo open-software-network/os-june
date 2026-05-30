@@ -1233,25 +1233,49 @@ input:focus-visible,
 }
 
 .transcript-view {
+  /* The scroll box is clipped to its own edges, so a turn's hover bleed
+   * (margin: 0 -sp-4) would be shorn flat against the right edge. Borrow
+   * the .main-panel-body trick: pad the scroller by sp-4 and pull it back
+   * out by the same amount with a negative margin (width:auto keeps the
+   * content column at content-max). The bleed now lands inside the
+   * padding — fully rounded — while the content still aligns with the
+   * editor header above. */
+  width: auto;
   overflow: auto;
-  padding: var(--sp-2) 0 140px;
+  margin-inline: calc(-1 * var(--sp-4));
+  padding: var(--sp-2) var(--sp-4) 140px;
   font-size: var(--fs-lg);
   line-height: 1.6;
 }
 
-/* Sits above the first transcript card and shares its max-width so
- * the copy action right-aligns with the card edge. */
+/* Sits above the first transcript turn and shares its max-width so the
+ * filter/Copy align with the turn content (and the editor header). Copy
+ * hugs the right by default; the source filter (when present) takes the
+ * left, splitting the bar via :has() so we don't need a layout
+ * placeholder. */
 .transcript-toolbar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   width: 100%;
   max-width: var(--content-max);
   margin-bottom: var(--sp-2);
 }
 
-.transcript-toolbar::before {
-  content: "";
+.transcript-toolbar:has(.transcript-source-filter) {
+  justify-content: space-between;
+}
+
+/* A quieter, smaller cut of the segmented control so the source filter
+ * reads as a sub-filter rather than echoing the Notes/Transcription tabs
+ * sitting just above it. */
+.transcript-source-filter {
+  height: 28px;
+}
+
+.transcript-source-filter button {
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
 }
 
 /* "Copy entire transcript" pill — mirrors the muted-chip language
@@ -1287,48 +1311,142 @@ input:focus-visible,
   margin: 0;
 }
 
+/* Conversation turns read top-to-bottom as one transcript, so they shed
+ * the heavy card chrome in favour of the lighter dictation-row language:
+ * a source glyph, a quiet meta line, and hover-revealed per-turn copy. */
 .source-transcripts {
   display: grid;
-  gap: var(--sp-6);
-}
-
-.source-transcripts section {
-  display: grid;
-  gap: var(--sp-3);
+  gap: 2px;
   max-width: var(--content-max);
-  padding: var(--sp-5) var(--sp-6);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--card);
 }
 
-/* Squircle chips for source / timestamp metadata — modest radius
- * keeps them reading as metadata blocks rather than pills, the muted
- * fill lets them sit quietly against the white card. */
+/* Content aligns at the column edge (icon ↔ filter ↔ header); the hover
+ * background bleeds sp-4 past it on each side and lands in the scroller's
+ * matching padding, exactly like the dictation rows. */
+.transcript-turn {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  margin: 0 calc(-1 * var(--sp-4));
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.transcript-turn:hover,
+.transcript-turn:focus-within {
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.transcript-turn-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 1px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+
+.transcript-turn-body {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
 .transcript-turn-meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: baseline;
   gap: var(--sp-2);
-  align-items: center;
 }
 
-.transcript-turn-meta > span,
+.transcript-turn-source {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
 .transcript-turn-meta > time {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px var(--sp-2);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
+  font-size: var(--fs-sm);
   color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-turn-text {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* Clamp long turns until expanded; the measured "Show more" toggle below
+ * lifts the clamp in place rather than opening a dialog. */
+.transcript-turn-text:not([data-expanded]) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+  overflow: hidden;
+}
+
+.transcript-turn-more {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
   font-size: var(--fs-sm);
   font-weight: 500;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
 }
 
-.source-transcripts p {
-  margin: 0;
+.transcript-turn-more:hover {
+  color: var(--foreground);
+}
+
+.transcript-turn-copy {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.transcript-turn:hover .transcript-turn-copy,
+.transcript-turn:focus-within .transcript-turn-copy,
+.transcript-turn-copy:focus-visible,
+.transcript-turn-copy[data-copied] {
+  opacity: 1;
+}
+
+.transcript-turn-copy:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.transcript-turn-copy[data-copied] {
+  color: var(--warm-strong);
 }
 
 .source-transcript-error {
+  margin: 0;
   color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
   font-size: var(--fs-sm);
 }
@@ -4835,7 +4953,9 @@ input:focus-visible,
   align-self: center;
   border-radius: var(--r-xl);
   background: linear-gradient(135deg, #dbc1a3 0%, #9d7355 100%);
-  color: var(--primary-foreground);
+  /* Mark sits on the fixed tan gradient in both themes, so keep it white
+     rather than inheriting --primary-foreground (which inverts in dark). */
+  color: #fff;
   line-height: 0;
   margin-bottom: var(--sp-2);
 }

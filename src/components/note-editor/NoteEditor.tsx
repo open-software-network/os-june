@@ -4,6 +4,8 @@ import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
+import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
@@ -17,6 +19,7 @@ import type {
   RecordingSourceReadinessDto,
   RecordingStatusDto,
   RecoverableRecordingDto,
+  TranscriptDto,
 } from "../../lib/tauri";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -65,6 +68,20 @@ function sourceLabel(source?: string) {
   return source === "system" ? "System" : "Microphone";
 }
 
+/** Normalise a turn's source to one of the two filterable buckets — an
+ * absent source is treated as microphone, matching sourceLabel. */
+function sourceKey(source?: string): "microphone" | "system" {
+  return source === "system" ? "system" : "microphone";
+}
+
+type SourceFilter = "all" | "microphone" | "system";
+
+const SOURCE_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "microphone", label: "Microphone" },
+  { value: "system", label: "System" },
+] as const;
+
 function formatTurnTime(startMs?: number, endMs?: number) {
   if (startMs === undefined || endMs === undefined || endMs <= startMs) {
     return null;
@@ -109,6 +126,32 @@ export function NoteEditor({
   const sourceTranscripts = visibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  // The source filter is ephemeral view state — reset it when navigating
+  // to a different note so it never leaks across transcripts.
+  useEffect(() => {
+    setSourceFilter("all");
+  }, [note.id]);
+
+  // The filter only earns its place when both sources are present — a
+  // mic-only voice memo has nothing to switch between. Built on the
+  // already-pruned visible list so silent/error-only lanes don't count.
+  const hasBothSources = useMemo(() => {
+    let mic = false;
+    let system = false;
+    for (const turn of sourceTranscripts) {
+      if (sourceKey(turn.source) === "system") system = true;
+      else mic = true;
+      if (mic && system) return true;
+    }
+    return false;
+  }, [sourceTranscripts]);
+  const visibleTurns = useMemo(() => {
+    if (!hasBothSources || sourceFilter === "all") return sourceTranscripts;
+    return sourceTranscripts.filter(
+      (turn) => sourceKey(turn.source) === sourceFilter,
+    );
+  }, [sourceTranscripts, hasBothSources, sourceFilter]);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemSource = sourceReadiness?.sources.find(
     (source) => source.source === "system",
@@ -192,31 +235,29 @@ export function NoteEditor({
           <div className="transcript-view">
             {transcriptToText(note) ? (
               <div className="transcript-toolbar">
-                <CopyTranscriptButton text={transcriptToText(note)} />
+                {hasBothSources ? (
+                  <SegmentedControl
+                    className="transcript-source-filter"
+                    aria-label="Filter transcript by source"
+                    value={sourceFilter}
+                    options={SOURCE_FILTERS}
+                    onValueChange={setSourceFilter}
+                  />
+                ) : null}
+                <CopyTranscriptButton
+                  text={
+                    visibleTurns.length
+                      ? turnsToText(visibleTurns)
+                      : transcriptToText(note)
+                  }
+                />
               </div>
             ) : null}
-            {sourceTranscripts.length ? (
+            {visibleTurns.length ? (
               <div className="source-transcripts">
-                {sourceTranscripts.map((transcript) => {
-                  const turnTime = formatTurnTime(
-                    transcript.startMs,
-                    transcript.endMs,
-                  );
-                  return (
-                    <section className="transcript-turn" key={transcript.id}>
-                      <div className="transcript-turn-meta">
-                        <span>{sourceLabel(transcript.source)}</span>
-                        {turnTime ? <time>{turnTime}</time> : null}
-                      </div>
-                      <p>{transcript.text}</p>
-                      {transcript.lastError ? (
-                        <p className="source-transcript-error">
-                          {userFacingFailureMessage(transcript.lastError)}
-                        </p>
-                      ) : null}
-                    </section>
-                  );
-                })}
+                {visibleTurns.map((transcript) => (
+                  <TranscriptTurn key={transcript.id} transcript={transcript} />
+                ))}
               </div>
             ) : note.transcript?.text ? (
               <p>{note.transcript.text}</p>
@@ -569,17 +610,21 @@ function processingMessage(status: NoteDto["processingStatus"]): string | null {
   }
 }
 
+function turnsToText(turns: TranscriptDto[]): string {
+  return turns
+    .filter((turn) => turn.text.trim())
+    .map((turn) => {
+      const meta = formatTurnTime(turn.startMs, turn.endMs)
+        ? `${sourceLabel(turn.source)} ${formatTurnTime(turn.startMs, turn.endMs)}`
+        : sourceLabel(turn.source);
+      return `${meta}\n${turn.text}`;
+    })
+    .join("\n\n");
+}
+
 function transcriptToText(note: NoteDto): string {
   if (note.sourceTranscripts?.length) {
-    return note.sourceTranscripts
-      .filter((turn) => turn.text.trim())
-      .map((turn) => {
-        const meta = formatTurnTime(turn.startMs, turn.endMs)
-          ? `${sourceLabel(turn.source)} ${formatTurnTime(turn.startMs, turn.endMs)}`
-          : sourceLabel(turn.source);
-        return `${meta}\n${turn.text}`;
-      })
-      .join("\n\n");
+    return turnsToText(note.sourceTranscripts);
   }
   return note.transcript?.text ?? "";
 }
@@ -591,6 +636,114 @@ function visibleSourceTranscripts(
     if (turn.text.trim()) return true;
     return note.processingStatus !== "failed" && !!turn.lastError;
   });
+}
+
+/** A single conversation turn in the Transcription tab. Mirrors the dictation
+ * history row language: a source glyph, a light meta line, and the transcript
+ * text — copy reveals on hover, long turns clamp to a "Show more" toggle. */
+function TranscriptTurn({ transcript }: { transcript: TranscriptDto }) {
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [clamped, setClamped] = useState(false);
+
+  const isSystem = transcript.source === "system";
+  const turnTime = formatTurnTime(transcript.startMs, transcript.endMs);
+  const hasText = transcript.text.trim().length > 0;
+  // Every turn is copyable — a turn where nothing was said still carries
+  // its error ("No speech detected…"), which is worth being able to grab.
+  // The error is run through userFacingFailureMessage so raw provider codes
+  // never reach the clipboard (or the card below).
+  const errorMessage = userFacingFailureMessage(transcript.lastError) ?? "";
+  const copyValue = hasText ? transcript.text : errorMessage;
+  const canCopy = copyValue.trim().length > 0;
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  // Measure whether the collapsed text overflows its line clamp so the
+  // "Show more" toggle only appears when there's hidden content.
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el || expanded) return;
+    const measure = () => setClamped(el.scrollHeight - el.clientHeight > 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [transcript.text, expanded]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(copyValue);
+      setCopied(true);
+    } catch {
+      // Clipboard can fail in restricted contexts; stay silent.
+    }
+  }
+
+  return (
+    <article
+      className="transcript-turn"
+      data-source={isSystem ? "system" : "microphone"}
+    >
+      <span className="transcript-turn-icon" aria-hidden>
+        {isSystem ? (
+          <IconVolumeFull size={14} />
+        ) : (
+          <IconMicrophoneLine size={14} />
+        )}
+      </span>
+      <div className="transcript-turn-body">
+        <div className="transcript-turn-meta">
+          <span className="transcript-turn-source">
+            {sourceLabel(transcript.source)}
+          </span>
+          {turnTime ? <time>{turnTime}</time> : null}
+        </div>
+        {hasText ? (
+          <p
+            ref={textRef}
+            className="transcript-turn-text"
+            data-expanded={expanded || undefined}
+          >
+            {transcript.text}
+          </p>
+        ) : null}
+        {clamped || expanded ? (
+          <button
+            type="button"
+            className="transcript-turn-more"
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        ) : null}
+        {errorMessage ? (
+          <p className="source-transcript-error">{errorMessage}</p>
+        ) : null}
+      </div>
+      {canCopy ? (
+        <button
+          type="button"
+          className="transcript-turn-copy"
+          data-copied={copied || undefined}
+          aria-label={copied ? "Copied" : "Copy turn"}
+          title={copied ? "Copied" : "Copy"}
+          onClick={() => void handleCopy()}
+        >
+          {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
+        </button>
+      ) : null}
+    </article>
+  );
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {
