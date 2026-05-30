@@ -601,3 +601,54 @@ async fn get_note_returns_only_timed_source_transcript_rows() {
     assert_eq!(loaded.source_transcripts.len(), 1);
     assert_eq!(loaded.source_transcripts[0].text, "Timed source transcript");
 }
+
+#[tokio::test]
+async fn get_note_returns_failed_source_transcript_reason() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let session_id = "session-1";
+    repos
+        .create_recording_session(
+            &note.id,
+            session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "/tmp/system.partial.wav",
+            "/tmp/system.wav",
+            None,
+        )
+        .await
+        .expect("session");
+    let audio = repos
+        .create_audio_artifact(&note.id, session_id, "/tmp/system.wav", 1200, 2048, "abc")
+        .await
+        .expect("artifact");
+
+    repos
+        .create_failed_source_transcript(
+            &note.id,
+            session_id,
+            &audio.id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "venice",
+            "System source was silent.",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("failed source transcript");
+
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+
+    assert_eq!(loaded.source_transcripts.len(), 1);
+    assert_eq!(
+        loaded.source_transcripts[0].source.as_deref(),
+        Some("system")
+    );
+    assert_eq!(loaded.source_transcripts[0].status, "failed");
+    assert_eq!(
+        loaded.source_transcripts[0].last_error.as_deref(),
+        Some("System source was silent.")
+    );
+}
