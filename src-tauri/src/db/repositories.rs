@@ -1332,6 +1332,57 @@ impl Repositories {
         Ok(transcript)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_failed_source_transcript(
+        &self,
+        note_id: &str,
+        session_id: &str,
+        audio_artifact_id: &str,
+        source_mode: RecordingSourceMode,
+        source: &str,
+        provider: &str,
+        last_error: &str,
+        start_ms: Option<i64>,
+        end_ms: Option<i64>,
+        turn_index: Option<i64>,
+    ) -> Result<TranscriptDto, sqlx::Error> {
+        let transcript = TranscriptDto {
+            id: Uuid::new_v4().to_string(),
+            text: String::new(),
+            source_mode: Some(source_mode),
+            source: Some(source.to_string()),
+            start_ms,
+            end_ms,
+            turn_index,
+            language: None,
+            status: "failed".to_string(),
+            last_error: Some(last_error.to_string()),
+        };
+        let now = timestamp();
+        sqlx::query(
+            "INSERT INTO transcripts
+             (id, note_id, recording_session_id, audio_artifact_id, source_artifact_id, source, source_mode, text, start_ms, end_ms, turn_index, language, provider, status, retry_count, last_error, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, NULL, ?, 'failed', 0, ?, ?, ?)",
+        )
+        .bind(&transcript.id)
+        .bind(note_id)
+        .bind(session_id)
+        .bind(audio_artifact_id)
+        .bind(audio_artifact_id)
+        .bind(source)
+        .bind(source_mode.as_db())
+        .bind(start_ms)
+        .bind(end_ms)
+        .bind(turn_index)
+        .bind(provider)
+        .bind(last_error)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(transcript)
+    }
+
     pub async fn create_generation_result(
         &self,
         note_id: &str,

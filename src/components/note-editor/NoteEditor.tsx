@@ -22,7 +22,10 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
-import { NoteFailureBanner } from "./NoteFailureBanner";
+import {
+  NoteFailureBanner,
+  userFacingFailureMessage,
+} from "./NoteFailureBanner";
 import { NotePreview } from "./NotePreview";
 
 type NoteEditorProps = {
@@ -103,6 +106,7 @@ export function NoteEditor({
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
+  const sourceTranscripts = visibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
   const [optionsOpen, setOptionsOpen] = useState(false);
   const systemOn = sourceMode === "microphonePlusSystem";
@@ -191,9 +195,9 @@ export function NoteEditor({
                 <CopyTranscriptButton text={transcriptToText(note)} />
               </div>
             ) : null}
-            {note.sourceTranscripts?.length ? (
+            {sourceTranscripts.length ? (
               <div className="source-transcripts">
-                {note.sourceTranscripts.map((transcript) => {
+                {sourceTranscripts.map((transcript) => {
                   const turnTime = formatTurnTime(
                     transcript.startMs,
                     transcript.endMs,
@@ -207,7 +211,7 @@ export function NoteEditor({
                       <p>{transcript.text}</p>
                       {transcript.lastError ? (
                         <p className="source-transcript-error">
-                          {transcript.lastError}
+                          {userFacingFailureMessage(transcript.lastError)}
                         </p>
                       ) : null}
                     </section>
@@ -568,6 +572,7 @@ function processingMessage(status: NoteDto["processingStatus"]): string | null {
 function transcriptToText(note: NoteDto): string {
   if (note.sourceTranscripts?.length) {
     return note.sourceTranscripts
+      .filter((turn) => turn.text.trim())
       .map((turn) => {
         const meta = formatTurnTime(turn.startMs, turn.endMs)
           ? `${sourceLabel(turn.source)} ${formatTurnTime(turn.startMs, turn.endMs)}`
@@ -577,6 +582,15 @@ function transcriptToText(note: NoteDto): string {
       .join("\n\n");
   }
   return note.transcript?.text ?? "";
+}
+
+function visibleSourceTranscripts(
+  note: NoteDto,
+): NonNullable<NoteDto["sourceTranscripts"]> {
+  return (note.sourceTranscripts ?? []).filter((turn) => {
+    if (turn.text.trim()) return true;
+    return note.processingStatus !== "failed" && !!turn.lastError;
+  });
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {

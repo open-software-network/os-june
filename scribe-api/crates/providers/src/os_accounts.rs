@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
+// OS Accounts returns this when a charge is replayed with the same
+// idempotency key. It means the note was already settled, so it is a
+// success signal — not a failure. Surface it as an idempotent replay so a
+// retry of an already-charged note returns its transcript instead of 502ing.
+const ERR_IDEMPOTENCY_KEY_COLLISION: i64 = 4001;
 const CHARGE_RETRY_ATTEMPTS: u32 = 2;
 const CHARGE_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 
@@ -151,6 +156,28 @@ impl OsAccountsHttpClient {
         if envelope.error_code == Some(ERR_INSUFFICIENT_CREDITS) {
             tracing::warn!(%url, body = %raw, "os_accounts: charge denied — insufficient credits");
             return Err(ChargeError::Domain(DomainError::InsufficientCredits));
+        }
+        if envelope.error_code == Some(ERR_IDEMPOTENCY_KEY_COLLISION) {
+            // The note was already charged under this key (e.g. an earlier
+            // attempt settled before a transient failure). Treat it as an
+            // idempotent replay: the user already paid, so return success and
+            // let the transcript through rather than failing the whole call.
+            //
+            // The 4001 reply carries `data: null`, so we cannot recover the
+            // amount actually settled — we report this request's `credits` as
+            // an approximation. Logged at WARN so any discrepancy between this
+            // value and the original settlement is visible to accounting/audit.
+            tracing::warn!(
+                %url,
+                body = %raw,
+                reported_credits = body.credits,
+                "os_accounts: charge replayed — idempotency key already settled; \
+                 credits_charged reflects the requested estimate, not the settled amount"
+            );
+            return Ok(Receipt {
+                credits_charged: Credits(body.credits),
+                idempotent_replay: true,
+            });
         }
         tracing::error!(%status, %url, body = %raw, "os_accounts: charge denied");
         Err(ChargeError::Domain(DomainError::UpstreamProvider))
@@ -395,6 +422,37 @@ mod tests {
             .await;
 
         assert_eq!(receipt.map(|value| value.idempotent_replay), Ok(true));
+    }
+
+    #[tokio::test]
+    async fn charge_treats_idempotency_collision_as_replay() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/charge"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "data": null,
+                "success": false,
+                "error_code": 4001,
+                "message": "idempotency_key_collision",
+            })))
+            .mount(&server)
+            .await;
+        let client = OsAccountsHttpClient::new(http::default_client(), &server.uri(), "osk_test");
+
+        let receipt = client
+            .charge(ChargeRequest {
+                action_token: "agts_test".to_string(),
+                credits: Credits(7),
+                idempotency_key: "note_transcribe:usr_123:turn-0".to_string(),
+            })
+            .await;
+
+        // Already settled under this key → success, surfaced as an idempotent
+        // replay carrying the attempted amount.
+        assert_eq!(
+            receipt.map(|value| (value.credits_charged.0, value.idempotent_replay)),
+            Ok((7, true))
+        );
     }
 
     #[tokio::test]

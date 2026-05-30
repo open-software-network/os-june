@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "co.opensoftware.scribe",
   "build": {
-    "beforeDevCommand": "pnpm run dev",
+    "beforeDevCommand": "./scripts/tauri-before-dev.sh",
     "beforeBuildCommand": "pnpm run build",
     "devUrl": "http://127.0.0.1:1421",
     "frontendDist": "../dist"

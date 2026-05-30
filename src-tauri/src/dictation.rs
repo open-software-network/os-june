@@ -1439,9 +1439,24 @@ fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     normalized.starts_with("sure")
         || normalized.starts_with("here")
+        || normalized.starts_with("the transcript ")
+        || normalized.starts_with("the user expresses")
+        || normalized.starts_with("the user did")
+        || normalized.starts_with("the user asks")
         || normalized.starts_with("i can")
         || normalized.starts_with("i'll")
         || normalized.starts_with("i will")
+        || normalized.contains(" the transcript ")
+        || normalized.contains(" the user expresses")
+        || normalized.contains(" the user did")
+        || normalized.contains(" the user asks")
+        || normalized.contains(" did not ask ")
+        || normalized.contains(" only shared ")
+        || normalized.contains(" writing style ")
+        || normalized.contains(" tone is ")
+        || normalized.contains(" filler sounds ")
+        || normalized.contains(" custom terms ")
+        || normalized.contains(" spelled correctly ")
         || normalized.contains("rewritten text")
         || normalized.contains("normalized transcript")
 }
@@ -2366,7 +2381,21 @@ mod tests {
         assert!(looks_like_instruction_response(
             "Here is the normalized transcript: Hello."
         ));
+        assert!(looks_like_instruction_response(
+            "The transcript ends here without additional context. The user did not ask a question or give an instruction."
+        ));
+        assert!(looks_like_instruction_response(
+            "the user expresses passion for solving an issue related to dictation layout."
+        ));
         assert!(!looks_like_instruction_response("Hello, \"testing\"."));
+        // Legitimate dictated speech beginning with "user" must survive — the
+        // meta-commentary filter keys off specific verb phrases, not the prefix.
+        assert!(!looks_like_instruction_response(
+            "User authentication flow needs a retry button."
+        ));
+        assert!(!looks_like_instruction_response(
+            "The user story for this sprint covers the dictation page."
+        ));
     }
 
     #[test]

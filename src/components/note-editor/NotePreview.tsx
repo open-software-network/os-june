@@ -25,6 +25,10 @@ export function NotePreview({
   const wrapRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<{ x: number; y: number } | null>(null);
   const initialHtml = useMemo(() => markdownToHtml(markdown), [noteId]);
+  const focusedExternalMarkdown = useRef<{
+    editorMarkdown: string;
+    externalMarkdown: string;
+  } | null>(null);
 
   const editor = useEditor(
     {
@@ -54,7 +58,13 @@ export function NotePreview({
         // useEditor dep list tears the editor down on note change, so
         // this closure always reflects the note the editor was bound
         // to, even when blur fires during teardown.
-        onChange(noteId, htmlToMarkdown(editor.view.dom));
+        const editorMarkdown = htmlToMarkdown(editor.view.dom);
+        const mergedMarkdown = mergeFocusedExternalMarkdown(
+          editorMarkdown,
+          focusedExternalMarkdown.current,
+        );
+        focusedExternalMarkdown.current = null;
+        onChange(noteId, mergedMarkdown);
       },
     },
     [noteId],
@@ -90,10 +100,17 @@ export function NotePreview({
   // an isDestroyed check so we never touch a torn-down view during
   // note-switch unmounts.
   useEffect(() => {
-    if (!editor || editor.isDestroyed || editor.isFocused) return;
+    if (!editor || editor.isDestroyed) return;
     try {
       const current = htmlToMarkdown(editor.view.dom).trim();
       if (current === markdown.trim()) return;
+      if (editor.isFocused) {
+        focusedExternalMarkdown.current = {
+          editorMarkdown: htmlToMarkdown(editor.view.dom),
+          externalMarkdown: markdown,
+        };
+        return;
+      }
       editor.commands.setContent(markdownToHtml(markdown), {
         emitUpdate: false,
       });
@@ -161,6 +178,40 @@ export function NotePreview({
       ) : null}
     </div>
   );
+}
+
+function mergeFocusedExternalMarkdown(
+  editorMarkdown: string,
+  pending: { editorMarkdown: string; externalMarkdown: string } | null,
+) {
+  if (!pending) return editorMarkdown;
+  if (editorMarkdown.trim() === pending.externalMarkdown.trim()) {
+    return editorMarkdown;
+  }
+
+  const base = pending.editorMarkdown.trim();
+  const external = pending.externalMarkdown.trim();
+  if (!external) return editorMarkdown;
+  if (!base) {
+    return editorMarkdown.trim()
+      ? appendMarkdown(editorMarkdown, external)
+      : pending.externalMarkdown;
+  }
+  if (!external.startsWith(base)) return editorMarkdown;
+
+  const appended = external.slice(base.length).trim();
+  if (!appended || editorMarkdown.trimEnd().endsWith(appended)) {
+    return editorMarkdown;
+  }
+  return appendMarkdown(editorMarkdown, appended);
+}
+
+function appendMarkdown(existing: string, addition: string) {
+  const existingTrimmed = existing.trimEnd();
+  const additionTrimmed = addition.trim();
+  if (!existingTrimmed) return additionTrimmed;
+  if (!additionTrimmed) return existingTrimmed;
+  return `${existingTrimmed}\n\n${additionTrimmed}`;
 }
 
 function getToolbarPosition(editor: Editor | null) {

@@ -197,13 +197,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn authorization_denial_maps_to_insufficient_credits() {
-        let os_accounts = Arc::new(RecordingOsAccounts {
-            allow: false,
-            ..RecordingOsAccounts::default()
-        });
-        let service = NoteGenerateService::new(NoteGenerateServiceDeps {
+    fn note_generate_service(os_accounts: Arc<RecordingOsAccounts>) -> NoteGenerateService {
+        NoteGenerateService::new(NoteGenerateServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(
                 "text-model",
                 PriceUnit::Tokens,
@@ -214,23 +209,51 @@ mod tests {
             generator: Arc::new(FixedGenerator),
             hold_ttl_seconds: 300,
             flat_estimate_credits: 1024,
-        });
+        })
+    }
 
-        let result = service
-            .generate(NoteGenerateParams {
-                user_id: UserId("usr_123".to_string()),
-                note_id: "note_1".to_string(),
-                prompt_version: "v7".to_string(),
-                title: "Title".to_string(),
-                transcript: "Transcript".to_string(),
-                manual_notes: None,
-                language: None,
-                existing_generated_note: None,
-                model_id: ModelId("text-model".to_string()),
-            })
-            .await;
+    fn note_generate_params() -> NoteGenerateParams {
+        NoteGenerateParams {
+            user_id: UserId("usr_123".to_string()),
+            note_id: "note_1".to_string(),
+            prompt_version: "v7".to_string(),
+            title: "Title".to_string(),
+            transcript: "Transcript".to_string(),
+            manual_notes: None,
+            language: None,
+            existing_generated_note: None,
+            model_id: ModelId("text-model".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn balance_denial_maps_to_insufficient_credits() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            allow: false,
+            deny_reason: Some("insufficient_available_balance".to_string()),
+            ..RecordingOsAccounts::default()
+        });
+        let service = note_generate_service(os_accounts);
+
+        let result = service.generate(note_generate_params()).await;
 
         assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+    }
+
+    #[tokio::test]
+    async fn transient_denial_does_not_map_to_insufficient_credits() {
+        // A user with funds who hits a concurrency cap must NOT be told to add
+        // funds — it surfaces as a transient authorization denial instead.
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            allow: false,
+            deny_reason: Some("concurrency_cap_exceeded".to_string()),
+            ..RecordingOsAccounts::default()
+        });
+        let service = note_generate_service(os_accounts);
+
+        let result = service.generate(note_generate_params()).await;
+
+        assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
     }
 
     async fn wait_for_charge_idempotency_key(os_accounts: &RecordingOsAccounts) -> Option<String> {
@@ -290,6 +313,7 @@ mod tests {
     struct RecordingOsAccounts {
         allow: bool,
         cap: Option<u64>,
+        deny_reason: Option<String>,
         events: Mutex<Vec<RecordedCall>>,
     }
 
@@ -298,6 +322,7 @@ mod tests {
             Self {
                 allow: true,
                 cap: None,
+                deny_reason: None,
                 events: Mutex::new(Vec::new()),
             }
         }
@@ -308,6 +333,7 @@ mod tests {
             Self {
                 allow: true,
                 cap,
+                deny_reason: None,
                 events: Mutex::new(Vec::new()),
             }
         }
@@ -335,7 +361,7 @@ mod tests {
                 allowed: self.allow,
                 action_token: self.allow.then(|| "agt_test".to_string()),
                 cap_credits: self.cap.map(Credits),
-                reason: None,
+                reason: self.deny_reason.clone(),
             })
         }
 

@@ -1,6 +1,7 @@
 use crate::{
     audio::turns::{
-        coalesce_turns_for_transcription, detect_turns, write_turn_wav, DetectionSource,
+        coalesce_turns_for_transcription, detect_turns, normalize_wav_for_transcription,
+        write_turn_wav, DetectionSource,
     },
     db::repositories::Repositories,
     domain::types::{AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode},
@@ -201,12 +202,20 @@ pub async fn process_saved_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
+    let temp_dir = std::env::temp_dir().join(format!("os-scribe-transcription-{session_id}"));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    let normalized_audio_path = normalize_wav_for_transcription(
+        &audio_path,
+        &temp_dir.join(format!("{audio_artifact_id}-normalized.wav")),
+    )?;
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let transcript = match transcribe_saved_audio(TranscriptionRequest {
         provider: transcription_provider.clone(),
-        audio_path,
+        audio_path: normalized_audio_path,
         title: title.clone(),
         context: dictionary_context.clone(),
         operation_id: Some(note_id.to_string()),
@@ -225,6 +234,7 @@ pub async fn process_saved_audio(
             return Err(error);
         }
     };
+    let _ = std::fs::remove_dir_all(&temp_dir);
     let transcript = maybe_post_process_note_transcript(
         &transcription_provider,
         transcript,
@@ -306,6 +316,12 @@ pub async fn process_saved_source_audio(
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let mut first_transcript_id = None;
+    // Drop a silent system-audio track up front (nothing was playing through the
+    // speakers). This avoids a wasted provider round-trip and, more importantly,
+    // the OS Accounts authorization Hold that round-trip would open and leave to
+    // expire. Never strip the sole source — a system-only capture of silence
+    // should still surface its "no speech" failure.
+    let sources = drop_silent_system_sources(sources);
     let turns = detect_turns(
         &sources
             .iter()
@@ -346,22 +362,39 @@ pub async fn process_saved_source_audio(
             "{:04}-{}-{}-{}.wav",
             turn.turn_index, turn.source, turn.start_ms, turn.end_ms
         ));
-        let audio_path = if turn.end_ms > turn.start_ms {
+        let source_audio_path = normalize_wav_for_transcription(
+            &turn.source_path,
+            &segment_dir.join(format!(
+                "{:04}-{}-source-normalized.wav",
+                turn.turn_index, turn.source
+            )),
+        )?;
+        let covers_full_source = turn.end_ms <= turn.start_ms;
+        let raw_audio_path = if covers_full_source {
+            turn.source_path.clone()
+        } else {
             write_turn_wav(&turn, &segment_path)?;
             segment_path.clone()
-        } else {
-            turn.source_path.clone()
         };
+        let audio_path = normalize_wav_for_transcription(
+            &raw_audio_path,
+            &segment_dir.join(format!(
+                "{:04}-{}-{}-{}-normalized.wav",
+                turn.turn_index, turn.source, turn.start_ms, turn.end_ms
+            )),
+        )?;
         transcription_jobs.push(TurnTranscriptionJob {
             artifact_id: turn.artifact_id,
             source: turn.source,
             audio_path,
+            source_path: source_audio_path,
+            covers_full_source,
             start_ms: turn.start_ms,
             end_ms: turn.end_ms,
             turn_index: turn.turn_index,
         });
     }
-    let transcript_candidates = transcribe_turn_jobs_by_source_lane(
+    let transcription_outcome = transcribe_turn_jobs_by_source_lane(
         transcription_jobs,
         transcription_provider.clone(),
         title.clone(),
@@ -371,7 +404,43 @@ pub async fn process_saved_source_audio(
     .await?;
     let _ = std::fs::remove_dir_all(&segment_dir);
 
-    let transcript_candidates = coalesce_transcript_candidates(transcript_candidates);
+    // A silent system-audio track is expected whenever the user is only
+    // speaking into the mic (nothing is playing through the speakers). Once
+    // some source produced a usable transcript, don't persist that silence as
+    // a per-source error — it renders as a spurious "System: No speech
+    // detected" card even though the note succeeded. The all-sources-failed
+    // case still reports through `source_failure_summary` below.
+    let has_valid_transcript = !transcription_outcome.candidates.is_empty();
+    for failure in &transcription_outcome.failures {
+        let warning = failure
+            .input
+            .warning
+            .as_deref()
+            .unwrap_or("Source did not produce a usable transcript.");
+        if !should_record_source_failure(
+            failure.input.source.as_str(),
+            warning,
+            has_valid_transcript,
+        ) {
+            continue;
+        }
+        repos
+            .create_failed_source_transcript(
+                note_id,
+                session_id,
+                failure.artifact_id.as_str(),
+                source_mode,
+                failure.input.source.as_str(),
+                &transcription_provider,
+                warning,
+                failure.input.start_ms,
+                failure.input.end_ms,
+                failure.input.turn_index,
+            )
+            .await?;
+    }
+
+    let transcript_candidates = coalesce_transcript_candidates(transcription_outcome.candidates);
     let transcript_inputs = transcript_candidates
         .iter()
         .map(|candidate| candidate.input.clone())
@@ -399,17 +468,16 @@ pub async fn process_saved_source_audio(
 
     let valid_sources = valid_sources_for_processing(transcript_inputs);
     if valid_sources.is_empty() {
+        let failure_message = source_failure_summary(&transcription_outcome.failures)
+            .unwrap_or_else(|| "No selected source produced a usable transcript.".to_string());
         repos
             .set_note_status(
                 note_id,
                 ProcessingStatus::Failed,
-                Some("No selected source produced a usable transcript.".to_string()),
+                Some(failure_message.clone()),
             )
             .await?;
-        return Err(AppError::new(
-            "transcription_failed",
-            "No selected source produced a usable transcript.",
-        ));
+        return Err(AppError::new("transcription_failed", failure_message));
     }
     let labeled_transcript = labeled_transcript_from_sources(&valid_sources);
     repos
@@ -516,10 +584,24 @@ struct TranscriptCandidate {
 }
 
 #[derive(Debug, Clone)]
+struct FailedTranscriptCandidate {
+    artifact_id: String,
+    input: SourceTranscriptInput,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TranscriptionOutcome {
+    candidates: Vec<TranscriptCandidate>,
+    failures: Vec<FailedTranscriptCandidate>,
+}
+
+#[derive(Debug, Clone)]
 struct TurnTranscriptionJob {
     artifact_id: String,
     source: String,
     audio_path: PathBuf,
+    source_path: PathBuf,
+    covers_full_source: bool,
     start_ms: i64,
     end_ms: i64,
     turn_index: i64,
@@ -539,7 +621,7 @@ async fn transcribe_turn_jobs_by_source_lane(
     title: String,
     dictionary_context: Option<String>,
     transcriber: TurnTranscriber,
-) -> Result<Vec<TranscriptCandidate>, AppError> {
+) -> Result<TranscriptionOutcome, AppError> {
     let mut lanes: Vec<(String, Vec<TurnTranscriptionJob>)> = Vec::new();
     for job in jobs {
         if let Some((_, lane_jobs)) = lanes
@@ -564,13 +646,14 @@ async fn transcribe_turn_jobs_by_source_lane(
         });
     }
 
-    let mut candidates = Vec::new();
+    let mut outcome = TranscriptionOutcome::default();
     while let Some(result) = join_set.join_next().await {
-        let mut lane_candidates =
+        let mut lane_outcome =
             result.map_err(|error| AppError::new("transcription_failed", error.to_string()))??;
-        candidates.append(&mut lane_candidates);
+        outcome.candidates.append(&mut lane_outcome.candidates);
+        outcome.failures.append(&mut lane_outcome.failures);
     }
-    candidates.sort_by(|left, right| {
+    outcome.candidates.sort_by(|left, right| {
         left.input
             .turn_index
             .unwrap_or(i64::MAX)
@@ -582,7 +665,19 @@ async fn transcribe_turn_jobs_by_source_lane(
                     .cmp(&right.input.start_ms.unwrap_or(i64::MAX))
             })
     });
-    Ok(candidates)
+    outcome.failures.sort_by(|left, right| {
+        left.input
+            .turn_index
+            .unwrap_or(i64::MAX)
+            .cmp(&right.input.turn_index.unwrap_or(i64::MAX))
+            .then_with(|| {
+                left.input
+                    .start_ms
+                    .unwrap_or(i64::MAX)
+                    .cmp(&right.input.start_ms.unwrap_or(i64::MAX))
+            })
+    });
+    Ok(outcome)
 }
 
 async fn transcribe_source_lane(
@@ -591,9 +686,10 @@ async fn transcribe_source_lane(
     title: String,
     dictionary_context: Option<String>,
     transcriber: TurnTranscriber,
-) -> Result<Vec<TranscriptCandidate>, AppError> {
+) -> Result<TranscriptionOutcome, AppError> {
+    let fallback_job = full_source_fallback_job(&jobs);
     let mut transcript_inputs = Vec::new();
-    let mut transcript_candidates = Vec::new();
+    let mut outcome = TranscriptionOutcome::default();
     for job in jobs {
         let context = merge_transcription_context(
             dictionary_context.as_deref(),
@@ -610,14 +706,21 @@ async fn transcribe_source_lane(
         {
             Ok(transcript) => transcript,
             Err(error) => {
-                transcript_inputs.push(SourceTranscriptInput {
+                let warning =
+                    user_facing_transcription_failure_message(&error.code, &error.message);
+                let input = SourceTranscriptInput {
                     source: job.source,
                     text: String::new(),
                     valid: false,
-                    warning: Some(error.message),
+                    warning: Some(warning),
                     start_ms: Some(job.start_ms),
                     end_ms: Some(job.end_ms),
                     turn_index: Some(job.turn_index),
+                };
+                transcript_inputs.push(input.clone());
+                outcome.failures.push(FailedTranscriptCandidate {
+                    artifact_id: job.artifact_id,
+                    input,
                 });
                 continue;
             }
@@ -634,14 +737,66 @@ async fn transcribe_source_lane(
             turn_index: Some(job.turn_index),
         };
         transcript_inputs.push(input.clone());
-        transcript_candidates.push(TranscriptCandidate {
+        outcome.candidates.push(TranscriptCandidate {
             artifact_id: job.artifact_id,
             language: transcript.language,
             provider: transcript.provider,
             input,
         });
     }
-    Ok(transcript_candidates)
+    if outcome.candidates.is_empty() {
+        if let Some(job) = fallback_job {
+            let context = merge_transcription_context(dictionary_context.as_deref(), None);
+            if let Ok(transcript) = transcriber(TranscriptionRequest {
+                provider: provider.clone(),
+                audio_path: job.audio_path,
+                title,
+                context: context.clone(),
+                operation_id: Some(format!("source-{}", job.source)),
+            })
+            .await
+            {
+                let transcript =
+                    maybe_post_process_note_transcript(&provider, transcript, context.as_deref())
+                        .await;
+                if !transcript.text.trim().is_empty() {
+                    outcome.failures.clear();
+                    outcome.candidates.push(TranscriptCandidate {
+                        artifact_id: job.artifact_id,
+                        language: transcript.language,
+                        provider: transcript.provider,
+                        input: SourceTranscriptInput {
+                            source: job.source,
+                            text: transcript.text,
+                            valid: true,
+                            warning: None,
+                            start_ms: Some(job.start_ms),
+                            end_ms: Some(job.end_ms),
+                            turn_index: Some(job.turn_index),
+                        },
+                    });
+                }
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscriptionJob> {
+    let first = jobs.first()?;
+    if jobs.iter().all(|job| job.covers_full_source) {
+        return None;
+    }
+    Some(TurnTranscriptionJob {
+        artifact_id: first.artifact_id.clone(),
+        source: first.source.clone(),
+        audio_path: first.source_path.clone(),
+        source_path: first.source_path.clone(),
+        covers_full_source: true,
+        start_ms: 0,
+        end_ms: jobs.iter().map(|job| job.end_ms).max().unwrap_or(0),
+        turn_index: first.turn_index,
+    })
 }
 
 fn coalesce_transcript_candidates(
@@ -668,6 +823,113 @@ fn coalesce_transcript_candidates(
         candidate.input.turn_index = Some(index as i64);
     }
     coalesced
+}
+
+fn source_failure_summary(failures: &[FailedTranscriptCandidate]) -> Option<String> {
+    let mut by_source: Vec<(&str, Vec<&str>)> = Vec::new();
+    let has_microphone_failure = failures
+        .iter()
+        .any(|failure| failure.input.source.as_str() == "microphone");
+    for failure in failures {
+        let source = failure.input.source.as_str();
+        let message = failure
+            .input
+            .warning
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Source did not produce a usable transcript.");
+        if has_microphone_failure && source == "system" && is_no_speech_message(message) {
+            continue;
+        }
+        if let Some((_, messages)) = by_source
+            .iter_mut()
+            .find(|(existing_source, _)| *existing_source == source)
+        {
+            if !messages.contains(&message) {
+                messages.push(message);
+            }
+        } else {
+            by_source.push((source, vec![message]));
+        }
+    }
+    if by_source.is_empty() {
+        return None;
+    }
+    Some(
+        by_source
+            .into_iter()
+            .map(|(source, messages)| {
+                let label = match source {
+                    "system" => "System",
+                    _ => "Microphone",
+                };
+                format!("{label}: {}", messages.join("; "))
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    )
+}
+
+/// Remove system-audio sources whose track is effectively silent, but only when
+/// another source remains to carry the recording. Keeping the last source — even
+/// a silent one — preserves the "no speech" failure for system-only captures.
+fn drop_silent_system_sources(
+    sources: Vec<(String, String, PathBuf)>,
+) -> Vec<(String, String, PathBuf)> {
+    let has_other_source = sources
+        .iter()
+        .any(|(_, source, _)| source.as_str() != "system");
+    if !has_other_source {
+        return sources;
+    }
+    sources
+        .into_iter()
+        .filter(|(_, source, path)| {
+            let silent = source.as_str() == "system"
+                && crate::audio::turns::source_is_effectively_silent(path);
+            if silent {
+                tracing::info!(
+                    %source,
+                    path = %path.display(),
+                    "skipping silent system source — no transcribable audio"
+                );
+            }
+            !silent
+        })
+        .collect()
+}
+
+/// Whether a failed source should be persisted as a visible per-source error.
+/// A silent system-audio track (no_speech) is expected when the user only
+/// speaks into the mic, so we drop it once any source produced a usable
+/// transcript. Everything else — including system failures that aren't
+/// no_speech, and the all-sources-failed case — is still recorded.
+fn should_record_source_failure(source: &str, warning: &str, has_valid_transcript: bool) -> bool {
+    !(has_valid_transcript && source == "system" && is_no_speech_message(warning))
+}
+
+fn is_no_speech_message(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized == "no_speech" || normalized.contains("no speech detected")
+}
+
+fn user_facing_transcription_failure_message(code: &str, message: &str) -> String {
+    let normalized_code = code.trim().to_ascii_lowercase();
+    let normalized_message = message.trim().to_ascii_lowercase();
+    if normalized_code == "no_speech"
+        || normalized_message == "no_speech"
+        || normalized_message.contains("no speech")
+    {
+        return "No speech detected. Try speaking louder or moving closer to the microphone."
+            .to_string();
+    }
+    if normalized_message.contains("upstream_provider_failed")
+        || normalized_code.contains("upstream")
+    {
+        return "The transcription provider could not process this audio.".to_string();
+    }
+    message.trim().to_string()
 }
 
 fn ordered_source_transcripts(
@@ -827,13 +1089,13 @@ mod tests {
             }) as TurnTranscriber
         };
 
-        let candidates = transcribe_turn_jobs_by_source_lane(
+        let outcome = transcribe_turn_jobs_by_source_lane(
             vec![
                 test_job("m0", "microphone", 0),
                 test_job("s1", "system", 1),
                 test_job("m2", "microphone", 2),
             ],
-            "test-provider".to_string(),
+            crate::providers::OPENAI_PROVIDER.to_string(),
             "Meeting".to_string(),
             None,
             transcriber,
@@ -843,7 +1105,8 @@ mod tests {
 
         assert!(max_active.load(Ordering::SeqCst) > 1);
         assert_eq!(
-            candidates
+            outcome
+                .candidates
                 .iter()
                 .map(|candidate| candidate.input.text.as_str())
                 .collect::<Vec<_>>(),
@@ -860,14 +1123,287 @@ mod tests {
             .contains("Microphone: m0"));
     }
 
+    #[tokio::test]
+    async fn source_lane_failures_keep_their_source_reason() {
+        let transcriber = Arc::new(move |request: TranscriptionRequest| {
+            Box::pin(async move {
+                if request.audio_path == PathBuf::from("s1") {
+                    Err(AppError::new(
+                        "transcription_failed",
+                        "System source was silent.",
+                    ))
+                } else {
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }
+            }) as TranscriptionFuture
+        }) as TurnTranscriber;
+
+        let outcome = transcribe_turn_jobs_by_source_lane(
+            vec![test_job("m0", "microphone", 0), test_job("s1", "system", 1)],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("source lanes should complete despite one failed source");
+
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].input.source, "system");
+        assert_eq!(
+            source_failure_summary(&outcome.failures).as_deref(),
+            Some("System: System source was silent.")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_segmented_lane_retries_full_source_audio() {
+        let seen_paths = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let seen_paths = Arc::clone(&seen_paths);
+            Arc::new(move |request: TranscriptionRequest| {
+                let seen_paths = Arc::clone(&seen_paths);
+                Box::pin(async move {
+                    let path = request.audio_path.to_string_lossy().to_string();
+                    seen_paths.lock().unwrap().push(path.clone());
+                    if path == "full-microphone" {
+                        Ok(TranscriptionProviderResult {
+                            text: "quiet but usable speech".to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        })
+                    } else {
+                        Err(AppError::new("no_speech", "no_speech"))
+                    }
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_by_source_lane(
+            vec![segmented_test_job(
+                "microphone-segment",
+                "full-microphone",
+                "microphone",
+                0,
+            )],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("source lane should retry full source audio");
+
+        assert_eq!(outcome.failures.len(), 0);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.candidates[0].input.text, "quiet but usable speech");
+        assert_eq!(
+            seen_paths.lock().unwrap().as_slice(),
+            ["microphone-segment", "full-microphone"]
+        );
+    }
+
+    #[test]
+    fn transcription_failure_messages_hide_provider_codes() {
+        assert_eq!(
+            user_facing_transcription_failure_message("scribe_request_failed", "no_speech"),
+            "No speech detected. Try speaking louder or moving closer to the microphone."
+        );
+        assert_eq!(
+            user_facing_transcription_failure_message(
+                "scribe_request_failed",
+                "upstream_provider_failed"
+            ),
+            "The transcription provider could not process this audio."
+        );
+    }
+
+    #[test]
+    fn source_failure_summary_suppresses_silent_system_when_microphone_failed() {
+        let summary = source_failure_summary(&[
+            FailedTranscriptCandidate {
+                artifact_id: "mic".to_string(),
+                input: SourceTranscriptInput {
+                    source: "microphone".to_string(),
+                    text: String::new(),
+                    valid: false,
+                    warning: Some(
+                        "The transcription provider could not process this audio.".to_string(),
+                    ),
+                    start_ms: Some(0),
+                    end_ms: Some(0),
+                    turn_index: Some(0),
+                },
+            },
+            FailedTranscriptCandidate {
+                artifact_id: "system".to_string(),
+                input: SourceTranscriptInput {
+                    source: "system".to_string(),
+                    text: String::new(),
+                    valid: false,
+                    warning: Some(
+                        "No speech detected. Try speaking louder or moving closer to the microphone."
+                            .to_string(),
+                    ),
+                    start_ms: Some(0),
+                    end_ms: Some(0),
+                    turn_index: Some(1),
+                },
+            },
+        ]);
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Microphone: The transcription provider could not process this audio.")
+        );
+    }
+
+    #[test]
+    fn drops_silent_system_failure_once_a_source_succeeded() {
+        // Solo mic recording: the system track is silent. With a valid
+        // transcript present, that no_speech must not be recorded as a
+        // per-source error (it rendered as a spurious "System" card).
+        assert!(!should_record_source_failure(
+            "system",
+            "No speech detected. Try speaking louder or moving closer to the microphone.",
+            true,
+        ));
+    }
+
+    #[test]
+    fn keeps_system_failure_when_nothing_else_succeeded() {
+        // Everything failed (e.g. system-only capture of silence): keep it so
+        // the user learns the recording produced nothing.
+        assert!(should_record_source_failure("system", "no_speech", false));
+    }
+
+    #[test]
+    fn keeps_non_no_speech_system_failures() {
+        // A real provider error on the system track is still worth surfacing.
+        assert!(should_record_source_failure(
+            "system",
+            "The transcription provider could not process this audio.",
+            true,
+        ));
+    }
+
+    #[test]
+    fn never_drops_microphone_failures() {
+        assert!(should_record_source_failure(
+            "microphone",
+            "no_speech",
+            true
+        ));
+    }
+
+    fn write_test_wav(path: &std::path::Path, samples: &[i16]) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for sample in samples {
+            writer.write_sample(*sample).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn drops_silent_system_source_but_keeps_microphone() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-drop-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+        write_test_wav(&mic_path, &[20_000, -18_000, 19_000, -20_000]);
+        write_test_wav(&system_path, &[0, 0, 0, 0, 1, -1]);
+
+        let kept = drop_silent_system_sources(vec![
+            (
+                "mic".to_string(),
+                "microphone".to_string(),
+                mic_path.clone(),
+            ),
+            ("sys".to_string(), "system".to_string(), system_path),
+        ]);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1, "microphone");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_silent_system_source_when_it_is_the_only_one() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-drop-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let system_path = dir.join("system.wav");
+        write_test_wav(&system_path, &[0, 0, 0, 0]);
+
+        let kept = drop_silent_system_sources(vec![(
+            "sys".to_string(),
+            "system".to_string(),
+            system_path,
+        )]);
+
+        // System-only capture of silence must survive so its "no speech"
+        // failure still reaches the user.
+        assert_eq!(kept.len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_audible_system_source() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-drop-silent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+        write_test_wav(&mic_path, &[20_000, -18_000]);
+        write_test_wav(&system_path, &[15_000, -16_000, 14_000]);
+
+        let kept = drop_silent_system_sources(vec![
+            ("mic".to_string(), "microphone".to_string(), mic_path),
+            ("sys".to_string(), "system".to_string(), system_path),
+        ]);
+
+        assert_eq!(kept.len(), 2);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn test_job(path: &str, source: &str, turn_index: i64) -> TurnTranscriptionJob {
         TurnTranscriptionJob {
             artifact_id: format!("artifact-{path}"),
             source: source.to_string(),
             audio_path: PathBuf::from(path),
+            source_path: PathBuf::from(path),
+            covers_full_source: true,
             start_ms: turn_index * 1_000,
             end_ms: turn_index * 1_000 + 500,
             turn_index,
+        }
+    }
+
+    fn segmented_test_job(
+        path: &str,
+        source_path: &str,
+        source: &str,
+        turn_index: i64,
+    ) -> TurnTranscriptionJob {
+        TurnTranscriptionJob {
+            source_path: PathBuf::from(source_path),
+            covers_full_source: false,
+            ..test_job(path, source, turn_index)
         }
     }
 

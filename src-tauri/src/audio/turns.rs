@@ -1,9 +1,16 @@
 use crate::domain::types::AppError;
-use hound::{SampleFormat, WavReader, WavWriter};
+use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use std::path::{Path, PathBuf};
 
 const WINDOW_MS: i64 = 30;
 const TRANSCRIPTION_COHERENCE_GAP_MS: i64 = 2_500;
+const NORMALIZE_TARGET_PEAK: f32 = 0.75;
+const NORMALIZE_MIN_GAIN: f32 = 1.25;
+const NORMALIZE_MAX_GAIN: f32 = 32.0;
+/// Loudest-window RMS below which a track carries no transcribable speech.
+/// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
+/// activity `min_rms`, so we only ever skip clearly-silent audio.
+const SILENCE_RMS_FLOOR: f32 = 0.012;
 
 #[derive(Debug, Clone)]
 pub struct DetectionSource {
@@ -49,6 +56,17 @@ pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppEr
         turn.turn_index = index as i64;
     }
     Ok(turns)
+}
+
+/// Whether a WAV's loudest RMS window never crosses the silence floor — i.e.
+/// the track is effectively silent and not worth transcribing. If the file
+/// can't be read we return `false` so the audio is still attempted rather than
+/// silently dropped.
+pub fn source_is_effectively_silent(path: &Path) -> bool {
+    match read_rms_windows(path) {
+        Ok(windows) => windows.iter().copied().fold(0.0_f32, f32::max) < SILENCE_RMS_FLOOR,
+        Err(_) => false,
+    }
 }
 
 pub fn coalesce_turns_for_transcription(mut turns: Vec<AudioTurn>) -> Vec<AudioTurn> {
@@ -112,6 +130,57 @@ pub fn write_turn_wav(turn: &AudioTurn, output_path: &Path) -> Result<(), AppErr
         .finalize()
         .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
     Ok(())
+}
+
+pub fn normalize_wav_for_transcription(
+    input_path: &Path,
+    output_path: &Path,
+) -> Result<PathBuf, AppError> {
+    let mut reader = WavReader::open(input_path)
+        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    let spec = reader.spec();
+    ensure_normalizable_spec(spec)?;
+    let samples = reader
+        .samples::<i16>()
+        .map(|sample| sample.unwrap_or(0))
+        .collect::<Vec<_>>();
+    let peak = samples
+        .iter()
+        .map(|sample| sample.unsigned_abs() as f32 / i16::MAX as f32)
+        .fold(0.0_f32, f32::max);
+    if peak <= f32::EPSILON {
+        return Ok(input_path.to_path_buf());
+    }
+    let gain = (NORMALIZE_TARGET_PEAK / peak).min(NORMALIZE_MAX_GAIN);
+    if gain < NORMALIZE_MIN_GAIN {
+        return Ok(input_path.to_path_buf());
+    }
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    }
+    let mut writer = WavWriter::create(output_path, spec)
+        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    for sample in samples {
+        let amplified = (sample as f32 * gain).round();
+        writer
+            .write_sample(amplified.clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+            .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    }
+    writer
+        .finalize()
+        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    Ok(output_path.to_path_buf())
+}
+
+fn ensure_normalizable_spec(spec: WavSpec) -> Result<(), AppError> {
+    if spec.sample_format == SampleFormat::Int && spec.bits_per_sample == 16 {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "audio_normalize_failed",
+        "Only 16-bit PCM WAV normalization is supported.",
+    ))
 }
 
 fn detect_source_turns(
@@ -281,5 +350,87 @@ fn source_order(source: &str) -> i32 {
         "microphone" => 0,
         "system" => 1,
         _ => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hound::WavSpec;
+
+    #[test]
+    fn normalization_boosts_quiet_wav_without_touching_original() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-normalize-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("quiet.wav");
+        let output = dir.join("normalized.wav");
+        write_samples(&input, &[100, -120, 90, -80]);
+
+        let prepared = normalize_wav_for_transcription(&input, &output).unwrap();
+
+        assert_eq!(prepared, output);
+        let original = read_samples(&input);
+        let normalized = read_samples(&output);
+        assert_eq!(original, vec![100, -120, 90, -80]);
+        assert!(
+            normalized.iter().map(|sample| sample.abs()).max().unwrap()
+                > original.iter().map(|sample| sample.abs()).max().unwrap() * 10
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normalization_reuses_loud_enough_wav() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-normalize-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("loud.wav");
+        let output = dir.join("normalized.wav");
+        write_samples(&input, &[20_000, -18_000]);
+
+        let prepared = normalize_wav_for_transcription(&input, &output).unwrap();
+
+        assert_eq!(prepared, input);
+        assert!(!output.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn flags_silent_track_and_keeps_audible_one() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-silence-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let silent = dir.join("silent.wav");
+        let audible = dir.join("audible.wav");
+        write_samples(&silent, &[0, 0, 0, 0, 1, -1]);
+        write_samples(&audible, &[20_000, -18_000, 19_000, -20_000]);
+
+        assert!(source_is_effectively_silent(&silent));
+        assert!(!source_is_effectively_silent(&audible));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn write_samples(path: &Path, samples: &[i16]) {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for sample in samples {
+            writer.write_sample(*sample).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    fn read_samples(path: &Path) -> Vec<i16> {
+        let mut reader = WavReader::open(path).unwrap();
+        reader
+            .samples::<i16>()
+            .map(|sample| sample.unwrap())
+            .collect()
     }
 }
