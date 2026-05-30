@@ -24,6 +24,31 @@ export function classifyFailure(message?: string): FailureKind {
     : "generic";
 }
 
+export function userFacingFailureMessage(message?: string) {
+  if (!message) return undefined;
+  return message
+    .split("|")
+    .map((part) => friendlyFailureSegment(part.trim()))
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function friendlyFailureSegment(message: string) {
+  const source = message.match(/^(Microphone|System):\s*/i)?.[1];
+  const body = source
+    ? message.replace(/^(Microphone|System):\s*/i, "")
+    : message;
+  const normalized = body.toLowerCase();
+  let friendly = body;
+  if (normalized.includes("no_speech") || normalized.includes("no speech")) {
+    friendly =
+      "No speech detected. Try speaking louder or moving closer to the microphone.";
+  } else if (normalized.includes("upstream_provider_failed")) {
+    friendly = "The transcription provider could not process this audio.";
+  }
+  return source ? `${source}: ${friendly}` : friendly;
+}
+
 export function NoteFailureBanner({
   errorMessage,
   audioPreserved,
@@ -32,15 +57,20 @@ export function NoteFailureBanner({
 }: Props) {
   const kind = classifyFailure(errorMessage);
   const isBalanceIssue = kind === "balance_low";
+  const displayMessage = userFacingFailureMessage(errorMessage);
   // Local busy flag so a fast double-click can't fire onRetry twice. The
   // banner unmounts when the note transitions out of `failed` status, so we
   // don't need to reset this state ourselves; the catch covers the case
   // where onRetry rejects and the note stays in `failed`.
   const [retrying, setRetrying] = useState(false);
+  // Mirror the settings balance-refresh affordance: each click advances the
+  // rotation by a full turn so the arrow sweeps once on press.
+  const [spins, setSpins] = useState(0);
 
   async function handleRetry() {
     if (retrying) return;
     setRetrying(true);
+    setSpins((turns) => turns + 1);
     try {
       await onRetry();
     } catch {
@@ -63,7 +93,8 @@ export function NoteFailureBanner({
             ? audioPreserved
               ? "Your recording is saved locally. Add funds and retry to transcribe."
               : "Your balance is too low. Add funds to continue."
-            : (errorMessage ?? "Scribe couldn't finish processing this note.")}
+            : (displayMessage ??
+              "Scribe couldn't finish processing this note.")}
           {!isBalanceIssue && audioPreserved
             ? " Your recording is saved locally — you can retry."
             : null}
@@ -89,9 +120,10 @@ export function NoteFailureBanner({
         >
           <IconArrowRotateClockwise
             size={14}
-            data-spinning={retrying ? "true" : undefined}
+            className="balance-refresh-icon"
+            style={{ transform: `rotate(${spins * 360}deg)` }}
           />
-          {retrying ? "Retrying…" : "Retry transcription"}
+          Retry
         </button>
       </div>
     </aside>

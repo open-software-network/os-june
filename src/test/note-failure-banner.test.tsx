@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   NoteFailureBanner,
   classifyFailure,
+  userFacingFailureMessage,
 } from "../components/note-editor/NoteFailureBanner";
 
 describe("classifyFailure", () => {
@@ -20,6 +21,18 @@ describe("classifyFailure", () => {
   it("falls back to generic for unknown failures", () => {
     expect(classifyFailure("network timeout")).toBe("generic");
     expect(classifyFailure(undefined)).toBe("generic");
+  });
+});
+
+describe("userFacingFailureMessage", () => {
+  it("turns no-speech provider codes into useful guidance", () => {
+    expect(
+      userFacingFailureMessage(
+        "Microphone: upstream_provider_failed; no_speech",
+      ),
+    ).toBe(
+      "Microphone: No speech detected. Try speaking louder or moving closer to the microphone.",
+    );
   });
 });
 
@@ -45,9 +58,7 @@ describe("NoteFailureBanner", () => {
     await userEvent.click(screen.getByRole("button", { name: /Add funds/i }));
     expect(onTopUp).toHaveBeenCalledOnce();
 
-    await userEvent.click(
-      screen.getByRole("button", { name: /Retry transcription/i }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: /Retry/i }));
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
@@ -66,12 +77,26 @@ describe("NoteFailureBanner", () => {
     expect(
       screen.queryByRole("button", { name: /Add funds/i }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Retry transcription/i }),
-    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeEnabled();
     expect(
       screen.getByText(/Your recording is saved locally/i),
     ).toBeInTheDocument();
+  });
+
+  it("shows a friendly message for no-speech transcription failures", () => {
+    render(
+      <NoteFailureBanner
+        errorMessage="Microphone: upstream_provider_failed; no_speech"
+        audioPreserved
+        onRetry={() => undefined}
+        onTopUp={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText(/No speech detected/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/upstream_provider_failed/i),
+    ).not.toBeInTheDocument();
   });
 
   it("guards against double-click while a retry is in flight", async () => {
@@ -91,17 +116,15 @@ describe("NoteFailureBanner", () => {
       />,
     );
 
-    const retryButton = screen.getByRole("button", {
-      name: /Retry transcription/i,
-    });
+    const retryButton = screen.getByRole("button", { name: /Retry/i });
     await userEvent.click(retryButton);
 
-    // Label flips, button is disabled, aria-busy reflects the state.
-    expect(screen.getByRole("button", { name: /Retrying…/i })).toBeDisabled();
+    // Button disables while the retry is in flight; aria-busy reflects it.
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
     expect(onRetry).toHaveBeenCalledTimes(1);
 
     // A second click while pending must not fire onRetry again.
-    await userEvent.click(screen.getByRole("button", { name: /Retrying…/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Retry/i }));
     expect(onRetry).toHaveBeenCalledTimes(1);
 
     // Resolve so the test doesn't hang on cleanup.
@@ -117,8 +140,6 @@ describe("NoteFailureBanner", () => {
         onTopUp={() => undefined}
       />,
     );
-    expect(
-      screen.getByRole("button", { name: /Retry transcription/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
   });
 });
