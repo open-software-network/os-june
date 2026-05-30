@@ -111,8 +111,14 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByText("System")).toBeInTheDocument();
-    expect(screen.getByText("Microphone")).toBeInTheDocument();
+    // Scope to the turn labels — the source filter (shown when both
+    // sources are present) also renders "System"/"Microphone" options.
+    expect(
+      screen.getByText("System", { selector: ".transcript-turn-source" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Microphone", { selector: ".transcript-turn-source" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("0:01-0:03")).toBeInTheDocument();
     expect(screen.getByText("System playback text")).toBeInTheDocument();
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
