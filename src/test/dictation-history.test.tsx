@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   listDictationHistory: vi.fn(),
   deleteDictationHistoryItem: vi.fn(),
   dictationSettings: vi.fn(),
+  listDictionaryEntries: vi.fn(),
   listen: vi.fn(),
   writeText: vi.fn(),
 }));
@@ -15,6 +16,7 @@ vi.mock("../lib/tauri", () => ({
   listDictationHistory: mocks.listDictationHistory,
   deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   dictationSettings: mocks.dictationSettings,
+  listDictionaryEntries: mocks.listDictionaryEntries,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -28,6 +30,7 @@ describe("DictationHistoryView", () => {
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.writeText.mockResolvedValue(undefined);
     mocks.deleteDictationHistoryItem.mockResolvedValue(undefined);
+    mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -97,6 +100,71 @@ describe("DictationHistoryView", () => {
     await waitFor(() =>
       expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "),
     );
+  });
+
+  function manyItems(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `dictation-${i}`,
+      text: `Transcript ${i}`,
+      language: "en",
+      provider: "openai",
+      createdAt: new Date().toISOString(),
+    }));
+  }
+
+  it("hides the 'Get more' card until dictation is adopted", async () => {
+    // Only one recent dictation — below the adoption threshold.
+    render(<DictationHistoryView />);
+    await waitFor(() =>
+      expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Get more from dictation")).not.toBeInTheDocument();
+  });
+
+  it("surfaces only the unconfigured features once adopted", async () => {
+    mocks.listDictationHistory.mockResolvedValue({
+      retentionDays: 7,
+      items: manyItems(12),
+    });
+    // Style is configured, dictionary is not → only dictionary should show.
+    mocks.dictationSettings.mockResolvedValue({
+      settings: {
+        pushToTalkShortcut: { code: "Fn", label: "Fn", pressCount: 1, modifiers: {} },
+        toggleShortcut: { code: "Space", label: "Ctrl+Opt+Space", pressCount: 1, modifiers: {} },
+        microphone: {},
+        style: "formal",
+      },
+    });
+    mocks.listDictionaryEntries.mockResolvedValue([]);
+
+    render(<DictationHistoryView />);
+    await waitFor(() =>
+      expect(screen.getByText("Get more from dictation")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Personal dictionary")).toBeInTheDocument();
+    expect(screen.queryByText("Writing styles")).not.toBeInTheDocument();
+  });
+
+  it("never shows the card once both features are configured", async () => {
+    mocks.listDictationHistory.mockResolvedValue({
+      retentionDays: 7,
+      items: manyItems(12),
+    });
+    mocks.dictationSettings.mockResolvedValue({
+      settings: {
+        pushToTalkShortcut: { code: "Fn", label: "Fn", pressCount: 1, modifiers: {} },
+        toggleShortcut: { code: "Space", label: "Ctrl+Opt+Space", pressCount: 1, modifiers: {} },
+        microphone: {},
+        style: "casualLowercase",
+      },
+    });
+    mocks.listDictionaryEntries.mockResolvedValue([{ id: "e1", phrase: "Bismarck" }]);
+
+    render(<DictationHistoryView />);
+    await waitFor(() =>
+      expect(screen.getByText("Transcript 0")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Get more from dictation")).not.toBeInTheDocument();
   });
 
   it("deletes a transcription after confirmation", async () => {

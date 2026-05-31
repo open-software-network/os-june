@@ -3475,18 +3475,13 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.dictation-hint-divider {
-  height: 1px;
-  margin: var(--sp-4) 0 var(--sp-3);
-  border: 0;
-  background: var(--border-subtle);
-}
-
 .dictation-hint-title {
-  margin: 0 0 var(--sp-1);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-serif);
+  font-size: var(--fs-lg);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
 }
 
 .dictation-hint-items {
