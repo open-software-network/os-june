@@ -142,7 +142,7 @@ describe("DictationHistoryView", () => {
       expect(screen.getByText("Get more from dictation")).toBeInTheDocument(),
     );
     expect(screen.getByText("Personal dictionary")).toBeInTheDocument();
-    expect(screen.queryByText("Writing styles")).not.toBeInTheDocument();
+    expect(screen.queryByText("Writing style")).not.toBeInTheDocument();
   });
 
   it("never shows the card once both features are configured", async () => {
