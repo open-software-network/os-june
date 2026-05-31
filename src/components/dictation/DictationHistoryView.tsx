@@ -1,5 +1,4 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconBook } from "central-icons/IconBook";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconClipboard } from "central-icons/IconClipboard";
@@ -10,6 +9,7 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconMicrophoneSparkle as IconMicrophoneSparkleFilled } from "central-icons-filled/IconMicrophoneSparkle";
+import { IconSpeachToText } from "central-icons/IconSpeachToText";
 import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -27,6 +27,7 @@ import {
   deleteDictationHistoryItem,
   dictationSettings,
   listDictationHistory,
+  listDictionaryEntries,
   type DictationSettingsDto,
   type DictationHistoryItemDto,
 } from "../../lib/tauri";
@@ -43,10 +44,20 @@ type HistoryGroup = {
   items: DictationHistoryItemDto[];
 };
 
-// Persists the dismissed state of the "Get more from dictation" card. While
-// it's shown, it carries the shortcut hints; once dismissed they relocate to
-// the header's upper-right corner.
+// Persists the dismissed state of the "Get more from dictation" card. The card
+// points at two *optional* power features (writing styles, personal
+// dictionary), so a dismiss is honored permanently — we don't badger people
+// about extras they've chosen to skip.
 const HINT_DISMISSED_KEY = "os-scribe:dictation-hint-dismissed";
+
+// The card only surfaces once someone has clearly adopted dictation, so we
+// never stack setup suggestions on a newcomer who's still learning the gesture.
+// Note: history is the last 7 days (capped at 200), so this is a recent-usage
+// signal, not a lifetime count.
+const MIN_DICTATIONS_FOR_HINT = 10;
+
+// The default writing style; anything else means the user has configured one.
+const DEFAULT_STYLE = "standard";
 
 function readHintDismissed() {
   try {
@@ -66,6 +77,7 @@ export function DictationHistoryView({
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settings, setSettings] = useState<DictationSettingsDto>();
+  const [dictionaryCount, setDictionaryCount] = useState<number | null>(null);
   const [hintDismissed, setHintDismissed] = useState(readHintDismissed);
   const [pendingDelete, setPendingDelete] =
     useState<DictationHistoryItemDto | null>(null);
@@ -91,6 +103,12 @@ export function DictationHistoryView({
     dictationSettings()
       .then((response) => setSettings(response.settings))
       .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    listDictionaryEntries()
+      .then((entries) => setDictionaryCount(entries.length))
+      .catch(() => setDictionaryCount(0));
   }, []);
 
   useEffect(() => {
@@ -120,6 +138,18 @@ export function DictationHistoryView({
 
   const pushToTalk = settings?.pushToTalkShortcut.label ?? "Fn";
   const toggle = settings?.toggleShortcut.label ?? "Ctrl+Opt+Space";
+
+  // Show each optional feature only while it's still unconfigured, and only
+  // once we know its state (avoids the card flashing in then vanishing). The
+  // card itself appears only for adopted users who haven't dismissed it.
+  const customizationLoaded = settings !== undefined && dictionaryCount !== null;
+  const styleUnconfigured = settings?.style === DEFAULT_STYLE;
+  const dictionaryUnconfigured = (dictionaryCount ?? 0) === 0;
+  const showHint =
+    !hintDismissed &&
+    customizationLoaded &&
+    items.length >= MIN_DICTATIONS_FOR_HINT &&
+    (styleUnconfigured || dictionaryUnconfigured);
 
   function dismissHint() {
     setHintDismissed(true);
@@ -160,9 +190,9 @@ export function DictationHistoryView({
             AI transcriptions from the last {retentionDays} days.
           </p>
         </div>
-        {/* Once dismissed, the shortcuts relocate to the header — but only
-            when there's history. When empty, they live in the empty state. */}
-        {hintDismissed && items.length > 0 ? (
+        {/* Shortcuts live in the header whenever there's history; newcomers
+            get them in the empty state instead. */}
+        {items.length > 0 ? (
           <ShortcutLegend
             className="dictation-shortcuts"
             pushToTalk={pushToTalk}
@@ -171,16 +201,15 @@ export function DictationHistoryView({
         ) : null}
       </header>
 
-      {hintDismissed ? null : (
+      {showHint ? (
         <GetMoreCard
-          showShortcuts={items.length > 0}
-          pushToTalk={pushToTalk}
-          toggle={toggle}
+          showStyles={styleUnconfigured}
+          showDictionary={dictionaryUnconfigured}
           onDismiss={dismissHint}
           onSetUpStyles={() => onNavigateToSettings?.("style")}
           onSetUpDictionary={() => onNavigateToSettings?.("dictionary")}
         />
-      )}
+      ) : null}
 
       {items.length > 0 ? (
         <div className="folders-controls">
@@ -403,20 +432,18 @@ function DictationHistoryRow({
   );
 }
 
-/** The "Get more from dictation" card. When there's history it leads with the
- * two shortcuts (which relocate to the header on dismiss); when empty, the
- * shortcuts live in the empty state instead, so the card is features-only. */
+/** The "Get more from dictation" card. Surfaces only the optional features the
+ * user hasn't set up yet; once both are configured it stops rendering entirely.
+ * Shortcuts live in the header/empty state, not here. */
 function GetMoreCard({
-  showShortcuts,
-  pushToTalk,
-  toggle,
+  showStyles,
+  showDictionary,
   onDismiss,
   onSetUpStyles,
   onSetUpDictionary,
 }: {
-  showShortcuts: boolean;
-  pushToTalk: string;
-  toggle: string;
+  showStyles: boolean;
+  showDictionary: boolean;
   onDismiss: () => void;
   onSetUpStyles: () => void;
   onSetUpDictionary: () => void;
@@ -431,56 +458,50 @@ function GetMoreCard({
       >
         <IconCrossSmall size={14} />
       </button>
-      {showShortcuts ? (
-        <>
-          <ShortcutLegend
-            className="shortcut-legend-inline"
-            pushToTalk={pushToTalk}
-            toggle={toggle}
-          />
-          <hr className="dictation-hint-divider" />
-        </>
-      ) : null}
       <h2 className="dictation-hint-title">Get more from dictation</h2>
       <div className="dictation-hint-items">
-        <button
-          type="button"
-          className="dictation-hint-item"
-          onClick={onSetUpStyles}
-        >
-          <span className="dictation-hint-chip" aria-hidden>
-            <IconFontStyle size={16} />
-          </span>
-          <span className="dictation-hint-item-body">
-            <span className="dictation-hint-item-name">Writing styles</span>
-            <span className="dictation-hint-item-desc">
-              Match your tone per app — email, Slack, notes.
+        {showStyles ? (
+          <button
+            type="button"
+            className="dictation-hint-item"
+            onClick={onSetUpStyles}
+          >
+            <span className="dictation-hint-chip" aria-hidden>
+              <IconFontStyle size={16} />
             </span>
-          </span>
-          <span className="dictation-hint-setup">
-            Set up <IconChevronRightSmall size={15} />
-          </span>
-        </button>
-        <button
-          type="button"
-          className="dictation-hint-item"
-          onClick={onSetUpDictionary}
-        >
-          <span className="dictation-hint-chip" aria-hidden>
-            <IconBook size={16} />
-          </span>
-          <span className="dictation-hint-item-body">
-            <span className="dictation-hint-item-name">
-              Personal dictionary
+            <span className="dictation-hint-item-body">
+              <span className="dictation-hint-item-name">Writing style</span>
+              <span className="dictation-hint-item-desc">
+                Choose how transcriptions read — casual, standard, or formal.
+              </span>
             </span>
-            <span className="dictation-hint-item-desc">
-              Teach it names and jargon it keeps mishearing.
+            <span className="dictation-hint-setup">
+              Set up <IconChevronRightSmall size={15} />
             </span>
-          </span>
-          <span className="dictation-hint-setup">
-            Set up <IconChevronRightSmall size={15} />
-          </span>
-        </button>
+          </button>
+        ) : null}
+        {showDictionary ? (
+          <button
+            type="button"
+            className="dictation-hint-item"
+            onClick={onSetUpDictionary}
+          >
+            <span className="dictation-hint-chip" aria-hidden>
+              <IconSpeachToText size={16} />
+            </span>
+            <span className="dictation-hint-item-body">
+              <span className="dictation-hint-item-name">
+                Personal dictionary
+              </span>
+              <span className="dictation-hint-item-desc">
+                Teach it the names and jargon it keeps mishearing.
+              </span>
+            </span>
+            <span className="dictation-hint-setup">
+              Set up <IconChevronRightSmall size={15} />
+            </span>
+          </button>
+        ) : null}
       </div>
     </section>
   );
