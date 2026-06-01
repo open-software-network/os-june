@@ -1377,7 +1377,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scribe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "scribe-config",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "figment",
  "pretty_assertions",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "scribe-services"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "pretty_assertions",

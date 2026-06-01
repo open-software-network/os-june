@@ -23,6 +23,7 @@ pub use error::ApiError;
 pub use handlers::dictate::{
     DictateCleanupRequest, DictateCleanupResponse, DictateTranscribeResponse,
 };
+pub use handlers::health::HealthDto;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
 pub use state::{ApiLimits, ApiState, ApiStateParams};
@@ -35,6 +36,8 @@ pub fn router(state: ApiState) -> Router {
     );
     Router::new()
         .route("/livez", get(handlers::health::livez))
+        .route("/readyz", get(handlers::health::readyz))
+        .route("/healthz", get(handlers::health::healthz))
         .route("/v1/models", get(handlers::models::list_models))
         .route(
             "/v1/notes/transcribe",
