@@ -12,7 +12,7 @@ The `scribe-api` backend runs in an Intel TDX confidential VM on Phala Cloud. Be
 - **Image** — built by [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml) and published to [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-scribe/pkgs/container/scribe-api) as a plain single-arch image whose content digest is directly pullable. dstack cannot verify digest-pinned refs, so deploys pin an immutable per-commit tag (`:<sha>`); the digest each commit deploys is recorded in-repo as a signed `deploy/<env>/<sha>` git tag.
 - **Attestation** — the [Phala Trust Center report](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c) is third-party-verifiable proof that the image digest above is what's actually running inside a real Intel TDX confidential VM.
 
-Together these bind the running image to a public commit: you can confirm the attested digest is the one our CI built and recorded for that commit. (Bit-for-bit *rebuild-from-source* reproducibility — so you can regenerate the digest yourself instead of trusting our CI — is in progress.)
+Together these bind the running image to a public commit: you can confirm the attested digest is the one our CI built and recorded for that commit. (Bit-for-bit _rebuild-from-source_ reproducibility — so you can regenerate the digest yourself instead of trusting our CI — is in progress.)
 
 Audio still leaves the TEE when forwarded to OpenAI or Venice for transcription, under those providers' own privacy policies. This chain verifies the **code** running in the confidential VM, not what upstream providers do with audio. End-to-end private STT is a separate workstream.
 
@@ -117,7 +117,7 @@ APPLE_API_KEY=
 APPLE_API_KEY_PATH=/path/to/AuthKey_KEYID.p8
 ```
 
-For GitHub Actions, configure repository secrets with the same certificate values plus App Store Connect API key values:
+For GitHub Actions, the current automated DMG workflow is staging-only. Configure repository secrets with the certificate values plus App Store Connect API key values:
 
 - `APPLE_CERTIFICATE`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -126,7 +126,16 @@ For GitHub Actions, configure repository secrets with the same certificate value
 - `APPLE_API_KEY`
 - `APPLE_API_KEY_P8`
 
-The `desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed bundle has the expected empty entitlement set:
+Also configure the staging app environment secrets. These are intentionally staging-prefixed because there is no production DMG build environment yet:
+
+- `STAGING_OS_ACCOUNTS_URL`
+- `STAGING_OS_ACCOUNTS_API_URL`
+- `STAGING_OS_ACCOUNTS_CLIENT_ID`
+- `STAGING_SCRIBE_API_URL`
+
+The `staging-desktop-dmg` workflow maps those staging secrets into `OS_ACCOUNTS_URL`, `OS_ACCOUNTS_API_URL`, `OS_ACCOUNTS_CLIENT_ID`, and `SCRIBE_API_URL` only for the build, so the release binary embeds staging endpoints as fallback runtime config.
+
+The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed bundle has the expected empty entitlement set:
 
 ```sh
 codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app"

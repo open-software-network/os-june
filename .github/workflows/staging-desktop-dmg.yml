@@ -1,10 +1,10 @@
-name: desktop-dmg
+name: staging-desktop-dmg
 
 on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/desktop-dmg.yml"
+      - ".github/workflows/staging-desktop-dmg.yml"
       - "hud.html"
       - "index.html"
       - "package.json"
@@ -21,12 +21,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-dmg-${{ github.ref }}
+  group: staging-desktop-dmg-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build macOS DMG
+    name: Build staging macOS DMG
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +68,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Validate signing and notarization secrets
+      - name: Validate staging DMG secrets
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -76,10 +76,10 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          OS_ACCOUNTS_URL: ${{ secrets.OS_ACCOUNTS_URL }}
-          OS_ACCOUNTS_API_URL: ${{ secrets.OS_ACCOUNTS_API_URL }}
-          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.OS_ACCOUNTS_CLIENT_ID }}
-          SCRIBE_API_URL: ${{ secrets.SCRIBE_API_URL }}
+          STAGING_OS_ACCOUNTS_URL: ${{ secrets.STAGING_OS_ACCOUNTS_URL }}
+          STAGING_OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
+          STAGING_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
+          STAGING_SCRIBE_API_URL: ${{ secrets.STAGING_SCRIBE_API_URL }}
         run: |
           set -euo pipefail
           missing=0
@@ -90,19 +90,19 @@ jobs:
             APPLE_API_ISSUER \
             APPLE_API_KEY \
             APPLE_API_KEY_P8 \
-            OS_ACCOUNTS_URL \
-            OS_ACCOUNTS_API_URL \
-            OS_ACCOUNTS_CLIENT_ID \
-            SCRIBE_API_URL
+            STAGING_OS_ACCOUNTS_URL \
+            STAGING_OS_ACCOUNTS_API_URL \
+            STAGING_OS_ACCOUNTS_CLIENT_ID \
+            STAGING_SCRIBE_API_URL
           do
             if [ -z "${!name:-}" ]; then
-              echo "::error::${name} is required to build a distributable signed and notarized DMG."
+              echo "::error::${name} is required to build a staging distributable signed and notarized DMG."
               missing=1
             fi
           done
           exit "$missing"
 
-      - name: Build DMG
+      - name: Build staging DMG
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -110,23 +110,24 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          OS_ACCOUNTS_URL: ${{ secrets.OS_ACCOUNTS_URL }}
-          OS_ACCOUNTS_API_URL: ${{ secrets.OS_ACCOUNTS_API_URL }}
-          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.OS_ACCOUNTS_CLIENT_ID }}
-          SCRIBE_API_URL: ${{ secrets.SCRIBE_API_URL }}
+          OS_ACCOUNTS_URL: ${{ secrets.STAGING_OS_ACCOUNTS_URL }}
+          OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
+          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
+          SCRIBE_API_URL: ${{ secrets.STAGING_SCRIBE_API_URL }}
         run: pnpm tauri:build:signed-dmg
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: os-scribe-dmg-${{ github.sha }}
+          name: os-scribe-staging-dmg-${{ github.sha }}
           path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Summary
         run: |
           {
-            echo "### macOS DMG"
+            echo "### Staging macOS DMG"
+            echo "This artifact is built against the staging OS Accounts and Scribe API environment."
             for dmg in src-tauri/target/release/bundle/dmg/*.dmg; do
               [ -e "$dmg" ] || continue
               echo "- \`$dmg\`"
