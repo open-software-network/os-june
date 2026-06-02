@@ -95,16 +95,41 @@ The macOS bundle includes:
 
 - `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`
 - `NSAudioCaptureUsageDescription` in `src-tauri/Info.plist`
-- `com.apple.security.device.audio-input` in `src-tauri/Entitlements.plist`
 
 The `Microphone only` mode is the default. The `Microphone + system audio` mode uses a small macOS helper built by `src-tauri/build.rs` into `.tauri-helper/` during `pnpm tauri:dev`, `pnpm test:rust`, or `pnpm tauri:build`. Generated helper binaries are ignored by git and kept outside `src-tauri` so Tauri dev does not restart on its own generated files.
 
 Dictation uses a separate macOS helper built into `.tauri-helper/OS Scribe Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
 
-Local `pnpm tauri:build` output is ad-hoc signed unless a signing identity is configured. Before distribution, verify the signed bundle embeds the expected entitlements:
+Local `pnpm tauri:build` output is ad-hoc signed unless a signing identity is configured. To build a downloadable, Developer ID-signed and notarized DMG, set the signing environment and run:
 
 ```sh
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Notetaker.app"
+pnpm tauri:build:signed-dmg
+```
+
+The signed DMG build reads signing values from the environment, or from an ignored local `.env.signing` file when present:
+
+```sh
+APPLE_CERTIFICATE=
+APPLE_CERTIFICATE_PASSWORD=
+APPLE_SIGNING_IDENTITY="Developer ID Application: Example, Inc. (TEAMID)"
+APPLE_API_ISSUER=
+APPLE_API_KEY=
+APPLE_API_KEY_PATH=/path/to/AuthKey_KEYID.p8
+```
+
+For GitHub Actions, configure repository secrets with the same certificate values plus App Store Connect API key values:
+
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_API_ISSUER`
+- `APPLE_API_KEY`
+- `APPLE_API_KEY_P8`
+
+The `desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed bundle has the expected empty entitlement set:
+
+```sh
+codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app"
 ```
 
 If permission is denied during local testing, reset it from macOS Privacy & Security settings or with:

@@ -111,7 +111,8 @@ describe("AppSettings", () => {
                 modelType: "asr",
                 description: "Speech-to-text model for transcribing audio.",
                 privacy: "private",
-                pricing: { input: { usd: 0.002 }, output: { usd: 0.006 } },
+                priceUnit: "seconds",
+                creditsPerMillionSeconds: 100000,
                 contextTokens: 8192,
                 traits: ["default"],
                 capabilities: [],
@@ -149,7 +150,9 @@ describe("AppSettings", () => {
                 modelType: "text",
                 description: "Text model for writing notes.",
                 privacy: "private",
-                pricing: { input: { usd: 0.15 }, output: { usd: 0.6 } },
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 1000,
+                outputCreditsPerMillionTokens: 3200,
                 contextTokens: 32768,
                 traits: [],
                 capabilities: ["supportsFunctionCalling"],
@@ -373,6 +376,9 @@ describe("AppSettings", () => {
     expect(
       await screen.findByRole("option", { name: /Parakeet/ }),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("$0.0001 per second audio").length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
     await user.click(
       await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),
@@ -387,6 +393,9 @@ describe("AppSettings", () => {
         name: "Change note generation model",
       }),
     );
+    expect(
+      screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("Anon").length).toBeGreaterThan(0);
     await user.click(
       await screen.findByRole("option", { name: /Venice Uncensored/ }),

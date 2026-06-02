@@ -581,8 +581,10 @@ impl Repositories {
         content: String,
     ) -> Result<NoteDto, sqlx::Error> {
         let current = self.get_note(note_id).await?;
-        let title = if current.title.trim().is_empty() {
-            title.unwrap_or_else(|| "New note".to_string())
+        let title = if is_replaceable_generated_title(&current.title) {
+            usable_generated_title(title.as_deref())
+                .or_else(|| generated_title_from_content(&content))
+                .unwrap_or_else(|| "New note".to_string())
         } else {
             current.title.clone()
         };
@@ -1538,6 +1540,63 @@ fn normalize_generated_addition(
         strip_generated_addition_prefixes(title, manual_tail, rest.trim_start()).to_string()
     } else {
         strip_generated_addition_prefixes(title, manual_tail, content).to_string()
+    }
+}
+
+fn usable_generated_title(title: Option<&str>) -> Option<String> {
+    title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| !is_replaceable_generated_title(value))
+        .map(ToString::to_string)
+}
+
+fn is_replaceable_generated_title(title: &str) -> bool {
+    let normalized = title.trim().to_lowercase();
+    normalized.is_empty() || normalized == "new note" || normalized == "untitled note"
+}
+
+fn generated_title_from_content(content: &str) -> Option<String> {
+    content
+        .lines()
+        .map(clean_generated_title_line)
+        .find(|line| !line.is_empty() && !is_replaceable_generated_title(line))
+        .map(|line| truncate_title(&line, 72))
+}
+
+fn clean_generated_title_line(line: &str) -> String {
+    line.trim()
+        .trim_start_matches('#')
+        .trim_start_matches(|character: char| {
+            character.is_whitespace() || matches!(character, '-' | '*' | ':' | '"' | '\'' | '`')
+        })
+        .trim()
+        .trim_end_matches(|character: char| matches!(character, ':' | '"' | '\'' | '`'))
+        .trim()
+        .to_string()
+}
+
+fn truncate_title(title: &str, max_chars: usize) -> String {
+    if title.chars().count() <= max_chars {
+        return title.to_string();
+    }
+
+    let mut truncated = String::new();
+    for word in title.split_whitespace() {
+        let separator_len = usize::from(!truncated.is_empty());
+        if truncated.chars().count() + separator_len + word.chars().count() > max_chars {
+            break;
+        }
+        if !truncated.is_empty() {
+            truncated.push(' ');
+        }
+        truncated.push_str(word);
+    }
+
+    if truncated.is_empty() {
+        title.chars().take(max_chars).collect()
+    } else {
+        truncated
     }
 }
 

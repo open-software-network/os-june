@@ -22,13 +22,9 @@ const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // credits:spend so Scribe API can authorize-and-charge against the user's
 // wallet for transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
-// Shared OS Accounts token store. Service name is identity-provider scoped
-// (not consumer-app scoped) so every Open Software app reads/writes the same
-// entry. Cross-app sharing requires both apps to declare the same
-// `keychain-access-groups` entitlement (see src-tauri/Entitlements.plist —
-// $(AppIdentifierPrefix)co.opensoftware.shared). With the entitlement set,
-// new keyring writes default to that access group; a second Open Software
-// app with the matching entitlement can read this entry without re-auth.
+// OS Accounts token store. Service name is identity-provider scoped, but the
+// downloadable Developer ID build uses the default app keychain access because
+// shared keychain groups require a provisioning profile.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.accounts";
 const KEYCHAIN_USER: &str = "tokens";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);

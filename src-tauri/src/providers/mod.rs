@@ -82,6 +82,14 @@ pub struct VeniceModelDto {
     pub context_tokens: Option<i64>,
     pub traits: Vec<String>,
     pub capabilities: Vec<String>,
+    pub price_unit: String,
+    pub price_description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits_per_million_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_credits_per_million_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_credits_per_million_tokens: Option<u64>,
 }
 
 impl From<crate::scribe_api::ModelDto> for VeniceModelDto {
@@ -98,6 +106,11 @@ impl From<crate::scribe_api::ModelDto> for VeniceModelDto {
             context_tokens: value.context_tokens,
             traits: value.traits,
             capabilities: value.capabilities,
+            price_unit: value.price_unit,
+            price_description: value.price_description,
+            credits_per_million_seconds: value.credits_per_million_seconds,
+            input_credits_per_million_tokens: value.input_credits_per_million_tokens,
+            output_credits_per_million_tokens: value.output_credits_per_million_tokens,
         }
     }
 }

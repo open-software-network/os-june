@@ -81,6 +81,27 @@ async fn generated_note_returns_to_notes_tab() {
 }
 
 #[tokio::test]
+async fn generated_note_derives_title_when_provider_returns_placeholder() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+
+    let generated = repos
+        .set_generated_note(
+            &note.id,
+            Some("Untitled note".to_string()),
+            "- Conversation about rate limits for upcoming launch\n- Sabrina can help with higher limits"
+                .to_string(),
+        )
+        .await
+        .expect("generated note");
+
+    assert_eq!(
+        generated.title,
+        "Conversation about rate limits for upcoming launch"
+    );
+}
+
+#[tokio::test]
 async fn generated_note_appends_to_existing_generated_content() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");

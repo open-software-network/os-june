@@ -161,6 +161,11 @@ export type VeniceModelDto = {
   contextTokens?: number;
   traits: string[];
   capabilities: string[];
+  priceUnit?: string;
+  priceDescription?: string;
+  creditsPerMillionSeconds?: number;
+  inputCreditsPerMillionTokens?: number;
+  outputCreditsPerMillionTokens?: number;
 };
 
 export type VeniceModelsResponse = {
