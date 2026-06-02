@@ -230,7 +230,12 @@ describe("App shortcuts", () => {
     );
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
-    expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.createNote).toHaveBeenCalledWith(undefined),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Note title")).toHaveValue(""),
+    );
   });
 
   it("does not flash the sign-in gate while account status is loading", async () => {

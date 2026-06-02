@@ -1,14 +1,13 @@
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
-import { IconFileText } from "central-icons/IconFileText";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconFolders } from "central-icons/IconFolders";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconMoveFolder } from "central-icons/IconMoveFolder";
+import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
-import { IconSidebarHiddenLeftWide } from "central-icons/IconSidebarHiddenLeftWide";
-import { IconSidebarSimpleLeftWide } from "central-icons/IconSidebarSimpleLeftWide";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
@@ -38,7 +37,6 @@ type SidebarProps = {
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   recoverableNoteIds?: ReadonlySet<string>;
   collapsed?: boolean;
-  onToggleCollapsed?: () => void;
 };
 
 type MenuState = {
@@ -60,7 +58,6 @@ export function Sidebar({
   onRemoveNoteFromFolder,
   recoverableNoteIds,
   collapsed = false,
-  onToggleCollapsed,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -125,45 +122,16 @@ export function Sidebar({
           />
           <span style={{ position: "absolute", left: -9999 }}>Scribe</span>
         </a>
-        {onToggleCollapsed ? (
-          <button
-            type="button"
-            className="sidebar-toggle"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-pressed={collapsed}
-            onClick={onToggleCollapsed}
-          >
-            <span className="sidebar-toggle-icon" aria-hidden>
-              <span data-active={collapsed}>
-                <IconSidebarHiddenLeftWide size={18} />
-              </span>
-              <span data-active={!collapsed}>
-                <IconSidebarSimpleLeftWide size={18} />
-              </span>
-            </span>
-          </button>
-        ) : null}
       </header>
 
-      {collapsed ? (
-        <button
-          type="button"
-          className="icon-button sidebar-search-collapsed"
-          aria-label="Search"
-          onClick={onToggleCollapsed}
-        >
-          <IconMagnifyingGlass size={16} />
-        </button>
-      ) : (
-        <label className="sidebar-search">
-          <IconMagnifyingGlass size={15} />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search"
-          />
-        </label>
-      )}
+      <label className="sidebar-search">
+        <IconMagnifyingGlass size={15} />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          placeholder="Search"
+        />
+      </label>
 
       <nav className="sidebar-nav" aria-label="Primary">
         <button
@@ -351,7 +319,7 @@ function NoteRow({
         }}
       >
         <span className="note-row-icon">
-          <IconFileText size={15} />
+          <IconNoteText size={15} />
         </span>
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
@@ -420,8 +388,12 @@ function NoteContextMenu({
           onClose();
         }}
       >
-        <IconFolderAddRight size={14} />
-        {hasFolder ? "Move to folder" : "Add to folder"}
+        {hasFolder ? (
+          <IconMoveFolder size={14} />
+        ) : (
+          <IconFolderAddRight size={14} />
+        )}
+        {hasFolder ? "Change folder" : "Add to folder"}
       </button>
       {hasFolder && currentFolderId ? (
         <button

@@ -1,7 +1,6 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
-import { IconFileText } from "central-icons/IconFileText";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconFolders as IconFoldersFilled } from "central-icons-filled/IconFolders";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
@@ -9,6 +8,9 @@ import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconFolderOpen } from "central-icons/IconFolderOpen";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconMoveFolder } from "central-icons/IconMoveFolder";
+import { IconNoteText } from "central-icons/IconNoteText";
+import { IconPageSearch } from "central-icons/IconPageSearch";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
@@ -88,6 +90,7 @@ function FolderList({
   notes,
   onSelectFolder,
   onCreateFolder,
+  onRenameFolder,
   onDeleteFolder,
   onAssignNoteToFolder,
 }: FoldersWorkspaceProps) {
@@ -96,7 +99,9 @@ function FolderList({
   const [sort, setSort] = useState<SortKey>("updated");
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
   const deleteFolderTarget = folders.find((f) => f.id === deleteId);
+  const editFolderTarget = folders.find((f) => f.id === editId);
 
   useEffect(() => {
     if (!menu) return;
@@ -236,6 +241,10 @@ function FolderList({
             onSelectFolder(folderId);
             setMenu(null);
           }}
+          onEdit={(folderId) => {
+            setEditId(folderId);
+            setMenu(null);
+          }}
           onRequestDelete={(folderId) => setDeleteId(folderId)}
         />
       ) : null}
@@ -260,6 +269,16 @@ function FolderList({
           await onCreateFolder(name, description);
         }}
       />
+      {editFolderTarget ? (
+        <EditFolderDialog
+          open
+          onClose={() => setEditId(null)}
+          folder={editFolderTarget}
+          onSave={(name, description) =>
+            onRenameFolder(editFolderTarget.id, name, description)
+          }
+        />
+      ) : null}
     </section>
   );
 }
@@ -434,11 +453,12 @@ function FolderCard({
         </div>
         <p className="folder-card-footer">
           <span className="folder-card-footer-icon" aria-hidden>
-            <IconFileText size={11} />
+            <IconNoteText size={11} />
           </span>
           <span>
             {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
           </span>
+          <span className="metadata-dot" aria-hidden />
           <span>Updated {formatRelative(lastUpdated)}</span>
         </p>
       </div>
@@ -466,6 +486,7 @@ function FolderCardMenu({
   folders,
   onClose,
   onOpen,
+  onEdit,
   onRequestDelete,
 }: {
   right: number;
@@ -475,6 +496,7 @@ function FolderCardMenu({
   notes: NoteListItemDto[];
   onClose: () => void;
   onOpen: (folderId: string) => void;
+  onEdit: (folderId: string) => void;
   onRequestDelete: (folderId: string) => void;
 }) {
   const folder = folders.find((item) => item.id === folderId);
@@ -490,6 +512,10 @@ function FolderCardMenu({
       <button type="button" role="menuitem" onClick={() => onOpen(folder.id)}>
         <IconFolderOpen size={14} />
         Open
+      </button>
+      <button type="button" role="menuitem" onClick={() => onEdit(folder.id)}>
+        <IconPencil size={14} />
+        Edit details
       </button>
       <button
         type="button"
@@ -663,15 +689,10 @@ function FolderDetail({
           ) : null}
           <p className="folder-detail-meta">
             <span className="folder-detail-meta-pill" aria-hidden>
-              <IconFolder1 size={12} />
-            </span>
-            <span className="folder-detail-meta-dot" aria-hidden>
-              ·
+              <IconNoteText size={12} />
             </span>
             {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
-            <span className="folder-detail-meta-dot" aria-hidden>
-              ·
-            </span>
+            <span className="metadata-dot" aria-hidden />
             Updated {formatDate(lastUpdated)}
           </p>
         </header>
@@ -820,8 +841,87 @@ function FolderActions({
   onAddExisting: () => void;
   hasNotesElsewhere: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    function close() {
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") close();
+    }
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
     <div className="folder-actions-row">
+      <h2 className="folder-notes-title">Notes</h2>
+      <button
+        type="button"
+        className="folder-add-trigger"
+        aria-label="Add note"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+      >
+        <IconPlusMedium size={15} />
+      </button>
+      {open ? (
+        <div
+          className="folder-add-popover"
+          role="menu"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {hasNotesElsewhere ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onAddExisting();
+              }}
+            >
+              <IconPageSearch size={14} />
+              Add existing note
+            </button>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onCreateNote();
+            }}
+          >
+            <IconPlusMedium size={14} />
+            New note
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FolderEmptyActions({
+  onCreateNote,
+  onAddExisting,
+  hasNotesElsewhere,
+}: {
+  onCreateNote: () => void;
+  onAddExisting: () => void;
+  hasNotesElsewhere: boolean;
+}) {
+  return (
+    <div className="folder-empty-actions">
       {hasNotesElsewhere ? (
         <button
           type="button"
@@ -859,6 +959,7 @@ function FolderNoteRow({
   onDelete: () => void;
 }) {
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!menu) return;
@@ -878,10 +979,14 @@ function FolderNoteRow({
 
   return (
     <li>
-      <div className="folder-note-row" data-menu-open={menu !== null}>
+      <div
+        className="folder-note-row"
+        data-has-actions="true"
+        data-menu-open={menu !== null}
+      >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconFileText size={14} />
+            <IconNoteText size={14} />
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">
@@ -897,28 +1002,30 @@ function FolderNoteRow({
         <span className="folder-note-time">
           {formatNoteTime(note.updatedAt)}
         </span>
-        <button
-          type="button"
-          className="folder-note-menu"
-          aria-label={`Actions for ${note.title.trim() || "this note"}`}
-          aria-haspopup="menu"
-          aria-expanded={menu !== null}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (menu) {
-              setMenu(null);
-              return;
-            }
-            const rect = event.currentTarget.getBoundingClientRect();
-            setMenu({
-              right: window.innerWidth - rect.right,
-              top: rect.bottom + 4,
-            });
-          }}
-        >
-          <IconDotGrid1x3Horizontal size={13} />
-        </button>
+        <span className="folder-note-actions">
+          <button
+            type="button"
+            className="folder-note-menu"
+            aria-label={`Actions for ${note.title.trim() || "this note"}`}
+            aria-haspopup="menu"
+            aria-expanded={menu !== null}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (menu) {
+                setMenu(null);
+                return;
+              }
+              const rect = event.currentTarget.getBoundingClientRect();
+              setMenu({
+                right: window.innerWidth - rect.right,
+                top: rect.bottom + 4,
+              });
+            }}
+          >
+            <IconDotGrid1x3Horizontal size={13} />
+          </button>
+        </span>
         {menu ? (
           <div
             className="context-menu"
@@ -934,8 +1041,8 @@ function FolderNoteRow({
                 onOpenMove();
               }}
             >
-              <IconFolderAddRight size={14} />
-              Move to folder
+              <IconMoveFolder size={14} />
+              Change folder
             </button>
             <button
               type="button"
@@ -955,15 +1062,7 @@ function FolderNoteRow({
               className="destructive"
               onClick={() => {
                 setMenu(null);
-                if (
-                  window.confirm(
-                    `Delete "${
-                      note.title.trim() || "New note"
-                    }"? This cannot be undone.`,
-                  )
-                ) {
-                  onDelete();
-                }
+                setConfirmDelete(true);
               }}
             >
               <IconTrashCan size={14} />
@@ -972,6 +1071,15 @@ function FolderNoteRow({
           </div>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={onDelete}
+        title={`Delete "${note.title.trim() || "New note"}"?`}
+        description="This cannot be undone."
+        confirmLabel="Delete note"
+        destructive
+      />
     </li>
   );
 }
@@ -990,25 +1098,11 @@ function FolderEmptyState({
       <p className="folder-empty-hint">
         Capture a meeting, a phone call, or a half-formed thought
       </p>
-      <div className="folder-empty-actions">
-        {hasNotesElsewhere ? (
-          <button
-            type="button"
-            className="primary-action"
-            onClick={onAddExisting}
-          >
-            Add existing note
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="primary-action primary-solid"
-          onClick={onCreateNote}
-        >
-          <IconPlusMedium size={13} />
-          New note
-        </button>
-      </div>
+      <FolderEmptyActions
+        onCreateNote={onCreateNote}
+        onAddExisting={onAddExisting}
+        hasNotesElsewhere={hasNotesElsewhere}
+      />
     </div>
   );
 }

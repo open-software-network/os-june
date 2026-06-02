@@ -132,29 +132,87 @@ input:focus-visible,
 /* Shell is pinned to the viewport; the two panels each own their scroll. */
 .app-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w-current, var(--sidebar-w)) minmax(
+      0,
+      1fr
+    );
+  position: relative;
   height: 100vh;
   overflow: hidden;
   background: var(--sidebar);
+  transition: none;
+}
+
+.app-shell[data-sidebar-transition="smooth"] {
   transition: grid-template-columns var(--t-med) var(--ease-out);
 }
 
+.app-shell[data-sidebar-resizing="true"] {
+  transition: none;
+}
+
+.app-shell[data-sidebar-resizing="true"],
+.app-shell[data-sidebar-resizing="true"] * {
+  cursor: col-resize !important;
+}
+
 .app-shell[data-sidebar="collapsed"] {
-  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 /* Sidebar ------------------------------------------------------------ */
 
 .sidebar {
+  grid-column: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
   min-width: 0;
   height: 100vh;
   padding: calc(var(--sp-3) + var(--titlebar-h)) var(--sp-3) var(--sp-3);
   background: var(--sidebar);
   color: var(--sidebar-foreground);
   overflow: hidden;
+}
+
+.app-shell[data-sidebar="collapsed"] .sidebar {
+  display: none;
+}
+
+.sidebar-resize-handle {
+  position: fixed;
+  top: calc(var(--titlebar-h) + var(--sp-2));
+  bottom: 0;
+  /* Track the white card's left edge — sidebar width plus its collapsed gutter
+   * — not the raw sidebar width, so the drag bar rides the card (and stays on
+   * white for contrast) as it collapses instead of sliding onto the gray. */
+  left: calc(
+    var(--sidebar-w-current, var(--sidebar-w)) + var(--main-gutter, 0px) - 5px
+  );
+  z-index: 70;
+  width: 12px;
+  cursor: col-resize;
+}
+
+.sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: var(--sp-4);
+  bottom: var(--sp-8);
+  left: 7px;
+  width: 2px;
+  border-radius: var(--r-pill);
+  background: transparent;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.sidebar-resize-handle:hover::before,
+.app-shell[data-sidebar-resizing="true"] .sidebar-resize-handle::before {
+  background: color-mix(in oklch, var(--foreground) 16%, transparent);
+}
+
+.app-shell[data-sidebar="collapsed"] .sidebar-resize-handle {
+  display: none;
 }
 
 /* Empty strip behind the macOS traffic lights — the sidebar and the inset
@@ -169,6 +227,54 @@ input:focus-visible,
   z-index: 100;
   background: transparent;
   -webkit-app-region: drag;
+}
+
+.chrome-sidebar-toggle {
+  position: fixed;
+  /* Vertically centered in the titlebar, then nudged down a hair to sit level
+   * with the native traffic lights. */
+  top: calc(
+    (var(--titlebar-h) - var(--control-md)) / 2 +
+      var(--titlebar-controls-nudge)
+  );
+  /* Anchored just past the green control (see the token notes) rather than a
+   * bare pixel offset. */
+  left: calc(var(--titlebar-controls-end) + var(--titlebar-controls-gap));
+  z-index: 110;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.chrome-sidebar-toggle:hover {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--foreground);
+}
+
+/* The toggle's divider tweens between the open (full-height, x=9) and closed
+ * (short, centered, x=7) glyphs by sliding + scaling, so it visibly moves
+ * rather than hard-swapping. Transform runs in the SVG's own coordinate space
+ * about the divider's midpoint. */
+.sidebar-toggle-divider {
+  transform-box: view-box;
+  transform-origin: 9px 12px;
+  transition: transform var(--t-med) var(--ease-out);
+}
+
+.chrome-sidebar-toggle[aria-pressed="true"] .sidebar-toggle-divider {
+  /* x=9 → x=7, and full height (14u) → ~6u centered on y=12. */
+  transform: translateX(-2px) scaleY(0.43);
 }
 
 /* The macOS traffic lights float above this row (the sidebar reserves
@@ -237,8 +343,6 @@ input:focus-visible,
 }
 
 /* Collapsed rail: every hit target is the same rounded square. */
-.sidebar[data-collapsed="true"] .sidebar-toggle,
-.sidebar[data-collapsed="true"] .sidebar-search-collapsed,
 .sidebar[data-collapsed="true"] .note-row {
   width: 38px;
   height: 38px;
@@ -254,60 +358,6 @@ input:focus-visible,
 .sidebar[data-collapsed="true"] .note-row-main {
   width: 100%;
   height: 100%;
-}
-
-/* Sidebar toggle — two icons crossfade in the same 18×18 box so the
- * header layout never reflows. Borrowed pattern from Fellow's
- * SidebarCollapseTrigger. */
-.sidebar-toggle {
-  position: relative;
-  flex: 0 0 auto;
-  display: inline-grid;
-  place-items: center;
-  width: var(--control-md);
-  height: var(--control-md);
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
-}
-
-.sidebar-toggle:hover {
-  background: var(--sidebar-accent);
-  color: var(--foreground);
-}
-
-.sidebar-toggle-icon {
-  position: relative;
-  display: block;
-  width: 18px;
-  height: 18px;
-}
-
-.sidebar-toggle-icon > span {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    opacity var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out);
-  will-change: opacity, transform;
-}
-
-.sidebar-toggle-icon > span[data-active="false"] {
-  opacity: 0;
-  transform: scale(0.92);
-}
-
-.sidebar-toggle-icon > span[data-active="true"] {
-  opacity: 1;
-  transform: scale(1);
 }
 
 /* Icon button — used inside the inset card too. */
@@ -483,8 +533,8 @@ input:focus-visible,
   flex: 0 0 auto;
   flex-direction: column;
   gap: 1px;
-  padding-top: var(--sp-2);
-  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  padding-top: 0;
+  background: var(--sidebar);
 }
 
 .sidebar[data-collapsed="true"] .sidebar-footer {
@@ -816,11 +866,13 @@ input:focus-visible,
   z-index: 50;
   min-width: 156px;
   padding: var(--sp-1);
-  border: 1px solid var(--border);
+  border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow: var(--shadow-lg);
+  box-shadow:
+    0 16px 36px oklch(0% 0 none / 12%),
+    0 2px 6px oklch(0% 0 none / 6%);
 }
 
 .context-menu button {
@@ -839,7 +891,11 @@ input:focus-visible,
 }
 
 .context-menu button:hover {
-  background: var(--muted);
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.context-menu button > svg {
+  color: var(--muted-foreground);
 }
 
 .context-menu .destructive {
@@ -847,13 +903,17 @@ input:focus-visible,
 }
 
 .context-menu .destructive:hover {
-  background: var(--destructive-soft);
+  background: color-mix(in oklch, var(--destructive-soft) 55%, transparent);
+}
+
+.context-menu .destructive > svg {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--muted-foreground));
 }
 
 .context-menu-separator {
   height: 1px;
   margin: var(--sp-1) calc(var(--sp-1) * -1);
-  background: var(--border);
+  background: var(--border-subtle);
 }
 
 .sidebar-empty {
@@ -884,6 +944,7 @@ input:focus-visible,
  * Uniform tight radius on all four corners so the card nests cleanly
  * inside the macOS window's curve instead of leaving slivered gaps. */
 .main-panel {
+  grid-column: 2;
   position: relative;
   display: flex;
   min-width: 0;
@@ -897,8 +958,11 @@ input:focus-visible,
   overflow: hidden;
 }
 
+/* Collapsed: no sidebar to provide the left gutter, so the card supplies its
+ * own — matching the right/bottom inset so it floats evenly on all sides
+ * instead of hugging the window edge. */
 .app-shell[data-sidebar="collapsed"] .main-panel {
-  margin-left: 0;
+  margin-left: var(--sp-3);
 }
 
 .main-panel-body {
@@ -1466,7 +1530,7 @@ input:focus-visible,
   padding: var(--sp-2) 0 0;
   font-size: var(--fs-lg);
   line-height: 1.5;
-  color: var(--foreground);
+  color: var(--body-copy);
 }
 
 /* Single-level heading for now (no H2). Diatype, medium weight, just a
@@ -1490,29 +1554,38 @@ input:focus-visible,
 
 .note-preview p {
   margin: 0 0 var(--sp-3);
-  color: var(--foreground);
+  color: var(--body-copy);
 }
 
 .note-preview ul {
   margin: 0 0 var(--sp-3);
-  padding-left: var(--sp-6);
-  list-style: disc;
-  color: var(--foreground);
-  line-height: 1.5;
+  padding-left: 0;
+  list-style: none;
+  color: var(--body-copy);
+  line-height: 1.42;
 }
 
 .note-preview li {
-  margin: 0 0 var(--sp-1);
-  padding-left: var(--sp-1);
+  position: relative;
+  margin: 0 0 2px;
+  padding-left: 16px;
 }
 
-.note-preview li::marker {
-  color: var(--muted-foreground);
+.note-preview li::before {
+  content: "";
+  position: absolute;
+  top: 0.78em;
+  left: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--muted-foreground);
+  transform: translateY(-50%);
 }
 
 .note-preview ul ul {
-  margin-top: var(--sp-2);
-  list-style: circle;
+  margin-top: 2px;
+  padding-left: var(--sp-5);
 }
 
 .note-preview strong {
@@ -2604,7 +2677,7 @@ input:focus-visible,
   font-size: var(--fs-xl);
   font-weight: 400;
   line-height: 1.32;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
 }
 
 /* Compact row variant — tighter vertical rhythm for list-style content
@@ -2848,9 +2921,10 @@ input:focus-visible,
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
+  border: 1px solid var(--popover-border);
   box-shadow:
     0 12px 32px oklch(0% 0 none / 12%),
-    0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent);
+    0 2px 6px oklch(0% 0 none / 6%);
 }
 
 .select-popover li {
@@ -3148,6 +3222,26 @@ input:focus-visible,
   cursor: not-allowed;
 }
 
+/* Keycap hint inside a solid (dark) action button — mirrors the sidebar's
+ * ⌘N caps but tuned for the dark surface: a translucent light chip rather
+ * than the muted-gray one used on light backgrounds. */
+.primary-action-kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  margin-left: var(--sp-1);
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--primary-foreground) 18%, transparent);
+  color: color-mix(in oklch, var(--primary-foreground) 80%, transparent);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .primary-action.primary-destructive {
   border-color: transparent;
   background: var(--destructive);
@@ -3337,7 +3431,15 @@ input:focus-visible,
   padding: var(--sp-10) 0 var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
+  /* Match the dictation view's between-section rhythm. */
+  gap: var(--sp-6);
+}
+
+/* Search sits with the list it filters: a touch of air after the header,
+ * tucked close to the rows below — same treatment as the dictation view. */
+.all-notes-workspace .folders-controls {
+  margin-top: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 
 .dictation-history-workspace {
@@ -3347,7 +3449,12 @@ input:focus-visible,
   padding: var(--sp-10) 0 var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
+  gap: var(--sp-6);
+}
+
+.dictation-history-workspace .folders-controls {
+  margin-top: var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 
 .folders-header {
@@ -3365,7 +3472,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-weight: 400;
   font-size: var(--fs-display);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   line-height: 1.1;
 }
 
@@ -3480,7 +3587,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-size: var(--fs-lg);
   font-weight: 400;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--foreground);
 }
 
@@ -3635,10 +3742,12 @@ input:focus-visible,
   z-index: 40;
   min-width: 140px;
   padding: var(--sp-1);
-  border: 1px solid var(--border);
+  border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
   background: var(--popover);
-  box-shadow: var(--shadow-lg);
+  box-shadow:
+    0 12px 32px oklch(0% 0 none / 12%),
+    0 2px 6px oklch(0% 0 none / 6%);
 }
 
 .folders-sort-item {
@@ -3660,7 +3769,7 @@ input:focus-visible,
 }
 
 .folders-sort-item:hover {
-  background: var(--muted);
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
 }
 
 .folders-sort-check {
@@ -3752,7 +3861,7 @@ input:focus-visible,
   margin: 0;
   font-size: var(--fs-lg);
   font-weight: 500;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3775,9 +3884,13 @@ input:focus-visible,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-1) var(--sp-3);
+  gap: var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+  font-variant-numeric: proportional-nums;
+  font-feature-settings:
+    "tnum" 0,
+    "pnum" 1;
 }
 
 .folder-card-footer > span {
@@ -3791,6 +3904,13 @@ input:focus-visible,
   height: 14px;
   color: var(--muted-foreground);
   opacity: 0.85;
+}
+
+.metadata-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
 }
 
 .folder-card-menu {
@@ -3880,7 +4000,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-weight: 400;
   font-size: var(--fs-display);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   line-height: 1.1;
   cursor: text;
   border-radius: var(--r-sm);
@@ -3908,7 +4028,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-weight: 400;
   font-size: var(--fs-display);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   line-height: 1.1;
   width: calc(100% + var(--sp-4));
   border-radius: var(--r-sm);
@@ -3934,6 +4054,10 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+  font-variant-numeric: proportional-nums;
+  font-feature-settings:
+    "tnum" 0,
+    "pnum" 1;
 }
 
 .folder-detail-meta-pill {
@@ -3967,7 +4091,7 @@ input:focus-visible,
 .folder-note-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
   margin: 0 calc(-1 * var(--sp-4));
@@ -4034,6 +4158,14 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   white-space: nowrap;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.folder-note-row[data-has-actions="true"]:hover .folder-note-time,
+.folder-note-row[data-has-actions="true"]:focus-within .folder-note-time,
+.folder-note-row[data-has-actions="true"][data-menu-open="true"]
+  .folder-note-time {
+  opacity: 0;
 }
 
 .all-notes-list {
@@ -4077,7 +4209,7 @@ input:focus-visible,
 .dictation-history-item {
   position: relative;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   /* Top-align so the icon, time, and actions sit level with the first line
    * of the transcript instead of drifting to the middle of a multi-line
    * (or expanded) row. */
@@ -4138,17 +4270,77 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   white-space: nowrap;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.dictation-history-item:hover .dictation-history-time,
+.dictation-history-item:focus-within .dictation-history-time {
+  opacity: 0;
 }
 
 /* Trailing row actions — copy + delete, revealed on hover/focus. */
 .dictation-history-actions {
+  position: absolute;
+  z-index: 2;
+  top: var(--sp-3);
+  right: var(--sp-4);
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
-  align-self: start;
+  width: 112px;
+  min-height: 28px;
+  padding-left: var(--sp-8);
+  border-radius: var(--r-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+/* Hover fade behind the trailing actions. Painted on the ROW itself so it
+ * spans the full row height — long titles / transcripts / dates tuck neatly
+ * underneath instead of peeking out above or below a button-height box. */
+.dictation-history-item::after,
+.folder-note-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 160px;
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in oklch, var(--muted) 35%, var(--card)) 45%,
+    color-mix(in oklch, var(--muted) 35%, var(--card))
+  );
+  /* Above the row's static text (so long titles tuck under) but below the
+   * action cluster (z-index: 2) so the fade never paints over the buttons. */
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.dictation-history-item:hover::after,
+.dictation-history-item:focus-within::after,
+.folder-note-row[data-has-actions="true"]:hover::after,
+.folder-note-row[data-has-actions="true"]:focus-within::after,
+.folder-note-row[data-has-actions="true"][data-menu-open="true"]::after {
+  opacity: 1;
+}
+
+.dictation-history-item:hover .dictation-history-actions,
+.dictation-history-item:focus-within .dictation-history-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .dictation-row-act {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 var(--control-sm);
   display: inline-grid;
   place-items: center;
   width: var(--control-sm);
@@ -4158,7 +4350,8 @@ input:focus-visible,
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
-  opacity: 0;
+  opacity: 1;
+  pointer-events: auto;
   cursor: pointer;
   transition:
     opacity var(--t-fast) var(--ease-out),
@@ -4171,6 +4364,15 @@ input:focus-visible,
 .dictation-row-act:focus-visible,
 .dictation-row-act[data-copied="true"] {
   opacity: 1;
+  pointer-events: auto;
+}
+
+.dictation-row-act > svg,
+.folder-note-menu > svg {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 .dictation-row-act:hover {
@@ -4303,7 +4505,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-weight: 400;
   font-size: var(--fs-xl);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .empty-state-description {
@@ -4360,7 +4562,36 @@ input:focus-visible,
   margin: 0;
 }
 
+.folder-note-actions {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: var(--sp-4);
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 56px;
+  min-height: var(--control-sm);
+  padding-left: var(--sp-5);
+  border-radius: var(--r-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.folder-note-row[data-has-actions="true"]:hover .folder-note-actions,
+.folder-note-row[data-has-actions="true"]:focus-within .folder-note-actions,
+.folder-note-row[data-has-actions="true"][data-menu-open="true"]
+  .folder-note-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .folder-note-menu {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 var(--control-sm);
   display: inline-grid;
   place-items: center;
   width: var(--control-sm);
@@ -4370,21 +4601,14 @@ input:focus-visible,
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
-  opacity: 0;
   cursor: pointer;
   transition:
-    opacity var(--t-fast) var(--ease-out),
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
 }
 
-.folder-note-row:hover .folder-note-menu,
-.folder-note-row:focus-within .folder-note-menu,
-.folder-note-row[data-menu-open="true"] .folder-note-menu {
-  opacity: 1;
-}
-
-.folder-note-menu:hover {
+.folder-note-menu:hover,
+.folder-note-menu[aria-expanded="true"] {
   background: var(--muted);
   color: var(--foreground);
 }
@@ -4420,10 +4644,94 @@ input:focus-visible,
 
 /* Folder action row above the notes list — right-aligned. */
 .folder-actions-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: var(--sp-3);
+}
+
+/* The "Notes" action row is the list's header, so sit the list tight beneath
+ * it — the detail view's roomy sp-8 gap belongs above the row (separating it
+ * from the folder header), not between the title and its own rows. */
+.folder-actions-row + .folder-notes {
+  margin-top: calc(var(--sp-3) - var(--sp-8));
+}
+
+.folder-notes-title {
+  margin: 0;
+  /* Serif display title, a touch larger than body — matches the page's serif
+   * heading voice. Line box matches the add button's height so both share the
+   * same vertical center in the flex row (a tight line-height:1 left the serif
+   * cap-height sitting low against the button). */
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+  line-height: var(--control-lg);
+  color: var(--foreground);
+}
+
+.folder-add-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--foreground);
+  color: var(--background);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.folder-add-trigger:hover,
+.folder-add-trigger[aria-expanded="true"] {
+  background: color-mix(in oklch, var(--foreground) 88%, var(--card));
+}
+
+.folder-add-popover {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  right: 0;
+  z-index: 60;
+  min-width: 178px;
+  padding: var(--sp-1);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow:
+    0 12px 32px oklch(0% 0 none / 12%),
+    0 2px 6px oklch(0% 0 none / 6%);
+}
+
+.folder-add-popover button {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.folder-add-popover button:hover {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.folder-add-popover button > svg {
+  color: var(--muted-foreground);
 }
 
 /* Add-existing-note dialog ----------------------------------------- */
@@ -4616,7 +4924,7 @@ input:focus-visible,
   margin: 0;
   font-size: var(--fs-xl);
   font-weight: 500;
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4762,6 +5070,12 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
+.move-to-folder-trigger > svg {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+}
+
 .move-to-folder-trigger:hover,
 .move-to-folder-trigger[aria-expanded="true"] {
   background: color-mix(in oklch, var(--muted) 55%, transparent);
@@ -4811,11 +5125,13 @@ input:focus-visible,
   z-index: 60;
   width: 280px;
   padding: var(--sp-1);
-  border: 1px solid var(--border);
+  border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow: var(--shadow-lg);
+  box-shadow:
+    0 12px 32px oklch(0% 0 none / 12%),
+    0 2px 6px oklch(0% 0 none / 6%);
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
@@ -4848,7 +5164,7 @@ input:focus-visible,
 .move-to-folder-divider {
   height: 1px;
   margin: 2px var(--sp-1);
-  background: var(--border);
+  background: var(--border-subtle);
 }
 
 .move-to-folder-list {
@@ -4879,7 +5195,12 @@ input:focus-visible,
 
 .move-to-folder-item:hover,
 .move-to-folder-create:hover {
-  background: var(--muted);
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.move-to-folder-item > svg,
+.move-to-folder-create > svg {
+  color: var(--muted-foreground);
 }
 
 .move-to-folder-item-name {
@@ -4960,7 +5281,7 @@ input:focus-visible,
   font-family: var(--font-serif);
   font-size: var(--fs-display);
   font-weight: 400;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--foreground);
   text-align: center;
 }
