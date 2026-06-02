@@ -4653,13 +4653,14 @@ input:focus-visible,
 
 .folder-notes-title {
   margin: 0;
-  /* Serif display title, a touch larger than body — matches the page's
-   * serif heading voice. line-height:1 so it optically centers against the
-   * add button in the flex row. */
+  /* Serif display title, a touch larger than body — matches the page's serif
+   * heading voice. Line box matches the add button's height so both share the
+   * same vertical center in the flex row (a tight line-height:1 left the serif
+   * cap-height sitting low against the button). */
   font-family: var(--font-serif);
   font-size: var(--fs-xl);
   font-weight: 400;
-  line-height: 1;
+  line-height: var(--control-lg);
   color: var(--foreground);
 }
 
