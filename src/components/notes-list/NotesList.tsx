@@ -1,7 +1,10 @@
-import { IconFileText } from "central-icons/IconFileText";
+import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconMoveFolder } from "central-icons/IconMoveFolder";
+import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
-import { useMemo, useState } from "react";
+import { IconTrashCan } from "central-icons/IconTrashCan";
+import { useEffect, useMemo, useState } from "react";
 import type { NoteListItemDto } from "../../lib/tauri";
 
 type NotesListProps = {
@@ -9,6 +12,8 @@ type NotesListProps = {
   selectedNoteId?: string;
   onSelectNote: (noteId: string) => void;
   onCreateNote: () => void;
+  onOpenMoveDialog: (noteId: string) => void;
+  onDeleteNote: (noteId: string) => void;
 };
 
 export function NotesList({
@@ -16,6 +21,8 @@ export function NotesList({
   selectedNoteId,
   onSelectNote,
   onCreateNote,
+  onOpenMoveDialog,
+  onDeleteNote,
 }: NotesListProps) {
   const [query, setQuery] = useState("");
   const filteredNotes = useMemo(() => {
@@ -48,6 +55,9 @@ export function NotesList({
         >
           <IconPlusMedium size={13} />
           New note
+          <kbd className="primary-action-kbd" aria-hidden>
+            ⌘N
+          </kbd>
         </button>
       </header>
 
@@ -89,6 +99,8 @@ export function NotesList({
               note={note}
               selected={selectedNoteId === note.id}
               onSelect={() => onSelectNote(note.id)}
+              onOpenMove={() => onOpenMoveDialog(note.id)}
+              onDelete={() => onDeleteNote(note.id)}
             />
           ))}
         </ul>
@@ -101,20 +113,46 @@ function AllNoteRow({
   note,
   selected,
   onSelect,
+  onOpenMove,
+  onDelete,
 }: {
   note: NoteListItemDto;
   selected: boolean;
   onSelect: () => void;
+  onOpenMove: () => void;
+  onDelete: () => void;
 }) {
   const title = note.title.trim() || "New note";
   const preview = note.preview.trim() || statusLabel(note.processingStatus);
+  const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    function close() {
+      setMenu(null);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") close();
+    }
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
 
   return (
     <li>
-      <div className="folder-note-row all-notes-row" data-selected={selected}>
+      <div
+        className="folder-note-row all-notes-row"
+        data-selected={selected}
+        data-has-actions="true"
+        data-menu-open={menu !== null}
+      >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconFileText size={14} />
+            <IconNoteText size={14} />
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>
@@ -124,6 +162,67 @@ function AllNoteRow({
         <span className="folder-note-time">
           {formatNoteTime(note.updatedAt)}
         </span>
+        <span className="folder-note-actions">
+          <button
+            type="button"
+            className="folder-note-menu"
+            aria-label={`Actions for ${title}`}
+            aria-haspopup="menu"
+            aria-expanded={menu !== null}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (menu) {
+                setMenu(null);
+                return;
+              }
+              const rect = event.currentTarget.getBoundingClientRect();
+              setMenu({
+                right: window.innerWidth - rect.right,
+                top: rect.bottom + 4,
+              });
+            }}
+          >
+            <IconDotGrid1x3Horizontal size={13} />
+          </button>
+        </span>
+        {menu ? (
+          <div
+            className="context-menu"
+            style={{ right: menu.right, top: menu.top }}
+            role="menu"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenu(null);
+                onOpenMove();
+              }}
+            >
+              <IconMoveFolder size={14} />
+              Move to folder
+            </button>
+            <div className="context-menu-separator" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="destructive"
+              onClick={() => {
+                setMenu(null);
+                if (
+                  window.confirm(`Delete "${title}"? This cannot be undone.`)
+                ) {
+                  onDelete();
+                }
+              }}
+            >
+              <IconTrashCan size={14} />
+              Delete note
+            </button>
+          </div>
+        ) : null}
       </div>
     </li>
   );

@@ -65,6 +65,15 @@
   --sidebar-w: 240px;
   --sidebar-w-collapsed: 56px;
   --titlebar-h: 28px;
+  /* macOS traffic lights live in the titlebar strip and their geometry is
+   * owned by the OS — CSS can't measure them, so we anchor our own titlebar
+   * controls to these named values instead of bare pixels. `*-end` is the
+   * right edge of the green control; `*-gap` is the breathing room after it;
+   * `*-nudge` is a small optical drop so a 28px control reads as centered
+   * against the slightly-low native lights. */
+  --titlebar-controls-end: 70px;
+  --titlebar-controls-gap: var(--sp-4);
+  --titlebar-controls-nudge: 2px;
 
   /* Centered content column. Shared by every primary view (notes, folders,
    * dictation, the editor) so they line up, and steps up on larger displays
@@ -111,6 +120,12 @@
    * and adapt across light/dark. */
   --surface-subtle: color-mix(in oklch, var(--muted) 65%, transparent);
   --border-subtle: color-mix(in oklch, var(--border) 55%, transparent);
+  --body-copy: color-mix(
+    in oklch,
+    var(--foreground) 86%,
+    var(--muted-foreground)
+  );
+  --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
   --record: oklch(60% 0.22 27);
   /* Warm-accent set for the record button hover state — a soft peach
@@ -202,6 +217,12 @@
    * 55% mix would dilute it below the visibility floor. Bump to 80%
    * so the subtle border still reads against the dark card. */
   --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
+  --body-copy: color-mix(
+    in oklch,
+    var(--foreground) 88%,
+    var(--muted-foreground)
+  );
+  --popover-border: color-mix(in oklch, white 12%, transparent);
   --warm-soft: oklch(0.42 0.12 50);
   --warm-strong: oklch(0.86 0.16 60);
   --focus-ring: oklch(0.78 0.025 84.59 / 22%);

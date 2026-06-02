@@ -1,6 +1,6 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
-import { IconFileText } from "central-icons/IconFileText";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconNoteText } from "central-icons/IconNoteText";
 import { useEffect, useMemo, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
@@ -131,7 +131,7 @@ export function AddNotesToFolderDialog({
                     onClick={() => toggle(note.id)}
                   >
                     <span className="add-notes-icon" aria-hidden>
-                      <IconFileText size={14} />
+                      <IconNoteText size={14} />
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">

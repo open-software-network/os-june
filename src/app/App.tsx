@@ -1,7 +1,15 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
@@ -45,6 +53,7 @@ import type {
   DictationHelperEvent,
   NoteDto,
   RecordingStatusDto,
+  AccountStatus,
 } from "../lib/tauri";
 import type {
   RecordingSourceMode,
@@ -55,6 +64,24 @@ import { shouldBlockOnSignIn } from "../lib/account-gate";
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
 
+const SIDEBAR_DEFAULT_WIDTH = 240;
+const SIDEBAR_MIN_WIDTH = 188;
+const SIDEBAR_MAX_WIDTH = 320;
+const SIDEBAR_COLLAPSE_WIDTH = 160;
+// Floor for the note card so the sidebar can't be dragged wide enough to
+// crush it into a sliver — it always keeps a usable width plus its gutters.
+const MAIN_PANEL_MIN_WIDTH = 420;
+
+// Largest the sidebar may grow given the live window width: never past its own
+// cap, and never so far that the main panel drops below its floor. Falls back
+// to the sidebar min on very narrow windows where both can't be satisfied.
+function sidebarMaxWidth() {
+  return Math.max(
+    SIDEBAR_MIN_WIDTH,
+    Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - MAIN_PANEL_MIN_WIDTH),
+  );
+}
+
 export function App() {
   const [state, dispatch] = useReducer(
     notesReducer,
@@ -63,8 +90,17 @@ export function App() {
   );
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [sidebarResizing, setSidebarResizing] = useState(false);
+  const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">(
+    "none",
+  );
   const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
+  // Tracks that the open note was drilled into from the All notes view, so the
+  // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
+  // whenever a note is opened from anywhere else (e.g. the sidebar list).
+  const [originAllNotes, setOriginAllNotes] = useState(false);
   const [folderReturnTarget, setFolderReturnTarget] = useState<
     { noteId: string; label: string } | undefined
   >();
@@ -91,6 +127,7 @@ export function App() {
     refresh: refreshAccount,
     setAccount,
   } = useAccountStatus();
+  const startOnFreshNoteRef = useRef(false);
   const signInRequired = shouldBlockOnSignIn(account);
   const appBlocked = accountLoading || signInRequired;
   const selectedNote = state.selectedNote;
@@ -122,6 +159,16 @@ export function App() {
       })
       .catch((err: unknown) => setError(messageFromError(err)));
   }
+
+  const handleAccountChanged = useCallback(
+    (nextAccount: AccountStatus) => {
+      if (signInRequired && !shouldBlockOnSignIn(nextAccount)) {
+        startOnFreshNoteRef.current = true;
+      }
+      setAccount(nextAccount);
+    },
+    [setAccount, signInRequired],
+  );
 
   useEffect(() => {
     preloadRecordingSounds();
@@ -167,6 +214,13 @@ export function App() {
         dispatch({ type: "bootstrapLoaded", payload: seeded.payload });
         if (seeded.fakeNote) {
           dispatch({ type: "noteLoaded", note: seeded.fakeNote });
+          return;
+        }
+        if (startOnFreshNoteRef.current || seeded.payload.notes.length === 0) {
+          startOnFreshNoteRef.current = false;
+          const note = await createNote(undefined);
+          dispatch({ type: "noteLoaded", note });
+          setActiveView("notes");
           return;
         }
         const firstNoteId = seeded.payload.notes[0]?.id;
@@ -290,6 +344,8 @@ export function App() {
           folderId === null ? undefined : (folderId ?? state.selectedFolderId);
         const note = await createNote(targetFolderId);
         dispatch({ type: "noteLoaded", note });
+        setOriginFolderId(undefined);
+        setOriginAllNotes(false);
         setActiveView("notes");
       } catch (err) {
         setError(messageFromError(err));
@@ -400,7 +456,23 @@ export function App() {
       const note = await getNote(noteId);
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(undefined);
+      setOriginAllNotes(false);
       setFolderReturnTarget(undefined);
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  // Drilling into a note from the All notes view. Mirrors the folder flow so
+  // the note opens with a "Back to All notes" breadcrumb up top.
+  async function handleSelectNoteFromAllNotes(noteId: string) {
+    try {
+      const note = await getNote(noteId);
+      dispatch({ type: "noteLoaded", note });
+      setOriginFolderId(undefined);
+      setOriginAllNotes(true);
+      setFolderReturnTarget(undefined);
+      setActiveView("notes");
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -434,6 +506,7 @@ export function App() {
       const note = await getNote(noteId);
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(folderId);
+      setOriginAllNotes(false);
       setFolderReturnTarget(undefined);
       setActiveView("notes");
     } catch (err) {
@@ -581,7 +654,7 @@ export function App() {
         <AccountGate
           account={account}
           loading={accountLoading}
-          onAccountChanged={setAccount}
+          onAccountChanged={handleAccountChanged}
         />
       </main>
     );
@@ -591,6 +664,13 @@ export function App() {
     <main
       className="app-shell"
       data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
+      data-sidebar-resizing={sidebarResizing ? "true" : "false"}
+      data-sidebar-transition={sidebarTransition}
+      style={
+        {
+          "--sidebar-w-current": `${sidebarWidth}px`,
+        } as CSSProperties
+      }
     >
       <div
         className="titlebar-drag"
@@ -598,6 +678,23 @@ export function App() {
         data-tauri-drag-region
         onPointerDown={handleTitlebarPointerDown}
       />
+      <button
+        type="button"
+        className="chrome-sidebar-toggle"
+        aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        aria-pressed={sidebarCollapsed}
+        onClick={() => {
+          setSidebarTransition("none");
+          if (sidebarCollapsed) {
+            setSidebarWidth((width) => Math.max(width, SIDEBAR_DEFAULT_WIDTH));
+            setSidebarCollapsed(false);
+            return;
+          }
+          setSidebarCollapsed(true);
+        }}
+      >
+        <SidebarToggleGlyph />
+      </button>
       <Sidebar
         folders={state.folders}
         notes={state.notes}
@@ -612,6 +709,7 @@ export function App() {
           }
           if (view !== "notes") {
             setOriginFolderId(undefined);
+            setOriginAllNotes(false);
             setFolderReturnTarget(undefined);
           }
         }}
@@ -631,7 +729,38 @@ export function App() {
         }
         recoverableNoteIds={recoverableNoteIds}
         collapsed={sidebarCollapsed}
-        onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+      />
+      <div
+        className="sidebar-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onPointerDown={(event) =>
+          handleSidebarResizeStart(
+            event,
+            sidebarWidth,
+            () => {
+              setSidebarResizing(true);
+              setSidebarTransition("none");
+            },
+            (finalWidth) => {
+              if (finalWidth <= SIDEBAR_COLLAPSE_WIDTH) {
+                setSidebarResizing(false);
+                setSidebarTransition("smooth");
+                setSidebarWidth(Math.max(0, finalWidth));
+                setSidebarCollapsed(true);
+                return;
+              }
+              const nextWidth = Math.min(
+                sidebarMaxWidth(),
+                Math.max(SIDEBAR_MIN_WIDTH, finalWidth),
+              );
+              setSidebarResizing(false);
+              setSidebarCollapsed(false);
+              setSidebarWidth(nextWidth);
+            },
+          )
+        }
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
@@ -645,7 +774,7 @@ export function App() {
                 sourceMode={sourceMode}
                 sourceReadiness={sourceReadiness}
                 checkingSourceReadiness={checkingSourceReadiness}
-                onAccountChanged={setAccount}
+                onAccountChanged={handleAccountChanged}
                 onAccountRefresh={refreshAccount}
                 onSourceModeChange={handleSourceModeChange}
                 onEnableSystemAudio={handleEnableSystemAudio}
@@ -668,11 +797,11 @@ export function App() {
                 notes={state.notes}
                 selectedNoteId={state.selectedNoteId}
                 onSelectNote={(noteId) =>
-                  void handleSelectNote(noteId).then(() =>
-                    setActiveView("notes"),
-                  )
+                  void handleSelectNoteFromAllNotes(noteId)
                 }
                 onCreateNote={() => void handleCreateNote(null)}
+                onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+                onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
               />
             ) : activeView === "folders" ? (
               <FoldersWorkspace
@@ -739,6 +868,24 @@ export function App() {
                             folderId: originFolder.id,
                           });
                           setOriginFolderId(undefined);
+                        },
+                      },
+                      { label: selectedNote.title.trim() || "New note" },
+                    ]}
+                  />
+                ) : originAllNotes ? (
+                  <BreadcrumbBar
+                    backLabel="Back to All notes"
+                    onBack={() => {
+                      setActiveView("all-notes");
+                      setOriginAllNotes(false);
+                    }}
+                    items={[
+                      {
+                        label: "All notes",
+                        onClick: () => {
+                          setActiveView("all-notes");
+                          setOriginAllNotes(false);
                         },
                       },
                       { label: selectedNote.title.trim() || "New note" },
@@ -852,6 +999,42 @@ export function App() {
   );
 }
 
+// Sidebar toggle icon. One static panel with a single divider that animates:
+// expanded it's a full-height line at x=9, collapsed it slides left to x=7 and
+// shrinks to a short centered bar — the same glyph the two central-icons draw,
+// but tweened via a transform on the divider so it visibly moves between states.
+// The collapsed transform is driven by `aria-pressed` on the parent button.
+function SidebarToggleGlyph() {
+  return (
+    <svg
+      className="sidebar-toggle-glyph"
+      width={18}
+      height={18}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <path
+        d="M3 8C3 6.34315 4.34315 5 6 5H18C19.6569 5 21 6.34315 21 8V16C21 17.6569 19.6569 19 18 19H6C4.34315 19 3 17.6569 3 16V8Z"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinejoin="round"
+      />
+      <line
+        className="sidebar-toggle-divider"
+        x1={9}
+        y1={5}
+        x2={9}
+        y2={19}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
   if (event.button !== 0 || event.detail > 1) return;
   event.preventDefault();
@@ -860,6 +1043,108 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     .catch((error: unknown) =>
       console.warn("Failed to start window drag", error),
     );
+}
+
+function handleSidebarResizeStart(
+  event: ReactPointerEvent<HTMLDivElement>,
+  currentWidth: number,
+  onStart: () => void,
+  onEnd: (width: number) => void,
+) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  onStart();
+  const handle = event.currentTarget;
+  const shell = handle.closest(".app-shell") as HTMLElement | null;
+  const mainPanel = shell?.querySelector(".main-panel") as HTMLElement | null;
+  const startX = event.clientX;
+  const startWidth = currentWidth;
+  let latestWidth = currentWidth;
+  let collapsed = currentWidth === 0;
+
+  // While dragging in the resizable range the panel tracks the cursor with no
+  // transition (snappy). But the snap between the min width and fully-closed
+  // is a discrete jump — animate *that* crossing so collapsing/reopening via
+  // drag tweens smoothly. The handle's `left` rides along so the drag line
+  // doesn't detach from the panel edge mid-tween, and the main panel's left
+  // margin eases to its collapsed gutter at the same time so the card lands on
+  // its padding instead of sliding to the window edge and snapping back.
+  function setSnapTransition(animate: boolean) {
+    const timing = "var(--t-med) var(--ease-out)";
+    if (shell)
+      shell.style.transition = animate
+        ? `grid-template-columns ${timing}`
+        : "none";
+    handle.style.transition = animate ? `left ${timing}` : "none";
+    if (mainPanel)
+      mainPanel.style.transition = animate ? `margin ${timing}` : "none";
+  }
+
+  function applyWidth(width: number) {
+    shell?.style.setProperty("--sidebar-w-current", `${width}px`);
+    // Expanded the card hugs grid column 2 (the sidebar supplies the gutter);
+    // collapsed it must carry its own left gutter. Drive it here so it tweens
+    // with the collapse rather than jumping when React commits on pointer-up.
+    // `--main-gutter` keeps the resize bar tracking the card's left edge (so it
+    // rides the white, not the gray) since the bar is positioned off it too.
+    if (mainPanel)
+      mainPanel.style.marginLeft = width === 0 ? "var(--sp-3)" : "0px";
+    shell?.style.setProperty("--main-gutter", width === 0 ? "var(--sp-3)" : "0px");
+    latestWidth = width;
+  }
+
+  function onPointerMove(moveEvent: PointerEvent) {
+    const rawWidth = startWidth + moveEvent.clientX - startX;
+
+    if (rawWidth <= SIDEBAR_COLLAPSE_WIDTH) {
+      // Below the threshold: collapse to 0. Only kick the smooth transition on
+      // the *crossing* — subsequent moves must leave it alone so the tween
+      // isn't cancelled by the next pointermove a few ms later.
+      if (!collapsed) {
+        collapsed = true;
+        setSnapTransition(true);
+        applyWidth(0);
+      }
+      return;
+    }
+
+    const nextWidth = Math.min(
+      sidebarMaxWidth(),
+      Math.max(SIDEBAR_MIN_WIDTH, rawWidth),
+    );
+    if (collapsed) {
+      // Re-opening from collapsed: animate the 0 → min snap.
+      collapsed = false;
+      setSnapTransition(true);
+      applyWidth(nextWidth);
+      return;
+    }
+    // Live resize within range: snap-follow the cursor, but don't re-assert
+    // `none` (which would cancel an in-flight open tween) unless the width
+    // actually moves.
+    if (nextWidth !== latestWidth) {
+      setSnapTransition(false);
+      applyWidth(nextWidth);
+    }
+  }
+
+  function onPointerUp() {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    // Hand control back to React-driven styling. Commit synchronously so the
+    // collapsed/expanded class (and its matching left margin) is in the DOM
+    // *before* we drop the inline margin — otherwise removing it would briefly
+    // expose the expanded margin and flash a jump.
+    shell?.style.removeProperty("transition");
+    handle.style.removeProperty("transition");
+    mainPanel?.style.removeProperty("transition");
+    flushSync(() => onEnd(latestWidth));
+    mainPanel?.style.removeProperty("margin-left");
+    shell?.style.removeProperty("--main-gutter");
+  }
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
 }
 
 function isDeniedPermission(state?: string) {

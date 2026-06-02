@@ -135,16 +135,18 @@ describe("folders UI", () => {
         selectedNoteId="note-2"
         onSelectNote={onSelectNote}
         onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
       />,
     );
     const list = within(
       container.querySelector(".all-notes-list") as HTMLElement,
     );
 
-    expect(list.getByRole("button", { name: /Second/ })).toBeInTheDocument();
+    expect(list.getByRole("button", { name: /^Second/ })).toBeInTheDocument();
     expect(screen.queryByText("Ideas")).not.toBeInTheDocument();
 
-    await user.click(list.getByRole("button", { name: /Second/ }));
+    await user.click(list.getByRole("button", { name: /^Second/ }));
     expect(onSelectNote).toHaveBeenCalledWith("note-2");
   });
 
@@ -160,6 +162,8 @@ describe("folders UI", () => {
         ]}
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
       />,
     );
 
@@ -168,7 +172,13 @@ describe("folders UI", () => {
 
   it("shows empty state with create action", () => {
     render(
-      <NotesList notes={[]} onSelectNote={vi.fn()} onCreateNote={vi.fn()} />,
+      <NotesList
+        notes={[]}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+      />,
     );
 
     expect(screen.getByText("No notes yet.")).toBeInTheDocument();
