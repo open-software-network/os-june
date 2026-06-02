@@ -271,7 +271,7 @@ function FolderList({
       />
       {editFolderTarget ? (
         <EditFolderDialog
-          open={editFolderTarget !== undefined}
+          open
           onClose={() => setEditId(null)}
           folder={editFolderTarget}
           onSave={(name, description) =>
@@ -959,6 +959,7 @@ function FolderNoteRow({
   onDelete: () => void;
 }) {
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!menu) return;
@@ -1061,15 +1062,7 @@ function FolderNoteRow({
               className="destructive"
               onClick={() => {
                 setMenu(null);
-                if (
-                  window.confirm(
-                    `Delete "${
-                      note.title.trim() || "New note"
-                    }"? This cannot be undone.`,
-                  )
-                ) {
-                  onDelete();
-                }
+                setConfirmDelete(true);
               }}
             >
               <IconTrashCan size={14} />
@@ -1078,6 +1071,15 @@ function FolderNoteRow({
           </div>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={onDelete}
+        title={`Delete "${note.title.trim() || "New note"}"?`}
+        description="This cannot be undone."
+        confirmLabel="Delete note"
+        destructive
+      />
     </li>
   );
 }

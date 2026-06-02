@@ -6,6 +6,7 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useState } from "react";
 import type { NoteListItemDto } from "../../lib/tauri";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 type NotesListProps = {
   notes: NoteListItemDto[];
@@ -125,6 +126,7 @@ function AllNoteRow({
   const title = note.title.trim() || "New note";
   const preview = note.preview.trim() || statusLabel(note.processingStatus);
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!menu) return;
@@ -211,11 +213,7 @@ function AllNoteRow({
               className="destructive"
               onClick={() => {
                 setMenu(null);
-                if (
-                  window.confirm(`Delete "${title}"? This cannot be undone.`)
-                ) {
-                  onDelete();
-                }
+                setConfirmDelete(true);
               }}
             >
               <IconTrashCan size={14} />
@@ -224,6 +222,15 @@ function AllNoteRow({
           </div>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={onDelete}
+        title={`Delete "${title}"?`}
+        description="This cannot be undone."
+        confirmLabel="Delete note"
+        destructive
+      />
     </li>
   );
 }
