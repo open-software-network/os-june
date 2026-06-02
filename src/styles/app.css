@@ -4651,6 +4651,13 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
+/* The "Notes" action row is the list's header, so sit the list tight beneath
+ * it — the detail view's roomy sp-8 gap belongs above the row (separating it
+ * from the folder header), not between the title and its own rows. */
+.folder-actions-row + .folder-notes {
+  margin-top: calc(var(--sp-3) - var(--sp-8));
+}
+
 .folder-notes-title {
   margin: 0;
   /* Serif display title, a touch larger than body — matches the page's serif
