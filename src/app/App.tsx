@@ -585,10 +585,10 @@ export function App() {
   async function handleFinishRecording(sessionId: string) {
     // Collapse the shell back to idle the instant stop is pressed so it
     // never lingers wide while the (potentially long) transcribe +
-    // generate pipeline runs. The record button stays disabled via
-    // processingLock until the backend resolves, and the body shimmer
-    // ("Transcribing audio…" → "Generating notes…") tells the user
-    // work is still in flight.
+    // generate pipeline runs. Processing is queued per note, so the record
+    // button stays available — you can stack another take while this one
+    // finishes — and the body shimmer ("Transcribing audio…" → "Generating
+    // notes…") plus a queued count tell the user work is still in flight.
     dispatch({ type: "recordingStatusCleared" });
     playRecordingSound("stop");
     if (selectedNote) {

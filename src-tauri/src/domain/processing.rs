@@ -1,7 +1,7 @@
 use crate::{
     audio::turns::{
         coalesce_turns_for_transcription, detect_turns, normalize_wav_for_transcription,
-        write_turn_wav, DetectionSource,
+        split_wav_for_transcription, write_turn_wav, DetectionSource,
     },
     db::repositories::Repositories,
     domain::types::{AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode},
@@ -213,13 +213,22 @@ pub async fn process_saved_audio(
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
-    let transcript = match transcribe_saved_audio(TranscriptionRequest {
-        provider: transcription_provider.clone(),
-        audio_path: normalized_audio_path,
-        title: title.clone(),
-        context: dictionary_context.clone(),
-        operation_id: Some(note_id.to_string()),
-    })
+    let transcript = match transcribe_prepared_audio(
+        default_turn_transcriber(),
+        TranscribePreparedAudioRequest {
+            provider: transcription_provider.clone(),
+            audio_path: normalized_audio_path,
+            temp_dir: temp_dir.clone(),
+            chunk_stem: audio_artifact_id.to_string(),
+            title: title.clone(),
+            base_context: dictionary_context.clone(),
+            operation_id: note_id.to_string(),
+            source: "microphone".to_string(),
+            start_ms: None,
+            end_ms: None,
+            turn_index: None,
+        },
+    )
     .await
     {
         Ok(transcript) => transcript,
@@ -387,6 +396,7 @@ pub async fn process_saved_source_audio(
             artifact_id: turn.artifact_id,
             source: turn.source,
             audio_path,
+            temp_dir: segment_dir.clone(),
             source_path: source_audio_path,
             covers_full_source,
             start_ms: turn.start_ms,
@@ -600,6 +610,7 @@ struct TurnTranscriptionJob {
     artifact_id: String,
     source: String,
     audio_path: PathBuf,
+    temp_dir: PathBuf,
     source_path: PathBuf,
     covers_full_source: bool,
     start_ms: i64,
@@ -613,6 +624,90 @@ type TurnTranscriber = Arc<dyn Fn(TranscriptionRequest) -> TranscriptionFuture +
 
 fn default_turn_transcriber() -> TurnTranscriber {
     Arc::new(|request| Box::pin(transcribe_saved_audio(request)))
+}
+
+struct TranscribePreparedAudioRequest {
+    provider: String,
+    audio_path: PathBuf,
+    temp_dir: PathBuf,
+    chunk_stem: String,
+    title: String,
+    base_context: Option<String>,
+    operation_id: String,
+    source: String,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+    turn_index: Option<i64>,
+}
+
+async fn transcribe_prepared_audio(
+    transcriber: TurnTranscriber,
+    request: TranscribePreparedAudioRequest,
+) -> Result<TranscriptionProviderResult, AppError> {
+    let chunk_dir = request.temp_dir.join("chunks");
+    let audio_paths = if request.audio_path.exists() {
+        split_wav_for_transcription(&request.audio_path, &chunk_dir, &request.chunk_stem)?
+    } else {
+        vec![request.audio_path.clone()]
+    };
+    if audio_paths.len() == 1 {
+        return transcriber(TranscriptionRequest {
+            provider: request.provider,
+            audio_path: audio_paths.into_iter().next().unwrap_or(request.audio_path),
+            title: request.title,
+            context: request.base_context,
+            operation_id: Some(request.operation_id),
+        })
+        .await;
+    }
+
+    let mut previous = Vec::new();
+    let mut text_parts = Vec::new();
+    let mut language = None;
+    let mut provider_name = request.provider.clone();
+    for (index, audio_path) in audio_paths.into_iter().enumerate() {
+        let context = merge_transcription_context(
+            request.base_context.as_deref(),
+            build_transcription_context(&previous).as_deref(),
+        );
+        let transcript = transcriber(TranscriptionRequest {
+            provider: request.provider.clone(),
+            audio_path,
+            title: request.title.clone(),
+            context,
+            operation_id: Some(format!("{}-chunk-{index}", request.operation_id)),
+        })
+        .await?;
+        if language.is_none() {
+            language = transcript.language.clone();
+        }
+        provider_name = transcript.provider.clone();
+        let text = transcript.text.trim().to_string();
+        previous.push(SourceTranscriptInput {
+            source: request.source.clone(),
+            text: text.clone(),
+            valid: !text.is_empty(),
+            warning: None,
+            start_ms: request.start_ms,
+            end_ms: request.end_ms,
+            turn_index: request.turn_index,
+        });
+        if !text.is_empty() {
+            text_parts.push(text);
+        }
+    }
+
+    if text_parts.is_empty() {
+        return Err(AppError::new(
+            "transcription_empty",
+            "Transcription provider returned empty text for every audio chunk.",
+        ));
+    }
+    Ok(TranscriptionProviderResult {
+        text: text_parts.join("\n"),
+        language,
+        provider: provider_name,
+    })
 }
 
 async fn transcribe_turn_jobs_by_source_lane(
@@ -695,13 +790,22 @@ async fn transcribe_source_lane(
             dictionary_context.as_deref(),
             build_transcription_context(&transcript_inputs).as_deref(),
         );
-        let transcript = match transcriber(TranscriptionRequest {
-            provider: provider.clone(),
-            audio_path: job.audio_path,
-            title: title.clone(),
-            context: context.clone(),
-            operation_id: Some(format!("turn-{}", job.turn_index)),
-        })
+        let transcript = match transcribe_prepared_audio(
+            Arc::clone(&transcriber),
+            TranscribePreparedAudioRequest {
+                provider: provider.clone(),
+                audio_path: job.audio_path,
+                temp_dir: job.temp_dir.clone(),
+                chunk_stem: format!("turn-{}", job.turn_index),
+                title: title.clone(),
+                base_context: context.clone(),
+                operation_id: format!("turn-{}", job.turn_index),
+                source: job.source.clone(),
+                start_ms: Some(job.start_ms),
+                end_ms: Some(job.end_ms),
+                turn_index: Some(job.turn_index),
+            },
+        )
         .await
         {
             Ok(transcript) => transcript,
@@ -747,13 +851,22 @@ async fn transcribe_source_lane(
     if outcome.candidates.is_empty() {
         if let Some(job) = fallback_job {
             let context = merge_transcription_context(dictionary_context.as_deref(), None);
-            if let Ok(transcript) = transcriber(TranscriptionRequest {
-                provider: provider.clone(),
-                audio_path: job.audio_path,
-                title,
-                context: context.clone(),
-                operation_id: Some(format!("source-{}", job.source)),
-            })
+            if let Ok(transcript) = transcribe_prepared_audio(
+                Arc::clone(&transcriber),
+                TranscribePreparedAudioRequest {
+                    provider: provider.clone(),
+                    audio_path: job.audio_path,
+                    temp_dir: job.temp_dir,
+                    chunk_stem: format!("source-{}", job.source),
+                    title,
+                    base_context: context.clone(),
+                    operation_id: format!("source-{}", job.source),
+                    source: job.source.clone(),
+                    start_ms: Some(job.start_ms),
+                    end_ms: Some(job.end_ms),
+                    turn_index: Some(job.turn_index),
+                },
+            )
             .await
             {
                 let transcript =
@@ -791,6 +904,7 @@ fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscr
         artifact_id: first.artifact_id.clone(),
         source: first.source.clone(),
         audio_path: first.source_path.clone(),
+        temp_dir: first.temp_dir.clone(),
         source_path: first.source_path.clone(),
         covers_full_source: true,
         start_ms: 0,
@@ -1127,7 +1241,7 @@ mod tests {
     async fn source_lane_failures_keep_their_source_reason() {
         let transcriber = Arc::new(move |request: TranscriptionRequest| {
             Box::pin(async move {
-                if request.audio_path == PathBuf::from("s1") {
+                if request.audio_path == std::path::Path::new("s1") {
                     Err(AppError::new(
                         "transcription_failed",
                         "System source was silent.",
@@ -1386,6 +1500,7 @@ mod tests {
             artifact_id: format!("artifact-{path}"),
             source: source.to_string(),
             audio_path: PathBuf::from(path),
+            temp_dir: std::env::temp_dir(),
             source_path: PathBuf::from(path),
             covers_full_source: true,
             start_ms: turn_index * 1_000,

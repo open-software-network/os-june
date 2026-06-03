@@ -163,6 +163,7 @@ impl Repositories {
             audio_sources: self.latest_audio_sources(note_id).await?,
             active_tab: row.get("active_tab"),
             last_error: row.get("last_error"),
+            queued_recordings: 0,
         })
     }
 
@@ -1571,7 +1572,7 @@ fn clean_generated_title_line(line: &str) -> String {
             character.is_whitespace() || matches!(character, '-' | '*' | ':' | '"' | '\'' | '`')
         })
         .trim()
-        .trim_end_matches(|character: char| matches!(character, ':' | '"' | '\'' | '`'))
+        .trim_end_matches([':', '"', '\'', '`'])
         .trim()
         .to_string()
 }

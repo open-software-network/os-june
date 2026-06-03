@@ -10,7 +10,7 @@ import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
@@ -21,6 +21,7 @@ import type {
   RecoverableRecordingDto,
   TranscriptDto,
 } from "../../lib/tauri";
+import { BrailleSpinner } from "../BrailleSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
@@ -178,10 +179,13 @@ export function NoteEditor({
   // stays disabled via processingLock so nothing can re-trigger.
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
-  // System audio is optional — the record button only blocks when the
-  // microphone itself isn't ready. handleStartRecording re-checks on
+  // Processing runs in the background and is queued per note, so a recording
+  // that's still transcribing/generating no longer blocks starting another —
+  // you can stack messages and they process in order. The record button only
+  // blocks when the microphone isn't ready; handleStartRecording re-checks on
   // click and silently falls back to mic-only if system audio is denied.
-  const recordDisabled = processingLock || !!recovery;
+  const queuedRecordings = note.queuedRecordings ?? 0;
+  const queuedTooltipId = useId();
   const updatedAtLabel = formatFullDate(note.updatedAt);
 
   return (
@@ -278,14 +282,45 @@ export function NoteEditor({
               noteId={note.id}
               markdown={content}
               onChange={onContentChange}
-              emptyPlaceholder="Hit record to capture a conversation, or just start typing your thoughts here"
+              emptyPlaceholder={
+                processingLock
+                  ? ""
+                  : "Hit record to capture a conversation, or just start typing your thoughts here"
+              }
             />
             {processingLock ? (
-              <p className="note-generating" role="status" aria-live="polite">
-                {note.processingStatus === "generating"
-                  ? "Generating notes…"
-                  : "Transcribing audio…"}
-              </p>
+              <div className="note-generating" role="status" aria-live="polite">
+                <BrailleSpinner className="note-generating-spinner" />
+                <span className="note-generating-label">
+                  {note.processingStatus === "generating"
+                    ? "Generating notes…"
+                    : "Transcribing audio…"}
+                </span>
+                {queuedRecordings > 0 ? (
+                  <span
+                    className="note-generating-count"
+                    tabIndex={0}
+                    aria-describedby={queuedTooltipId}
+                  >
+                    +{queuedRecordings}
+                    <span
+                      className="note-generating-tip"
+                      id={queuedTooltipId}
+                      role="tooltip"
+                    >
+                      {queuedRecordings} more recording
+                      {queuedRecordings > 1 ? "s" : ""} queued
+                    </span>
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {note.processingStatus === "generating" ? (
+              <div className="note-skeleton" aria-hidden="true">
+                <span className="note-skeleton-line" />
+                <span className="note-skeleton-line" />
+                <span className="note-skeleton-line" />
+              </div>
             ) : null}
           </div>
         )}
@@ -418,7 +453,6 @@ export function NoteEditor({
                         className="record-button"
                         aria-label="Record"
                         title="Record"
-                        disabled={recordDisabled}
                         onClick={onStartRecording}
                       >
                         <IconMicrophone size={20} />

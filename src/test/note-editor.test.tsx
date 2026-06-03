@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
-import type { NoteDto } from "../lib/tauri";
+import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
 
 const now = "2026-05-19T10:00:00Z";
 
@@ -45,6 +45,15 @@ const props = {
   onNavigateToFolders: vi.fn(),
   onNavigateToFolder: vi.fn(),
   onTabChange: vi.fn(),
+};
+
+const recovery: RecoverableRecordingDto = {
+  sessionId: "session-1",
+  noteId: "note-1",
+  startedAt: now,
+  partialPathPresent: true,
+  finalPathPresent: false,
+  bytesFound: 4096,
 };
 
 describe("NoteEditor", () => {
@@ -278,7 +287,7 @@ describe("NoteEditor", () => {
     expect(onRetry).toHaveBeenCalled();
   });
 
-  it("locks the record button and hides retry while processing", () => {
+  it("keeps the record button available and hides retry while processing", () => {
     render(
       <NoteEditor
         {...props}
@@ -298,11 +307,53 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Record" })).toBeDisabled();
+    // Processing is queued per note, so a recording still in flight no longer
+    // blocks starting another take.
+    expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
     expect(screen.getByText("Transcribing audio...")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a queued count when a follow-up recording is stacked", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "generating",
+          generatedContent: "Earlier notes",
+          activeTab: "notes",
+          queuedRecordings: 1,
+        })}
+      />,
+    );
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Generating notes");
+    expect(status).toHaveTextContent("+1");
+  });
+
+  it("keeps recording available when the note has an interrupted recording", async () => {
+    const user = userEvent.setup();
+    const onStartRecording = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        recovery={recovery}
+        onStartRecording={onStartRecording}
+      />,
+    );
+
+    expect(screen.getByText("Interrupted recording")).toBeInTheDocument();
+
+    const recordButton = screen.getByRole("button", { name: "Record" });
+    expect(recordButton).toBeEnabled();
+
+    await user.click(recordButton);
+
+    expect(onStartRecording).toHaveBeenCalledOnce();
   });
 
   it("keeps existing notes visible while showing processing status below them", () => {
@@ -319,5 +370,29 @@ describe("NoteEditor", () => {
 
     expect(screen.getByText("Existing notes stay visible")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Generating notes");
+  });
+
+  it("shows skeleton lines while generating and drops them once ready", () => {
+    const { container, rerender } = render(
+      <NoteEditor
+        {...props}
+        note={note({ processingStatus: "generating", activeTab: "notes" })}
+      />,
+    );
+
+    expect(container.querySelectorAll(".note-skeleton-line")).toHaveLength(3);
+
+    rerender(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "ready",
+          generatedContent: "The notes",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(container.querySelectorAll(".note-skeleton-line")).toHaveLength(0);
   });
 });

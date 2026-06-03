@@ -133,6 +133,8 @@ impl SystemAudioCapture {
                     );
                 } else if status.message.is_some() {
                     stats.last_error = status.message;
+                } else if status.event == "ready" || status.event == "level" {
+                    stats.last_error = None;
                 }
                 if stats
                     .last_debug_log
@@ -176,7 +178,10 @@ impl SystemAudioCapture {
         }
         let _ = std::fs::remove_file(&self.status_path);
         let _ = std::fs::remove_file(&self.pid_path);
-        let _ = std::fs::remove_file(&self.log_path);
+        dev_log(format!(
+            "preserved helper log at {}",
+            self.log_path.display()
+        ));
         Ok(self.final_path)
     }
 }

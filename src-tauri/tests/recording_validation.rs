@@ -116,7 +116,7 @@ fn accepts_stereo_wav_with_expected_duration() {
 }
 
 #[test]
-fn accepts_shorter_non_silent_system_audio() {
+fn rejects_truncated_system_audio() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("short-system.wav");
     write_stereo_wav(&path, 6_000, 2_000);
@@ -126,7 +126,7 @@ fn accepts_shorter_non_silent_system_audio() {
 
     assert!(!result.duration_within_tolerance);
     assert!(result.non_silent_signal);
-    assert!(source_audio_passes_validation(
+    assert!(!source_audio_passes_validation(
         RecordingSource::System,
         &result
     ));

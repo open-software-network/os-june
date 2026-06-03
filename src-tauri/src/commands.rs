@@ -17,6 +17,7 @@ use crate::{
             manual_notes_for_generation, process_saved_audio, process_saved_source_audio,
             retry_from_saved_audio,
         },
+        processing_queue,
         types::{
             AppError, AssignNoteToFolderRequest, BootstrapResponse,
             CheckRecordingSourceReadinessRequest, CreateDictionaryEntryRequest,
@@ -84,7 +85,9 @@ pub async fn list_notes(
 
 #[tauri::command]
 pub async fn get_note(app: AppHandle, request: GetNoteRequest) -> Result<NoteDto, AppError> {
-    Ok(repositories(&app).await?.get_note(&request.note_id).await?)
+    let mut note = repositories(&app).await?.get_note(&request.note_id).await?;
+    note.queued_recordings = processing_queue::queued_behind(&request.note_id);
+    Ok(note)
 }
 
 #[tauri::command]
@@ -521,22 +524,47 @@ pub async fn finish_recording(
     repos
         .add_checkpoint(&finished.session_id, "validation", None)
         .await?;
-    let title = repos.get_note(&finished.note_id).await?.title;
-    repos
-        .set_note_status(
-            &finished.note_id,
-            crate::domain::types::ProcessingStatus::Transcribing,
-            None,
-        )
-        .await?;
-    let note = repos.get_note(&finished.note_id).await?;
-    let existing_generated_note = note.generated_content.clone();
-    let manual_notes = manual_notes_for_generation(&note);
+
+    // Capture is single-instance, but processing runs asynchronously — so the
+    // user may have already recorded (and stopped) another message on this note
+    // while a previous one is still in flight. Register this recording behind
+    // any in-flight job for the note; the spawned task waits its turn and reads
+    // the note's generated content *after* acquiring the lock, so incremental
+    // generation always builds on whatever the previous job wrote.
+    let (ticket, depth) = processing_queue::enqueue(&finished.note_id);
+    if depth <= 1 {
+        // First in line: reflect "processing" immediately for snappy feedback.
+        repos
+            .set_note_status(
+                &finished.note_id,
+                crate::domain::types::ProcessingStatus::Transcribing,
+                None,
+            )
+            .await?;
+    }
+
+    let mut note = repos.get_note(&finished.note_id).await?;
+    note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
+
     let task_repos = repos.clone();
     let task_note_id = finished.note_id.clone();
     let task_session_id = finished.session_id.clone();
     let task_source_mode = finished.source_mode;
     tokio::spawn(async move {
+        let queue_lock = ticket.lock();
+        let _guard = queue_lock.lock().await;
+        // Now that earlier jobs on this note are done, read the latest note so
+        // generation has the freshest existing content as context.
+        let note = match task_repos.get_note(&task_note_id).await {
+            Ok(note) => note,
+            Err(_) => {
+                ticket.finish();
+                return;
+            }
+        };
+        let title = note.title.clone();
+        let existing_generated_note = note.generated_content.clone();
+        let manual_notes = manual_notes_for_generation(&note);
         let result = if valid_sources.len() == 1
             && task_source_mode == RecordingSourceMode::MicrophoneOnly
         {
@@ -577,6 +605,7 @@ pub async fn finish_recording(
                 )
                 .await;
         }
+        ticket.finish();
     });
     Ok(FinishRecordingResponse {
         note,

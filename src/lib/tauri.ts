@@ -251,6 +251,8 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Recordings queued behind the one currently processing (0 when none). */
+  queuedRecordings?: number;
 };
 
 export type RecoverableRecordingDto = {

@@ -88,6 +88,11 @@ pub struct NoteDto {
     pub audio_sources: Vec<AudioArtifactDto>,
     pub active_tab: Option<String>,
     pub last_error: Option<String>,
+    /// Recordings queued behind the one currently processing for this note
+    /// (0 when nothing extra is waiting). Populated from the in-memory
+    /// processing queue at the command layer, not persisted.
+    #[serde(default)]
+    pub queued_recordings: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,6 +7,9 @@ const TRANSCRIPTION_COHERENCE_GAP_MS: i64 = 2_500;
 const NORMALIZE_TARGET_PEAK: f32 = 0.75;
 const NORMALIZE_MIN_GAIN: f32 = 1.25;
 const NORMALIZE_MAX_GAIN: f32 = 32.0;
+const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
+const TRANSCRIPTION_CHANNELS: u16 = 1;
+const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 8 * 60 * 1000;
 /// Loudest-window RMS below which a track carries no transcribable speech.
 /// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
 /// activity `min_rms`, so we only ever skip clearly-silent audio.
@@ -140,28 +143,43 @@ pub fn normalize_wav_for_transcription(
         .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
     let spec = reader.spec();
     ensure_normalizable_spec(spec)?;
-    let samples = reader
+    let input_samples = reader
         .samples::<i16>()
         .map(|sample| sample.unwrap_or(0))
         .collect::<Vec<_>>();
-    let peak = samples
+    let mono_samples = downmix_to_mono(&input_samples, spec.channels.max(1));
+    let peak = mono_samples
         .iter()
         .map(|sample| sample.unsigned_abs() as f32 / i16::MAX as f32)
         .fold(0.0_f32, f32::max);
-    if peak <= f32::EPSILON {
+    let output_spec = WavSpec {
+        channels: TRANSCRIPTION_CHANNELS,
+        sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let already_transcription_ready =
+        spec.channels == TRANSCRIPTION_CHANNELS && spec.sample_rate == TRANSCRIPTION_SAMPLE_RATE;
+    if peak <= f32::EPSILON && already_transcription_ready {
         return Ok(input_path.to_path_buf());
     }
-    let gain = (NORMALIZE_TARGET_PEAK / peak).min(NORMALIZE_MAX_GAIN);
-    if gain < NORMALIZE_MIN_GAIN {
+    let gain = if peak <= f32::EPSILON {
+        1.0
+    } else {
+        (NORMALIZE_TARGET_PEAK / peak).min(NORMALIZE_MAX_GAIN)
+    };
+    if gain < NORMALIZE_MIN_GAIN && already_transcription_ready {
         return Ok(input_path.to_path_buf());
     }
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
     }
-    let mut writer = WavWriter::create(output_path, spec)
+    let prepared_samples =
+        resample_linear(&mono_samples, spec.sample_rate, TRANSCRIPTION_SAMPLE_RATE);
+    let mut writer = WavWriter::create(output_path, output_spec)
         .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    for sample in samples {
+    for sample in prepared_samples {
         let amplified = (sample as f32 * gain).round();
         writer
             .write_sample(amplified.clamp(i16::MIN as f32, i16::MAX as f32) as i16)
@@ -173,6 +191,74 @@ pub fn normalize_wav_for_transcription(
     Ok(output_path.to_path_buf())
 }
 
+pub fn split_wav_for_transcription(
+    input_path: &Path,
+    output_dir: &Path,
+    stem: &str,
+) -> Result<Vec<PathBuf>, AppError> {
+    let mut reader = WavReader::open(input_path)
+        .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
+    let spec = reader.spec();
+    ensure_normalizable_spec(spec)?;
+    let channels = spec.channels.max(1) as usize;
+    let sample_rate = spec.sample_rate.max(1) as i64;
+    let total_frames = reader.duration() as i64;
+    let duration_ms = (total_frames * 1000) / sample_rate;
+    if duration_ms <= MAX_TRANSCRIPTION_CHUNK_MS {
+        return Ok(vec![input_path.to_path_buf()]);
+    }
+
+    std::fs::create_dir_all(output_dir)
+        .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
+    let frames_per_chunk = ((sample_rate * MAX_TRANSCRIPTION_CHUNK_MS) / 1000).max(1) as usize;
+    let mut chunks = Vec::new();
+    let mut writer: Option<WavWriter<std::io::BufWriter<std::fs::File>>> = None;
+    let mut chunk_index = 0_usize;
+    let mut frames_in_chunk = 0_usize;
+    let mut channel_index = 0_usize;
+
+    for sample in reader.samples::<i16>() {
+        if writer.is_none() || frames_in_chunk == frames_per_chunk {
+            if let Some(writer) = writer.take() {
+                writer
+                    .finalize()
+                    .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
+            }
+            let path = output_dir.join(format!("{stem}-chunk-{chunk_index:03}.wav"));
+            writer = Some(
+                WavWriter::create(&path, spec)
+                    .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?,
+            );
+            chunks.push(path);
+            chunk_index += 1;
+            frames_in_chunk = 0;
+            channel_index = 0;
+        }
+        if let Some(writer) = writer.as_mut() {
+            writer
+                .write_sample(sample.unwrap_or(0))
+                .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
+        }
+        channel_index += 1;
+        if channel_index == channels {
+            channel_index = 0;
+            frames_in_chunk += 1;
+        }
+    }
+
+    if let Some(writer) = writer.take() {
+        writer
+            .finalize()
+            .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
+    }
+
+    debug_assert!(
+        !chunks.is_empty(),
+        "split_wav_for_transcription: no chunks produced for audio longer than MAX_TRANSCRIPTION_CHUNK_MS"
+    );
+    Ok(chunks)
+}
+
 fn ensure_normalizable_spec(spec: WavSpec) -> Result<(), AppError> {
     if spec.sample_format == SampleFormat::Int && spec.bits_per_sample == 16 {
         return Ok(());
@@ -181,6 +267,40 @@ fn ensure_normalizable_spec(spec: WavSpec) -> Result<(), AppError> {
         "audio_normalize_failed",
         "Only 16-bit PCM WAV normalization is supported.",
     ))
+}
+
+fn downmix_to_mono(samples: &[i16], channels: u16) -> Vec<i16> {
+    let channel_count = channels.max(1) as usize;
+    if channel_count == 1 {
+        return samples.to_vec();
+    }
+    samples
+        .chunks(channel_count)
+        .map(|frame| {
+            let sum = frame.iter().map(|sample| *sample as i32).sum::<i32>();
+            (sum / frame.len().max(1) as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        })
+        .collect()
+}
+
+fn resample_linear(samples: &[i16], input_rate: u32, output_rate: u32) -> Vec<i16> {
+    if samples.is_empty() || input_rate == output_rate {
+        return samples.to_vec();
+    }
+    let ratio = input_rate as f64 / output_rate as f64;
+    let output_len = ((samples.len() as f64) / ratio).ceil().max(1.0) as usize;
+    let mut output = Vec::with_capacity(output_len);
+    for index in 0..output_len {
+        let source_pos = index as f64 * ratio;
+        let left_index = source_pos.floor() as usize;
+        let right_index = (left_index + 1).min(samples.len() - 1);
+        let fraction = source_pos - left_index as f64;
+        let left = samples[left_index.min(samples.len() - 1)] as f64;
+        let right = samples[right_index] as f64;
+        let sample = left + ((right - left) * fraction);
+        output.push(sample.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16);
+    }
+    output
 }
 
 fn detect_source_turns(
@@ -397,6 +517,25 @@ mod tests {
     }
 
     #[test]
+    fn normalization_downmixes_and_downsamples_for_transcription() {
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-normalize-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("stereo.wav");
+        let output = dir.join("prepared.wav");
+        write_stereo_48k_samples(&input, &[8_000, 8_000, -8_000, -8_000, 4_000, 4_000]);
+
+        let prepared = normalize_wav_for_transcription(&input, &output).unwrap();
+
+        assert_eq!(prepared, output);
+        let reader = WavReader::open(&output).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 16_000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn flags_silent_track_and_keeps_audible_one() {
         let dir =
             std::env::temp_dir().join(format!("os-scribe-silence-test-{}", uuid::Uuid::new_v4()));
@@ -415,6 +554,20 @@ mod tests {
     fn write_samples(path: &Path, samples: &[i16]) {
         let spec = WavSpec {
             channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec).unwrap();
+        for sample in samples {
+            writer.write_sample(*sample).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    fn write_stereo_48k_samples(path: &Path, samples: &[i16]) {
+        let spec = WavSpec {
+            channels: 2,
             sample_rate: 48_000,
             bits_per_sample: 16,
             sample_format: SampleFormat::Int,

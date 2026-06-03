@@ -1538,7 +1538,7 @@ input:focus-visible,
  * identically to H1 so the doc stays consistent. */
 .note-preview h1,
 .note-preview h2 {
-  margin: var(--sp-5) 0 var(--sp-2);
+  margin: var(--sp-7) 0 var(--sp-2);
   color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 15px;
@@ -1553,12 +1553,12 @@ input:focus-visible,
 }
 
 .note-preview p {
-  margin: 0 0 var(--sp-3);
+  margin: 0 0 var(--sp-4);
   color: var(--body-copy);
 }
 
 .note-preview ul {
-  margin: 0 0 var(--sp-3);
+  margin: 0 0 var(--sp-4);
   padding-left: 0;
   list-style: none;
   color: var(--body-copy);
@@ -1610,33 +1610,147 @@ input:focus-visible,
 }
 
 .note-generating {
-  display: inline-block;
-  margin: var(--sp-1) 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
   font-size: var(--fs-md);
   font-weight: 500;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.note-generating-spinner {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-md);
+  line-height: 1;
+  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
+}
+
+.note-generating-label {
   background: linear-gradient(
     90deg,
-    color-mix(in oklch, var(--muted-foreground) 80%, transparent) 0%,
-    color-mix(in oklch, var(--foreground) 58%, var(--muted-foreground)) 38%,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
     var(--foreground) 50%,
-    color-mix(in oklch, var(--foreground) 58%, var(--muted-foreground)) 62%,
-    color-mix(in oklch, var(--muted-foreground) 80%, transparent) 100%
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
   );
-  background-size: 180% 100%;
+  background-size: 200% 100%;
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: note-shimmer 1.05s linear infinite;
-  will-change: background-position;
+  animation: note-text-shimmer 2s linear infinite;
 }
 
-@keyframes note-shimmer {
+@keyframes note-text-shimmer {
   0% {
-    background-position: 130% 0;
+    background-position: 150% 0;
   }
   100% {
-    background-position: -70% 0;
+    background-position: -50% 0;
+  }
+}
+
+/* Count chip — how many follow-up recordings are queued behind the one
+ * currently processing. Appears only when you stack a second take. The badge
+ * itself is pointer-events: none (unselectable status), so the chip opts back
+ * in to be a hover/focus target for its tooltip. */
+.note-generating-count {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs, 11px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.note-generating-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 10;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-xs, 11px);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, 3px);
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out);
+  pointer-events: none;
+}
+
+.note-generating-count:hover .note-generating-tip,
+.note-generating-count:focus-visible .note-generating-tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Skeleton — placeholder note lines shown while generation is in flight, so a
+ * fresh note isn't blank space until the text pops in. The shimmer reuses the
+ * label sweep keyframe; lines are staggered so the motion reads as alive. */
+.note-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
+}
+
+.note-skeleton-line {
+  height: 12px;
+  border-radius: var(--r-xs);
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--muted-foreground) 11%, transparent) 0%,
+    color-mix(in oklch, var(--muted-foreground) 22%, transparent) 50%,
+    color-mix(in oklch, var(--muted-foreground) 11%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: note-text-shimmer 1.8s linear infinite;
+}
+
+.note-skeleton-line:nth-child(1) {
+  width: 92%;
+}
+
+.note-skeleton-line:nth-child(2) {
+  width: 80%;
+  animation-delay: 0.15s;
+}
+
+.note-skeleton-line:nth-child(3) {
+  width: 86%;
+  animation-delay: 0.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-skeleton-line {
+    animation: none;
   }
 }
 

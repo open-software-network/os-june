@@ -112,7 +112,7 @@ pub fn source_audio_passes_validation(
     let has_usable_audio = validation.non_zero_size && validation.readable_audio;
     match source {
         RecordingSource::Microphone => has_usable_audio && validation.duration_within_tolerance,
-        RecordingSource::System => has_usable_audio,
+        RecordingSource::System => has_usable_audio && validation.duration_within_tolerance,
     }
 }
 

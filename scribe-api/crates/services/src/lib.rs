@@ -197,6 +197,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn note_generate_prompt_requests_topic_headings() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let generator = Arc::new(RecordingGenerator::default());
+        let service = NoteGenerateService::new(NoteGenerateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                1,
+                ModelType::Text,
+            )]))),
+            os_accounts,
+            generator: generator.clone(),
+            hold_ttl_seconds: 300,
+            flat_estimate_credits: 1024,
+        });
+
+        service
+            .generate(note_generate_params())
+            .await
+            .expect("generate succeeds with happy path");
+
+        let prompt = generator.last_system_prompt().unwrap_or_default();
+        assert!(prompt.contains("markdown H1 headings"));
+        assert!(prompt.contains("# Heading"));
+        assert!(prompt.contains("Do not add wrapper headings"));
+    }
+
     fn note_generate_service(os_accounts: Arc<RecordingOsAccounts>) -> NoteGenerateService {
         NoteGenerateService::new(NoteGenerateServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(
@@ -388,6 +416,38 @@ mod tests {
             &self,
             _request: GenerationRequest,
         ) -> Result<GeneratedNote, DomainError> {
+            Ok(GeneratedNote {
+                content: "Generated note".to_string(),
+                title_suggestion: Some("Title".to_string()),
+                provider: "test".to_string(),
+                usage: TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                },
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingGenerator {
+        last_system_prompt: Mutex<Option<String>>,
+    }
+
+    impl RecordingGenerator {
+        fn last_system_prompt(&self) -> Option<String> {
+            self.last_system_prompt
+                .lock()
+                .ok()
+                .and_then(|value| value.clone())
+        }
+    }
+
+    #[async_trait]
+    impl Generator for RecordingGenerator {
+        async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+            if let Ok(mut last_system_prompt) = self.last_system_prompt.lock() {
+                *last_system_prompt = Some(request.system_prompt);
+            }
             Ok(GeneratedNote {
                 content: "Generated note".to_string(),
                 title_suggestion: Some("Title".to_string()),
