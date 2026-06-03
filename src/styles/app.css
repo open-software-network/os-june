@@ -234,8 +234,7 @@ input:focus-visible,
   /* Vertically centered in the titlebar, then nudged down a hair to sit level
    * with the native traffic lights. */
   top: calc(
-    (var(--titlebar-h) - var(--control-md)) / 2 +
-      var(--titlebar-controls-nudge)
+    (var(--titlebar-h) - var(--control-md)) / 2 + var(--titlebar-controls-nudge)
   );
   /* Anchored just past the green control (see the token notes) rather than a
    * bare pixel offset. */
@@ -1042,17 +1041,20 @@ input:focus-visible,
 .workspace {
   display: grid;
   flex: 1;
+  min-height: 0;
   min-width: 0;
+  height: 100%;
 }
 
-/* Wrapper gives the editor a real height to grow into — its internal
- * grid (auto / 1fr / auto) keeps the recorder pinned at the bottom and
- * the header flush at the top. */
+/* Wrapper gives the editor a real viewport-height box inside the card. Long
+ * note content contributes to the card scroller while the recorder is fixed
+ * to the card bottom. */
 .note-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  min-height: 0;
   min-width: 0;
+  height: 100%;
 }
 
 .note-shell > .note-editor {
@@ -1070,13 +1072,10 @@ input:focus-visible,
   gap: var(--sp-5);
   width: 100%;
   max-width: var(--content-max);
-  /* Fill the workspace but don't exceed it — the previous
-   * `calc(100vh - 60px)` baked a viewport-tall minimum that overflowed
-   * the main-panel-body by a few dozen pixels, letting you scroll past
-   * content. 100% fills the workspace (flex:1 inside main-panel-body)
-   * so the recorder still hangs at the bottom for short notes without
-   * creating phantom scroll. */
-  min-height: 100%;
+  /* Fill the workspace without growing past it. Long note content can overflow
+   * the body row into the card scroller. */
+  min-height: 0;
+  height: 100%;
   margin: 0 auto;
   padding: var(--sp-10) 0 var(--sp-5);
 }
@@ -1853,8 +1852,13 @@ input:focus-visible,
 /* Recorder ---------------------------------------------------------- */
 
 .editor-footer {
-  position: sticky;
-  bottom: var(--sp-5);
+  position: fixed;
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
+  right: calc(var(--sp-3) + var(--sp-8));
+  /* Card sits --sp-3 off the window bottom; the body adds --sp-5 padding and
+   * the old sticky recorder added another --sp-5 on top of that. Sum all three
+   * so the fixed pill lands at the same height it had in prod. */
+  bottom: calc(var(--sp-3) + var(--sp-5) * 2);
   z-index: 3;
   display: flex;
   flex-wrap: wrap;
@@ -1864,6 +1868,10 @@ input:focus-visible,
   min-height: 56px;
   padding: 0 var(--sp-4);
   pointer-events: none;
+}
+
+.app-shell[data-sidebar="collapsed"] .editor-footer {
+  left: calc(var(--sp-3) + var(--sp-8));
 }
 
 .editor-footer > * {
