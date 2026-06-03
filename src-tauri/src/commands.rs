@@ -33,8 +33,8 @@ use crate::{
     },
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::path::PathBuf;
 use std::str::FromStr;
+use std::{path::PathBuf, time::Instant};
 use tauri::{AppHandle, Manager};
 
 #[tauri::command]
@@ -378,8 +378,26 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
+    let finalization_ms = finalization_started
+        .elapsed()
+        .as_millis()
+        .min(i64::MAX as u128) as i64;
     let repos = repositories(&app).await?;
+    repos
+        .add_checkpoint(
+            &finished.session_id,
+            "recording_finalization",
+            Some(
+                serde_json::json!({
+                    "durationMs": finalization_ms,
+                    "sourceCount": finished.sources.len(),
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
     repos
         .add_checkpoint(&finished.session_id, "done", None)
         .await?;
@@ -392,6 +410,7 @@ pub async fn finish_recording(
     let mut primary_validation = None;
     let mut primary_checksum = String::new();
     let mut primary_file_size = 0;
+    let validation_started = Instant::now();
     for source in &finished.sources {
         let validation = validate_audio_artifact(
             &source.final_path,
@@ -522,7 +541,18 @@ pub async fn finish_recording(
     }
 
     repos
-        .add_checkpoint(&finished.session_id, "validation", None)
+        .add_checkpoint(
+            &finished.session_id,
+            "audio_validation",
+            Some(
+                serde_json::json!({
+                    "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+                    "validSourceCount": valid_sources.len(),
+                    "sourceCount": finished.sources.len(),
+                })
+                .to_string(),
+            ),
+        )
         .await?;
 
     // Capture is single-instance, but processing runs asynchronously — so the

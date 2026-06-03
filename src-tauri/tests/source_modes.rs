@@ -88,3 +88,72 @@ async fn stores_source_artifacts_independently() {
         .any(|artifact| artifact.source == "microphone"));
     assert!(artifacts.iter().any(|artifact| artifact.source == "system"));
 }
+
+#[tokio::test]
+async fn upserts_source_turn_transcripts_for_retry() {
+    let repos = test_repositories().await;
+    let note = repos.create_note(None).await.expect("note should exist");
+
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-1",
+            RecordingSourceMode::MicrophonePlusSystem,
+            "/tmp/mic.partial.wav",
+            "/tmp/mic.wav",
+            None,
+        )
+        .await
+        .expect("session should be created");
+    let artifact = repos
+        .create_pending_source_artifact(
+            &note.id,
+            "session-1",
+            "microphone",
+            "/tmp/mic.partial.wav",
+            "/tmp/mic.wav",
+        )
+        .await
+        .expect("microphone artifact should be created");
+
+    let failed = repos
+        .upsert_failed_source_turn_transcript(
+            &note.id,
+            "session-1",
+            &artifact.id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "microphone",
+            "test",
+            "temporary provider failure",
+            0,
+            1_000,
+            0,
+        )
+        .await
+        .expect("failed turn should be stored");
+    let succeeded = repos
+        .upsert_successful_source_turn_transcript(
+            &note.id,
+            "session-1",
+            &artifact.id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "microphone",
+            "Recovered transcript",
+            Some("en".to_string()),
+            "test",
+            0,
+            1_000,
+            0,
+        )
+        .await
+        .expect("successful retry should replace failed turn");
+
+    assert_eq!(failed.id, succeeded.id);
+    let transcripts = repos
+        .successful_source_turn_transcripts_for_session("session-1")
+        .await
+        .expect("successful turns should load");
+    assert_eq!(transcripts.len(), 1);
+    assert_eq!(transcripts[0].text, "Recovered transcript");
+    assert_eq!(transcripts[0].status, "succeeded");
+}

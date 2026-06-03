@@ -4,13 +4,22 @@ use crate::{
         split_wav_for_transcription, write_turn_wav, DetectionSource,
     },
     db::repositories::Repositories,
-    domain::types::{AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode},
+    domain::types::{
+        AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode, TranscriptDto,
+    },
     scribe_api::{
         generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
         TranscriptionProviderResult, TranscriptionRequest,
     },
 };
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub const PROMPT_VERSION: &str = "notes-mvp-v3";
 const NOTE_TRANSCRIPT_CLEANUP_TIMEOUT_MS: u64 = 5_000;
@@ -19,6 +28,7 @@ const TRANSCRIPT_COHERENCE_GAP_MS: i64 = 2_500;
 const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
+const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTranscriptInput {
@@ -38,6 +48,29 @@ pub fn valid_sources_for_processing(
         .into_iter()
         .filter(|source| source.valid && !source.text.trim().is_empty())
         .collect()
+}
+
+fn source_transcript_input_from_row(row: &TranscriptDto) -> SourceTranscriptInput {
+    SourceTranscriptInput {
+        source: row
+            .source
+            .clone()
+            .unwrap_or_else(|| "microphone".to_string()),
+        text: row.text.clone(),
+        valid: row.status == "succeeded" && !row.text.trim().is_empty(),
+        warning: row.last_error.clone(),
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        turn_index: row.turn_index,
+    }
+}
+
+fn turn_cache_key(source: &str, turn_index: i64) -> String {
+    format!("{source}:{turn_index}")
+}
+
+fn elapsed_ms(started: Instant) -> i64 {
+    started.elapsed().as_millis().min(i64::MAX as u128) as i64
 }
 
 pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> String {
@@ -296,7 +329,7 @@ pub async fn process_saved_audio(
             &generated.prompt_version,
         )
         .await?;
-    Ok(repos
+    let note = repos
         .set_generated_note_for_session(
             note_id,
             Some(session_id),
@@ -304,7 +337,8 @@ pub async fn process_saved_audio(
             generated.title_suggestion,
             generated.content,
         )
-        .await?)
+        .await?;
+    Ok(note)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -324,12 +358,8 @@ pub async fn process_saved_source_audio(
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
-    let mut first_transcript_id = None;
-    // Drop a silent system-audio track up front (nothing was playing through the
-    // speakers). This avoids a wasted provider round-trip and, more importantly,
-    // the OS Accounts authorization Hold that round-trip would open and leave to
-    // expire. Never strip the sole source — a system-only capture of silence
-    // should still surface its "no speech" failure.
+    let processing_started = Instant::now();
+    let detection_started = Instant::now();
     let sources = drop_silent_system_sources(sources);
     let turns = detect_turns(
         &sources
@@ -360,13 +390,64 @@ pub async fn process_saved_source_audio(
         turns
     };
     let turns = coalesce_turns_for_transcription(turns);
+    repos
+        .add_checkpoint(
+            session_id,
+            "turn_detection",
+            Some(
+                serde_json::json!({
+                    "durationMs": elapsed_ms(detection_started),
+                    "sourceCount": sources.len(),
+                    "turnCount": turns.len(),
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
+
     let segment_dir = std::env::temp_dir().join(format!("os-scribe-turns-{session_id}"));
     let _ = std::fs::remove_dir_all(&segment_dir);
     std::fs::create_dir_all(&segment_dir)
         .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
 
+    let extraction_started = Instant::now();
+    let existing_transcripts = repos
+        .successful_source_turn_transcripts_for_session(session_id)
+        .await?;
+    let existing_by_turn = existing_transcripts
+        .into_iter()
+        .filter_map(|transcript| {
+            Some((
+                turn_cache_key(transcript.source.as_deref()?, transcript.turn_index?),
+                transcript,
+            ))
+        })
+        .collect::<HashMap<_, _>>();
     let mut transcription_jobs = Vec::new();
+    let mut cached_candidates = Vec::new();
     for turn in turns {
+        if let Some(existing) = existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
+        {
+            cached_candidates.push(TranscriptCandidate {
+                artifact_id: turn.artifact_id,
+                language: existing.language.clone(),
+                provider: transcription_provider.clone(),
+                input: SourceTranscriptInput {
+                    source: existing
+                        .source
+                        .clone()
+                        .unwrap_or_else(|| turn.source.clone()),
+                    text: existing.text.clone(),
+                    valid: existing.status == "succeeded" && !existing.text.trim().is_empty(),
+                    warning: None,
+                    start_ms: existing.start_ms.or(Some(turn.start_ms)),
+                    end_ms: existing.end_ms.or(Some(turn.end_ms)),
+                    turn_index: existing.turn_index.or(Some(turn.turn_index)),
+                },
+            });
+            continue;
+        }
+
         let segment_path = segment_dir.join(format!(
             "{:04}-{}-{}-{}.wav",
             turn.turn_index, turn.source, turn.start_ms, turn.end_ms
@@ -399,27 +480,64 @@ pub async fn process_saved_source_audio(
             temp_dir: segment_dir.clone(),
             source_path: source_audio_path,
             covers_full_source,
+            source_fallback: false,
             start_ms: turn.start_ms,
             end_ms: turn.end_ms,
             turn_index: turn.turn_index,
         });
     }
-    let transcription_outcome = transcribe_turn_jobs_by_source_lane(
-        transcription_jobs,
-        transcription_provider.clone(),
-        title.clone(),
-        dictionary_context,
-        default_turn_transcriber(),
-    )
-    .await?;
+    repos
+        .add_checkpoint(
+            session_id,
+            "turn_wav_extraction",
+            Some(
+                serde_json::json!({
+                    "durationMs": elapsed_ms(extraction_started),
+                    "jobCount": transcription_jobs.len(),
+                    "reusedTranscriptCount": cached_candidates.len(),
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
+
+    let persist_repos = repos.clone();
+    let persist_note_id = note_id.to_string();
+    let persist_session_id = session_id.to_string();
+    let result_sink: TurnResultSink = Arc::new(move |event| {
+        let repos = persist_repos.clone();
+        let note_id = persist_note_id.clone();
+        let session_id = persist_session_id.clone();
+        Box::pin(async move {
+            persist_turn_transcription_event(&repos, &note_id, &session_id, source_mode, event)
+                .await
+        })
+    });
+
+    let mut transcription_outcome = TranscriptionOutcome {
+        candidates: cached_candidates,
+        failures: Vec::new(),
+    };
+    if !transcription_jobs.is_empty() {
+        let mut fresh_outcome = transcribe_turn_jobs_bounded(
+            transcription_jobs,
+            transcription_provider.clone(),
+            title.clone(),
+            dictionary_context,
+            default_turn_transcriber(),
+            Some(result_sink),
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        )
+        .await?;
+        transcription_outcome
+            .candidates
+            .append(&mut fresh_outcome.candidates);
+        transcription_outcome
+            .failures
+            .append(&mut fresh_outcome.failures);
+    }
     let _ = std::fs::remove_dir_all(&segment_dir);
 
-    // A silent system-audio track is expected whenever the user is only
-    // speaking into the mic (nothing is playing through the speakers). Once
-    // some source produced a usable transcript, don't persist that silence as
-    // a per-source error — it renders as a spurious "System: No speech
-    // detected" card even though the note succeeded. The all-sources-failed
-    // case still reports through `source_failure_summary` below.
     let has_valid_transcript = !transcription_outcome.candidates.is_empty();
     for failure in &transcription_outcome.failures {
         let warning = failure
@@ -434,8 +552,9 @@ pub async fn process_saved_source_audio(
         ) {
             continue;
         }
+        let persistence_started = Instant::now();
         repos
-            .create_failed_source_transcript(
+            .upsert_failed_source_turn_transcript(
                 note_id,
                 session_id,
                 failure.artifact_id.as_str(),
@@ -443,39 +562,39 @@ pub async fn process_saved_source_audio(
                 failure.input.source.as_str(),
                 &transcription_provider,
                 warning,
-                failure.input.start_ms,
-                failure.input.end_ms,
-                failure.input.turn_index,
+                failure.input.start_ms.unwrap_or_default(),
+                failure.input.end_ms.unwrap_or_default(),
+                failure.input.turn_index.unwrap_or_default(),
             )
             .await?;
-    }
-
-    let transcript_candidates = coalesce_transcript_candidates(transcription_outcome.candidates);
-    let transcript_inputs = transcript_candidates
-        .iter()
-        .map(|candidate| candidate.input.clone())
-        .collect::<Vec<_>>();
-    for candidate in &transcript_candidates {
-        let row = repos
-            .create_source_transcript(
-                note_id,
+        repos
+            .add_source_checkpoint(
                 session_id,
-                &candidate.artifact_id,
-                source_mode,
-                &candidate.input.source,
-                &candidate.input.text,
-                candidate.language.clone(),
-                &candidate.provider,
-                candidate.input.start_ms,
-                candidate.input.end_ms,
-                candidate.input.turn_index,
+                Some(failure.artifact_id.as_str()),
+                Some(failure.input.source.as_str()),
+                "transcript_persistence",
+                Some(
+                    serde_json::json!({
+                        "durationMs": elapsed_ms(persistence_started),
+                        "status": "failed",
+                        "turnIndex": failure.input.turn_index,
+                    })
+                    .to_string(),
+                ),
             )
             .await?;
-        if first_transcript_id.is_none() {
-            first_transcript_id = Some(row.id);
-        }
     }
 
+    let persisted_transcripts = repos
+        .successful_source_turn_transcripts_for_session(session_id)
+        .await?;
+    let first_transcript_id = persisted_transcripts
+        .first()
+        .map(|transcript| transcript.id.clone());
+    let transcript_inputs = persisted_transcripts
+        .iter()
+        .map(source_transcript_input_from_row)
+        .collect::<Vec<_>>();
     let valid_sources = valid_sources_for_processing(transcript_inputs);
     if valid_sources.is_empty() {
         let failure_message = source_failure_summary(&transcription_outcome.failures)
@@ -493,6 +612,7 @@ pub async fn process_saved_source_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
+    let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
         provider: crate::providers::configured_provider(),
         operation_id: Some(note_id.to_string()),
@@ -513,9 +633,37 @@ pub async fn process_saved_source_audio(
                     Some(error.message.clone()),
                 )
                 .await?;
+            repos
+                .add_checkpoint(
+                    session_id,
+                    "note_generation",
+                    Some(
+                        serde_json::json!({
+                            "durationMs": elapsed_ms(generation_started),
+                            "status": "failed",
+                            "error": error.code,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
             return Err(error);
         }
     };
+    repos
+        .add_checkpoint(
+            session_id,
+            "note_generation",
+            Some(
+                serde_json::json!({
+                    "durationMs": elapsed_ms(generation_started),
+                    "status": "succeeded",
+                    "transcriptCount": valid_sources.len(),
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
     let transcript_id = first_transcript_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let generation_result_id = repos
         .create_generation_result(
@@ -527,7 +675,7 @@ pub async fn process_saved_source_audio(
             &generated.prompt_version,
         )
         .await?;
-    Ok(repos
+    let note = repos
         .set_generated_note_for_session(
             note_id,
             Some(session_id),
@@ -535,7 +683,20 @@ pub async fn process_saved_source_audio(
             generated.title_suggestion,
             generated.content,
         )
-        .await?)
+        .await?;
+    repos
+        .add_checkpoint(
+            session_id,
+            "processing_complete",
+            Some(
+                serde_json::json!({
+                    "durationMs": elapsed_ms(processing_started),
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
+    Ok(note)
 }
 
 pub async fn retry_from_saved_audio(
@@ -606,6 +767,18 @@ struct TranscriptionOutcome {
 }
 
 #[derive(Debug, Clone)]
+struct CompletedTurnTranscription {
+    result: TurnTranscriptionResult,
+    duration_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+enum TurnTranscriptionResult {
+    Candidate(TranscriptCandidate),
+    Failure(FailedTranscriptCandidate),
+}
+
+#[derive(Debug, Clone)]
 struct TurnTranscriptionJob {
     artifact_id: String,
     source: String,
@@ -613,6 +786,7 @@ struct TurnTranscriptionJob {
     temp_dir: PathBuf,
     source_path: PathBuf,
     covers_full_source: bool,
+    source_fallback: bool,
     start_ms: i64,
     end_ms: i64,
     turn_index: i64,
@@ -621,6 +795,8 @@ struct TurnTranscriptionJob {
 type TranscriptionFuture =
     Pin<Box<dyn Future<Output = Result<TranscriptionProviderResult, AppError>> + Send>>;
 type TurnTranscriber = Arc<dyn Fn(TranscriptionRequest) -> TranscriptionFuture + Send + Sync>;
+type TurnResultFuture = Pin<Box<dyn Future<Output = Result<(), AppError>> + Send>>;
+type TurnResultSink = Arc<dyn Fn(CompletedTurnTranscription) -> TurnResultFuture + Send + Sync>;
 
 fn default_turn_transcriber() -> TurnTranscriber {
     Arc::new(|request| Box::pin(transcribe_saved_audio(request)))
@@ -710,6 +886,7 @@ async fn transcribe_prepared_audio(
     })
 }
 
+#[cfg(test)]
 async fn transcribe_turn_jobs_by_source_lane(
     jobs: Vec<TurnTranscriptionJob>,
     provider: String,
@@ -717,37 +894,148 @@ async fn transcribe_turn_jobs_by_source_lane(
     dictionary_context: Option<String>,
     transcriber: TurnTranscriber,
 ) -> Result<TranscriptionOutcome, AppError> {
-    let mut lanes: Vec<(String, Vec<TurnTranscriptionJob>)> = Vec::new();
-    for job in jobs {
-        if let Some((_, lane_jobs)) = lanes
-            .iter_mut()
-            .find(|(source, _)| source.as_str() == job.source.as_str())
-        {
-            lane_jobs.push(job);
-        } else {
-            lanes.push((job.source.clone(), vec![job]));
+    transcribe_turn_jobs_bounded(
+        jobs,
+        provider,
+        title,
+        dictionary_context,
+        transcriber,
+        None,
+        DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+    )
+    .await
+}
+
+async fn transcribe_turn_jobs_bounded(
+    jobs: Vec<TurnTranscriptionJob>,
+    provider: String,
+    title: String,
+    dictionary_context: Option<String>,
+    transcriber: TurnTranscriber,
+    result_sink: Option<TurnResultSink>,
+    max_concurrency: usize,
+) -> Result<TranscriptionOutcome, AppError> {
+    let max_concurrency = max_concurrency.max(1);
+    let mut source_jobs: HashMap<String, Vec<TurnTranscriptionJob>> = HashMap::new();
+    for job in &jobs {
+        source_jobs
+            .entry(job.source.clone())
+            .or_default()
+            .push(job.clone());
+    }
+    let mut pending = VecDeque::from(jobs);
+    let mut join_set = tokio::task::JoinSet::new();
+    let mut completed_inputs = Vec::new();
+    let mut outcome = TranscriptionOutcome::default();
+
+    spawn_turn_jobs(
+        &mut pending,
+        &mut join_set,
+        &completed_inputs,
+        max_concurrency,
+        &provider,
+        &title,
+        dictionary_context.as_deref(),
+        &transcriber,
+    );
+
+    while let Some(result) = join_set.join_next().await {
+        let event =
+            result.map_err(|error| AppError::new("transcription_failed", error.to_string()))??;
+        if let Some(sink) = result_sink.as_ref() {
+            sink(event.clone()).await?;
         }
+        match event.result {
+            TurnTranscriptionResult::Candidate(candidate) => {
+                completed_inputs.push(candidate.input.clone());
+                outcome.candidates.push(candidate);
+            }
+            TurnTranscriptionResult::Failure(failure) => {
+                completed_inputs.push(failure.input.clone());
+                outcome.failures.push(failure);
+            }
+        }
+        spawn_turn_jobs(
+            &mut pending,
+            &mut join_set,
+            &completed_inputs,
+            max_concurrency,
+            &provider,
+            &title,
+            dictionary_context.as_deref(),
+            &transcriber,
+        );
     }
 
-    let mut join_set = tokio::task::JoinSet::new();
-    for (_, lane_jobs) in lanes {
+    for (_source, lane_jobs) in source_jobs {
+        let has_candidate = outcome.candidates.iter().any(|candidate| {
+            candidate.input.source == lane_jobs[0].source
+                && candidate.input.valid
+                && !candidate.input.text.trim().is_empty()
+        });
+        if has_candidate {
+            continue;
+        }
+        let Some(job) = full_source_fallback_job(&lane_jobs) else {
+            continue;
+        };
         let provider = provider.clone();
         let title = title.clone();
-        let dictionary_context = dictionary_context.clone();
         let transcriber = Arc::clone(&transcriber);
+        let event = transcribe_one_turn_job(
+            job,
+            provider,
+            title,
+            dictionary_context.clone(),
+            transcriber,
+        )
+        .await?;
+        if let TurnTranscriptionResult::Candidate(candidate) = &event.result {
+            outcome
+                .failures
+                .retain(|failure| failure.input.source != candidate.input.source);
+        }
+        if let Some(sink) = result_sink.as_ref() {
+            sink(event.clone()).await?;
+        }
+        match event.result {
+            TurnTranscriptionResult::Candidate(candidate) => outcome.candidates.push(candidate),
+            TurnTranscriptionResult::Failure(failure) => outcome.failures.push(failure),
+        }
+    }
+    sort_transcription_outcome(&mut outcome);
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_turn_jobs(
+    pending: &mut VecDeque<TurnTranscriptionJob>,
+    join_set: &mut tokio::task::JoinSet<Result<CompletedTurnTranscription, AppError>>,
+    completed_inputs: &[SourceTranscriptInput],
+    max_concurrency: usize,
+    provider: &str,
+    title: &str,
+    dictionary_context: Option<&str>,
+    transcriber: &TurnTranscriber,
+) {
+    while join_set.len() < max_concurrency {
+        let Some(job) = pending.pop_front() else {
+            break;
+        };
+        let context = merge_transcription_context(
+            dictionary_context,
+            build_transcription_context(completed_inputs).as_deref(),
+        );
+        let provider = provider.to_string();
+        let title = title.to_string();
+        let transcriber = Arc::clone(transcriber);
         join_set.spawn(async move {
-            transcribe_source_lane(lane_jobs, provider, title, dictionary_context, transcriber)
-                .await
+            transcribe_one_turn_job(job, provider, title, context, transcriber).await
         });
     }
+}
 
-    let mut outcome = TranscriptionOutcome::default();
-    while let Some(result) = join_set.join_next().await {
-        let mut lane_outcome =
-            result.map_err(|error| AppError::new("transcription_failed", error.to_string()))??;
-        outcome.candidates.append(&mut lane_outcome.candidates);
-        outcome.failures.append(&mut lane_outcome.failures);
-    }
+fn sort_transcription_outcome(outcome: &mut TranscriptionOutcome) {
     outcome.candidates.sort_by(|left, right| {
         left.input
             .turn_index
@@ -772,129 +1060,171 @@ async fn transcribe_turn_jobs_by_source_lane(
                     .cmp(&right.input.start_ms.unwrap_or(i64::MAX))
             })
     });
-    Ok(outcome)
 }
 
-async fn transcribe_source_lane(
-    jobs: Vec<TurnTranscriptionJob>,
+async fn transcribe_one_turn_job(
+    job: TurnTranscriptionJob,
     provider: String,
     title: String,
-    dictionary_context: Option<String>,
+    context: Option<String>,
     transcriber: TurnTranscriber,
-) -> Result<TranscriptionOutcome, AppError> {
-    let fallback_job = full_source_fallback_job(&jobs);
-    let mut transcript_inputs = Vec::new();
-    let mut outcome = TranscriptionOutcome::default();
-    for job in jobs {
-        let operation_id = turn_operation_id(&job);
-        let context = merge_transcription_context(
-            dictionary_context.as_deref(),
-            build_transcription_context(&transcript_inputs).as_deref(),
-        );
-        let transcript = match transcribe_prepared_audio(
-            Arc::clone(&transcriber),
-            TranscribePreparedAudioRequest {
-                provider: provider.clone(),
-                audio_path: job.audio_path,
-                temp_dir: job.temp_dir.clone(),
-                chunk_stem: format!("turn-{}", job.turn_index),
-                title: title.clone(),
-                base_context: context.clone(),
-                operation_id,
-                source: job.source.clone(),
-                start_ms: Some(job.start_ms),
-                end_ms: Some(job.end_ms),
-                turn_index: Some(job.turn_index),
-            },
-        )
-        .await
-        {
-            Ok(transcript) => transcript,
-            Err(error) => {
-                let warning =
-                    user_facing_transcription_failure_message(&error.code, &error.message);
-                let input = SourceTranscriptInput {
-                    source: job.source,
-                    text: String::new(),
-                    valid: false,
-                    warning: Some(warning),
-                    start_ms: Some(job.start_ms),
-                    end_ms: Some(job.end_ms),
-                    turn_index: Some(job.turn_index),
-                };
-                transcript_inputs.push(input.clone());
-                outcome.failures.push(FailedTranscriptCandidate {
-                    artifact_id: job.artifact_id,
-                    input,
-                });
-                continue;
-            }
-        };
-        let transcript =
-            maybe_post_process_note_transcript(&provider, transcript, context.as_deref()).await;
-        let input = SourceTranscriptInput {
-            source: job.source,
-            text: transcript.text,
-            valid: true,
-            warning: None,
+) -> Result<CompletedTurnTranscription, AppError> {
+    let started = Instant::now();
+    let operation_id = if job.source_fallback {
+        source_fallback_operation_id(&job)
+    } else {
+        turn_operation_id(&job)
+    };
+    let transcript = match transcribe_prepared_audio(
+        Arc::clone(&transcriber),
+        TranscribePreparedAudioRequest {
+            provider: provider.clone(),
+            audio_path: job.audio_path,
+            temp_dir: job.temp_dir.clone(),
+            chunk_stem: format!("turn-{}", job.turn_index),
+            title,
+            base_context: context.clone(),
+            operation_id,
+            source: job.source.clone(),
             start_ms: Some(job.start_ms),
             end_ms: Some(job.end_ms),
             turn_index: Some(job.turn_index),
-        };
-        transcript_inputs.push(input.clone());
-        outcome.candidates.push(TranscriptCandidate {
+        },
+    )
+    .await
+    {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            let warning = user_facing_transcription_failure_message(&error.code, &error.message);
+            let input = SourceTranscriptInput {
+                source: job.source,
+                text: String::new(),
+                valid: false,
+                warning: Some(warning),
+                start_ms: Some(job.start_ms),
+                end_ms: Some(job.end_ms),
+                turn_index: Some(job.turn_index),
+            };
+            return Ok(CompletedTurnTranscription {
+                result: TurnTranscriptionResult::Failure(FailedTranscriptCandidate {
+                    artifact_id: job.artifact_id,
+                    input,
+                }),
+                duration_ms: elapsed_ms(started),
+            });
+        }
+    };
+    let transcript =
+        maybe_post_process_note_transcript(&provider, transcript, context.as_deref()).await;
+    let input = SourceTranscriptInput {
+        source: job.source,
+        text: transcript.text,
+        valid: true,
+        warning: None,
+        start_ms: Some(job.start_ms),
+        end_ms: Some(job.end_ms),
+        turn_index: Some(job.turn_index),
+    };
+    Ok(CompletedTurnTranscription {
+        result: TurnTranscriptionResult::Candidate(TranscriptCandidate {
             artifact_id: job.artifact_id,
             language: transcript.language,
             provider: transcript.provider,
             input,
-        });
-    }
-    if outcome.candidates.is_empty() {
-        if let Some(job) = fallback_job {
-            let operation_id = source_fallback_operation_id(&job);
-            let context = merge_transcription_context(dictionary_context.as_deref(), None);
-            if let Ok(transcript) = transcribe_prepared_audio(
-                Arc::clone(&transcriber),
-                TranscribePreparedAudioRequest {
-                    provider: provider.clone(),
-                    audio_path: job.audio_path,
-                    temp_dir: job.temp_dir,
-                    chunk_stem: format!("source-{}", job.source),
-                    title,
-                    base_context: context.clone(),
-                    operation_id,
-                    source: job.source.clone(),
-                    start_ms: Some(job.start_ms),
-                    end_ms: Some(job.end_ms),
-                    turn_index: Some(job.turn_index),
-                },
-            )
-            .await
-            {
-                let transcript =
-                    maybe_post_process_note_transcript(&provider, transcript, context.as_deref())
-                        .await;
-                if !transcript.text.trim().is_empty() {
-                    outcome.failures.clear();
-                    outcome.candidates.push(TranscriptCandidate {
-                        artifact_id: job.artifact_id,
-                        language: transcript.language,
-                        provider: transcript.provider,
-                        input: SourceTranscriptInput {
-                            source: job.source,
-                            text: transcript.text,
-                            valid: true,
-                            warning: None,
-                            start_ms: Some(job.start_ms),
-                            end_ms: Some(job.end_ms),
-                            turn_index: Some(job.turn_index),
-                        },
-                    });
-                }
-            }
-        }
-    }
-    Ok(outcome)
+        }),
+        duration_ms: elapsed_ms(started),
+    })
+}
+
+async fn persist_turn_transcription_event(
+    repos: &Repositories,
+    note_id: &str,
+    session_id: &str,
+    source_mode: RecordingSourceMode,
+    event: CompletedTurnTranscription,
+) -> Result<(), AppError> {
+    let (artifact_id, source, start_ms, end_ms, turn_index, status) = match &event.result {
+        TurnTranscriptionResult::Candidate(candidate) => (
+            candidate.artifact_id.as_str(),
+            candidate.input.source.as_str(),
+            candidate.input.start_ms.unwrap_or_default(),
+            candidate.input.end_ms.unwrap_or_default(),
+            candidate.input.turn_index.unwrap_or_default(),
+            "succeeded",
+        ),
+        TurnTranscriptionResult::Failure(failure) => (
+            failure.artifact_id.as_str(),
+            failure.input.source.as_str(),
+            failure.input.start_ms.unwrap_or_default(),
+            failure.input.end_ms.unwrap_or_default(),
+            failure.input.turn_index.unwrap_or_default(),
+            "failed",
+        ),
+    };
+    repos
+        .add_source_checkpoint(
+            session_id,
+            Some(artifact_id),
+            Some(source),
+            "transcription_request",
+            Some(
+                serde_json::json!({
+                    "durationMs": event.duration_ms,
+                    "status": status,
+                    "turnIndex": turn_index,
+                    "startMs": start_ms,
+                    "endMs": end_ms,
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
+
+    let TurnTranscriptionResult::Candidate(candidate) = event.result else {
+        return Ok(());
+    };
+
+    let persistence_started = Instant::now();
+    let row = repos
+        .upsert_successful_source_turn_transcript(
+            note_id,
+            session_id,
+            &candidate.artifact_id,
+            source_mode,
+            &candidate.input.source,
+            &candidate.input.text,
+            candidate.language,
+            &candidate.provider,
+            candidate.input.start_ms.unwrap_or_default(),
+            candidate.input.end_ms.unwrap_or_default(),
+            candidate.input.turn_index.unwrap_or_default(),
+        )
+        .await?;
+    tracing::info!(
+        %session_id,
+        source = %candidate.input.source,
+        turn_index = candidate.input.turn_index.unwrap_or_default(),
+        transcript_id = %row.id,
+        "persisted partial turn transcript"
+    );
+    repos
+        .add_source_checkpoint(
+            session_id,
+            Some(candidate.artifact_id.as_str()),
+            Some(candidate.input.source.as_str()),
+            "transcript_persistence",
+            Some(
+                serde_json::json!({
+                    "durationMs": elapsed_ms(persistence_started),
+                    "status": "succeeded",
+                    "turnIndex": candidate.input.turn_index,
+                    "transcriptId": row.id,
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
+    Ok(())
 }
 
 fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscriptionJob> {
@@ -909,6 +1239,7 @@ fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscr
         temp_dir: first.temp_dir.clone(),
         source_path: first.source_path.clone(),
         covers_full_source: true,
+        source_fallback: true,
         start_ms: 0,
         end_ms: jobs.iter().map(|job| job.end_ms).max().unwrap_or(0),
         turn_index: first.turn_index,
@@ -921,32 +1252,6 @@ fn turn_operation_id(job: &TurnTranscriptionJob) -> String {
 
 fn source_fallback_operation_id(job: &TurnTranscriptionJob) -> String {
     format!("{}-{}-source", job.artifact_id, job.source)
-}
-
-fn coalesce_transcript_candidates(
-    candidates: Vec<TranscriptCandidate>,
-) -> Vec<TranscriptCandidate> {
-    let mut coalesced: Vec<TranscriptCandidate> = Vec::new();
-    for candidate in candidates {
-        if let Some(last) = coalesced.last_mut() {
-            if can_coalesce_source_transcripts(&last.input, &candidate.input) {
-                last.input.text = join_transcript_text(&last.input.text, &candidate.input.text);
-                last.input.end_ms = match (last.input.end_ms, candidate.input.end_ms) {
-                    (Some(left), Some(right)) => Some(left.max(right)),
-                    (None, value) | (value, None) => value,
-                };
-                if last.language.is_none() {
-                    last.language = candidate.language;
-                }
-                continue;
-            }
-        }
-        coalesced.push(candidate);
-    }
-    for (index, candidate) in coalesced.iter_mut().enumerate() {
-        candidate.input.turn_index = Some(index as i64);
-    }
-    coalesced
 }
 
 fn source_failure_summary(failures: &[FailedTranscriptCandidate]) -> Option<String> {
@@ -1242,15 +1547,6 @@ mod tests {
             vec!["m0", "s1", "m2"]
         );
 
-        let contexts = contexts.lock().unwrap();
-        let context_by_path = contexts.iter().cloned().collect::<HashMap<_, _>>();
-        assert!(context_by_path["m0"].is_none());
-        assert!(context_by_path["s1"].is_none());
-        assert!(context_by_path["m2"]
-            .as_ref()
-            .expect("second microphone turn should receive prior microphone context")
-            .contains("Microphone: m0"));
-
         let mut operation_ids = operation_ids.lock().unwrap().clone();
         operation_ids.sort();
         assert_eq!(
@@ -1261,6 +1557,56 @@ mod tests {
                 "artifact-s1-system-turn-1",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn bounded_turn_scheduler_uses_completed_context_when_available() {
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let contexts = Arc::clone(&contexts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let contexts = Arc::clone(&contexts);
+                Box::pin(async move {
+                    contexts.lock().unwrap().push((
+                        request.audio_path.to_string_lossy().to_string(),
+                        request.context,
+                    ));
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        transcribe_turn_jobs_bounded(
+            vec![
+                test_job("m0", "microphone", 0),
+                test_job("s1", "system", 1),
+                test_job("m2", "microphone", 2),
+            ],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+            None,
+            1,
+        )
+        .await
+        .expect("turn jobs should transcribe");
+
+        let contexts = contexts.lock().unwrap();
+        let context_by_path = contexts.iter().cloned().collect::<HashMap<_, _>>();
+        assert!(context_by_path["m0"].is_none());
+        assert!(context_by_path["s1"]
+            .as_ref()
+            .expect("later turn should receive completed context")
+            .contains("Microphone: m0"));
+        assert!(context_by_path["m2"]
+            .as_ref()
+            .expect("later microphone turn should receive nearby context")
+            .contains("System: s1"));
     }
 
     #[tokio::test]
@@ -1539,6 +1885,7 @@ mod tests {
             temp_dir: std::env::temp_dir(),
             source_path: PathBuf::from(path),
             covers_full_source: true,
+            source_fallback: false,
             start_ms: turn_index * 1_000,
             end_ms: turn_index * 1_000 + 500,
             turn_index,

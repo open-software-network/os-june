@@ -1243,6 +1243,41 @@ impl Repositories {
             .collect())
     }
 
+    pub async fn successful_source_turn_transcripts_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<TranscriptDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, text, source_mode, source, start_ms, end_ms, turn_index, language, status, last_error
+             FROM transcripts
+             WHERE recording_session_id = ?
+               AND turn_index IS NOT NULL
+               AND status = 'succeeded'
+               AND TRIM(text) != ''
+             ORDER BY COALESCE(turn_index, 999999), COALESCE(start_ms, 999999999), created_at ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TranscriptDto {
+                id: row.get("id"),
+                text: row.get("text"),
+                source_mode: Some(RecordingSourceMode::from(
+                    row.get::<String, _>("source_mode").as_str(),
+                )),
+                source: row.get("source"),
+                start_ms: row.get("start_ms"),
+                end_ms: row.get("end_ms"),
+                turn_index: row.get("turn_index"),
+                language: row.get("language"),
+                status: row.get("status"),
+                last_error: row.get("last_error"),
+            })
+            .collect())
+    }
+
     pub async fn create_transcript(
         &self,
         note_id: &str,
@@ -1336,6 +1371,75 @@ impl Repositories {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_successful_source_turn_transcript(
+        &self,
+        note_id: &str,
+        session_id: &str,
+        audio_artifact_id: &str,
+        source_mode: RecordingSourceMode,
+        source: &str,
+        text: &str,
+        language: Option<String>,
+        provider: &str,
+        start_ms: i64,
+        end_ms: i64,
+        turn_index: i64,
+    ) -> Result<TranscriptDto, sqlx::Error> {
+        let now = timestamp();
+        if let Some(existing_id) = self
+            .source_turn_transcript_id(session_id, source, turn_index)
+            .await?
+        {
+            sqlx::query(
+                "UPDATE transcripts
+                 SET audio_artifact_id = ?, source_artifact_id = ?, source_mode = ?, text = ?,
+                     start_ms = ?, end_ms = ?, language = ?, provider = ?, status = 'succeeded',
+                     last_error = NULL, updated_at = ?
+                 WHERE id = ?",
+            )
+            .bind(audio_artifact_id)
+            .bind(audio_artifact_id)
+            .bind(source_mode.as_db())
+            .bind(text)
+            .bind(start_ms)
+            .bind(end_ms)
+            .bind(&language)
+            .bind(provider)
+            .bind(&now)
+            .bind(&existing_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(TranscriptDto {
+                id: existing_id,
+                text: text.to_string(),
+                source_mode: Some(source_mode),
+                source: Some(source.to_string()),
+                start_ms: Some(start_ms),
+                end_ms: Some(end_ms),
+                turn_index: Some(turn_index),
+                language,
+                status: "succeeded".to_string(),
+                last_error: None,
+            });
+        }
+
+        self.create_source_transcript(
+            note_id,
+            session_id,
+            audio_artifact_id,
+            source_mode,
+            source,
+            text,
+            language,
+            provider,
+            Some(start_ms),
+            Some(end_ms),
+            Some(turn_index),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_failed_source_transcript(
         &self,
         note_id: &str,
@@ -1384,6 +1488,94 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(transcript)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_failed_source_turn_transcript(
+        &self,
+        note_id: &str,
+        session_id: &str,
+        audio_artifact_id: &str,
+        source_mode: RecordingSourceMode,
+        source: &str,
+        provider: &str,
+        last_error: &str,
+        start_ms: i64,
+        end_ms: i64,
+        turn_index: i64,
+    ) -> Result<TranscriptDto, sqlx::Error> {
+        let now = timestamp();
+        if let Some(existing_id) = self
+            .source_turn_transcript_id(session_id, source, turn_index)
+            .await?
+        {
+            sqlx::query(
+                "UPDATE transcripts
+                 SET audio_artifact_id = ?, source_artifact_id = ?, source_mode = ?, text = '',
+                     start_ms = ?, end_ms = ?, language = NULL, provider = ?, status = 'failed',
+                     last_error = ?, updated_at = ?
+                 WHERE id = ?",
+            )
+            .bind(audio_artifact_id)
+            .bind(audio_artifact_id)
+            .bind(source_mode.as_db())
+            .bind(start_ms)
+            .bind(end_ms)
+            .bind(provider)
+            .bind(last_error)
+            .bind(&now)
+            .bind(&existing_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(TranscriptDto {
+                id: existing_id,
+                text: String::new(),
+                source_mode: Some(source_mode),
+                source: Some(source.to_string()),
+                start_ms: Some(start_ms),
+                end_ms: Some(end_ms),
+                turn_index: Some(turn_index),
+                language: None,
+                status: "failed".to_string(),
+                last_error: Some(last_error.to_string()),
+            });
+        }
+
+        self.create_failed_source_transcript(
+            note_id,
+            session_id,
+            audio_artifact_id,
+            source_mode,
+            source,
+            provider,
+            last_error,
+            Some(start_ms),
+            Some(end_ms),
+            Some(turn_index),
+        )
+        .await
+    }
+
+    async fn source_turn_transcript_id(
+        &self,
+        session_id: &str,
+        source: &str,
+        turn_index: i64,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT id
+             FROM transcripts
+             WHERE recording_session_id = ?
+               AND source = ?
+               AND turn_index = ?
+             LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(source)
+        .bind(turn_index)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| row.get("id")))
     }
 
     pub async fn create_generation_result(

@@ -329,9 +329,22 @@ export function App() {
       return;
     }
     const noteId = selectedNote.id;
+    const startedAt = performance.now();
     const interval = window.setInterval(() => {
       getNote(noteId)
-        .then((note) => dispatch({ type: "noteUpdated", note }))
+        .then((note) => {
+          if (
+            import.meta.env.DEV &&
+            !shouldPollProcessingStatus(note.processingStatus)
+          ) {
+            console.debug("[processing] polling complete", {
+              noteId,
+              status: note.processingStatus,
+              durationMs: Math.round(performance.now() - startedAt),
+            });
+          }
+          dispatch({ type: "noteUpdated", note });
+        })
         .catch((err: unknown) => setError(messageFromError(err)));
     }, 1000);
     return () => window.clearInterval(interval);
