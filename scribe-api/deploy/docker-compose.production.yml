@@ -48,7 +48,9 @@ services:
     # DSTACK_DOCKER_* (registry auth) is consumed by the prelaunch, not the app.
     environment:
       - RUST_LOG=scribe=warn,scribe_api=warn,scribe_services=warn,scribe_providers=warn,tower_http=warn
-      - SCRIBE__OS_ACCOUNTS__API_URL=${SCRIBE__OS_ACCOUNTS__API_URL}
+      - SCRIBE__OS_ACCOUNTS__API_URL=https://accounts-api.opensoftware.co
+      - SCRIBE__OS_ACCOUNTS__ISS=https://accounts.opensoftware.co
+      - SCRIBE__OS_ACCOUNTS__AUD=open-software-apps
       - SCRIBE__OS_ACCOUNTS__APP_API_KEY=${SCRIBE__OS_ACCOUNTS__APP_API_KEY}
       - SCRIBE__UPSTREAMS__OPENAI__API_KEY=${SCRIBE__UPSTREAMS__OPENAI__API_KEY}
       - SCRIBE__UPSTREAMS__VENICE__API_KEY=${SCRIBE__UPSTREAMS__VENICE__API_KEY}
