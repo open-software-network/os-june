@@ -1874,6 +1874,15 @@ input:focus-visible,
   left: calc(var(--sp-3) + var(--sp-8));
 }
 
+/* The fixed recorder's `left` rides the card's left edge. During a smooth
+ * collapse/expand the sidebar grid tweens over --t-med, so match it here —
+ * otherwise the pill snaps to its collapsed offset at frame 0 while the
+ * sidebar is still in motion. While resizing (transition: none) the left
+ * tracks --sidebar-w-current live, so no transition there. */
+.app-shell[data-sidebar-transition="smooth"] .editor-footer {
+  transition: left var(--t-med) var(--ease-out);
+}
+
 .editor-footer > * {
   pointer-events: auto;
 }
