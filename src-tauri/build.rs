@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=Entitlements.plist");
     println!("cargo:rerun-if-changed=icons/icon.icns");
     println!("cargo:rerun-if-changed=icons/icon.png");
     println!("cargo:rerun-if-changed=icons/32x32.png");
@@ -119,7 +120,7 @@ fn build_system_audio_helper() {
     }
 
     if should_sign || has_signing_identity() {
-        sign_helper_app(&app_dir);
+        sign_helper_app(&manifest_dir, &app_dir);
     }
 }
 
@@ -261,7 +262,7 @@ fn build_dictation_helper() {
     }
 
     if should_sign || has_signing_identity() {
-        sign_helper_app(&app_dir);
+        sign_helper_app(&manifest_dir, &app_dir);
     }
 }
 
@@ -271,15 +272,18 @@ fn has_signing_identity() -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
-fn sign_helper_app(app_dir: &std::path::Path) {
+fn sign_helper_app(manifest_dir: &std::path::Path, app_dir: &std::path::Path) {
     let identity = std::env::var("APPLE_SIGNING_IDENTITY")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "-".to_string());
+    let entitlements = manifest_dir.join("Entitlements.plist");
     let mut command = std::process::Command::new("codesign");
     command
         .arg("--force")
         .arg("--deep")
+        .arg("--entitlements")
+        .arg(entitlements)
         .arg("--sign")
         .arg(&identity);
     if identity != "-" {

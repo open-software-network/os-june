@@ -191,6 +191,8 @@ plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 
 # 5. Entitlements are what you expect (especially helpers).
 codesign -d --entitlements :- "$APP"
+codesign -d --entitlements :- "$APP/Contents/Resources/native/bin/OS Scribe.app"
+codesign -d --entitlements :- "$APP/Contents/Resources/native/bin/OS Scribe Dictation Helper.app"
 ```
 
 If any check fails, **do not distribute**. Common fixes in the
@@ -331,12 +333,11 @@ mitigations:
 
 ### Sandbox blocks something at runtime
 
-Current `Entitlements.plist` has `com.apple.security.app-sandbox =
-true` plus audio-input and a read-write toggle. URL scheme handling
-works inside the sandbox. If a future feature needs another capability
-(file picker, network listener, etc.), add the entitlement to
-`Entitlements.plist` *before* signing — sandbox is enforced at runtime
-based on what's signed in, not what's in the source file at runtime.
+Current `Entitlements.plist` intentionally avoids App Sandbox for the
+Developer ID build, but it must include `com.apple.security.device.audio-input`
+for signed microphone capture. If a future feature needs another capability,
+add the entitlement to `Entitlements.plist` *before* signing — hardened runtime
+behavior is based on what's signed in, not what's in the source file at runtime.
 
 ### Helper app loses Accessibility permission after update
 

@@ -156,10 +156,12 @@ for OS Scribe. Provider keys such as OpenAI, Venice, and the OS Accounts App API
 key remain server-side in Scribe API/Phala env; they do not belong in the desktop
 DMG workflow.
 
-The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. The `production-desktop-dmg` workflow is manual-only. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed bundle has the expected empty entitlement set:
+The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. The `production-desktop-dmg` workflow is manual-only. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
 
 ```sh
 codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app"
+codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app/Contents/Resources/native/bin/OS Scribe.app"
+codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app/Contents/Resources/native/bin/OS Scribe Dictation Helper.app"
 ```
 
 If permission is denied during local testing, reset it from macOS Privacy & Security settings or with:
