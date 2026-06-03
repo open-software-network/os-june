@@ -2,7 +2,7 @@ import { IconPause } from "central-icons-filled/IconPause";
 import { IconPlay } from "central-icons-filled/IconPlay";
 import { IconStop } from "central-icons-filled/IconStop";
 import type { RecordingStatusDto } from "../../lib/tauri";
-import { Waveform } from "./Waveform";
+import { combineSourceAudioLevels, Waveform } from "./Waveform";
 
 type RecorderBarProps = {
   status: RecordingStatusDto;
@@ -20,6 +20,11 @@ export function RecorderBar({
   const paused = status.state === "paused";
   const controlsEnabled =
     status.state === "recording" || status.state === "paused";
+  // status.level is mic-only; status.sources carries mic+system when available.
+  const meterLevel =
+    status.sources && status.sources.length > 0
+      ? combineSourceAudioLevels(status.sources)
+      : status.level;
   const pauseLabel = paused
     ? "Resume"
     : status.state === "recording"
@@ -44,7 +49,7 @@ export function RecorderBar({
       </button>
       <div className="recorder-meter">
         <span className="elapsed">{formatElapsed(status.elapsedMs)}</span>
-        <Waveform level={status.level} />
+        <Waveform level={meterLevel} />
       </div>
       <button
         type="button"

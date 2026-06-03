@@ -2,7 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RecorderBar } from "../components/recorder/RecorderBar";
-import { visualPeakScale } from "../components/recorder/Waveform";
+import {
+  combineAudioLevels,
+  combineSourceAudioLevels,
+  SOURCE_VISUAL_GAIN,
+  visualPeakScale,
+} from "../components/recorder/Waveform";
 
 describe("RecorderBar", () => {
   it("shows elapsed time, waveform evidence, and pause/done actions while recording", () => {
@@ -25,7 +30,7 @@ describe("RecorderBar", () => {
     expect(screen.getByText("01:05")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Microphone activity")).toBeInTheDocument();
+    expect(screen.getByLabelText("Audio activity")).toBeInTheDocument();
   });
 
   it("uses resume action when paused", async () => {
@@ -93,6 +98,95 @@ describe("RecorderBar", () => {
     expect(
       screen.queryByText("Microphone input appears silent"),
     ).not.toBeInTheDocument();
+  });
+
+  it("drives the waveform from system audio when the mic is quiet", () => {
+    render(
+      <RecorderBar
+        status={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 5_000,
+          level: { peak: 0.002, rms: 0.001, recentPeaks: [0.002] },
+          silenceWarning: false,
+          bytesWritten: 4096,
+          sources: [
+            {
+              source: "microphone",
+              state: "recording",
+              elapsedMs: 5_000,
+              bytesWritten: 2048,
+              level: { peak: 0.002, rms: 0.001, recentPeaks: [0.002] },
+              silenceWarning: false,
+              pathFinalized: false,
+            },
+            {
+              source: "system",
+              state: "recording",
+              elapsedMs: 5_000,
+              bytesWritten: 2048,
+              level: { peak: 0.8, rms: 0.4, recentPeaks: [0.7] },
+              silenceWarning: false,
+              pathFinalized: false,
+            },
+          ],
+        }}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Audio activity")).toBeInTheDocument();
+  });
+
+  it("folds multiple source levels into the louder envelope", () => {
+    const combined = combineAudioLevels([
+      { peak: 0.1, rms: 0.05, recentPeaks: [0.1, 0.2] },
+      { peak: 0.8, rms: 0.4, recentPeaks: [0.7] },
+    ]);
+    expect(combined.peak).toBe(0.8);
+    expect(combined.rms).toBe(0.4);
+    expect(combined.recentPeaks).toEqual([0.1, 0.7]);
+  });
+
+  it("applies source visual gain before folding recorder source levels", () => {
+    const combined = combineSourceAudioLevels([
+      {
+        source: "microphone",
+        state: "recording",
+        elapsedMs: 5_000,
+        bytesWritten: 2048,
+        level: { peak: 0.25, rms: 0.1, recentPeaks: [0.2, 0.25] },
+        silenceWarning: false,
+        pathFinalized: false,
+      },
+      {
+        source: "system",
+        state: "recording",
+        elapsedMs: 5_000,
+        bytesWritten: 2048,
+        level: { peak: 0.8, rms: 0.4, recentPeaks: [0.7] },
+        silenceWarning: false,
+        pathFinalized: false,
+      },
+    ]);
+
+    expect(combined.peak).toBe(0.25);
+    expect(combined.rms).toBe(0.1);
+    expect(combined.recentPeaks).toEqual([0.2, 0.25]);
+  });
+
+  it("keeps boosted system audio below the waveform ceiling", () => {
+    expect(visualPeakScale(0.8 * SOURCE_VISUAL_GAIN.system)).toBeLessThan(0.85);
+  });
+
+  it("returns a silent level when no sources are present", () => {
+    expect(combineAudioLevels([undefined])).toEqual({
+      peak: 0,
+      rms: 0,
+      recentPeaks: [],
+    });
   });
 
   it("keeps quiet speech visible while leaving loud speech headroom", () => {

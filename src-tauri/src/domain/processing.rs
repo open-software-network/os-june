@@ -786,6 +786,7 @@ async fn transcribe_source_lane(
     let mut transcript_inputs = Vec::new();
     let mut outcome = TranscriptionOutcome::default();
     for job in jobs {
+        let operation_id = turn_operation_id(&job);
         let context = merge_transcription_context(
             dictionary_context.as_deref(),
             build_transcription_context(&transcript_inputs).as_deref(),
@@ -799,7 +800,7 @@ async fn transcribe_source_lane(
                 chunk_stem: format!("turn-{}", job.turn_index),
                 title: title.clone(),
                 base_context: context.clone(),
-                operation_id: format!("turn-{}", job.turn_index),
+                operation_id,
                 source: job.source.clone(),
                 start_ms: Some(job.start_ms),
                 end_ms: Some(job.end_ms),
@@ -850,6 +851,7 @@ async fn transcribe_source_lane(
     }
     if outcome.candidates.is_empty() {
         if let Some(job) = fallback_job {
+            let operation_id = source_fallback_operation_id(&job);
             let context = merge_transcription_context(dictionary_context.as_deref(), None);
             if let Ok(transcript) = transcribe_prepared_audio(
                 Arc::clone(&transcriber),
@@ -860,7 +862,7 @@ async fn transcribe_source_lane(
                     chunk_stem: format!("source-{}", job.source),
                     title,
                     base_context: context.clone(),
-                    operation_id: format!("source-{}", job.source),
+                    operation_id,
                     source: job.source.clone(),
                     start_ms: Some(job.start_ms),
                     end_ms: Some(job.end_ms),
@@ -911,6 +913,14 @@ fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscr
         end_ms: jobs.iter().map(|job| job.end_ms).max().unwrap_or(0),
         turn_index: first.turn_index,
     })
+}
+
+fn turn_operation_id(job: &TurnTranscriptionJob) -> String {
+    format!("{}-{}-turn-{}", job.artifact_id, job.source, job.turn_index)
+}
+
+fn source_fallback_operation_id(job: &TurnTranscriptionJob) -> String {
+    format!("{}-{}-source", job.artifact_id, job.source)
 }
 
 fn coalesce_transcript_candidates(
@@ -1177,23 +1187,28 @@ mod tests {
         let active = Arc::new(AtomicUsize::new(0));
         let max_active = Arc::new(AtomicUsize::new(0));
         let contexts = Arc::new(Mutex::new(Vec::new()));
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
         let transcriber = {
             let active = Arc::clone(&active);
             let max_active = Arc::clone(&max_active);
             let contexts = Arc::clone(&contexts);
+            let operation_ids = Arc::clone(&operation_ids);
             Arc::new(move |request: TranscriptionRequest| {
                 let active = Arc::clone(&active);
                 let max_active = Arc::clone(&max_active);
                 let contexts = Arc::clone(&contexts);
+                let operation_ids = Arc::clone(&operation_ids);
                 Box::pin(async move {
                     let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
                     max_active.fetch_max(now_active, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     active.fetch_sub(1, Ordering::SeqCst);
+                    let operation_id = request.operation_id();
                     contexts.lock().unwrap().push((
                         request.audio_path.to_string_lossy().to_string(),
                         request.context,
                     ));
+                    operation_ids.lock().unwrap().push(operation_id);
                     Ok(TranscriptionProviderResult {
                         text: request.audio_path.to_string_lossy().to_string(),
                         language: Some("es".to_string()),
@@ -1235,6 +1250,17 @@ mod tests {
             .as_ref()
             .expect("second microphone turn should receive prior microphone context")
             .contains("Microphone: m0"));
+
+        let mut operation_ids = operation_ids.lock().unwrap().clone();
+        operation_ids.sort();
+        assert_eq!(
+            operation_ids,
+            vec![
+                "artifact-m0-microphone-turn-0",
+                "artifact-m2-microphone-turn-2",
+                "artifact-s1-system-turn-1",
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1273,6 +1299,16 @@ mod tests {
             source_failure_summary(&outcome.failures).as_deref(),
             Some("System: System source was silent.")
         );
+    }
+
+    #[test]
+    fn turn_operation_id_includes_source_when_turn_indices_match() {
+        let mic = test_job("m0", "microphone", 0);
+        let system = test_job("s0", "system", 0);
+
+        assert_ne!(turn_operation_id(&mic), turn_operation_id(&system));
+        assert_eq!(turn_operation_id(&mic), "artifact-m0-microphone-turn-0");
+        assert_eq!(turn_operation_id(&system), "artifact-s0-system-turn-0");
     }
 
     #[tokio::test]
