@@ -97,17 +97,35 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
                 .map_err(sqlx::migrate::MigrateError::Execute)?;
         }
     }
-    for statement in include_str!("../../migrations/006_transcript_turn_uniqueness.sql").split(';')
-    {
-        let statement = statement.trim();
-        if !statement.is_empty() {
-            sqlx::query(statement)
-                .execute(_pool)
-                .await
-                .map_err(sqlx::migrate::MigrateError::Execute)?;
+    // The dedupe DELETE in this migration scans `transcripts`, so only run it
+    // until the unique index exists. Once present, there is nothing left to
+    // dedupe and re-running on every startup would be wasted work.
+    if !index_exists(_pool, "idx_transcripts_session_source_turn").await? {
+        for statement in
+            include_str!("../../migrations/006_transcript_turn_uniqueness.sql").split(';')
+        {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                sqlx::query(statement)
+                    .execute(_pool)
+                    .await
+                    .map_err(sqlx::migrate::MigrateError::Execute)?;
+            }
         }
     }
     Ok(())
+}
+
+async fn index_exists(
+    pool: &SqlitePool,
+    index: &str,
+) -> Result<bool, sqlx::migrate::MigrateError> {
+    let row = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .bind(index)
+        .fetch_optional(pool)
+        .await
+        .map_err(sqlx::migrate::MigrateError::Execute)?;
+    Ok(row.is_some())
 }
 
 async fn ensure_column(

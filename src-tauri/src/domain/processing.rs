@@ -521,6 +521,7 @@ pub async fn process_saved_source_audio(
     if !transcription_jobs.is_empty() {
         let mut fresh_outcome = transcribe_turn_jobs_bounded(
             transcription_jobs,
+            &transcription_outcome.candidates,
             transcription_provider.clone(),
             title.clone(),
             dictionary_context,
@@ -896,6 +897,7 @@ async fn transcribe_turn_jobs_by_source_lane(
 ) -> Result<TranscriptionOutcome, AppError> {
     transcribe_turn_jobs_bounded(
         jobs,
+        &[],
         provider,
         title,
         dictionary_context,
@@ -908,6 +910,7 @@ async fn transcribe_turn_jobs_by_source_lane(
 
 async fn transcribe_turn_jobs_bounded(
     jobs: Vec<TurnTranscriptionJob>,
+    cached_candidates: &[TranscriptCandidate],
     provider: String,
     title: String,
     dictionary_context: Option<String>,
@@ -968,11 +971,15 @@ async fn transcribe_turn_jobs_bounded(
     }
 
     for (_source, lane_jobs) in source_jobs {
-        let has_candidate = outcome.candidates.iter().any(|candidate| {
-            candidate.input.source == lane_jobs[0].source
-                && candidate.input.valid
-                && !candidate.input.text.trim().is_empty()
-        });
+        let has_candidate = outcome
+            .candidates
+            .iter()
+            .chain(cached_candidates.iter())
+            .any(|candidate| {
+                candidate.input.source == lane_jobs[0].source
+                    && candidate.input.valid
+                    && !candidate.input.text.trim().is_empty()
+            });
         if has_candidate {
             continue;
         }
@@ -1586,6 +1593,7 @@ mod tests {
                 test_job("s1", "system", 1),
                 test_job("m2", "microphone", 2),
             ],
+            &[],
             crate::providers::OPENAI_PROVIDER.to_string(),
             "Meeting".to_string(),
             None,
