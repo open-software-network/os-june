@@ -135,7 +135,28 @@ Also configure the staging app environment secrets. These are intentionally stag
 
 The `staging-desktop-dmg` workflow maps those staging secrets into `OS_ACCOUNTS_URL`, `OS_ACCOUNTS_API_URL`, `OS_ACCOUNTS_CLIENT_ID`, and `SCRIBE_API_URL` only for the build, so the release binary embeds staging endpoints as fallback runtime config.
 
-The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed bundle has the expected empty entitlement set:
+Configure the production desktop app environment secrets in the GitHub `production`
+environment for the manually-triggered `production-desktop-dmg` workflow:
+
+- `PRODUCTION_OS_ACCOUNTS_URL`
+- `PRODUCTION_OS_ACCOUNTS_API_URL`
+- `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`
+- `PRODUCTION_SCRIBE_API_URL`
+
+The production values should be:
+
+```sh
+PRODUCTION_OS_ACCOUNTS_URL=https://accounts.opensoftware.co
+PRODUCTION_OS_ACCOUNTS_API_URL=https://accounts-api.opensoftware.co
+PRODUCTION_SCRIBE_API_URL=https://scribe-api.opensoftware.co
+```
+
+`PRODUCTION_OS_ACCOUNTS_CLIENT_ID` is the production OS Accounts OAuth client id
+for OS Scribe. Provider keys such as OpenAI, Venice, and the OS Accounts App API
+key remain server-side in Scribe API/Phala env; they do not belong in the desktop
+DMG workflow.
+
+The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. The `production-desktop-dmg` workflow is manual-only. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed bundle has the expected empty entitlement set:
 
 ```sh
 codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app"
