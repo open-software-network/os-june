@@ -23,13 +23,18 @@ export function PermissionBanner() {
           onClick={() => {
             // Fire the helper's prompting check first: it registers the
             // dictation helper in the Accessibility list (so there's a toggle
-            // to flip) and shows the native system dialog. Then open the pane
-            // as a reliable fallback for repeat clicks, where macOS suppresses
-            // the one-time dialog.
+            // to flip) and shows the native system dialog. Open the pane only
+            // after that IPC resolves — sequenced, not concurrent, so the
+            // registration lands before System Settings can steal focus from
+            // the prompt. The pane is the fallback for repeat clicks, where
+            // macOS suppresses the one-time dialog.
             void dictationHelperCommand({
               type: "request_accessibility_permission",
-            }).catch(() => undefined);
-            void openPrivacySettings("accessibility");
+            })
+              .catch(() => undefined)
+              .finally(() => {
+                void openPrivacySettings("accessibility");
+              });
           }}
         >
           Open System Settings
