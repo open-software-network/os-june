@@ -176,12 +176,45 @@ jobs:
           chmod 600 "$key_path"
           echo "path=$key_path" >> "$GITHUB_OUTPUT"
 
+      # Import the Developer ID cert into a keychain BEFORE the build. build.rs
+      # signs the nested Swift helper apps during `cargo build` (compile phase),
+      # but tauri-action only sets up its signing keychain just before its own
+      # bundler-signing phase, AFTER compilation. Without this, build.rs's
+      # codesign fails ("helper app could not be signed") and the helpers reach
+      # notarization ad-hoc (no Developer ID / secure timestamp / hardened
+      # runtime). This mirrors scripts/build-signed-dmg.sh, which succeeds for
+      # exactly this reason. tauri-action then reuses this keychain via
+      # APPLE_SIGNING_IDENTITY, so we no longer hand it APPLE_CERTIFICATE (which
+      # would set up a second, competing keychain).
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/os-scribe-signing.keychain-db"
+          keychain_password="os-scribe-$RANDOM-$RANDOM"
+          cert="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          # Prepend our keychain to the existing user search list. The command
+          # substitution must word-split into one arg per keychain, so it stays
+          # unquoted intentionally.
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$cert"
+
       - name: Build, sign, notarize, and publish updater release
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
