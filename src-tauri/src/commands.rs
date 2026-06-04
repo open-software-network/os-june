@@ -2,8 +2,8 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_status, finish_active_capture, finish_capture, microphone_permission_state,
-            pause_capture, resume_capture, start_capture,
+            capture_status, finish_active_capture, finish_capture, is_capture_active,
+            microphone_permission_state, pause_capture, resume_capture, start_capture,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -681,7 +681,7 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
         let mut system = crate::audio::system_macos::system_audio_readiness();
-        if system.ready {
+        if should_probe_system_audio_permission(system.ready, is_capture_active()) {
             if let Err(error) = crate::audio::system_macos::helper_permission_check() {
                 system.ready = false;
                 system.permission_state = "denied".to_string();
@@ -700,6 +700,10 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         checked_at: crate::db::repositories::timestamp(),
         sources,
     }
+}
+
+fn should_probe_system_audio_permission(system_ready: bool, capture_active: bool) -> bool {
+    system_ready && !capture_active
 }
 
 #[tauri::command]
@@ -936,4 +940,20 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
     AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_probe_system_audio_permission;
+
+    #[test]
+    fn skips_system_audio_permission_probe_while_capture_is_active() {
+        assert!(!should_probe_system_audio_permission(true, true));
+    }
+
+    #[test]
+    fn probes_system_audio_permission_only_when_available_and_idle() {
+        assert!(should_probe_system_audio_permission(true, false));
+        assert!(!should_probe_system_audio_permission(false, false));
+    }
 }

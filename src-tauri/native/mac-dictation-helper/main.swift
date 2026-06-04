@@ -949,6 +949,17 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     private var finishHandler: ((Error?) -> Void)?
     private let failureHandler: (Error) -> Void
     private let levelHandler: (Float) -> Void
+    // Coalesce per-buffer levels to ~25Hz before emitting, matching the
+    // AVAudioRecorder metering timer. AVCaptureAudioDataOutput delivers buffers
+    // far faster than that (faster still for aggregate "system + mic" devices),
+    // so emitting one event per buffer floods the IPC channel — the HUD's event
+    // queue grows unbounded over a long recording until the waveform visibly
+    // lags and then freezes. Track the peak across skipped buffers so loud
+    // transients still register. All accesses happen on `queue` (the capture
+    // delegate queue), so no locking is needed.
+    private var lastLevelEmit: TimeInterval = 0
+    private var pendingPeak: Float = 0
+    private let levelEmitInterval: TimeInterval = 0.04
 
     init(
         device: AVCaptureDevice,
@@ -1007,6 +1018,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
             isStopping = true
             finishHandler = completion
             session.stopRunning()
+            flushPendingLevel()
             output.setSampleBufferDelegate(nil, queue: nil)
 
             guard didStartWriting else {
@@ -1089,7 +1101,26 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
         for sample in samples {
             peak = max(peak, abs(Float(sample) / Float(Int16.max)))
         }
-        levelHandler(peak)
+        pendingPeak = max(pendingPeak, peak)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastLevelEmit >= levelEmitInterval else {
+            return
+        }
+        emitPendingLevel(at: now)
+    }
+
+    private func flushPendingLevel() {
+        guard pendingPeak > 0 else {
+            return
+        }
+        emitPendingLevel(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func emitPendingLevel(at now: TimeInterval) {
+        lastLevelEmit = now
+        let coalesced = pendingPeak
+        pendingPeak = 0
+        levelHandler(coalesced)
     }
 
     private func fail(_ error: Error) {

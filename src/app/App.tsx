@@ -346,17 +346,24 @@ export function App() {
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
+    const recordingState = state.recordingStatus?.state;
+    const captureActive =
+      recordingState === "recording" ||
+      recordingState === "paused" ||
+      recordingState === "finalizing" ||
+      recordingState === "validating";
     function refresh() {
-      void checkRecordingSourceReadiness("microphonePlusSystem")
-        .then(setSourceReadiness)
-        .catch(() => undefined);
       void dictationHelperCommand({ type: "get_permission_status" }).catch(
         () => undefined,
       );
+      if (captureActive) return;
+      void checkRecordingSourceReadiness("microphonePlusSystem")
+        .then(setSourceReadiness)
+        .catch(() => undefined);
     }
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [appBlocked]);
+  }, [appBlocked, state.recordingStatus?.state]);
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
