@@ -357,7 +357,7 @@ impl Repositories {
     pub async fn list_agent_tasks(&self) -> Result<AgentTaskListResponse, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
-                    created_at, updated_at, completed_at
+                    hermes_session_id, created_at, updated_at, completed_at
              FROM agent_tasks
              ORDER BY updated_at DESC, rowid DESC
              LIMIT 200",
@@ -415,7 +415,7 @@ impl Repositories {
     pub async fn get_agent_task(&self, task_id: &str) -> Result<AgentTaskDto, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
-                    created_at, updated_at, completed_at
+                    hermes_session_id, created_at, updated_at, completed_at
              FROM agent_tasks
              WHERE id = ?",
         )
@@ -426,6 +426,19 @@ impl Repositories {
         task.messages = self.agent_messages(task_id).await?;
         task.tool_events = self.agent_tool_events(task_id).await?;
         Ok(task)
+    }
+
+    pub async fn set_agent_task_hermes_session(
+        &self,
+        task_id: &str,
+        hermes_session_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE agent_tasks SET hermes_session_id = ? WHERE id = ?")
+            .bind(hermes_session_id)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn add_agent_message(
@@ -461,6 +474,40 @@ impl Repositories {
         .fetch_one(&self.pool)
         .await?;
         Ok(agent_message_from_row(row))
+    }
+
+    pub async fn add_agent_message_if_absent(
+        &self,
+        task_id: &str,
+        role: AgentMessageRole,
+        content: &str,
+        created_at: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let existing = sqlx::query(
+            "SELECT 1 FROM agent_messages
+             WHERE task_id = ? AND role = ? AND content = ?
+             LIMIT 1",
+        )
+        .bind(task_id)
+        .bind(role.as_db())
+        .bind(content)
+        .fetch_optional(&self.pool)
+        .await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(task_id)
+        .bind(role.as_db())
+        .bind(content)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
     }
 
     pub async fn update_agent_task_status(
@@ -2214,6 +2261,7 @@ fn agent_task_from_row(row: sqlx::sqlite::SqliteRow) -> AgentTaskDto {
         prompt: row.get("prompt"),
         status: AgentTaskStatus::from(row.get::<String, _>("status").as_str()),
         safety_profile: AgentSafetyProfile::from(row.get::<String, _>("safety_profile").as_str()),
+        hermes_session_id: row.get("hermes_session_id"),
         progress_summary: row.get("progress_summary"),
         last_error: row.get("last_error"),
         created_at: row.get("created_at"),

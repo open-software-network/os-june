@@ -143,7 +143,30 @@ pub async fn start_hermes_bridge(
     bridge: State<'_, HermesBridge>,
     request: StartHermesBridgeRequest,
 ) -> Result<HermesBridgeStatus, AppError> {
-    if let Some(status) = existing_running_status(&bridge)? {
+    start_hermes_bridge_inner(&app, &bridge, request).await
+}
+
+pub fn start_on_app_start(app: &tauri::App) {
+    let app = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let bridge = app.state::<HermesBridge>();
+        if let Err(error) =
+            start_hermes_bridge_inner(&app, &bridge, StartHermesBridgeRequest { cwd: None }).await
+        {
+            eprintln!(
+                "failed to start Hermes bridge during app startup: {}",
+                error.message
+            );
+        }
+    });
+}
+
+async fn start_hermes_bridge_inner(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+    request: StartHermesBridgeRequest,
+) -> Result<HermesBridgeStatus, AppError> {
+    if let Some(status) = existing_running_status(bridge)? {
         return Ok(status);
     }
 
@@ -162,7 +185,7 @@ pub async fn start_hermes_bridge(
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let hermes_home = resolve_scribe_hermes_home(app)?;
     let provider_proxy = start_scribe_provider_proxy().await?;
     sync_hermes_config(&hermes_home, provider_proxy.port)?;
 
@@ -216,7 +239,7 @@ pub async fn start_hermes_bridge(
     }
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
-        let _ = stop_hermes_bridge_inner(&bridge);
+        let _ = stop_hermes_bridge_inner(bridge);
         return Err(error);
     }
 
@@ -392,9 +415,7 @@ async fn hermes_api_json(
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))
 }
 
-fn existing_running_status(
-    bridge: &State<'_, HermesBridge>,
-) -> Result<Option<HermesBridgeStatus>, AppError> {
+fn existing_running_status(bridge: &HermesBridge) -> Result<Option<HermesBridgeStatus>, AppError> {
     let mut guard = bridge
         .process
         .lock()
@@ -419,7 +440,7 @@ fn existing_running_status(
     }
 }
 
-fn stop_hermes_bridge_inner(bridge: &State<'_, HermesBridge>) -> Result<(), AppError> {
+fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
     let mut process = bridge
         .process
         .lock()

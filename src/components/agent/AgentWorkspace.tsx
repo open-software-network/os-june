@@ -30,6 +30,7 @@ import {
   listAgentTasks,
   retryAgentTask,
   saveAgentAssistantMessage,
+  saveAgentHermesSession,
   sendAgentMessage,
   startHermesBridge,
   toggleHermesBridgeSkill,
@@ -98,7 +99,6 @@ export function AgentWorkspace() {
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
-  const autoStartRequestedRef = useRef(false);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId),
@@ -162,10 +162,6 @@ export function AgentWorkspace() {
         const status = await hermesBridgeStatus();
         if (cancelled) return;
         setBridge(status);
-        if (!status.running && !autoStartRequestedRef.current) {
-          autoStartRequestedRef.current = true;
-          await startBridge();
-        }
       } catch (err) {
         if (!cancelled) setError(messageFromError(err));
       }
@@ -256,7 +252,7 @@ export function AgentWorkspace() {
   async function submitToHermes(task: AgentTaskDto, content: string) {
     try {
       const gateway = await ensureHermesGateway();
-      const existingSessionId = hermesSessions[task.id];
+      const existingSessionId = task.hermesSessionId ?? hermesSessions[task.id];
       const sessionId =
         existingSessionId ??
         (
@@ -267,6 +263,14 @@ export function AgentWorkspace() {
         ).session_id;
       if (!sessionId) throw new Error("Hermes did not create a session.");
       setHermesSessions((prev) => ({ ...prev, [task.id]: sessionId }));
+      if (sessionId !== task.hermesSessionId) {
+        saveAgentHermesSession({
+          taskId: task.id,
+          hermesSessionId: sessionId,
+        })
+          .then(upsertTask)
+          .catch((err: unknown) => setError(messageFromError(err)));
+      }
       const unlisten = gateway.onEvent((event) => {
         if (event.session_id !== sessionId) return;
         const liveEvent = { ...event, receivedAt: new Date().toISOString() };

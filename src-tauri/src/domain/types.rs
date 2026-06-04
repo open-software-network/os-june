@@ -464,6 +464,7 @@ pub struct AgentTaskDto {
     pub prompt: String,
     pub status: AgentTaskStatus,
     pub safety_profile: AgentSafetyProfile,
+    pub hermes_session_id: Option<String>,
     pub progress_summary: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
@@ -532,6 +533,13 @@ pub struct SendAgentMessageRequest {
 pub struct SaveAgentAssistantMessageRequest {
     pub task_id: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAgentHermesSessionRequest {
+    pub task_id: String,
+    pub hermes_session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

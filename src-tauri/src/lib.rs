@@ -60,6 +60,7 @@ pub fn run() {
             commands::get_agent_task,
             commands::send_agent_message,
             commands::save_agent_assistant_message,
+            commands::save_agent_hermes_session,
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,
@@ -107,6 +108,7 @@ pub fn run() {
         .setup(|app| {
             providers::setup(app);
             dictation::setup(app);
+            hermes_bridge::start_on_app_start(app);
             os_accounts::setup_deep_link(app);
             #[cfg(target_os = "macos")]
             setup_main_window_lifecycle(app);

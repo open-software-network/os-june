@@ -29,13 +29,15 @@ use crate::{
             NoteDto, OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource,
             RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
             RemoveNoteFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
-            SaveAgentAssistantMessageRequest, SendAgentMessageRequest, SessionRequest,
-            SourceReadinessDto, StartRecordingRequest, UpdateDictionaryEntryRequest,
-            UpdateNoteRequest,
+            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
+            SendAgentMessageRequest, SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
+use chrono::{TimeZone, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::Row;
 use std::str::FromStr;
 use std::{path::PathBuf, time::Instant};
 use tauri::{AppHandle, Manager};
@@ -208,7 +210,17 @@ pub async fn list_dictionary_entries(app: AppHandle) -> Result<Vec<DictionaryEnt
 
 #[tauri::command]
 pub async fn list_agent_tasks(app: AppHandle) -> Result<AgentTaskListResponse, AppError> {
-    Ok(repositories(&app).await?.list_agent_tasks().await?)
+    let repos = repositories(&app).await?;
+    let response = repos.list_agent_tasks().await?;
+    for task in &response.items {
+        if let Err(error) = hydrate_agent_task_from_hermes(&app, &repos, &task.id).await {
+            eprintln!(
+                "failed to hydrate agent task {} from Hermes state: {}",
+                task.id, error.message
+            );
+        }
+    }
+    Ok(repos.list_agent_tasks().await?)
 }
 
 #[tauri::command]
@@ -242,10 +254,14 @@ pub async fn get_agent_task(
     app: AppHandle,
     request: GetAgentTaskRequest,
 ) -> Result<AgentTaskDto, AppError> {
-    Ok(repositories(&app)
-        .await?
-        .get_agent_task(&request.task_id)
-        .await?)
+    let repos = repositories(&app).await?;
+    if let Err(error) = hydrate_agent_task_from_hermes(&app, &repos, &request.task_id).await {
+        eprintln!(
+            "failed to hydrate agent task {} from Hermes state: {}",
+            request.task_id, error.message
+        );
+    }
+    Ok(repos.get_agent_task(&request.task_id).await?)
 }
 
 #[tauri::command]
@@ -293,6 +309,25 @@ pub async fn save_agent_assistant_message(
     let repos = repositories(&app).await?;
     repos
         .add_agent_message(&request.task_id, AgentMessageRole::Assistant, content)
+        .await?;
+    Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn save_agent_hermes_session(
+    app: AppHandle,
+    request: SaveAgentHermesSessionRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let hermes_session_id = request.hermes_session_id.trim();
+    if hermes_session_id.is_empty() {
+        return Err(AppError::new(
+            "agent_hermes_session_required",
+            "Hermes session id is required.",
+        ));
+    }
+    let repos = repositories(&app).await?;
+    repos
+        .set_agent_task_hermes_session(&request.task_id, hermes_session_id)
         .await?;
     Ok(repos.get_agent_task(&request.task_id).await?)
 }
@@ -1084,6 +1119,99 @@ fn schedule_agent_runtime_placeholder(repos: Repositories, task_id: String) {
             )
             .await;
     });
+}
+
+async fn hydrate_agent_task_from_hermes(
+    app: &AppHandle,
+    repos: &Repositories,
+    task_id: &str,
+) -> Result<(), AppError> {
+    let task = repos.get_agent_task(task_id).await?;
+    let paths = app_paths(app)?;
+    let hermes_db_path = paths.data_dir.join("hermes").join("state.db");
+    if !hermes_db_path.exists() {
+        return Ok(());
+    }
+
+    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", hermes_db_path.display()))
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+    let session_id = match task.hermes_session_id.clone() {
+        Some(session_id) if !session_id.trim().is_empty() => Some(session_id),
+        _ => {
+            let task_started_at = chrono::DateTime::parse_from_rfc3339(&task.created_at)
+                .map(|value| value.timestamp_millis() as f64 / 1000.0)
+                .unwrap_or(0.0);
+            let row = sqlx::query(
+                "SELECT id
+                 FROM sessions
+                 WHERE title = ?
+                 ORDER BY ABS(started_at - ?) ASC
+                 LIMIT 1",
+            )
+            .bind(&task.title)
+            .bind(task_started_at)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+            let session_id = row.map(|row| row.get::<String, _>("id"));
+            if let Some(session_id) = &session_id {
+                repos
+                    .set_agent_task_hermes_session(task_id, session_id)
+                    .await?;
+            }
+            session_id
+        }
+    };
+
+    let Some(session_id) = session_id else {
+        return Ok(());
+    };
+
+    let rows = sqlx::query(
+        "SELECT content, timestamp
+         FROM messages
+         WHERE session_id = ?
+           AND role = 'assistant'
+           AND active = 1
+           AND content IS NOT NULL
+           AND trim(content) != ''
+         ORDER BY timestamp ASC, id ASC",
+    )
+    .bind(session_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+    for row in rows {
+        let content: String = row.get("content");
+        let timestamp: f64 = row.get("timestamp");
+        let created_at = unix_timestamp_to_rfc3339(timestamp);
+        repos
+            .add_agent_message_if_absent(
+                task_id,
+                AgentMessageRole::Assistant,
+                content.trim(),
+                &created_at,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
+    let seconds = timestamp.trunc() as i64;
+    let nanos = ((timestamp.fract() * 1_000_000_000.0).round() as u32).min(999_999_999);
+    Utc.timestamp_opt(seconds, nanos)
+        .single()
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppError> {

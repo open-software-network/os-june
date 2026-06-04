@@ -322,6 +322,7 @@ export type AgentTaskDto = {
   prompt: string;
   status: AgentTaskStatus;
   safetyProfile: AgentSafetyProfile;
+  hermesSessionId?: string;
   progressSummary?: string;
   lastError?: string;
   createdAt: string;
@@ -584,6 +585,15 @@ export async function saveAgentAssistantMessage(input: {
   content: string;
 }) {
   return invoke<AgentTaskDto>("save_agent_assistant_message", {
+    request: input,
+  });
+}
+
+export async function saveAgentHermesSession(input: {
+  taskId: string;
+  hermesSessionId: string;
+}) {
+  return invoke<AgentTaskDto>("save_agent_hermes_session", {
     request: input,
   });
 }

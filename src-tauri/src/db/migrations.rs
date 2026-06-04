@@ -122,6 +122,7 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
                 .map_err(sqlx::migrate::MigrateError::Execute)?;
         }
     }
+    ensure_column(_pool, "agent_tasks", "hermes_session_id", "TEXT").await?;
     Ok(())
 }
 
