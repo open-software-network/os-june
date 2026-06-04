@@ -1,22 +1,48 @@
-name: production-desktop-dmg
+name: production-desktop-release
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver version to release (for example 0.2.0)"
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: production-desktop-dmg-${{ github.ref }}
-  cancel-in-progress: true
+  group: production-desktop-release
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build production macOS DMG
+  release:
+    name: Release production macOS app
     runs-on: macos-latest
     environment: production
     steps:
+      # Mint a short-lived token from the release GitHub App, scoped to BOTH the
+      # private source repo (to push the version-bump commit to main) and the
+      # public releases repo (tauri-action publishes there). One App is the sole
+      # release identity — org-owned, no personal PAT — and is the ruleset bypass
+      # actor for when main is protected (docs/adr/0001 + infra runbook).
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-scribe,os-scribe-releases
+
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Persist the App token so the later `git push origin main` (the
+          # version-bump commit) is authenticated as the App, not GITHUB_TOKEN.
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -32,6 +58,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -55,7 +83,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Validate production DMG secrets
+      - name: Validate release secrets
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -63,6 +91,10 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
@@ -77,46 +109,111 @@ jobs:
             APPLE_API_ISSUER \
             APPLE_API_KEY \
             APPLE_API_KEY_P8 \
+            TAURI_SIGNING_PRIVATE_KEY \
+            RELEASE_APP_ID \
+            RELEASE_APP_PRIVATE_KEY \
             PRODUCTION_OS_ACCOUNTS_URL \
             PRODUCTION_OS_ACCOUNTS_API_URL \
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
             PRODUCTION_SCRIBE_API_URL
           do
             if [ -z "${!name:-}" ]; then
-              echo "::error::${name} is required to build a production distributable signed and notarized DMG."
+              echo "::error::${name} is required for a production auto-update release."
               missing=1
             fi
           done
           exit "$missing"
 
-      - name: Build production DMG
+      - name: Validate release version input
         env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          re='^[0-9]+\.[0-9]+\.[0-9]+$'
+          if [[ ! "$VERSION_INPUT" =~ $re ]]; then
+            echo "::error::Version must be semver X.Y.Z (digits only), got: $VERSION_INPUT"
+            exit 1
+          fi
+          # Stash the validated value. Every downstream step uses $VERSION (run:)
+          # or env.VERSION (with:), never the raw ${{ inputs.version }} — so the
+          # workflow_dispatch input can't reach a shell or action arg unsanitised
+          # (command/arg injection). The bash =~ match is anchored against the
+          # whole string, so an embedded newline fails the gate too.
+          echo "VERSION=$VERSION_INPUT" >> "$GITHUB_ENV"
+
+      - name: Bump release version
+        run: |
+          set -euo pipefail
+          pnpm version:bump "$VERSION"
+          cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+
+      - name: Run release checks
+        run: |
+          set -euo pipefail
+          pnpm lint
+          pnpm test
+          pnpm test:rust
+
+      - name: Write Apple API key
+        id: apple-api-key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Build, sign, notarize, and publish updater release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
-        run: pnpm tauri:build:signed-dmg
-
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
         with:
-          name: os-scribe-production-dmg-${{ github.sha }}
-          path: src-tauri/target/release/bundle/dmg/*.dmg
-          if-no-files-found: error
+          owner: open-software-network
+          repo: os-scribe-releases
+          tagName: v${{ env.VERSION }}
+          releaseName: OS Scribe v${{ env.VERSION }}
+          releaseBody: "Stable OS Scribe release v${{ env.VERSION }}."
+          releaseCommitish: main
+          generateReleaseNotes: true
+          args: --bundles app,dmg --target aarch64-apple-darwin
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+
+      # Push the version bump to main only AFTER the release is published, so a
+      # build/notarize failure never leaves an orphan `release:` commit on main
+      # with no matching release. The push is authenticated as the release App
+      # (token persisted by checkout above), so when main gets a ruleset, add
+      # this App to the bypass actors and the push keeps working
+      # (docs/adr/0001 + infra runbook).
+      - name: Commit release version
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git commit -m "release: v$VERSION"
+          git push origin main
 
       - name: Summary
         run: |
           {
-            echo "### Production macOS DMG"
-            echo "This artifact is built against the production OS Accounts and Scribe API environment."
-            for dmg in src-tauri/target/release/bundle/dmg/*.dmg; do
-              [ -e "$dmg" ] || continue
-              echo "- \`$dmg\`"
-            done
+            echo "### Production macOS release"
+            echo "- Version: \`$VERSION\`"
+            echo "- Release repo: \`open-software-network/os-scribe-releases\`"
+            echo "- Update manifest: \`https://github.com/open-software-network/os-scribe-releases/releases/latest/download/latest.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -5161,6 +5161,49 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
+.update-dialog-body {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.update-release-notes {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.48;
+}
+
+.update-progress {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.update-progress-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.update-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+}
+
+.update-progress-fill {
+  height: 100%;
+  /* Floor so the bar stays visible at 0% / indeterminate (width can be 0). */
+  min-width: 8%;
+  border-radius: inherit;
+  background: var(--foreground);
+  transition: width var(--t-fast) var(--ease-out);
+}
+
 @keyframes dialog-backdrop-in {
   from {
     opacity: 0;

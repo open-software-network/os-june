@@ -8,8 +8,12 @@ pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
 
+use tauri::Emitter;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
+
+const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
+const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
 
 pub fn run() {
     providers::load_local_env();
@@ -36,7 +40,17 @@ pub fn run() {
     }
 
     builder
+        // deep-link registers immediately after single-instance to keep the
+        // single-instance -> deep-link handoff (documented above) adjacent and
+        // obvious; process/updater are order-independent so they follow.
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
+                let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,
             commands::create_note,
@@ -86,6 +100,7 @@ pub fn run() {
         ])
         .manage(os_accounts::LoginFlow::default())
         .setup(|app| {
+            setup_app_menu(app)?;
             providers::setup(app);
             dictation::setup(app);
             os_accounts::setup_deep_link(app);
@@ -101,6 +116,106 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });
+}
+
+fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{
+        AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
+        WINDOW_SUBMENU_ID,
+    };
+
+    let handle = app.handle();
+    let pkg_info = handle.package_info();
+    let config = handle.config();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config
+            .bundle
+            .publisher
+            .clone()
+            .map(|publisher| vec![publisher]),
+        ..Default::default()
+    };
+
+    let app_menu = Submenu::with_items(
+        handle,
+        pkg_info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, None, Some(about_metadata))?,
+            &PredefinedMenuItem::separator(handle)?,
+            &MenuItem::with_id(
+                handle,
+                CHECK_FOR_UPDATES_MENU_ID,
+                "Check for updates…",
+                true,
+                Some("CmdOrCtrl+Shift+U"),
+            )?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::services(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::hide(handle, None)?,
+            &PredefinedMenuItem::hide_others(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::quit(handle, None)?,
+        ],
+    )?;
+
+    let file_menu = Submenu::with_items(
+        handle,
+        "File",
+        true,
+        &[&PredefinedMenuItem::close_window(handle, None)?],
+    )?;
+    let edit_menu = Submenu::with_items(
+        handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(handle, None)?,
+            &PredefinedMenuItem::redo(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::cut(handle, None)?,
+            &PredefinedMenuItem::copy(handle, None)?,
+            &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
+        ],
+    )?;
+    let view_menu = Submenu::with_items(
+        handle,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(handle, None)?],
+    )?;
+    let window_menu = Submenu::with_id_and_items(
+        handle,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(handle, None)?,
+            &PredefinedMenuItem::maximize(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::close_window(handle, None)?,
+        ],
+    )?;
+    let help_menu = Submenu::with_id_and_items(handle, HELP_SUBMENU_ID, "Help", true, &[])?;
+
+    let menu = Menu::with_items(
+        handle,
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ],
+    )?;
+    app.set_menu(menu)?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
