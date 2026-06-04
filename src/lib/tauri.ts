@@ -408,6 +408,55 @@ export type HermesMessagingPlatformsResponse = {
   platforms: HermesMessagingPlatformInfo[];
 };
 
+export type HermesSessionInfo = {
+  id: string;
+  source?: string;
+  user_id?: string;
+  model?: string;
+  title?: string;
+  started_at?: string;
+  ended_at?: string | null;
+  end_reason?: string | null;
+  message_count?: number;
+  tool_call_count?: number;
+  parent_session_id?: string | null;
+  last_active?: string;
+  preview?: string;
+  has_system_prompt?: boolean;
+  has_model_config?: boolean;
+};
+
+export type HermesSessionsResponse = {
+  sessions?: HermesSessionInfo[];
+  items?: HermesSessionInfo[];
+  data?: HermesSessionInfo[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+};
+
+export type HermesSessionMessage = {
+  id: string;
+  session_id?: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  tool_call_id?: string | null;
+  tool_calls?: unknown;
+  tool_name?: string | null;
+  timestamp?: string;
+  created_at?: string;
+  token_count?: number | null;
+  finish_reason?: string | null;
+  reasoning?: string | null;
+  reasoning_content?: string | null;
+};
+
+export type HermesSessionMessagesResponse = {
+  messages?: HermesSessionMessage[];
+  items?: HermesSessionMessage[];
+  data?: HermesSessionMessage[];
+};
+
 export type BootstrapResponse = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
@@ -647,6 +696,28 @@ export async function toggleHermesBridgeToolset(input: {
 export async function hermesBridgeMessagingPlatforms() {
   return invoke<HermesMessagingPlatformsResponse>(
     "hermes_bridge_messaging_platforms",
+  );
+}
+
+export async function hermesBridgeSessions(
+  input: {
+    limit?: number;
+    offset?: number;
+    archived?: "exclude" | "include" | "only";
+    minMessages?: number;
+    order?: string;
+    query?: string;
+  } = {},
+) {
+  return invoke<HermesSessionsResponse>("hermes_bridge_sessions", {
+    request: input,
+  });
+}
+
+export async function hermesBridgeSessionMessages(sessionId: string) {
+  return invoke<HermesSessionMessagesResponse>(
+    "hermes_bridge_session_messages",
+    { request: { sessionId } },
   );
 }
 

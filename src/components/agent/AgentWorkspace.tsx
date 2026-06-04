@@ -24,6 +24,8 @@ import {
   createAgentTask,
   getAgentTask,
   hermesBridgeMessagingPlatforms,
+  hermesBridgeSessionMessages,
+  hermesBridgeSessions,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
@@ -42,6 +44,8 @@ import {
   type AgentToolEventDto,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
+  type HermesSessionInfo,
+  type HermesSessionMessage,
   type HermesSkillInfo,
   type HermesToolsetInfo,
   type HermesBridgeStatus,
@@ -53,6 +57,7 @@ import {
 } from "../../lib/hermes-gateway";
 import {
   buildAgentChatTurns,
+  buildHermesSessionChatTurns,
   completedHermesMessageText as completedHermesRuntimeMessageText,
   type AgentChatPart,
   type AgentChatTurn,
@@ -82,10 +87,25 @@ export function AgentWorkspace() {
   const [hermesSessions, setHermesSessions] = useState<Record<string, string>>(
     {},
   );
+  const [hermesSessionItems, setHermesSessionItems] = useState<
+    HermesSessionInfo[]
+  >([]);
+  const [selectedHermesSessionId, setSelectedHermesSessionId] =
+    useState<string>();
+  const [hermesSessionMessages, setHermesSessionMessages] = useState<
+    Record<string, HermesSessionMessage[]>
+  >({});
+  const [pendingHermesMessages, setPendingHermesMessages] = useState<
+    Record<string, HermesSessionMessage[]>
+  >({});
+  const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
   >({});
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
@@ -118,10 +138,39 @@ export function AgentWorkspace() {
     });
   }, []);
 
+  const setSessionWorking = useCallback(
+    (sessionId: string, working: boolean) => {
+      setWorkingSessionIds((current) => {
+        const next = new Set(current);
+        if (working) {
+          next.add(sessionId);
+        } else {
+          next.delete(sessionId);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId),
     [selectedTaskId, tasks],
   );
+  const selectedHermesSession = useMemo(
+    () =>
+      hermesSessionItems.find(
+        (session) => session.id === selectedHermesSessionId,
+      ),
+    [hermesSessionItems, selectedHermesSessionId],
+  );
+  const selectedHermesMessages = useMemo(() => {
+    if (!selectedHermesSessionId) return [];
+    return [
+      ...(hermesSessionMessages[selectedHermesSessionId] ?? []),
+      ...(pendingHermesMessages[selectedHermesSessionId] ?? []),
+    ];
+  }, [hermesSessionMessages, pendingHermesMessages, selectedHermesSessionId]);
 
   const upsertTask = useCallback((task: AgentTaskDto) => {
     setTasks((prev) => {
@@ -146,9 +195,78 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const loadHermesSessions = useCallback(async () => {
+    if (!bridge.running) return;
+    setHermesSessionsLoading(true);
+    try {
+      const response = await hermesBridgeSessions({
+        limit: 100,
+        offset: 0,
+        archived: "exclude",
+        minMessages: 0,
+        order: "recent",
+      });
+      const sessions = (
+        response.sessions ??
+        response.items ??
+        response.data ??
+        []
+      ).sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
+      setHermesSessionItems(sessions);
+      setSelectedHermesSessionId((current) => {
+        if (current && sessions.some((session) => session.id === current)) {
+          return current;
+        }
+        const taskSession = selectedTask?.hermesSessionId;
+        if (
+          taskSession &&
+          sessions.some((session) => session.id === taskSession)
+        ) {
+          return taskSession;
+        }
+        return sessions[0]?.id;
+      });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setHermesSessionsLoading(false);
+    }
+  }, [bridge.running, selectedTask?.hermesSessionId]);
+
   useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    if (!bridge.running) return;
+    void loadHermesSessions();
+  }, [bridge.running, loadHermesSessions]);
+
+  useEffect(() => {
+    if (!bridge.running || !selectedHermesSessionId) return;
+    let cancelled = false;
+    hermesBridgeSessionMessages(selectedHermesSessionId)
+      .then((response) => {
+        if (cancelled) return;
+        const messages =
+          response.messages ?? response.items ?? response.data ?? [];
+        setHermesSessionMessages((current) => ({
+          ...current,
+          [selectedHermesSessionId]: messages,
+        }));
+        setPendingHermesMessages((current) => ({
+          ...current,
+          [selectedHermesSessionId]: [],
+        }));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge.running, selectedHermesSessionId]);
 
   useEffect(() => {
     if (!selectedTaskId) return;
@@ -206,7 +324,12 @@ export function AgentWorkspace() {
       top: listRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [selectedTask?.messages.length, selectedTask?.toolEvents.length]);
+  }, [
+    selectedTask?.messages.length,
+    selectedTask?.toolEvents.length,
+    selectedHermesMessages.length,
+    selectedHermesSessionId,
+  ]);
 
   useEffect(() => {
     if (activePanel === "skills" && (!skills || !toolsets)) {
@@ -224,19 +347,7 @@ export function AgentWorkspace() {
     setSubmitting(true);
     setDraft("");
     try {
-      const task = selectedTask
-        ? await sendAgentMessage({
-            taskId: selectedTask.id,
-            content,
-            runPlaceholder: false,
-          })
-        : await createAgentTask({
-            prompt: content,
-            safetyProfile: "autonomousPrivate",
-            runPlaceholder: false,
-          });
-      upsertTask(task);
-      void submitToHermes(task, content);
+      await submitHermesSession(content);
       setError(null);
     } catch (err) {
       setDraft(content);
@@ -244,6 +355,77 @@ export function AgentWorkspace() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function submitHermesSession(content: string) {
+    const gateway = await ensureHermesGateway();
+    const sessionId =
+      selectedHermesSessionId ??
+      (
+        await gateway.request<HermesSessionCreateResponse>("session.create", {
+          title: titleFromPrompt(content),
+          cols: 100,
+        })
+      ).session_id;
+    if (!sessionId) throw new Error("Hermes did not create a session.");
+    const createdAt = new Date().toISOString();
+    setSelectedHermesSessionId(sessionId);
+    setSelectedTaskId(undefined);
+    setHermesSessionItems((current) => {
+      if (current.some((session) => session.id === sessionId)) return current;
+      return [
+        {
+          id: sessionId,
+          title: titleFromPrompt(content),
+          preview: content,
+          started_at: createdAt,
+          last_active: createdAt,
+          message_count: 1,
+        },
+        ...current,
+      ];
+    });
+    setPendingHermesMessages((current) => ({
+      ...current,
+      [sessionId]: [
+        ...(current[sessionId] ?? []),
+        {
+          id: `pending:user:${Date.now()}`,
+          role: "user",
+          content,
+          timestamp: createdAt,
+        },
+      ],
+    }));
+    setSessionWorking(sessionId, true);
+    const unlisten = gateway.onEvent((event) => {
+      if (event.session_id !== sessionId) return;
+      const liveEvent = { ...event, receivedAt: new Date().toISOString() };
+      const nextSessionEvents = [
+        ...(liveEventsRef.current[sessionId] ?? []),
+        liveEvent,
+      ].slice(-200);
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [sessionId]: nextSessionEvents,
+      };
+      setLiveEvents(liveEventsRef.current);
+      if (event.type === "message.complete") {
+        unlisten();
+        setSessionWorking(sessionId, false);
+        window.setTimeout(() => {
+          void refreshHermesSession(sessionId);
+        }, 300);
+      } else if (event.type === "error") {
+        unlisten();
+        setSessionWorking(sessionId, false);
+      }
+    });
+    await gateway.request("prompt.submit", {
+      session_id: sessionId,
+      text: content,
+    });
+    await loadHermesSessions();
   }
 
   async function ensureHermesGateway() {
@@ -305,7 +487,8 @@ export function AgentWorkspace() {
         if (event.type === "message.complete") {
           unlisten();
           setTaskWorking(task.id, false);
-          const completedText = completedHermesRuntimeMessageText(nextTaskEvents);
+          const completedText =
+            completedHermesRuntimeMessageText(nextTaskEvents);
           if (completedText) {
             void persistHermesAssistantMessage(task.id, completedText);
           }
@@ -323,7 +506,10 @@ export function AgentWorkspace() {
     }
   }
 
-  async function persistHermesAssistantMessage(taskId: string, content: string) {
+  async function persistHermesAssistantMessage(
+    taskId: string,
+    content: string,
+  ) {
     try {
       const savedTask = await saveAgentAssistantMessage({ taskId, content });
       liveEventsRef.current = { ...liveEventsRef.current, [taskId]: [] };
@@ -334,9 +520,26 @@ export function AgentWorkspace() {
     }
   }
 
+  async function refreshHermesSession(sessionId: string) {
+    try {
+      const response = await hermesBridgeSessionMessages(sessionId);
+      setHermesSessionMessages((current) => ({
+        ...current,
+        [sessionId]: response.messages ?? response.items ?? response.data ?? [],
+      }));
+      setPendingHermesMessages((current) => ({ ...current, [sessionId]: [] }));
+      liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
+      setLiveEvents(liveEventsRef.current);
+      await loadHermesSessions();
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   async function startNewTask() {
     setActivePanel("chat");
     setSelectedTaskId(undefined);
+    setSelectedHermesSessionId(undefined);
     setDraft("");
   }
 
@@ -398,10 +601,11 @@ export function AgentWorkspace() {
     setCapabilitySaving(`skill:${skill.name}`);
     try {
       await toggleHermesBridgeSkill({ name: skill.name, enabled });
-      setSkills((current) =>
-        current?.map((item) =>
-          item.name === skill.name ? { ...item, enabled } : item,
-        ) ?? current,
+      setSkills(
+        (current) =>
+          current?.map((item) =>
+            item.name === skill.name ? { ...item, enabled } : item,
+          ) ?? current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -417,10 +621,11 @@ export function AgentWorkspace() {
     setCapabilitySaving(`toolset:${toolset.name}`);
     try {
       await toggleHermesBridgeToolset({ name: toolset.name, enabled });
-      setToolsets((current) =>
-        current?.map((item) =>
-          item.name === toolset.name ? { ...item, enabled } : item,
-        ) ?? current,
+      setToolsets(
+        (current) =>
+          current?.map((item) =>
+            item.name === toolset.name ? { ...item, enabled } : item,
+          ) ?? current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -439,10 +644,11 @@ export function AgentWorkspace() {
         platformId: platform.id,
         enabled,
       });
-      setMessagingPlatforms((current) =>
-        current?.map((item) =>
-          item.id === platform.id ? { ...item, enabled } : item,
-        ) ?? current,
+      setMessagingPlatforms(
+        (current) =>
+          current?.map((item) =>
+            item.id === platform.id ? { ...item, enabled } : item,
+          ) ?? current,
       );
     } catch (err) {
       setError(messageFromError(err));
@@ -451,7 +657,9 @@ export function AgentWorkspace() {
     }
   }
 
-  async function saveMessagingPlatformEnv(platform: HermesMessagingPlatformInfo) {
+  async function saveMessagingPlatformEnv(
+    platform: HermesMessagingPlatformInfo,
+  ) {
     const env = Object.fromEntries(
       Object.entries(messagingEnvEdits)
         .map(([key, value]) => [key, value.trim()])
@@ -553,9 +761,40 @@ export function AgentWorkspace() {
           </div>
         </header>
 
-        {activePanel !== "chat" ? null : loading ? (
+        {activePanel !== "chat" ? null : (loading || hermesSessionsLoading) &&
+          !hermesSessionItems.length ? (
           <div className="agent-loading">
             <Spinner size={16} />
+          </div>
+        ) : hermesSessionItems.length ? (
+          <div className="agent-task-list">
+            {hermesSessionItems.map((session) => (
+              <button
+                key={session.id}
+                type="button"
+                className="agent-task-row"
+                data-active={session.id === selectedHermesSessionId}
+                onClick={() => {
+                  setSelectedHermesSessionId(session.id);
+                  setSelectedTaskId(undefined);
+                }}
+              >
+                <span className="agent-task-row-title">
+                  {session.title || session.preview || "Untitled session"}
+                </span>
+                <span className="agent-task-row-meta">
+                  <ActivityIndicator
+                    active={workingSessionIds.has(session.id)}
+                  />
+                  <span>{relativeDate(sessionTimestamp(session))}</span>
+                </span>
+                {!workingSessionIds.has(session.id) && session.preview ? (
+                  <span className="agent-task-row-summary">
+                    {session.preview}
+                  </span>
+                ) : null}
+              </button>
+            ))}
           </div>
         ) : tasks.length ? (
           <div className="agent-task-list">
@@ -565,7 +804,10 @@ export function AgentWorkspace() {
                 type="button"
                 className="agent-task-row"
                 data-active={task.id === selectedTask?.id}
-                onClick={() => setSelectedTaskId(task.id)}
+                onClick={() => {
+                  setSelectedTaskId(task.id);
+                  setSelectedHermesSessionId(task.hermesSessionId);
+                }}
               >
                 <span className="agent-task-row-title">{task.title}</span>
                 <span className="agent-task-row-meta">
@@ -573,9 +815,7 @@ export function AgentWorkspace() {
                   <span>{relativeDate(task.updatedAt)}</span>
                 </span>
                 {workingTaskIds.has(task.id) ? (
-                  <span className="agent-task-row-summary">
-                    Working now.
-                  </span>
+                  <span className="agent-task-row-summary">Working now.</span>
                 ) : null}
               </button>
             ))}
@@ -592,67 +832,107 @@ export function AgentWorkspace() {
 
       <section className="agent-main" aria-label="Agent task details">
         {error ? <p className="error-banner">{error}</p> : null}
-        {managementPanel ?? (selectedTask ? (
-          <>
-            <header className="agent-detail-header">
-              <div className="agent-detail-title">
-                <ActivityIndicator
-                  active={workingTaskIds.has(selectedTask.id)}
-                  large
-                />
-                <div>
-                  <h2>{selectedTask.title}</h2>
-                  {workingTaskIds.has(selectedTask.id) ? (
-                    <p>Working now.</p>
-                  ) : null}
+        {managementPanel ??
+          (selectedHermesSessionId ? (
+            <>
+              <header className="agent-detail-header">
+                <div className="agent-detail-title">
+                  <ActivityIndicator
+                    active={workingSessionIds.has(selectedHermesSessionId)}
+                    large
+                  />
+                  <div>
+                    <h2>
+                      {selectedHermesSession?.title ||
+                        selectedHermesSession?.preview ||
+                        "Untitled session"}
+                    </h2>
+                  </div>
                 </div>
-              </div>
-              <div className="agent-actions">
-                {selectedTask.status !== "cancelled" &&
-                selectedTask.status !== "completed" ? (
+                <div className="agent-actions">
                   <button
                     type="button"
                     className="agent-icon-button"
-                    aria-label="Cancel task"
-                    onClick={() => void cancelTask(selectedTask.id)}
-                  >
-                    <CircleStopIcon size={15} />
-                  </button>
-                ) : null}
-                {selectedTask.status === "failed" ||
-                selectedTask.status === "paused" ? (
-                  <button
-                    type="button"
-                    className="agent-icon-button"
-                    aria-label="Retry task"
-                    onClick={() => void retryTask(selectedTask.id)}
+                    aria-label="Refresh session"
+                    onClick={() =>
+                      void refreshHermesSession(selectedHermesSessionId)
+                    }
                   >
                     <RotateCwIcon size={15} />
                   </button>
-                ) : null}
+                </div>
+              </header>
+              <div ref={listRef} className="agent-timeline">
+                <SafetyPanel />
+                {buildHermesSessionChatTurns(
+                  selectedHermesMessages,
+                  liveEvents[selectedHermesSessionId] ?? [],
+                ).map((turn) => (
+                  <AgentChatTurnRow key={turn.id} turn={turn} />
+                ))}
               </div>
-            </header>
-            <div ref={listRef} className="agent-timeline">
-              <SafetyPanel />
-              {buildAgentChatTurns(
-                selectedTask.messages,
-                selectedTask.toolEvents,
-                liveEvents[selectedTask.id] ?? [],
-              ).map((turn) => (
-                <AgentChatTurnRow key={turn.id} turn={turn} />
-              ))}
+            </>
+          ) : selectedTask ? (
+            <>
+              <header className="agent-detail-header">
+                <div className="agent-detail-title">
+                  <ActivityIndicator
+                    active={workingTaskIds.has(selectedTask.id)}
+                    large
+                  />
+                  <div>
+                    <h2>{selectedTask.title}</h2>
+                    {workingTaskIds.has(selectedTask.id) ? (
+                      <p>Working now.</p>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="agent-actions">
+                  {selectedTask.status !== "cancelled" &&
+                  selectedTask.status !== "completed" ? (
+                    <button
+                      type="button"
+                      className="agent-icon-button"
+                      aria-label="Cancel task"
+                      onClick={() => void cancelTask(selectedTask.id)}
+                    >
+                      <CircleStopIcon size={15} />
+                    </button>
+                  ) : null}
+                  {selectedTask.status === "failed" ||
+                  selectedTask.status === "paused" ? (
+                    <button
+                      type="button"
+                      className="agent-icon-button"
+                      aria-label="Retry task"
+                      onClick={() => void retryTask(selectedTask.id)}
+                    >
+                      <RotateCwIcon size={15} />
+                    </button>
+                  ) : null}
+                </div>
+              </header>
+              <div ref={listRef} className="agent-timeline">
+                <SafetyPanel />
+                {buildAgentChatTurns(
+                  selectedTask.messages,
+                  selectedTask.toolEvents,
+                  liveEvents[selectedTask.id] ?? [],
+                ).map((turn) => (
+                  <AgentChatTurnRow key={turn.id} turn={turn} />
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="agent-compose-empty">
+              <EmptyState
+                icon={<BotIcon size={24} />}
+                title="Start an agent task"
+                description="Create a task and the agent will track chat, status, and local-tool activity separately from your notes."
+                label="Start an agent task"
+              />
             </div>
-          </>
-        ) : (
-          <div className="agent-compose-empty">
-            <EmptyState
-              icon={<BotIcon size={24} />}
-              title="Start an agent task"
-              description="Create a task and the agent will track chat, status, and local-tool activity separately from your notes."
-              label="Start an agent task"
-            />
-          </div>
-        ))}
+          ))}
 
         {activePanel === "chat" ? (
           <form
@@ -663,7 +943,7 @@ export function AgentWorkspace() {
               value={draft}
               onChange={(event) => setDraft(event.currentTarget.value)}
               placeholder={
-                selectedTask
+                selectedHermesSessionId || selectedTask
                   ? "Send a follow-up"
                   : "Ask the agent to complete a desktop task"
               }
@@ -676,7 +956,9 @@ export function AgentWorkspace() {
             />
             <button type="submit" disabled={submitting || !draft.trim()}>
               {submitting ? <Spinner size={15} /> : <SendIcon size={15} />}
-              <span>{selectedTask ? "Send" : "Create"}</span>
+              <span>
+                {selectedHermesSessionId || selectedTask ? "Send" : "Create"}
+              </span>
             </button>
           </form>
         ) : null}
@@ -922,8 +1204,9 @@ function normalizeHermesEvents(events: LiveHermesEvent[]): TimelineItem[] {
 
 function completedHermesMessageText(events: LiveHermesEvent[]) {
   const message = normalizeHermesEvents(events)
-    .filter((item): item is Extract<TimelineItem, { kind: "hermes-message" }> =>
-      item.kind === "hermes-message",
+    .filter(
+      (item): item is Extract<TimelineItem, { kind: "hermes-message" }> =>
+        item.kind === "hermes-message",
     )
     .at(-1);
   if (!message || message.item.status !== "completed") return "";
@@ -1054,7 +1337,9 @@ function SkillsToolsPanel({
                 key={toolset.name}
                 title={toolset.label ?? toolset.name}
                 description={toolset.description}
-                meta={toolset.provider ?? toolNames(toolset).slice(0, 4).join(", ")}
+                meta={
+                  toolset.provider ?? toolNames(toolset).slice(0, 4).join(", ")
+                }
                 enabled={Boolean(toolset.enabled)}
                 saving={saving === `toolset:${toolset.name}`}
                 onToggle={(enabled) => onToggleToolset(toolset, enabled)}
@@ -1128,8 +1413,9 @@ function MessagingPanel({
                 const requiredSet = envVars.filter(
                   (field) => field.required && envFieldSet(field),
                 ).length;
-                const requiredTotal = envVars.filter((field) => field.required)
-                  .length;
+                const requiredTotal = envVars.filter(
+                  (field) => field.required,
+                ).length;
                 const state = platform.state ?? "unknown";
                 const configured =
                   platform.configured ||
@@ -1219,7 +1505,9 @@ function MessagingPlatformDetail({
             <p>{platform.description}</p>
             <div className="agent-platform-pills">
               <span>{stateLabel(platform.state ?? "unknown")}</span>
-              <span>{platform.configured ? "Credentials set" : "Needs setup"}</span>
+              <span>
+                {platform.configured ? "Credentials set" : "Needs setup"}
+              </span>
               {platform.gatewayRunning || platform.gateway_running ? null : (
                 <span>Messaging gateway stopped</span>
               )}
@@ -1328,12 +1616,14 @@ function MessagingFieldGroup({
             disabled={saving === `env:${field.key}`}
             placeholder={
               envFieldSet(field)
-                ? field.redactedValue ??
+                ? (field.redactedValue ??
                   field.redacted_value ??
-                  "Replace current value"
-                : field.prompt ?? field.key
+                  "Replace current value")
+                : (field.prompt ?? field.key)
             }
-            onChange={(event) => onEditEnv(field.key, event.currentTarget.value)}
+            onChange={(event) =>
+              onEditEnv(field.key, event.currentTarget.value)
+            }
           />
           {field.description ? <small>{field.description}</small> : null}
         </label>
@@ -1462,7 +1752,10 @@ function AgentChatTurnRow({ turn }: { turn: AgentChatTurn }) {
           <span>{relativeDate(turn.createdAt)}</span>
         </div>
         {textParts.map((part, index) => (
-          <MarkdownContent key={`${turn.id}:text:${index}`} markdown={part.text} />
+          <MarkdownContent
+            key={`${turn.id}:text:${index}`}
+            markdown={part.text}
+          />
         ))}
       </article>
     );
@@ -1482,10 +1775,7 @@ function AgentChatTurnRow({ turn }: { turn: AgentChatTurn }) {
               markdown={part.text}
             />
           ) : part.type === "reasoning" ? (
-            <ReasoningPart
-              key={`${turn.id}:reasoning:${index}`}
-              part={part}
-            />
+            <ReasoningPart key={`${turn.id}:reasoning:${index}`} part={part} />
           ) : (
             <AgentToolPartRow key={`${turn.id}:tool:${part.id}`} part={part} />
           ),
@@ -1713,7 +2003,8 @@ function renderMarkdownBlocks(markdown: string) {
 
 function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+  const pattern =
+    /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let index = 0;
@@ -1722,7 +2013,9 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
       nodes.push(text.slice(lastIndex, match.index));
     }
     if (match[2]) {
-      nodes.push(<strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>);
+      nodes.push(
+        <strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>,
+      );
     } else if (match[3]) {
       nodes.push(<code key={`code-${keySeed}-${index}`}>{match[3]}</code>);
     } else if (match[4] && match[5]) {
@@ -1874,10 +2167,7 @@ function humanizeToolName(value: string) {
 }
 
 function capabilityMatches(
-  item:
-    | HermesSkillInfo
-    | HermesToolsetInfo
-    | HermesMessagingPlatformInfo,
+  item: HermesSkillInfo | HermesToolsetInfo | HermesMessagingPlatformInfo,
   query: string,
 ) {
   if (!query) return true;
@@ -1999,6 +2289,21 @@ function relativeDate(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function sessionTimestamp(session: HermesSessionInfo) {
+  return (
+    session.last_active ??
+    session.started_at ??
+    session.ended_at ??
+    new Date(0).toISOString()
+  );
+}
+
+function titleFromPrompt(prompt: string) {
+  const title = prompt.replace(/\s+/g, " ").trim();
+  if (title.length <= 72) return title || "Untitled session";
+  return `${title.slice(0, 69).trim()}...`;
 }
 
 function messageFromError(err: unknown) {

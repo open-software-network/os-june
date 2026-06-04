@@ -2,6 +2,7 @@ import type {
   AgentMessageDto,
   AgentToolEventDto,
   AgentToolEventStatus,
+  HermesSessionMessage,
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
 
@@ -57,6 +58,90 @@ export function buildAgentChatTurns(
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+export function buildHermesSessionChatTurns(
+  messages: HermesSessionMessage[],
+  liveEvents: LiveHermesEvent[] = [],
+): AgentChatTurn[] {
+  const turns: AgentChatTurn[] = [];
+  const toolResults = new Map<string, HermesSessionMessage>();
+
+  for (const message of messages) {
+    if (message.role === "tool") {
+      const id = message.tool_call_id ?? message.id;
+      toolResults.set(id, message);
+      const turn =
+        lastAssistantTurn(turns) ??
+        createAssistantTurn(turns, messageTimestamp(message));
+      upsertToolPart(turn.parts, {
+        id,
+        name: message.tool_name ?? "Tool",
+        text: stringValue(message.content, true) ?? "",
+        status: "complete",
+      });
+      turn.status = "complete";
+      continue;
+    }
+
+    const turn: AgentChatTurn = {
+      id: message.id,
+      role:
+        message.role === "assistant"
+          ? "assistant"
+          : message.role === "system"
+            ? "system"
+            : "user",
+      createdAt: messageTimestamp(message),
+      status: "complete",
+      parts: [],
+    };
+
+    const reasoning =
+      stringValue(message.reasoning, true) ??
+      stringValue(message.reasoning_content, true);
+    if (reasoning) {
+      turn.parts.push({
+        type: "reasoning",
+        text: reasoning,
+        status: "complete",
+      });
+    }
+
+    for (const call of parseToolCalls(message.tool_calls)) {
+      const result = toolResults.get(call.id);
+      turn.parts.push({
+        type: "tool",
+        id: call.id,
+        name: humanizeToolName(call.name),
+        text:
+          stringValue(result?.content, true) ??
+          stringifyObject(call.arguments) ??
+          "",
+        status: "complete",
+      });
+    }
+
+    const content = stringValue(message.content, true);
+    if (content) {
+      turn.parts.push({
+        type: "text",
+        text: collapseRepeatedMessageText(content),
+        status: "complete",
+      });
+    }
+
+    if (turn.parts.length) {
+      turns.push(turn);
+    }
+  }
+
+  appendLiveHermesEvents(turns, liveEvents);
+  return turns
+    .filter((turn) =>
+      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 export function completedHermesMessageText(events: LiveHermesEvent[]) {
   const turn = buildAgentChatTurns([], [], events)
     .filter((item) => item.role === "assistant")
@@ -66,13 +151,20 @@ export function completedHermesMessageText(events: LiveHermesEvent[]) {
     .map((part) => part.text)
     .join("")
     .trim();
-  return turn?.status === "complete" ? collapseRepeatedMessageText(text ?? "") : "";
+  return turn?.status === "complete"
+    ? collapseRepeatedMessageText(text ?? "")
+    : "";
 }
 
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   return {
     id: message.id,
-    role: message.role === "assistant" ? "assistant" : message.role === "system" ? "system" : "user",
+    role:
+      message.role === "assistant"
+        ? "assistant"
+        : message.role === "system"
+          ? "system"
+          : "user",
     createdAt: message.createdAt,
     status: "complete",
     parts: [{ type: "text", text: message.content, status: "complete" }],
@@ -84,7 +176,8 @@ function appendPersistedToolEvents(
   toolEvents: AgentToolEventDto[],
 ) {
   for (const event of toolEvents) {
-    const turn = lastAssistantTurn(turns) ?? createAssistantTurn(turns, event.createdAt);
+    const turn =
+      lastAssistantTurn(turns) ?? createAssistantTurn(turns, event.createdAt);
     upsertToolPart(turn.parts, {
       id: event.id,
       name: event.toolName,
@@ -94,7 +187,10 @@ function appendPersistedToolEvents(
   }
 }
 
-function appendLiveHermesEvents(turns: AgentChatTurn[], events: LiveHermesEvent[]) {
+function appendLiveHermesEvents(
+  turns: AgentChatTurn[],
+  events: LiveHermesEvent[],
+) {
   let currentAssistant: AgentChatTurn | null = null;
 
   for (const event of events) {
@@ -132,7 +228,10 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: LiveHermesEvent[
 
     if (event.type.startsWith("tool.")) {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status = toolEventStatus(event) === "running" ? "running" : currentAssistant.status;
+      currentAssistant.status =
+        toolEventStatus(event) === "running"
+          ? "running"
+          : currentAssistant.status;
       const payload = event.payload as Record<string, unknown> | undefined;
       upsertToolPart(currentAssistant.parts, {
         id: toolEventKey(event),
@@ -199,17 +298,30 @@ function appendAssistantTextPart(
 
 function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   if (!text.trim()) return;
-  const lastText = [...parts].reverse().find((part): part is AgentChatTextPart => part.type === "text");
+  const lastText = [...parts]
+    .reverse()
+    .find((part): part is AgentChatTextPart => part.type === "text");
   if (lastText) {
-    lastText.text = collapseRepeatedMessageText(completeMessageText(lastText.text, text));
+    lastText.text = collapseRepeatedMessageText(
+      completeMessageText(lastText.text, text),
+    );
     lastText.status = "complete";
   } else {
-    parts.push({ type: "text", text: collapseRepeatedMessageText(text), status: "complete" });
+    parts.push({
+      type: "text",
+      text: collapseRepeatedMessageText(text),
+      status: "complete",
+    });
   }
 }
 
 function appendReasoningPart(parts: AgentChatPart[], delta: string) {
-  if (!delta.trim() || delta === "thinking.delta" || delta === "reasoning.delta") return;
+  if (
+    !delta.trim() ||
+    delta === "thinking.delta" ||
+    delta === "reasoning.delta"
+  )
+    return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
     last.text = appendLogText(last.text, delta);
@@ -223,7 +335,8 @@ function completeRunningParts(parts: AgentChatPart[]) {
   for (const part of parts) {
     if (part.type === "reasoning") part.status = "complete";
     if (part.type === "text") part.status = "complete";
-    if (part.type === "tool" && part.status === "running") part.status = "complete";
+    if (part.type === "tool" && part.status === "running")
+      part.status = "complete";
   }
 }
 
@@ -233,7 +346,9 @@ function upsertToolPart(
 ) {
   const existing = parts.find(
     (part): part is AgentChatToolPart =>
-      part.type === "tool" && (part.id === next.id || (!next.id && part.name === next.name && part.status === "running")),
+      part.type === "tool" &&
+      (part.id === next.id ||
+        (!next.id && part.name === next.name && part.status === "running")),
   );
   if (existing) {
     existing.name = next.name || existing.name;
@@ -268,11 +383,61 @@ function eventText(event: HermesGatewayEvent) {
   ]) {
     const value = stringValue(
       payload[key],
-      key === "text" || key === "delta" || key === "message" || key === "content",
+      key === "text" ||
+        key === "delta" ||
+        key === "message" ||
+        key === "content",
     );
     if (value) return value;
   }
   return "";
+}
+
+function messageTimestamp(message: HermesSessionMessage) {
+  return message.timestamp ?? message.created_at ?? new Date().toISOString();
+}
+
+function parseToolCalls(value: unknown) {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  const calls = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+  return calls.flatMap((call, index) => {
+    if (!call || typeof call !== "object") return [];
+    const record = call as Record<string, unknown>;
+    const functionRecord =
+      record.function && typeof record.function === "object"
+        ? (record.function as Record<string, unknown>)
+        : undefined;
+    const id =
+      stringValue(record.id) ??
+      stringValue(record.call_id) ??
+      stringValue(record.tool_call_id) ??
+      `tool:${index}`;
+    const name =
+      stringValue(record.name) ??
+      stringValue(functionRecord?.name) ??
+      stringValue(record.tool_name) ??
+      "Tool";
+    const args = functionRecord?.arguments ?? record.arguments ?? record.args;
+    return [{ id, name, arguments: args }];
+  });
+}
+
+function safeJsonParse(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function stringifyObject(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
 }
 
 function toolEventKey(event: HermesGatewayEvent) {
@@ -286,9 +451,12 @@ function toolEventKey(event: HermesGatewayEvent) {
   );
 }
 
-function toolEventStatus(event: HermesGatewayEvent): AgentChatToolPart["status"] {
+function toolEventStatus(
+  event: HermesGatewayEvent,
+): AgentChatToolPart["status"] {
   if (event.type.includes("complete")) return "complete";
-  if (event.type.includes("error") || event.type.includes("fail")) return "failed";
+  if (event.type.includes("error") || event.type.includes("fail"))
+    return "failed";
   return "running";
 }
 
@@ -315,7 +483,8 @@ function completeMessageText(current: string, complete: string) {
   if (!complete.trim()) return current;
   if (!current.trim()) return complete;
   if (complete.trim() === current.trim()) return current;
-  if (complete.includes(current.trim()) || complete.length >= current.length) return complete;
+  if (complete.includes(current.trim()) || complete.length >= current.length)
+    return complete;
   return appendMessageText(current, complete);
 }
 
@@ -371,7 +540,8 @@ function stringValue(value: unknown, preserveWhitespace = false) {
     if (!value.trim()) return undefined;
     return preserveWhitespace ? value : value.trim();
   }
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
   return undefined;
 }
 

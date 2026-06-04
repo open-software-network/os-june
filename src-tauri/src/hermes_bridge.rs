@@ -101,6 +101,23 @@ pub struct UpdateHermesMessagingPlatformRequest {
     pub env: Option<std::collections::HashMap<String, String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSessionsRequest {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub archived: Option<String>,
+    pub min_messages: Option<u32>,
+    pub order: Option<String>,
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSessionMessagesRequest {
+    pub session_id: String,
+}
+
 #[tauri::command]
 pub async fn hermes_bridge_status(
     bridge: State<'_, HermesBridge>,
@@ -338,6 +355,73 @@ pub async fn update_hermes_bridge_messaging_platform(
             "enabled": request.enabled,
             "env": request.env.unwrap_or_default(),
         })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_sessions(
+    bridge: State<'_, HermesBridge>,
+    request: HermesSessionsRequest,
+) -> Result<serde_json::Value, AppError> {
+    let mut params = vec![
+        ("limit", request.limit.unwrap_or(100).to_string()),
+        ("offset", request.offset.unwrap_or(0).to_string()),
+    ];
+    if let Some(archived) = request
+        .archived
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params.push(("archived", archived.to_string()));
+    }
+    if let Some(min_messages) = request.min_messages {
+        params.push(("min_messages", min_messages.to_string()));
+    }
+    if let Some(order) = request
+        .order
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params.push(("order", order.to_string()));
+    }
+    if let Some(query) = request
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params.push(("q", query.to_string()));
+    }
+    let query = params
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", urlencoding::encode(&value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::GET,
+        &format!("/api/sessions?{query}"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_session_messages(
+    bridge: State<'_, HermesBridge>,
+    request: HermesSessionMessagesRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::GET,
+        &format!(
+            "/api/sessions/{}/messages",
+            urlencoding::encode(&request.session_id)
+        ),
+        None,
     )
     .await
 }
