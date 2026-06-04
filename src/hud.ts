@@ -49,18 +49,47 @@ const meter = createBarMeter(
   bars.length,
   HUD_BAR_WEIGHTS,
   HUD_BAR_HISTORY_OFFSETS,
+  {
+    // Tuned 2026-06-04 to match Wispr Flow (see playground/waveform-playground.html):
+    // a smearier blend plus a speaking wave that sweeps left→right across the
+    // row and is smoothed between neighbours, instead of center bars spiking.
+    liveLevelMix: 0.35,
+    propDelay: 0.7,
+    propMode: "across",
+    spatial: 0.3,
+  },
 );
 
 let rafHandle: number | undefined;
 let lastAudioLevelAt = 0;
 const IDLE_RAF_TIMEOUT_MS = 260;
-// Lowered so a whisper crosses into the "voice" regime instead of being capped
-// at the ambient ceiling — quiet speech now reads on the bars. Raise back toward
-// 0.012 if room ambient starts lighting them up.
-const AUDIO_NOISE_GATE = 0.008;
-const AUDIO_VISUAL_GAIN = 16;
-const AMBIENT_VISUAL_GAIN = 4;
-const AMBIENT_MAX_LEVEL = 0.11;
+// Nudged 0.008→0.01 (2026-06-04) so quiet room ambient stays in the (now
+// heavily damped) ambient regime — real speech still clears it into the voice
+// path + whisper floor, but room tone no longer crosses over and lights bars.
+const AUDIO_NOISE_GATE = 0.01;
+// Raised 16→28 (2026-06-04) so the sqrt curve saturates at a much quieter input
+// — a whisper now fills the bars nearly as much as a shout (Wispr-Flow-style
+// compression, where bar height reads "voice present" more than "how loud").
+const AUDIO_VISUAL_GAIN = 28;
+// Ambient floor damped hard (gain 4→3, ceiling 0.11→0.03) so a quiet room rests
+// the bars near zero — the carrier wave, not room tone, is the idle "we're
+// listening" signal. The old 0.11 ceiling pegged the baseline and buried the
+// shimmer in ambient jitter, since the real HUD always has a live mic (unlike
+// the silent playground idle where the carrier was tuned).
+const AMBIENT_VISUAL_GAIN = 3;
+const AMBIENT_MAX_LEVEL = 0.03;
+
+// Whisper floor: once voice clears the gate, lift it off the baseline so even
+// quiet speech reads tall. Voice-gated (see renderAudioLevel) — ambient/silence
+// stays below the gate and still collapses the bars to zero.
+const HUD_WHISPER_FLOOR = 0.2;
+// Always-on carrier wave: a slow sine travelling across the bars at a low
+// baseline while listening, so the pill shimmers as an active-listening / time
+// signifier. Layered UNDER the audio response so it recedes as bars get loud.
+// Nudged 0.04→0.05 to sit clearly above the damped ambient floor (0.03).
+const HUD_IDLE_AMP = 0.05;
+const HUD_IDLE_SPEED = 0.45;
+const HUD_IDLE_SPREAD = 0.9;
 
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
@@ -94,13 +123,29 @@ function setHud(state: string, status: string) {
 
 function startBarLoop() {
   if (rafHandle !== undefined) return;
-  const tick = () => {
+  const tick = (now: number) => {
     const stillAnimating = meter.step();
+    const t = now / 1000;
     for (let i = 0; i < bars.length; i++) {
-      bars[i].style.setProperty("--level", meter.displayed[i].toFixed(3));
+      let level = meter.displayed[i];
+      if (HUD_IDLE_AMP > 0) {
+        // Carrier rides under the audio (× (1 - level)) so it reads as a
+        // baseline shimmer, not noise on top of a loud bar.
+        const ripple =
+          HUD_IDLE_AMP *
+          0.5 *
+          (1 +
+            Math.sin(2 * Math.PI * HUD_IDLE_SPEED * t - i * HUD_IDLE_SPREAD));
+        level = clamp(level + ripple * (1 - level), 0, 1);
+      }
+      bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
-    if (stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS) {
+    // Keep painting while bars move or audio is recent — and, once the carrier
+    // wave is on, for as long as we're listening so the shimmer never freezes.
+    const keepShimmering =
+      HUD_IDLE_AMP > 0 && hud?.dataset.state === "listening";
+    if (stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS || keepShimmering) {
       rafHandle = window.requestAnimationFrame(tick);
     } else {
       rafHandle = undefined;
@@ -118,7 +163,7 @@ function resetBars() {
 }
 
 function renderAudioLevel(rawLevel: number) {
-  const shaped =
+  let shaped =
     rawLevel <= AUDIO_NOISE_GATE
       ? clamp(Math.sqrt(rawLevel * AMBIENT_VISUAL_GAIN), 0, AMBIENT_MAX_LEVEL)
       : clamp(
@@ -127,6 +172,12 @@ function renderAudioLevel(rawLevel: number) {
           0,
           1,
         );
+  // Voice-gated whisper floor — only lifts once real voice clears the gate, so
+  // ambient room hiss stays pinned to zero (bars collapse) while any actual
+  // speech, however quiet, reads tall.
+  if (rawLevel > AUDIO_NOISE_GATE && shaped > 0.0001 && HUD_WHISPER_FLOOR > 0) {
+    shaped = HUD_WHISPER_FLOOR + (1 - HUD_WHISPER_FLOOR) * shaped;
+  }
   lastAudioLevelAt = performance.now();
   meter.pushLevel(shaped);
   startBarLoop();

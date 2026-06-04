@@ -138,16 +138,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2.5px;
   height: 22px;
 }
 
 /* The bar boxes stay a fixed size; only their absolutely-positioned inner
  * fills change height. That keeps the waveform fully rounded without forcing
- * flex layout work on every audio-level event. */
+ * flex layout work on every audio-level event. 7 thin bars (2026-06-04) read
+ * as a finer, Wispr-Flow-like waveform than the original 5 × 3px. */
 .hud-bar {
   position: relative;
-  width: 3px;
+  width: 2px;
   height: 22px;
 }
 
@@ -163,7 +164,9 @@ body {
   border-radius: 999px;
   background: var(--hud-bar);
   transform: translateY(50%);
-  transition: height 40ms linear;
+  /* Sharpened 40→24ms (2026-06-04) so the low-mix shimmer reads crisp rather
+   * than smeared on top of the ballistics. */
+  transition: height 24ms linear;
 }
 
 .hud-braille,
