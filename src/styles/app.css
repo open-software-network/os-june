@@ -520,6 +520,27 @@ input:focus-visible,
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.agent-capability-row > button:first-child {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.agent-capability-row > button:first-child:not(:disabled) {
+  cursor: pointer;
+}
+
+.agent-capability-row[data-selected="true"] {
+  margin: 0 calc(var(--sp-3) * -1);
+  border-radius: var(--r-sm);
+  padding-right: var(--sp-3);
+  padding-left: var(--sp-3);
+  background: var(--surface-subtle);
+}
+
 .agent-capability-row:last-child {
   border-bottom: 0;
 }
@@ -605,6 +626,182 @@ input:focus-visible,
 .agent-switch[aria-pressed="true"] span {
   transform: translateX(16px);
   background: var(--primary-foreground);
+}
+
+.agent-messaging-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.4fr);
+  min-height: 0;
+}
+
+.agent-messaging-list {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-5);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.agent-messaging-detail {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agent-messaging-detail-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-6);
+}
+
+.agent-messaging-detail-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+.agent-platform-avatar {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-weight: 700;
+}
+
+.agent-messaging-detail-header h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.agent-messaging-detail-header p {
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+
+.agent-platform-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.agent-platform-pills span {
+  border-radius: var(--r-pill);
+  padding: 2px var(--sp-2);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-platform-error {
+  margin-top: var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--destructive) 45%, transparent);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3);
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
+.agent-platform-docs {
+  display: inline-flex;
+  margin-top: var(--sp-4);
+  color: var(--primary);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+}
+
+.agent-messaging-fields {
+  margin-top: var(--sp-6);
+}
+
+.agent-messaging-fields h4,
+.agent-advanced-toggle {
+  margin: 0 0 var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-advanced-toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.agent-messaging-field {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.agent-messaging-field span {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.agent-messaging-field strong {
+  color: var(--success);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+
+.agent-messaging-field input {
+  width: 100%;
+  min-height: var(--control-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  outline: none;
+}
+
+.agent-messaging-field input:focus {
+  border-color: var(--ring-focus);
+}
+
+.agent-messaging-field small {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.agent-messaging-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.agent-messaging-footer button {
+  min-height: var(--control-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-4);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+
+.agent-messaging-footer button:disabled {
+  opacity: 0.55;
+}
+
+.agent-messaging-enable {
+  margin-right: auto;
 }
 
 .agent-safety-panel,

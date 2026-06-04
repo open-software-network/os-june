@@ -97,7 +97,8 @@ pub struct ToggleHermesCapabilityRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateHermesMessagingPlatformRequest {
     pub platform_id: String,
-    pub enabled: bool,
+    pub enabled: Option<bool>,
+    pub env: Option<std::collections::HashMap<String, String>>,
 }
 
 #[tauri::command]
@@ -312,6 +313,7 @@ pub async fn update_hermes_bridge_messaging_platform(
         ),
         Some(serde_json::json!({
             "enabled": request.enabled,
+            "env": request.env.unwrap_or_default(),
         })),
     )
     .await

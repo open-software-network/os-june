@@ -633,7 +633,8 @@ export async function hermesBridgeMessagingPlatforms() {
 
 export async function updateHermesBridgeMessagingPlatform(input: {
   platformId: string;
-  enabled: boolean;
+  enabled?: boolean;
+  env?: Record<string, string>;
 }) {
   return invoke<{ ok: boolean; platform: string }>(
     "update_hermes_bridge_messaging_platform",

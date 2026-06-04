@@ -92,6 +92,11 @@ export function AgentWorkspace() {
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
+  const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] =
+    useState<string>();
+  const [messagingEnvEdits, setMessagingEnvEdits] = useState<
+    Record<string, string>
+  >({});
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const autoStartRequestedRef = useRef(false);
@@ -306,6 +311,12 @@ export function AgentWorkspace() {
       await ensureHermesGateway();
       const response = await hermesBridgeMessagingPlatforms();
       setMessagingPlatforms(response.platforms);
+      setSelectedMessagingPlatformId((current) => {
+        if (current && response.platforms.some((item) => item.id === current)) {
+          return current;
+        }
+        return response.platforms[0]?.id;
+      });
       setError(null);
     } catch (err) {
       setError(messageFromError(err));
@@ -364,6 +375,30 @@ export function AgentWorkspace() {
           item.id === platform.id ? { ...item, enabled } : item,
         ) ?? current,
       );
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCapabilitySaving(null);
+    }
+  }
+
+  async function saveMessagingPlatformEnv(platform: HermesMessagingPlatformInfo) {
+    const env = Object.fromEntries(
+      Object.entries(messagingEnvEdits)
+        .map(([key, value]) => [key, value.trim()])
+        .filter(([, value]) => value.length > 0),
+    );
+    if (!Object.keys(env).length) {
+      return;
+    }
+    setCapabilitySaving(`env:${platform.id}`);
+    try {
+      await updateHermesBridgeMessagingPlatform({
+        platformId: platform.id,
+        env,
+      });
+      setMessagingEnvEdits({});
+      await loadMessagingPlatforms();
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -527,8 +562,21 @@ export function AgentWorkspace() {
                 platforms={messagingPlatforms}
                 query={capabilityQuery}
                 saving={capabilitySaving}
+                selectedPlatformId={selectedMessagingPlatformId}
+                envEdits={messagingEnvEdits}
                 onQueryChange={setCapabilityQuery}
                 onRefresh={() => void loadMessagingPlatforms()}
+                onSelectPlatform={(platform) => {
+                  setSelectedMessagingPlatformId(platform.id);
+                  setMessagingEnvEdits({});
+                }}
+                onEditEnv={(key, value) =>
+                  setMessagingEnvEdits((current) => ({
+                    ...current,
+                    [key]: value,
+                  }))
+                }
+                onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
                 onToggle={(platform, enabled) =>
                   void setMessagingPlatformEnabled(platform, enabled)
                 }
@@ -949,26 +997,40 @@ function SkillsToolsPanel({
 }
 
 function MessagingPanel({
+  envEdits,
   loading,
   platforms,
   query,
   saving,
+  selectedPlatformId,
+  onEditEnv,
   onQueryChange,
   onRefresh,
+  onSaveEnv,
+  onSelectPlatform,
   onToggle,
 }: {
+  envEdits: Record<string, string>;
   loading: boolean;
   platforms: HermesMessagingPlatformInfo[] | null;
   query: string;
   saving: string | null;
+  selectedPlatformId?: string;
+  onEditEnv: (key: string, value: string) => void;
   onQueryChange: (query: string) => void;
   onRefresh: () => void;
+  onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
+  onSelectPlatform: (platform: HermesMessagingPlatformInfo) => void;
   onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
 }) {
   const q = query.trim().toLowerCase();
   const visible = (platforms ?? [])
     .filter((platform) => capabilityMatches(platform, q))
     .sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
+  const selected =
+    visible.find((platform) => platform.id === selectedPlatformId) ??
+    visible[0] ??
+    null;
   return (
     <section className="agent-management-panel" aria-label="Messaging">
       <ManagementToolbar
@@ -983,54 +1045,228 @@ function MessagingPanel({
           <Spinner size={16} />
         </div>
       ) : (
-        <div className="agent-management-scroll">
-          <CapabilityGroup
-            title="Messaging"
-            count={visible.length}
-            empty="No matching platforms"
-          >
-            {visible.map((platform) => {
-              const envVars = platform.envVars ?? platform.env_vars ?? [];
-              const requiredSet = envVars.filter(
-                (field) => field.required && envFieldSet(field),
-              ).length;
-              const requiredTotal = envVars.filter((field) => field.required)
-                .length;
-              const state = platform.state ?? "unknown";
-              const configured =
-                platform.configured ||
-                (requiredTotal > 0 && requiredSet === requiredTotal);
-              return (
-                <CapabilityRow
-                  key={platform.id}
-                  title={platform.name}
-                  description={platform.description}
-                  meta={`${stateLabel(state)}${
-                    requiredTotal
-                      ? ` · ${requiredSet}/${requiredTotal} required set`
-                      : configured
-                        ? " · configured"
-                        : ""
-                  }`}
-                  enabled={Boolean(platform.enabled)}
-                  saving={saving === `messaging:${platform.id}`}
-                  onToggle={(enabled) => onToggle(platform, enabled)}
-                >
-                  {envVars.length ? (
-                    <div className="agent-env-list">
-                      {envVars.slice(0, 4).map((field) => (
-                        <span key={field.key} data-set={envFieldSet(field)}>
-                          {fieldLabel(field)}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </CapabilityRow>
-              );
-            })}
-          </CapabilityGroup>
+        <div className="agent-messaging-layout">
+          <div className="agent-messaging-list" aria-label="Messaging channels">
+            <CapabilityGroup
+              title="Messaging"
+              count={visible.length}
+              empty="No matching platforms"
+            >
+              {visible.map((platform) => {
+                const envVars = platform.envVars ?? platform.env_vars ?? [];
+                const requiredSet = envVars.filter(
+                  (field) => field.required && envFieldSet(field),
+                ).length;
+                const requiredTotal = envVars.filter((field) => field.required)
+                  .length;
+                const state = platform.state ?? "unknown";
+                const configured =
+                  platform.configured ||
+                  (requiredTotal > 0 && requiredSet === requiredTotal);
+                return (
+                  <CapabilityRow
+                    key={platform.id}
+                    title={platform.name}
+                    description={platform.description}
+                    meta={`${stateLabel(state)}${
+                      requiredTotal
+                        ? ` · ${requiredSet}/${requiredTotal} required set`
+                        : configured
+                          ? " · configured"
+                          : ""
+                    }`}
+                    enabled={Boolean(platform.enabled)}
+                    selected={platform.id === selected?.id}
+                    saving={saving === `messaging:${platform.id}`}
+                    onSelect={() => onSelectPlatform(platform)}
+                    onToggle={(enabled) => onToggle(platform, enabled)}
+                  />
+                );
+              })}
+            </CapabilityGroup>
+          </div>
+          <MessagingPlatformDetail
+            envEdits={envEdits}
+            platform={selected}
+            saving={saving}
+            onEditEnv={onEditEnv}
+            onSaveEnv={onSaveEnv}
+            onToggle={onToggle}
+          />
         </div>
       )}
+    </section>
+  );
+}
+
+function MessagingPlatformDetail({
+  envEdits,
+  platform,
+  saving,
+  onEditEnv,
+  onSaveEnv,
+  onToggle,
+}: {
+  envEdits: Record<string, string>;
+  platform: HermesMessagingPlatformInfo | null;
+  saving: string | null;
+  onEditEnv: (key: string, value: string) => void;
+  onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
+  onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
+}) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  if (!platform) {
+    return (
+      <div className="agent-messaging-detail">
+        <EmptyState
+          icon={<MessageSquareIcon size={24} />}
+          title="No messaging platform"
+          description="No matching Hermes messaging platform is available."
+        />
+      </div>
+    );
+  }
+  const envVars = platform.envVars ?? platform.env_vars ?? [];
+  const required = envVars.filter((field) => field.required);
+  const recommended = envVars.filter(
+    (field) => !field.required && !field.advanced,
+  );
+  const advanced = envVars.filter((field) => !field.required && field.advanced);
+  const hasEdits = Object.values(messagingTrimEdits(envEdits)).length > 0;
+  const docsUrl = platform.docsUrl ?? platform.docs_url;
+  const isSavingEnv = saving === `env:${platform.id}`;
+
+  return (
+    <div className="agent-messaging-detail">
+      <div className="agent-messaging-detail-scroll">
+        <header className="agent-messaging-detail-header">
+          <div className="agent-platform-avatar" aria-hidden="true">
+            {platform.name.charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <h3>{platform.name}</h3>
+            <p>{platform.description}</p>
+            <div className="agent-platform-pills">
+              <span>{stateLabel(platform.state ?? "unknown")}</span>
+              <span>{platform.configured ? "Credentials set" : "Needs setup"}</span>
+              {platform.gatewayRunning || platform.gateway_running ? null : (
+                <span>Messaging gateway stopped</span>
+              )}
+            </div>
+          </div>
+        </header>
+        {platform.errorMessage || platform.error_message ? (
+          <div className="agent-platform-error">
+            {platform.errorMessage ?? platform.error_message}
+          </div>
+        ) : null}
+        {docsUrl ? (
+          <a
+            className="agent-platform-docs"
+            href={docsUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            Open setup guide
+          </a>
+        ) : null}
+        <MessagingFieldGroup
+          title="Required"
+          fields={required}
+          edits={envEdits}
+          saving={saving}
+          onEditEnv={onEditEnv}
+        />
+        <MessagingFieldGroup
+          title="Recommended"
+          fields={recommended}
+          edits={envEdits}
+          saving={saving}
+          onEditEnv={onEditEnv}
+        />
+        {advanced.length ? (
+          <section className="agent-messaging-fields">
+            <button
+              type="button"
+              className="agent-advanced-toggle"
+              onClick={() => setShowAdvanced((value) => !value)}
+            >
+              Advanced ({advanced.length})
+            </button>
+            {showAdvanced ? (
+              <MessagingFieldGroup
+                title=""
+                fields={advanced}
+                edits={envEdits}
+                saving={saving}
+                onEditEnv={onEditEnv}
+              />
+            ) : null}
+          </section>
+        ) : null}
+      </div>
+      <footer className="agent-messaging-footer">
+        <button
+          type="button"
+          className="agent-messaging-enable"
+          disabled={saving === `messaging:${platform.id}`}
+          onClick={() => onToggle(platform, !platform.enabled)}
+        >
+          {platform.enabled ? "Enabled" : "Disabled"}
+        </button>
+        <button
+          type="button"
+          disabled={!hasEdits || isSavingEnv}
+          onClick={() => onSaveEnv(platform)}
+        >
+          {isSavingEnv ? "Saving..." : "Save changes"}
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+function MessagingFieldGroup({
+  edits,
+  fields,
+  saving,
+  title,
+  onEditEnv,
+}: {
+  edits: Record<string, string>;
+  fields: HermesMessagingEnvVarInfo[];
+  saving: string | null;
+  title: string;
+  onEditEnv: (key: string, value: string) => void;
+}) {
+  if (!fields.length) {
+    return null;
+  }
+  return (
+    <section className="agent-messaging-fields">
+      {title ? <h4>{title}</h4> : null}
+      {fields.map((field) => (
+        <label key={field.key} className="agent-messaging-field">
+          <span>
+            {fieldLabel(field)}
+            {envFieldSet(field) ? <strong>Saved</strong> : null}
+          </span>
+          <input
+            type={field.isPassword || field.is_password ? "password" : "text"}
+            value={edits[field.key] ?? ""}
+            disabled={saving === `env:${field.key}`}
+            placeholder={
+              envFieldSet(field)
+                ? field.redactedValue ??
+                  field.redacted_value ??
+                  "Replace current value"
+                : field.prompt ?? field.key
+            }
+            onChange={(event) => onEditEnv(field.key, event.currentTarget.value)}
+          />
+          {field.description ? <small>{field.description}</small> : null}
+        </label>
+      ))}
     </section>
   );
 }
@@ -1090,7 +1326,9 @@ function CapabilityRow({
   enabled,
   meta,
   saving,
+  selected = false,
   title,
+  onSelect,
   onToggle,
 }: {
   children?: ReactNode;
@@ -1098,19 +1336,21 @@ function CapabilityRow({
   enabled: boolean;
   meta?: string;
   saving: boolean;
+  selected?: boolean;
   title: string;
+  onSelect?: () => void;
   onToggle: (enabled: boolean) => void;
 }) {
   return (
-    <article className="agent-capability-row">
-      <div>
+    <article className="agent-capability-row" data-selected={selected}>
+      <button type="button" onClick={onSelect}>
         <div className="agent-capability-title">
           <span>{title}</span>
           {meta ? <em>{meta}</em> : null}
         </div>
         {description ? <p>{description}</p> : null}
         {children}
-      </div>
+      </button>
       <button
         type="button"
         className="agent-switch"
@@ -1370,6 +1610,14 @@ function envFieldSet(field: HermesMessagingEnvVarInfo) {
 
 function fieldLabel(field: HermesMessagingEnvVarInfo) {
   return field.prompt || field.key.replaceAll("_", " ").toLowerCase();
+}
+
+function messagingTrimEdits(edits: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(edits)
+      .map(([key, value]) => [key, value.trim()])
+      .filter(([, value]) => value.length > 0),
+  );
 }
 
 function StatusPill({
