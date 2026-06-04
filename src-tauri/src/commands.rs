@@ -2,7 +2,7 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            active_capture_session_id, capture_status, finish_capture, microphone_permission_state,
+            capture_status, finish_active_capture, finish_capture, microphone_permission_state,
             pause_capture, resume_capture, start_capture,
         },
         recovery::scan_recoverable_recordings,
@@ -380,22 +380,24 @@ pub async fn finish_recording(
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
     let repos = repositories(&app).await?;
-    finish_recording_session(&repos, &request.session_id).await
+    let finalization_started = Instant::now();
+    let finished = finish_capture(&request.session_id)?;
+    finish_recording_session(&repos, finished, finalization_started).await
 }
 
 async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {
-    if let Some(session_id) = active_capture_session_id()? {
-        finish_recording_session(repos, &session_id).await?;
+    let finalization_started = Instant::now();
+    if let Some(finished) = finish_active_capture()? {
+        finish_recording_session(repos, finished, finalization_started).await?;
     }
     Ok(())
 }
 
 async fn finish_recording_session(
     repos: &Repositories,
-    session_id: &str,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
 ) -> Result<FinishRecordingResponse, AppError> {
-    let finalization_started = Instant::now();
-    let finished = finish_capture(session_id)?;
     let finalization_ms = finalization_started
         .elapsed()
         .as_millis()
