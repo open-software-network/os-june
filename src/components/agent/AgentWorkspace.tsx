@@ -1,10 +1,7 @@
 import {
   BotIcon,
-  CheckCircle2Icon,
   CircleStopIcon,
-  ClockIcon,
   MessageSquareIcon,
-  PlayIcon,
   RotateCwIcon,
   SendIcon,
   ShieldCheckIcon,
@@ -545,12 +542,14 @@ export function AgentWorkspace() {
               >
                 <span className="agent-task-row-title">{task.title}</span>
                 <span className="agent-task-row-meta">
-                  <StatusPill status={task.status} />
+                  <ActivityIndicator status={task.status} />
                   <span>{relativeDate(task.updatedAt)}</span>
                 </span>
-                <span className="agent-task-row-summary">
-                  {taskActivitySummary(task)}
-                </span>
+                {isTaskActive(task.status) ? (
+                  <span className="agent-task-row-summary">
+                    {taskActivitySummary(task)}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>
@@ -570,10 +569,12 @@ export function AgentWorkspace() {
           <>
             <header className="agent-detail-header">
               <div className="agent-detail-title">
-                <StatusIcon status={selectedTask.status} />
+                <ActivityIndicator status={selectedTask.status} large />
                 <div>
                   <h2>{selectedTask.title}</h2>
-                  <p>{taskActivitySummary(selectedTask)}</p>
+                  {isTaskActive(selectedTask.status) ? (
+                    <p>{taskActivitySummary(selectedTask)}</p>
+                  ) : null}
                 </div>
               </div>
               <div className="agent-actions">
@@ -1817,13 +1818,20 @@ function StatusPill({
   );
 }
 
-function StatusIcon({ status }: { status: AgentTaskStatus }) {
-  if (status === "completed") return <CheckCircle2Icon size={18} />;
-  if (status === "running" || status === "queued")
-    return <PlayIcon size={18} />;
-  if (status === "cancelled") return <CircleStopIcon size={18} />;
-  if (status === "paused") return <CircleStopIcon size={18} />;
-  return <ClockIcon size={18} />;
+function ActivityIndicator({
+  large = false,
+  status,
+}: {
+  large?: boolean;
+  status: AgentTaskStatus;
+}) {
+  if (!isTaskActive(status)) return null;
+  return (
+    <span className="agent-activity-indicator" data-large={large}>
+      <span aria-hidden="true" />
+      Working
+    </span>
+  );
 }
 
 function toolStatusToTaskStatus(
@@ -1835,17 +1843,14 @@ function toolStatusToTaskStatus(
   return "waitingForUser";
 }
 
+function isTaskActive(status: AgentTaskStatus) {
+  return status === "queued" || status === "running";
+}
+
 function statusLabel(status: AgentTaskStatus) {
   switch (status) {
-    case "queued":
-    case "running":
-      return "Working";
     case "waitingForUser":
-      return "Needs input";
-    case "paused":
-      return "Idle";
-    case "cancelled":
-      return "Stopped";
+      return "Waiting";
     default:
       return status[0].toUpperCase() + status.slice(1);
   }
@@ -1857,18 +1862,8 @@ function taskActivitySummary(task: AgentTaskDto) {
       return "Starting work.";
     case "running":
       return task.progressSummary || "Working now.";
-    case "waitingForUser":
-      return "Waiting for your input.";
-    case "completed":
-      return "Finished.";
-    case "failed":
-      return task.lastError || "Stopped because something failed.";
-    case "cancelled":
-      return "Stopped.";
-    case "paused":
-      return "Not actively working.";
     default:
-      return "Not actively working.";
+      return "";
   }
 }
 
