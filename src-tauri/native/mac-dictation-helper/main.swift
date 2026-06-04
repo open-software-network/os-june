@@ -927,6 +927,9 @@ enum SelectedDeviceRecorderError: LocalizedError {
 }
 
 final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    private static let levelEmitInterval: TimeInterval = 0.04
+    private static let visualLevelScale: Float = 0.25
+
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
     private let queue = DispatchQueue(label: "co.opensoftware.scribe.dictation-recorder")
@@ -935,6 +938,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     private var didStartWriting = false
     private var isStopping = false
     private var finishHandler: ((Error?) -> Void)?
+    private var lastLevelEmitAt = 0.0
     private let failureHandler: (Error) -> Void
     private let levelHandler: (Float) -> Void
 
@@ -1073,11 +1077,17 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
         let samples = dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
             UnsafeBufferPointer(start: pointer, count: sampleCount)
         }
-        var peak: Float = 0
+        var sumSquares: Float = 0
         for sample in samples {
-            peak = max(peak, abs(Float(sample) / Float(Int16.max)))
+            let normalized = Float(sample) / Float(Int16.max)
+            sumSquares += normalized * normalized
         }
-        levelHandler(peak)
+        let rms = sqrt(sumSquares / Float(sampleCount))
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastLevelEmitAt >= Self.levelEmitInterval {
+            lastLevelEmitAt = now
+            levelHandler(min(1, rms * Self.visualLevelScale))
+        }
     }
 
     private func fail(_ error: Error) {
