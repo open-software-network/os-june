@@ -778,7 +778,7 @@ export function App() {
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
-        <div className="main-panel-body">
+        <div className="main-panel-body" data-active-view={activeView}>
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
             {activeView === "settings" ? (

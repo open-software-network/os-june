@@ -223,9 +223,11 @@ input:focus-visible,
   gap: var(--sp-6);
   width: min(100%, 1120px);
   min-height: 0;
+  max-height: 100%;
   height: 100%;
   margin: 0 auto;
   padding: var(--sp-8) var(--sp-6);
+  overflow: hidden;
 }
 
 .agent-task-rail,
@@ -2045,6 +2047,10 @@ input:focus-visible,
   min-height: 0;
   overflow-y: auto;
   padding: 0 var(--sp-8) var(--sp-5);
+}
+
+.main-panel-body[data-active-view="agent"] {
+  overflow: hidden;
 }
 
 /* Top + bottom fades for the main card. Top is short (28px) since no
