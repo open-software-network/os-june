@@ -352,6 +352,61 @@ export type HermesBridgeStatus = {
   message?: string;
 };
 
+export type HermesSkillInfo = {
+  name: string;
+  description?: string;
+  category?: string;
+  enabled?: boolean;
+};
+
+export type HermesToolsetInfo = {
+  name: string;
+  label?: string;
+  description?: string;
+  enabled?: boolean;
+  available?: boolean;
+  tools?: string[];
+  provider?: string;
+};
+
+export type HermesMessagingEnvVarInfo = {
+  key: string;
+  prompt?: string;
+  description?: string;
+  required?: boolean;
+  advanced?: boolean;
+  isSet?: boolean;
+  is_set?: boolean;
+  isPassword?: boolean;
+  is_password?: boolean;
+  redactedValue?: string | null;
+  redacted_value?: string | null;
+  url?: string | null;
+};
+
+export type HermesMessagingPlatformInfo = {
+  id: string;
+  name: string;
+  description?: string;
+  docsUrl?: string;
+  docs_url?: string;
+  enabled?: boolean;
+  configured?: boolean;
+  gatewayRunning?: boolean;
+  gateway_running?: boolean;
+  state?: string | null;
+  errorCode?: string | null;
+  error_code?: string | null;
+  errorMessage?: string | null;
+  error_message?: string | null;
+  envVars?: HermesMessagingEnvVarInfo[];
+  env_vars?: HermesMessagingEnvVarInfo[];
+};
+
+export type HermesMessagingPlatformsResponse = {
+  platforms: HermesMessagingPlatformInfo[];
+};
+
 export type BootstrapResponse = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
@@ -540,6 +595,50 @@ export async function listAgentToolEvents(taskId: string) {
 
 export async function hermesBridgeStatus() {
   return invoke<HermesBridgeStatus>("hermes_bridge_status");
+}
+
+export async function hermesBridgeSkills() {
+  return invoke<HermesSkillInfo[]>("hermes_bridge_skills");
+}
+
+export async function toggleHermesBridgeSkill(input: {
+  name: string;
+  enabled: boolean;
+}) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
+    "toggle_hermes_bridge_skill",
+    { request: input },
+  );
+}
+
+export async function hermesBridgeToolsets() {
+  return invoke<HermesToolsetInfo[]>("hermes_bridge_toolsets");
+}
+
+export async function toggleHermesBridgeToolset(input: {
+  name: string;
+  enabled: boolean;
+}) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
+    "toggle_hermes_bridge_toolset",
+    { request: input },
+  );
+}
+
+export async function hermesBridgeMessagingPlatforms() {
+  return invoke<HermesMessagingPlatformsResponse>(
+    "hermes_bridge_messaging_platforms",
+  );
+}
+
+export async function updateHermesBridgeMessagingPlatform(input: {
+  platformId: string;
+  enabled: boolean;
+}) {
+  return invoke<{ ok: boolean; platform: string }>(
+    "update_hermes_bridge_messaging_platform",
+    { request: input },
+  );
 }
 
 export async function startHermesBridge(cwd?: string) {

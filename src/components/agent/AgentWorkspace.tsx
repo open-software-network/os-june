@@ -3,15 +3,18 @@ import {
   CheckCircle2Icon,
   CircleStopIcon,
   ClockIcon,
+  MessageSquareIcon,
   PauseIcon,
   PlayIcon,
   RotateCwIcon,
   SendIcon,
   ShieldCheckIcon,
   TerminalIcon,
+  WrenchIcon,
 } from "lucide-react";
 import {
   type FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -24,15 +27,25 @@ import {
   cancelAgentTask,
   createAgentTask,
   getAgentTask,
+  hermesBridgeMessagingPlatforms,
+  hermesBridgeSkills,
   hermesBridgeStatus,
+  hermesBridgeToolsets,
   listAgentTasks,
   retryAgentTask,
   sendAgentMessage,
   startHermesBridge,
+  toggleHermesBridgeSkill,
+  toggleHermesBridgeToolset,
+  updateHermesBridgeMessagingPlatform,
   type AgentMessageDto,
   type AgentTaskDto,
   type AgentTaskStatus,
   type AgentToolEventDto,
+  type HermesMessagingEnvVarInfo,
+  type HermesMessagingPlatformInfo,
+  type HermesSkillInfo,
+  type HermesToolsetInfo,
   type HermesBridgeStatus,
 } from "../../lib/tauri";
 import {
@@ -51,9 +64,12 @@ type LiveHermesEvent = HermesGatewayEvent & {
   receivedAt: string;
 };
 
+type AgentPanel = "chat" | "skills" | "messaging";
+
 export function AgentWorkspace() {
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
+  const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -68,6 +84,14 @@ export function AgentWorkspace() {
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
   >({});
+  const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
+  const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
+  const [messagingPlatforms, setMessagingPlatforms] = useState<
+    HermesMessagingPlatformInfo[] | null
+  >(null);
+  const [capabilityQuery, setCapabilityQuery] = useState("");
+  const [capabilityLoading, setCapabilityLoading] = useState(false);
+  const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const autoStartRequestedRef = useRef(false);
@@ -142,6 +166,15 @@ export function AgentWorkspace() {
       behavior: "smooth",
     });
   }, [selectedTask?.messages.length, selectedTask?.toolEvents.length]);
+
+  useEffect(() => {
+    if (activePanel === "skills" && (!skills || !toolsets)) {
+      void loadCapabilities();
+    }
+    if (activePanel === "messaging" && !messagingPlatforms) {
+      void loadMessagingPlatforms();
+    }
+  }, [activePanel]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -228,6 +261,7 @@ export function AgentWorkspace() {
   }
 
   async function startNewTask() {
+    setActivePanel("chat");
     setSelectedTaskId(undefined);
     setDraft("");
   }
@@ -245,6 +279,95 @@ export function AgentWorkspace() {
       upsertTask(await retryAgentTask(taskId));
     } catch (err) {
       setError(messageFromError(err));
+    }
+  }
+
+  async function loadCapabilities() {
+    setCapabilityLoading(true);
+    try {
+      await ensureHermesGateway();
+      const [nextSkills, nextToolsets] = await Promise.all([
+        hermesBridgeSkills(),
+        hermesBridgeToolsets(),
+      ]);
+      setSkills(nextSkills);
+      setToolsets(nextToolsets);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCapabilityLoading(false);
+    }
+  }
+
+  async function loadMessagingPlatforms() {
+    setCapabilityLoading(true);
+    try {
+      await ensureHermesGateway();
+      const response = await hermesBridgeMessagingPlatforms();
+      setMessagingPlatforms(response.platforms);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCapabilityLoading(false);
+    }
+  }
+
+  async function setSkillEnabled(skill: HermesSkillInfo, enabled: boolean) {
+    setCapabilitySaving(`skill:${skill.name}`);
+    try {
+      await toggleHermesBridgeSkill({ name: skill.name, enabled });
+      setSkills((current) =>
+        current?.map((item) =>
+          item.name === skill.name ? { ...item, enabled } : item,
+        ) ?? current,
+      );
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCapabilitySaving(null);
+    }
+  }
+
+  async function setToolsetEnabled(
+    toolset: HermesToolsetInfo,
+    enabled: boolean,
+  ) {
+    setCapabilitySaving(`toolset:${toolset.name}`);
+    try {
+      await toggleHermesBridgeToolset({ name: toolset.name, enabled });
+      setToolsets((current) =>
+        current?.map((item) =>
+          item.name === toolset.name ? { ...item, enabled } : item,
+        ) ?? current,
+      );
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCapabilitySaving(null);
+    }
+  }
+
+  async function setMessagingPlatformEnabled(
+    platform: HermesMessagingPlatformInfo,
+    enabled: boolean,
+  ) {
+    setCapabilitySaving(`messaging:${platform.id}`);
+    try {
+      await updateHermesBridgeMessagingPlatform({
+        platformId: platform.id,
+        enabled,
+      });
+      setMessagingPlatforms((current) =>
+        current?.map((item) =>
+          item.id === platform.id ? { ...item, enabled } : item,
+        ) ?? current,
+      );
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCapabilitySaving(null);
     }
   }
 
@@ -333,6 +456,7 @@ export function AgentWorkspace() {
                 </div>
               </div>
               <div className="agent-actions">
+                <PanelTabs activePanel={activePanel} onChange={setActivePanel} />
                 {selectedTask.status !== "cancelled" &&
                 selectedTask.status !== "completed" ? (
                   <button
@@ -357,26 +481,59 @@ export function AgentWorkspace() {
                 ) : null}
               </div>
             </header>
-            <div ref={listRef} className="agent-timeline">
-              <SafetyPanel />
-              {mergeTimeline(
-                selectedTask.messages,
-                selectedTask.toolEvents,
-                liveEvents[selectedTask.id] ?? [],
-              ).map((item) =>
-                item.kind === "message" ? (
-                  <MessageBubble key={item.message.id} message={item.message} />
-                ) : item.kind === "tool" ? (
-                  <ToolEventRow key={item.event.id} event={item.event} />
-                ) : item.kind === "hermes-message" ? (
-                  <HermesMessageRow key={item.item.id} item={item.item} />
-                ) : item.kind === "hermes-tool" ? (
-                  <HermesToolRow key={item.item.id} item={item.item} />
-                ) : (
-                  <HermesNoteRow key={item.item.id} item={item.item} />
-                ),
-              )}
-            </div>
+            {activePanel === "chat" ? (
+              <div ref={listRef} className="agent-timeline">
+                <SafetyPanel />
+                {mergeTimeline(
+                  selectedTask.messages,
+                  selectedTask.toolEvents,
+                  liveEvents[selectedTask.id] ?? [],
+                ).map((item) =>
+                  item.kind === "message" ? (
+                    <MessageBubble
+                      key={item.message.id}
+                      message={item.message}
+                    />
+                  ) : item.kind === "tool" ? (
+                    <ToolEventRow key={item.event.id} event={item.event} />
+                  ) : item.kind === "hermes-message" ? (
+                    <HermesMessageRow key={item.item.id} item={item.item} />
+                  ) : item.kind === "hermes-tool" ? (
+                    <HermesToolRow key={item.item.id} item={item.item} />
+                  ) : (
+                    <HermesNoteRow key={item.item.id} item={item.item} />
+                  ),
+                )}
+              </div>
+            ) : activePanel === "skills" ? (
+              <SkillsToolsPanel
+                loading={capabilityLoading}
+                query={capabilityQuery}
+                saving={capabilitySaving}
+                skills={skills}
+                toolsets={toolsets}
+                onQueryChange={setCapabilityQuery}
+                onRefresh={() => void loadCapabilities()}
+                onToggleSkill={(skill, enabled) =>
+                  void setSkillEnabled(skill, enabled)
+                }
+                onToggleToolset={(toolset, enabled) =>
+                  void setToolsetEnabled(toolset, enabled)
+                }
+              />
+            ) : (
+              <MessagingPanel
+                loading={capabilityLoading}
+                platforms={messagingPlatforms}
+                query={capabilityQuery}
+                saving={capabilitySaving}
+                onQueryChange={setCapabilityQuery}
+                onRefresh={() => void loadMessagingPlatforms()}
+                onToggle={(platform, enabled) =>
+                  void setMessagingPlatformEnabled(platform, enabled)
+                }
+              />
+            )}
           </>
         ) : (
           <div className="agent-compose-empty">
@@ -391,6 +548,7 @@ export function AgentWorkspace() {
 
         <form
           className="agent-composer"
+          data-hidden={selectedTask ? activePanel !== "chat" : false}
           onSubmit={(event) => void submit(event)}
         >
           <textarea
@@ -668,6 +826,304 @@ function SafetyPanel() {
   );
 }
 
+function PanelTabs({
+  activePanel,
+  onChange,
+}: {
+  activePanel: AgentPanel;
+  onChange: (panel: AgentPanel) => void;
+}) {
+  return (
+    <div className="agent-panel-tabs" role="tablist" aria-label="Agent panels">
+      <button
+        type="button"
+        aria-selected={activePanel === "chat"}
+        onClick={() => onChange("chat")}
+      >
+        <BotIcon size={14} />
+        Chat
+      </button>
+      <button
+        type="button"
+        aria-selected={activePanel === "skills"}
+        onClick={() => onChange("skills")}
+      >
+        <WrenchIcon size={14} />
+        Skills
+      </button>
+      <button
+        type="button"
+        aria-selected={activePanel === "messaging"}
+        onClick={() => onChange("messaging")}
+      >
+        <MessageSquareIcon size={14} />
+        Messaging
+      </button>
+    </div>
+  );
+}
+
+function SkillsToolsPanel({
+  loading,
+  query,
+  saving,
+  skills,
+  toolsets,
+  onQueryChange,
+  onRefresh,
+  onToggleSkill,
+  onToggleToolset,
+}: {
+  loading: boolean;
+  query: string;
+  saving: string | null;
+  skills: HermesSkillInfo[] | null;
+  toolsets: HermesToolsetInfo[] | null;
+  onQueryChange: (query: string) => void;
+  onRefresh: () => void;
+  onToggleSkill: (skill: HermesSkillInfo, enabled: boolean) => void;
+  onToggleToolset: (toolset: HermesToolsetInfo, enabled: boolean) => void;
+}) {
+  const q = query.trim().toLowerCase();
+  const visibleSkills = (skills ?? [])
+    .filter((skill) => capabilityMatches(skill, q))
+    .sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
+  const visibleToolsets = (toolsets ?? [])
+    .filter((toolset) => capabilityMatches(toolset, q))
+    .sort((a, b) =>
+      safeText(a.label ?? a.name).localeCompare(safeText(b.label ?? b.name)),
+    );
+  return (
+    <section className="agent-management-panel" aria-label="Skills and tools">
+      <ManagementToolbar
+        loading={loading}
+        placeholder="Search skills and toolsets"
+        query={query}
+        onQueryChange={onQueryChange}
+        onRefresh={onRefresh}
+      />
+      {loading && !skills && !toolsets ? (
+        <div className="agent-loading">
+          <Spinner size={16} />
+        </div>
+      ) : (
+        <div className="agent-management-scroll">
+          <CapabilityGroup
+            title="Skills"
+            count={visibleSkills.length}
+            empty="No matching skills"
+          >
+            {visibleSkills.map((skill) => (
+              <CapabilityRow
+                key={skill.name}
+                title={skill.name}
+                description={skill.description}
+                meta={skill.category}
+                enabled={Boolean(skill.enabled)}
+                saving={saving === `skill:${skill.name}`}
+                onToggle={(enabled) => onToggleSkill(skill, enabled)}
+              />
+            ))}
+          </CapabilityGroup>
+          <CapabilityGroup
+            title="Toolsets"
+            count={visibleToolsets.length}
+            empty="No matching toolsets"
+          >
+            {visibleToolsets.map((toolset) => (
+              <CapabilityRow
+                key={toolset.name}
+                title={toolset.label ?? toolset.name}
+                description={toolset.description}
+                meta={toolset.provider ?? toolNames(toolset).slice(0, 4).join(", ")}
+                enabled={Boolean(toolset.enabled)}
+                saving={saving === `toolset:${toolset.name}`}
+                onToggle={(enabled) => onToggleToolset(toolset, enabled)}
+              />
+            ))}
+          </CapabilityGroup>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MessagingPanel({
+  loading,
+  platforms,
+  query,
+  saving,
+  onQueryChange,
+  onRefresh,
+  onToggle,
+}: {
+  loading: boolean;
+  platforms: HermesMessagingPlatformInfo[] | null;
+  query: string;
+  saving: string | null;
+  onQueryChange: (query: string) => void;
+  onRefresh: () => void;
+  onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
+}) {
+  const q = query.trim().toLowerCase();
+  const visible = (platforms ?? [])
+    .filter((platform) => capabilityMatches(platform, q))
+    .sort((a, b) => safeText(a.name).localeCompare(safeText(b.name)));
+  return (
+    <section className="agent-management-panel" aria-label="Messaging">
+      <ManagementToolbar
+        loading={loading}
+        placeholder="Search messaging platforms"
+        query={query}
+        onQueryChange={onQueryChange}
+        onRefresh={onRefresh}
+      />
+      {loading && !platforms ? (
+        <div className="agent-loading">
+          <Spinner size={16} />
+        </div>
+      ) : (
+        <div className="agent-management-scroll">
+          <CapabilityGroup
+            title="Messaging"
+            count={visible.length}
+            empty="No matching platforms"
+          >
+            {visible.map((platform) => {
+              const envVars = platform.envVars ?? platform.env_vars ?? [];
+              const requiredSet = envVars.filter(
+                (field) => field.required && envFieldSet(field),
+              ).length;
+              const requiredTotal = envVars.filter((field) => field.required)
+                .length;
+              const state = platform.state ?? "unknown";
+              const configured =
+                platform.configured ||
+                (requiredTotal > 0 && requiredSet === requiredTotal);
+              return (
+                <CapabilityRow
+                  key={platform.id}
+                  title={platform.name}
+                  description={platform.description}
+                  meta={`${stateLabel(state)}${
+                    requiredTotal
+                      ? ` · ${requiredSet}/${requiredTotal} required set`
+                      : configured
+                        ? " · configured"
+                        : ""
+                  }`}
+                  enabled={Boolean(platform.enabled)}
+                  saving={saving === `messaging:${platform.id}`}
+                  onToggle={(enabled) => onToggle(platform, enabled)}
+                >
+                  {envVars.length ? (
+                    <div className="agent-env-list">
+                      {envVars.slice(0, 4).map((field) => (
+                        <span key={field.key} data-set={envFieldSet(field)}>
+                          {fieldLabel(field)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </CapabilityRow>
+              );
+            })}
+          </CapabilityGroup>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ManagementToolbar({
+  loading,
+  placeholder,
+  query,
+  onQueryChange,
+  onRefresh,
+}: {
+  loading: boolean;
+  placeholder: string;
+  query: string;
+  onQueryChange: (query: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="agent-management-toolbar">
+      <input
+        value={query}
+        onChange={(event) => onQueryChange(event.currentTarget.value)}
+        placeholder={placeholder}
+      />
+      <button type="button" disabled={loading} onClick={onRefresh}>
+        <RotateCwIcon size={14} />
+        Refresh
+      </button>
+    </div>
+  );
+}
+
+function CapabilityGroup({
+  children,
+  count,
+  empty,
+  title,
+}: {
+  children: ReactNode;
+  count: number;
+  empty: string;
+  title: string;
+}) {
+  return (
+    <section className="agent-capability-group">
+      <h3>
+        {title} <span>{count}</span>
+      </h3>
+      {count ? children : <p className="agent-capability-empty">{empty}</p>}
+    </section>
+  );
+}
+
+function CapabilityRow({
+  children,
+  description,
+  enabled,
+  meta,
+  saving,
+  title,
+  onToggle,
+}: {
+  children?: ReactNode;
+  description?: string;
+  enabled: boolean;
+  meta?: string;
+  saving: boolean;
+  title: string;
+  onToggle: (enabled: boolean) => void;
+}) {
+  return (
+    <article className="agent-capability-row">
+      <div>
+        <div className="agent-capability-title">
+          <span>{title}</span>
+          {meta ? <em>{meta}</em> : null}
+        </div>
+        {description ? <p>{description}</p> : null}
+        {children}
+      </div>
+      <button
+        type="button"
+        className="agent-switch"
+        aria-pressed={enabled}
+        disabled={saving}
+        onClick={() => onToggle(!enabled)}
+      >
+        <span />
+      </button>
+    </article>
+  );
+}
+
 function MessageBubble({ message }: { message: AgentMessageDto }) {
   return (
     <article className="agent-message" data-role={message.role}>
@@ -872,6 +1328,48 @@ function humanizeToolName(value: string) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function capabilityMatches(
+  item:
+    | HermesSkillInfo
+    | HermesToolsetInfo
+    | HermesMessagingPlatformInfo,
+  query: string,
+) {
+  if (!query) return true;
+  const values = [
+    "name" in item ? item.name : "",
+    "label" in item ? item.label : "",
+    "description" in item ? item.description : "",
+    "category" in item ? item.category : "",
+    "provider" in item ? item.provider : "",
+    "state" in item ? item.state : "",
+  ];
+  if ("tools" in item && Array.isArray(item.tools)) {
+    values.push(...item.tools);
+  }
+  return values.some((value) => safeText(value).toLowerCase().includes(query));
+}
+
+function safeText(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function toolNames(toolset: HermesToolsetInfo) {
+  return Array.isArray(toolset.tools) ? toolset.tools : [];
+}
+
+function stateLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function envFieldSet(field: HermesMessagingEnvVarInfo) {
+  return Boolean(field.isSet ?? field.is_set);
+}
+
+function fieldLabel(field: HermesMessagingEnvVarInfo) {
+  return field.prompt || field.key.replaceAll("_", " ").toLowerCase();
 }
 
 function StatusPill({

@@ -86,6 +86,20 @@ pub struct StartHermesBridgeRequest {
     pub cwd: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToggleHermesCapabilityRequest {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHermesMessagingPlatformRequest {
+    pub platform_id: String,
+    pub enabled: bool,
+}
+
 #[tauri::command]
 pub async fn hermes_bridge_status(
     bridge: State<'_, HermesBridge>,
@@ -224,9 +238,156 @@ pub async fn stop_hermes_bridge(
     })
 }
 
+#[tauri::command]
+pub async fn hermes_bridge_skills(
+    bridge: State<'_, HermesBridge>,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(&bridge, reqwest::Method::GET, "/api/skills", None).await
+}
+
+#[tauri::command]
+pub async fn toggle_hermes_bridge_skill(
+    bridge: State<'_, HermesBridge>,
+    request: ToggleHermesCapabilityRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::PUT,
+        "/api/skills/toggle",
+        Some(serde_json::json!({
+            "name": request.name,
+            "enabled": request.enabled,
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_toolsets(
+    bridge: State<'_, HermesBridge>,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(&bridge, reqwest::Method::GET, "/api/tools/toolsets", None).await
+}
+
+#[tauri::command]
+pub async fn toggle_hermes_bridge_toolset(
+    bridge: State<'_, HermesBridge>,
+    request: ToggleHermesCapabilityRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::PUT,
+        &format!("/api/tools/toolsets/{}", urlencoding::encode(&request.name)),
+        Some(serde_json::json!({
+            "enabled": request.enabled,
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_messaging_platforms(
+    bridge: State<'_, HermesBridge>,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::GET,
+        "/api/messaging/platforms",
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn update_hermes_bridge_messaging_platform(
+    bridge: State<'_, HermesBridge>,
+    request: UpdateHermesMessagingPlatformRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::PUT,
+        &format!(
+            "/api/messaging/platforms/{}",
+            urlencoding::encode(&request.platform_id)
+        ),
+        Some(serde_json::json!({
+            "enabled": request.enabled,
+        })),
+    )
+    .await
+}
+
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
     let _ = stop_hermes_bridge_inner(&bridge);
+}
+
+async fn hermes_api_json(
+    bridge: &State<'_, HermesBridge>,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, AppError> {
+    let connection = {
+        let mut guard = bridge.process.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        let Some(process) = guard.as_mut() else {
+            return Err(AppError::new(
+                "hermes_bridge_not_running",
+                "Hermes bridge is not running.",
+            ));
+        };
+        match process.child.try_wait() {
+            Ok(Some(status)) => {
+                *guard = None;
+                return Err(AppError::new(
+                    "hermes_bridge_not_running",
+                    format!("Hermes exited with status {status}."),
+                ));
+            }
+            Ok(None) => process.connection.clone(),
+            Err(error) => {
+                return Err(AppError::new(
+                    "hermes_bridge_status_failed",
+                    error.to_string(),
+                ));
+            }
+        }
+    };
+    let url = format!("{}{}", connection.base_url, path);
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
+    let mut request = client
+        .request(method, &url)
+        .header("X-Hermes-Session-Token", connection.token)
+        .header("Content-Type", "application/json");
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
+    if !status.is_success() {
+        return Err(AppError::new(
+            "hermes_bridge_api_failed",
+            format!("Hermes API returned {status}: {text}"),
+        ));
+    }
+    if text.trim().is_empty() {
+        return Ok(serde_json::json!(null));
+    }
+    serde_json::from_str(&text)
+        .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))
 }
 
 fn existing_running_status(
