@@ -72,13 +72,14 @@ jobs:
           restore-keys: |
             cargo-registry-${{ runner.os }}-
 
-      - name: Cache cargo target
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target
-          key: tauri-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            tauri-target-${{ runner.os }}-
+      # NOTE: intentionally no `src-tauri/target` cache. A restored target lets
+      # Cargo treat build.rs as fresh and skip it during the signed build — so
+      # the nested Swift helper apps keep whatever signature they got the first
+      # time they were built (ad-hoc, from `pnpm test:rust` which runs without a
+      # signing identity) and notarization rejects them ("not signed with a valid
+      # Developer ID / no secure timestamp / no hardened runtime"). A clean
+      # compile forces build.rs to run under tauri-action's keychain + identity
+      # and re-sign the helpers (`codesign --force --deep …` in build.rs).
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -196,8 +197,10 @@ jobs:
           # raw (## headings, @-mentions). Keep notes = the plain releaseBody.
           generateReleaseNotes: false
           args: --bundles app,dmg --target aarch64-apple-darwin
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          # v0.6.x input name (was uploadUpdaterJson/uploadUpdaterSignatures,
+          # which this version ignores). Generates + uploads latest.json; the
+          # .sig updater signatures are uploaded alongside it automatically.
+          includeUpdaterJson: true
 
       # Push the version bump to main only AFTER the release is published, so a
       # build/notarize failure never leaves an orphan `release:` commit on main
