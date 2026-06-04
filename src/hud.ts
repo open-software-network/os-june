@@ -56,8 +56,15 @@ const meter = createBarMeter(
 );
 
 let rafHandle: number | undefined;
+let shimmerTimer: number | undefined;
 let lastAudioLevelAt = 0;
 const IDLE_RAF_TIMEOUT_MS = 260;
+// Once the bars have settled and no fresh audio is arriving, the only thing
+// left to animate is the slow idle carrier. Pace it at ~30fps via a timer
+// instead of painting every rAF, so a long listening session doesn't pin the
+// CPU at 60fps compositing — the carrier (a 0.45Hz sine) reads smooth either
+// way. Full rAF resumes the moment audio or bar motion returns.
+const SHIMMER_FRAME_MS = 33;
 // Nudged 0.008→0.01 (2026-06-04) so quiet room ambient stays in the (now
 // heavily damped) ambient regime — real speech still clears it into the voice
 // path + whisper floor, but room tone no longer crosses over and lights bars.
@@ -113,21 +120,34 @@ function setHud(state: string, status: string) {
 
 function startBarLoop() {
   if (rafHandle !== undefined) return;
+  // Audio arriving mid-shimmer cancels the throttled tick so we snap back to
+  // full-rate rAF immediately instead of waiting out the timer.
+  if (shimmerTimer !== undefined) {
+    window.clearTimeout(shimmerTimer);
+    shimmerTimer = undefined;
+  }
   const tick = (now: number) => {
+    rafHandle = undefined;
     const stillAnimating = meter.step();
     for (let i = 0; i < bars.length; i++) {
       const level = withIdleCarrier(meter.displayed[i], i, now);
       bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
-    // Keep painting while bars move or audio is recent — and, once the carrier
-    // wave is on, for as long as we're listening so the shimmer never freezes.
+    const reactive = stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS;
+    // Once the carrier wave is on, keep animating for as long as we're listening
+    // so the shimmer never freezes.
     const keepShimmering =
       IDLE_CARRIER_AMP > 0 && hud?.dataset.state === "listening";
-    if (stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS || keepShimmering) {
+    if (reactive) {
+      // Bars moving or audio recent → paint every frame for responsiveness.
       rafHandle = window.requestAnimationFrame(tick);
-    } else {
-      rafHandle = undefined;
+    } else if (keepShimmering) {
+      // Idle but listening → throttle the carrier so the CPU can idle between ticks.
+      shimmerTimer = window.setTimeout(() => {
+        shimmerTimer = undefined;
+        rafHandle = window.requestAnimationFrame(tick);
+      }, SHIMMER_FRAME_MS);
     }
   };
   rafHandle = window.requestAnimationFrame(tick);
