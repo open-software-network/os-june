@@ -1,4 +1,5 @@
 import {
+  createHermesBridgeSession,
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
   type HermesSessionInfo,
@@ -33,6 +34,15 @@ export async function listHermesSessions(
 export async function listHermesSessionMessages(sessionId: string) {
   const response = await hermesBridgeSessionMessages(sessionId);
   return normalizeHermesSessionMessagesResponse(response);
+}
+
+export async function createHermesSession(title: string) {
+  const response = await createHermesBridgeSession({ title });
+  const session = response.session ?? response.data;
+  if (session?.id) return session;
+  const id = response.session_id ?? response.id;
+  if (id) return { id, title } satisfies HermesSessionInfo;
+  throw new Error("Hermes did not create a session.");
 }
 
 export function normalizeHermesSessionsResponse(
@@ -106,7 +116,9 @@ function isHermesSessionMessage(value: unknown): value is HermesSessionMessage {
 function timestampString(value: unknown) {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value).toISOString();
+    const milliseconds =
+      value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+    return new Date(milliseconds).toISOString();
   }
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value.toISOString();

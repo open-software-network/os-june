@@ -42,6 +42,7 @@ import {
   type AgentToolEventDto,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
+  type HermesSessionCreateResponse,
   type HermesSessionInfo,
   type HermesSessionMessage,
   type HermesSkillInfo,
@@ -49,6 +50,7 @@ import {
   type HermesBridgeStatus,
 } from "../../lib/tauri";
 import {
+  createHermesSession,
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
@@ -57,7 +59,6 @@ import {
 import {
   HermesGatewayClient,
   type HermesGatewayEvent,
-  type HermesSessionCreateResponse,
 } from "../../lib/hermes-gateway";
 import {
   buildAgentChatTurns,
@@ -349,14 +350,10 @@ export function AgentWorkspace() {
 
   async function submitHermesSession(content: string) {
     const gateway = await ensureHermesGateway();
-    const sessionId =
-      selectedHermesSessionId ??
-      (
-        await gateway.request<HermesSessionCreateResponse>("session.create", {
-          title: titleFromPrompt(content),
-          cols: 100,
-        })
-      ).session_id;
+    const createdSession = selectedHermesSessionId
+      ? undefined
+      : await createHermesSession(titleFromPrompt(content));
+    const sessionId = selectedHermesSessionId ?? createdSession?.id;
     if (!sessionId) throw new Error("Hermes did not create a session.");
     const createdAt = new Date().toISOString();
     setSelectedHermesSessionId(sessionId);
@@ -366,10 +363,10 @@ export function AgentWorkspace() {
       return [
         {
           id: sessionId,
-          title: titleFromPrompt(content),
+          title: createdSession?.title ?? titleFromPrompt(content),
           preview: content,
-          started_at: createdAt,
-          last_active: createdAt,
+          started_at: createdSession?.started_at ?? createdAt,
+          last_active: createdSession?.last_active ?? createdAt,
           message_count: 1,
         },
         ...current,
@@ -411,11 +408,17 @@ export function AgentWorkspace() {
         setSessionWorking(sessionId, false);
       }
     });
-    await gateway.request("prompt.submit", {
-      session_id: sessionId,
-      text: content,
-    });
-    await loadHermesSessions();
+    try {
+      await gateway.request("prompt.submit", {
+        session_id: sessionId,
+        text: content,
+      });
+      await loadHermesSessions();
+    } catch (err) {
+      unlisten();
+      setSessionWorking(sessionId, false);
+      throw err;
+    }
   }
 
   async function ensureHermesGateway() {

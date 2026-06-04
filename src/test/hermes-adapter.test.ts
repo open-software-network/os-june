@@ -75,6 +75,12 @@ describe("Hermes adapter", () => {
         last_active: 0 as unknown as string,
       }),
     ).toBe("1970-01-01T00:00:00.000Z");
+    expect(
+      sessionTimestamp({
+        id: "session-4",
+        last_active: 1_780_603_200 as unknown as string,
+      }),
+    ).toBe("2026-06-04T20:00:00.000Z");
     expect(titleFromPrompt("  Write   a note  ")).toBe("Write a note");
     expect(titleFromPrompt("")).toBe("Untitled session");
   });

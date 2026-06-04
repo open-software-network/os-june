@@ -460,6 +460,13 @@ export type HermesSessionMessagesResponse = {
   data?: HermesSessionMessage[];
 };
 
+export type HermesSessionCreateResponse = {
+  session?: HermesSessionInfo;
+  data?: HermesSessionInfo;
+  id?: string;
+  session_id?: string;
+};
+
 export type BootstrapResponse = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
@@ -722,6 +729,12 @@ export async function hermesBridgeSessionMessages(sessionId: string) {
     "hermes_bridge_session_messages",
     { request: { sessionId } },
   );
+}
+
+export async function createHermesBridgeSession(input: { title?: string }) {
+  return invoke<HermesSessionCreateResponse>("create_hermes_bridge_session", {
+    request: input,
+  });
 }
 
 export async function updateHermesBridgeMessagingPlatform(input: {
