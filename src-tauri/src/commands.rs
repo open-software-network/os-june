@@ -2,8 +2,8 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_status, finish_capture, microphone_permission_state, pause_capture,
-            resume_capture, start_capture,
+            capture_status, finish_active_capture, finish_capture, microphone_permission_state,
+            pause_capture, resume_capture, start_capture,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -322,6 +322,7 @@ pub async fn start_recording(
             .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
         return Err(AppError::new("source_not_ready", message));
     }
+    finish_active_capture_before_start(&repos).await?;
     let started = start_capture(&paths, request.note_id.clone(), source_mode)?;
     repos
         .create_recording_session(
@@ -378,13 +379,29 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
+    finish_recording_session(&repos, finished, finalization_started).await
+}
+
+async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {
+    let finalization_started = Instant::now();
+    if let Some(finished) = finish_active_capture()? {
+        finish_recording_session(repos, finished, finalization_started).await?;
+    }
+    Ok(())
+}
+
+async fn finish_recording_session(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    let repos = repositories(&app).await?;
     repos
         .add_checkpoint(
             &finished.session_id,
@@ -576,7 +593,7 @@ pub async fn finish_recording(
     let mut note = repos.get_note(&finished.note_id).await?;
     note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
 
-    let task_repos = repos.clone();
+    let task_repos = (*repos).clone();
     let task_note_id = finished.note_id.clone();
     let task_session_id = finished.session_id.clone();
     let task_source_mode = finished.source_mode;
