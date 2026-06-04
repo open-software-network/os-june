@@ -2,18 +2,18 @@
 // dictation HUD (hud.ts) and the note recorder (recorder/Waveform.tsx) so the
 // two waveforms share one design language. Bar count/weights are per-surface
 // (both are now 7-bar symmetric "lens" rows), and the per-meter options below
-// let the HUD layer on its travelling-wave motion without touching the recorder.
+// let both live surfaces share the same travelling-wave motion.
 //
 // Inputs are already-shaped 0..1 levels (each surface shapes its own raw audio
 // before pushing — the HUD from the helper's level, the recorder from peaks).
 
-// 7-bar symmetric "lens": low edges, tall center (raised cosine between),
+// 7-bar symmetric "lens": tapered edges, tall center (raised cosine between),
 // tuned 2026-06-04 to match Wispr Flow. Shared by BOTH surfaces so the
 // dictation HUD and the note recorder read as one waveform family — only their
-// pixel geometry and raw-audio shaping differ. The center stays elevated while
-// speaking; motion comes from the travelling-wave options below, not the
-// offsets (which only matter on the legacy propDelay=0 path).
-export const LENS_BAR_WEIGHTS = [0.55, 0.633, 0.797, 0.88, 0.797, 0.633, 0.55];
+// pixel geometry and raw-audio shaping differ. The deeper edge taper keeps loud
+// speech from turning the whole row into a blunt block while the center stays
+// elevated enough for whispers to read.
+export const LENS_BAR_WEIGHTS = [0.38, 0.495, 0.725, 0.84, 0.725, 0.495, 0.38];
 export const LENS_HISTORY_OFFSETS = [1, 0, 1, 0, 1, 0, 1];
 
 export const HUD_BAR_COUNT = 7;
@@ -26,7 +26,8 @@ export const RECORDER_BAR_HISTORY_OFFSETS = LENS_HISTORY_OFFSETS;
 
 // Long enough that the HUD's per-bar propagation delays (a loud moment travels
 // across the row over several pushes) have history to read back from. The
-// recorder only reads the freshest one/two samples, so the extra length is free.
+// recorder uses the same travelling wave, so both live surfaces need enough
+// history for delayed bar samples.
 export const LEVEL_HISTORY_LENGTH = 32;
 export const LIVE_LEVEL_MIX = 0.7;
 export const IDLE_LEVEL = 0;
@@ -53,10 +54,10 @@ export type BarMeterOptions = {
 // smoothed between neighbours, instead of center bars spiking. Pass to
 // createBarMeter so both surfaces move identically.
 export const LIVE_WAVE_OPTIONS: BarMeterOptions = {
-  liveLevelMix: 0.35,
-  propDelay: 0.7,
+  liveLevelMix: 0.3,
+  propDelay: 0.85,
   propMode: "across",
-  spatial: 0.3,
+  spatial: 0.4,
 };
 
 // Idle carrier wave — a slow sine travelling across the bars at a low baseline

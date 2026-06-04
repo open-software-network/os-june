@@ -49,10 +49,7 @@ export function RecorderBar({
       </button>
       <div className="recorder-meter">
         <span className="elapsed">{formatElapsed(status.elapsedMs)}</span>
-        <Waveform
-          level={meterLevel}
-          active={status.state === "recording"}
-        />
+        <Waveform level={meterLevel} active={status.state === "recording"} />
       </div>
       <button
         type="button"

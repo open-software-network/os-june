@@ -17,9 +17,16 @@
         --warn: #f4b860;
         --bar: #e7ebf0;
         font-family:
-          ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
         background: var(--bg);
@@ -31,12 +38,24 @@
         border-bottom: 1px solid var(--line);
         position: sticky;
         top: 0;
-        background: linear-gradient(var(--bg), color-mix(in oklch, var(--bg) 86%, transparent));
+        background: linear-gradient(
+          var(--bg),
+          color-mix(in oklch, var(--bg) 86%, transparent)
+        );
         backdrop-filter: blur(6px);
         z-index: 5;
       }
-      h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: 0.2px; }
-      header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 70ch; }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 4px;
+        letter-spacing: 0.2px;
+      }
+      header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        max-width: 70ch;
+      }
       .wrap {
         display: grid;
         grid-template-columns: 380px 1fr;
@@ -72,7 +91,11 @@
         color: var(--fg);
         font-weight: 600;
       }
-      .surface .sub { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+      .surface .sub {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 0 0 16px;
+      }
 
       .pill {
         display: inline-flex;
@@ -83,8 +106,15 @@
         border-radius: 999px;
         padding: 14px 22px;
       }
-      .bars { display: flex; align-items: center; justify-content: center; }
-      .bar { position: relative; flex: 0 0 auto; }
+      .bars {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .bar {
+        position: relative;
+        flex: 0 0 auto;
+      }
       .bar > i {
         content: "";
         position: absolute;
@@ -103,8 +133,16 @@
         gap: 28px;
         flex-wrap: wrap;
       }
-      .row .label { font-size: 12px; color: var(--muted); width: 120px; }
-      .col { display: flex; flex-direction: column; gap: 16px; }
+      .row .label {
+        font-size: 12px;
+        color: var(--muted);
+        width: 120px;
+      }
+      .col {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
 
       /* ---- Controls ---- */
       .group {
@@ -127,7 +165,9 @@
         color: var(--muted);
         font-weight: 500;
       }
-      .knob { margin: 11px 0; }
+      .knob {
+        margin: 11px 0;
+      }
       .knob .top {
         display: flex;
         justify-content: space-between;
@@ -135,7 +175,9 @@
         font-size: 12px;
         margin-bottom: 5px;
       }
-      .knob .top .name { color: var(--fg); }
+      .knob .top .name {
+        color: var(--fg);
+      }
       .knob .top .val {
         font-variant-numeric: tabular-nums;
         color: var(--accent);
@@ -146,10 +188,19 @@
         font-size: 11px;
         margin-left: 6px;
       }
-      .knob input[type="range"] { width: 100%; accent-color: var(--accent); }
-      .knob .hint { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.35; }
+      .knob input[type="range"] {
+        width: 100%;
+        accent-color: var(--accent);
+      }
+      .knob .hint {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 3px;
+        line-height: 1.35;
+      }
 
-      button, select {
+      button,
+      select {
         font: inherit;
         font-size: 13px;
         color: var(--fg);
@@ -159,9 +210,21 @@
         padding: 8px 12px;
         cursor: pointer;
       }
-      button:hover { border-color: var(--accent); }
-      button.primary { background: var(--accent); color: #0a0c0f; border-color: var(--accent); font-weight: 600; }
-      .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        color: #0a0c0f;
+        border-color: var(--accent);
+        font-weight: 600;
+      }
+      .btnrow {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
 
       .meters {
         display: grid;
@@ -170,15 +233,50 @@
         font-size: 12px;
         font-variant-numeric: tabular-nums;
       }
-      .meters .m { display: flex; justify-content: space-between; }
-      .meters .m span:first-child { color: var(--muted); }
+      .meters .m {
+        display: flex;
+        justify-content: space-between;
+      }
+      .meters .m span:first-child {
+        color: var(--muted);
+      }
 
-      canvas { display: block; width: 100%; height: 90px; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); }
-      .legend { display: flex; gap: 16px; font-size: 11px; color: var(--muted); margin-top: 6px; }
-      .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 90px;
+        border-radius: 10px;
+        background: #0a0c0f;
+        border: 1px solid var(--line);
+      }
+      .legend {
+        display: flex;
+        gap: 16px;
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .legend i {
+        display: inline-block;
+        width: 10px;
+        height: 3px;
+        border-radius: 2px;
+        vertical-align: middle;
+        margin-right: 5px;
+      }
 
-      details summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
-      code { background: #0a0c0f; padding: 1px 5px; border-radius: 5px; font-size: 11px; }
+      details summary {
+        cursor: pointer;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      code {
+        background: #0a0c0f;
+        padding: 1px 5px;
+        border-radius: 5px;
+        font-size: 11px;
+      }
       .pre {
         white-space: pre;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -190,18 +288,22 @@
         overflow-x: auto;
         color: var(--good);
       }
-      .status { font-size: 12px; color: var(--warn); margin-left: 8px; }
+      .status {
+        font-size: 12px;
+        color: var(--warn);
+        margin-left: 8px;
+      }
     </style>
   </head>
   <body>
     <header>
       <h1>Waveform ballistics playground</h1>
       <p>
-        Live-tune the dictation HUD waveform. The <b>top row</b> runs your slider
-        values; the <b>bottom row</b> runs the shipping defaults on the exact same
-        audio, so you can A/B the snap-back directly. Click <b>Start mic</b>, or use
-        <b>Spike</b> / <b>Burst loop</b> to fire a loud→silent transient and watch the
-        tail collapse.
+        Live-tune the dictation HUD waveform. The <b>top row</b> runs your
+        slider values; the <b>bottom row</b> runs the shipping defaults on the
+        exact same audio, so you can A/B the snap-back directly. Click
+        <b>Start mic</b>, or use <b>Spike</b> / <b>Burst loop</b> to fire a
+        loud→silent transient and watch the tail collapse.
       </p>
     </header>
 
@@ -244,7 +346,10 @@
               <option value="across">left → right sweep</option>
               <option value="center">center → out ripple</option>
             </select>
-            <div class="hint">Where the speaking wave enters the row. "center → out" can still read jumpy in the middle; "left → right" sweeps cleanly across.</div>
+            <div class="hint">
+              Where the speaking wave enters the row. "center → out" can still
+              read jumpy in the middle; "left → right" sweeps cleanly across.
+            </div>
           </div>
         </div>
 
@@ -259,11 +364,13 @@
         </div>
 
         <div class="group" id="shapingHud">
-          <h3>Shaping — HUD <span class="tag">hud.ts · renderAudioLevel()</span></h3>
+          <h3>
+            Shaping — HUD <span class="tag">hud.ts · renderAudioLevel()</span>
+          </h3>
           <div id="shapeHud"></div>
         </div>
 
-        <div class="group" id="shapingRec" style="display:none">
+        <div class="group" id="shapingRec" style="display: none">
           <h3>Shaping — recorder <span class="tag">visualPeakScale()</span></h3>
           <div id="shapeRec"></div>
         </div>
@@ -302,15 +409,28 @@
           <p class="sub">last ~3s</p>
           <canvas id="scope" width="900" height="90"></canvas>
           <div class="legend">
-            <span><i style="background:#6ea8fe"></i>shaped level (in)</span>
-            <span><i style="background:#e7ebf0"></i>your displayed (mid bar)</span>
-            <span><i style="background:#7ee0a8"></i>default displayed (mid bar)</span>
+            <span><i style="background: #6ea8fe"></i>shaped level (in)</span>
+            <span
+              ><i style="background: #e7ebf0"></i>your displayed (mid bar)</span
+            >
+            <span
+              ><i style="background: #7ee0a8"></i>default displayed (mid
+              bar)</span
+            >
           </div>
-          <div class="meters" style="margin-top:14px">
-            <div class="m"><span>raw rms</span><span id="mRms">0.000</span></div>
-            <div class="m"><span>raw peak</span><span id="mPeak">0.000</span></div>
-            <div class="m"><span>shaped (yours)</span><span id="mShaped">0.000</span></div>
-            <div class="m"><span>target mid</span><span id="mTarget">0.000</span></div>
+          <div class="meters" style="margin-top: 14px">
+            <div class="m">
+              <span>raw rms</span><span id="mRms">0.000</span>
+            </div>
+            <div class="m">
+              <span>raw peak</span><span id="mPeak">0.000</span>
+            </div>
+            <div class="m">
+              <span>shaped (yours)</span><span id="mShaped">0.000</span>
+            </div>
+            <div class="m">
+              <span>target mid</span><span id="mTarget">0.000</span>
+            </div>
           </div>
         </div>
       </main>
@@ -376,6 +496,7 @@
         // generator below makes a clean symmetric "lens" from count + emphasis.
         BAR_COUNT: 5,
         CENTER_EMPHASIS: 0.3,
+        EDGE_WEIGHT: 0.55,
         // whisper floor — minimum shown when ANY voice is detected. Prod = 0.
         WHISPER_FLOOR: 0,
         // idle "carrier" wave — a slow sine travelling across the bars at a base
@@ -409,9 +530,10 @@
       // (prod), so every one of these shows as "← changed".
       const TUNED = {
         BAR_COUNT: 7,
-        CENTER_EMPHASIS: 0.28,
+        CENTER_EMPHASIS: 0.24,
+        EDGE_WEIGHT: 0.38,
         WHISPER_FLOOR: 0.2,
-        LIVE_LEVEL_MIX: 0.35,
+        LIVE_LEVEL_MIX: 0.3,
         CSS_MS: 24,
         // compress speaking so a whisper fills the pill nearly as much as a yell
         AUDIO_VISUAL_GAIN: 28,
@@ -424,9 +546,9 @@
         IDLE_SPEED: 0.45,
         IDLE_SPREAD: 0.9,
         // speaking wave spreads across the row instead of spiking in the middle
-        PROP_DELAY: 0.7,
+        PROP_DELAY: 0.85,
         PROP_MODE: "across",
-        SPATIAL: 0.3,
+        SPATIAL: 0.4,
       };
 
       // live params (meter A) start from defaults, overlaid with the tuned set
@@ -436,9 +558,11 @@
       // sit low, the center rides high (stays elevated while speaking), and the
       // [1,0,1,0,...] history offsets give the traveling shimmer.
       function genWeights(count, emphasis) {
-        const w = [], off = [];
+        const w = [],
+          off = [];
         const mid = (count - 1) / 2;
-        const edge = 0.55, center = 0.6 + emphasis;
+        const edge = P.EDGE_WEIGHT,
+          center = 0.6 + emphasis;
         for (let i = 0; i < count; i++) {
           const d = mid === 0 ? 0 : Math.abs(i - mid) / mid; // 0 center .. 1 edge
           const env = 0.5 * (1 + Math.cos(d * Math.PI)); // raised cosine 1 .. 0
@@ -464,10 +588,16 @@
       // ---- shaping (mirrors the two real surfaces) ----
       function shapeHud(rawLevel, p) {
         return rawLevel <= p.AUDIO_NOISE_GATE
-          ? clamp(Math.sqrt(rawLevel * p.AMBIENT_VISUAL_GAIN), 0, p.AMBIENT_MAX_LEVEL)
+          ? clamp(
+              Math.sqrt(rawLevel * p.AMBIENT_VISUAL_GAIN),
+              0,
+              p.AMBIENT_MAX_LEVEL,
+            )
           : clamp(
               p.AMBIENT_MAX_LEVEL +
-                Math.sqrt((rawLevel - p.AUDIO_NOISE_GATE) * p.AUDIO_VISUAL_GAIN),
+                Math.sqrt(
+                  (rawLevel - p.AUDIO_NOISE_GATE) * p.AUDIO_VISUAL_GAIN,
+                ),
               0,
               1,
             );
@@ -596,8 +726,10 @@
 
       function applyTransition() {
         // meter A uses the slider's CSS_MS; meter B uses the shipping 40ms.
-        for (const f of fillsA) f.style.transition = `height ${P.CSS_MS}ms linear`;
-        for (const f of fillsB) f.style.transition = `height ${DEFAULTS.CSS_MS}ms linear`;
+        for (const f of fillsA)
+          f.style.transition = `height ${P.CSS_MS}ms linear`;
+        for (const f of fillsB)
+          f.style.transition = `height ${DEFAULTS.CSS_MS}ms linear`;
       }
       // Paint the bars, layering the audio-driven displayed level with the
       // always-on travelling carrier wave. The wave recedes as a bar gets loud
@@ -610,7 +742,8 @@
             const ripple =
               p.IDLE_AMP *
               0.5 *
-              (1 + Math.sin(2 * Math.PI * p.IDLE_SPEED * t - i * p.IDLE_SPREAD));
+              (1 +
+                Math.sin(2 * Math.PI * p.IDLE_SPEED * t - i * p.IDLE_SPREAD));
             lvl = clamp(lvl + ripple * (1 - lvl), 0, 1);
           }
           fills[i].style.height = (3 + lvl * surface.growth).toFixed(2) + "px";
@@ -652,9 +785,15 @@
         }
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
           });
-          audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+          audioCtx =
+            audioCtx ||
+            new (window.AudioContext || window.webkitAudioContext)();
           await audioCtx.resume();
           const src = audioCtx.createMediaStreamSource(stream);
           analyser = audioCtx.createAnalyser();
@@ -665,7 +804,8 @@
           document.getElementById("mic").textContent = "Stop mic";
           document.getElementById("status").textContent = "mic live";
         } catch (e) {
-          document.getElementById("status").textContent = "mic blocked: " + e.message;
+          document.getElementById("status").textContent =
+            "mic blocked: " + e.message;
         }
       }
 
@@ -764,13 +904,17 @@
         // scope + readouts (downsample to ~ every other frame)
         if (++scopeAcc % 2 === 0) {
           const mid = (m) => m.displayed[Math.floor(m.count / 2)];
-          histShaped.push(lastShaped); histShaped.shift();
-          histA.push(mid(meterA)); histA.shift();
-          histB.push(mid(meterB)); histB.shift();
+          histShaped.push(lastShaped);
+          histShaped.shift();
+          histA.push(mid(meterA));
+          histA.shift();
+          histB.push(mid(meterB));
+          histB.shift();
           drawScope();
           document.getElementById("mRms").textContent = lastRms.toFixed(3);
           document.getElementById("mPeak").textContent = lastPeak.toFixed(3);
-          document.getElementById("mShaped").textContent = lastShaped.toFixed(3);
+          document.getElementById("mShaped").textContent =
+            lastShaped.toFixed(3);
           document.getElementById("mTarget").textContent =
             meterA.targets[Math.floor(meterA.count / 2)].toFixed(3);
         }
@@ -783,41 +927,210 @@
       // ===================================================================
       const SLIDERS = {
         wave: [
-          ["IDLE_AMP", "Idle amplitude", 0, 0.3, 0.01, "Height of the always-on carrier wave at the baseline — the 'shimmer across' you want. Recedes as bars get loud. 0 = off (shipping)."],
-          ["IDLE_SPEED", "Idle speed", 0.05, 2, 0.05, "How fast the wave travels across the bars (cycles/sec). ~0.4 reads as a calm breathing time-signifier; faster feels busier."],
-          ["IDLE_SPREAD", "Idle spread", 0, 2, 0.05, "Phase shift per bar = wavelength across the row. Higher = a tight wave clearly travelling left→right; 0 = all bars pulse in unison (no travel)."],
+          [
+            "IDLE_AMP",
+            "Idle amplitude",
+            0,
+            0.3,
+            0.01,
+            "Height of the always-on carrier wave at the baseline — the 'shimmer across' you want. Recedes as bars get loud. 0 = off (shipping).",
+          ],
+          [
+            "IDLE_SPEED",
+            "Idle speed",
+            0.05,
+            2,
+            0.05,
+            "How fast the wave travels across the bars (cycles/sec). ~0.4 reads as a calm breathing time-signifier; faster feels busier.",
+          ],
+          [
+            "IDLE_SPREAD",
+            "Idle spread",
+            0,
+            2,
+            0.05,
+            "Phase shift per bar = wavelength across the row. Higher = a tight wave clearly travelling left→right; 0 = all bars pulse in unison (no travel).",
+          ],
         ],
         spread: [
-          ["PROP_DELAY", "Propagation", 0, 1.5, 0.05, "How much the speaking envelope is delayed per bar of distance — i.e. how fast it travels across. 0 = all bars react together (the 'jumpy in the middle' you have now); higher = a smooth wave that spreads across the row."],
-          ["SPATIAL", "Spatial smoothing", 0, 1, 0.05, "Blend each bar toward its neighbours so the wave is smooth across the row instead of spiking on individual bars."],
+          [
+            "PROP_DELAY",
+            "Propagation",
+            0,
+            1.5,
+            0.05,
+            "How much the speaking envelope is delayed per bar of distance — i.e. how fast it travels across. 0 = all bars react together (the 'jumpy in the middle' you have now); higher = a smooth wave that spreads across the row.",
+          ],
+          [
+            "SPATIAL",
+            "Spatial smoothing",
+            0,
+            1,
+            0.05,
+            "Blend each bar toward its neighbours so the wave is smooth across the row instead of spiking on individual bars.",
+          ],
         ],
         bars: [
-          ["BAR_COUNT", "Bar count", 3, 13, 1, "How many bars. Prod HUD = 5, recorder = 7. The pill you screenshotted reads ~10–11. Weights auto-generate as a symmetric lens."],
-          ["CENTER_EMPHASIS", "Center emphasis", 0, 0.4, 0.02, "How much taller the middle bars sit vs the edges — the lens/envelope shape. The center stays elevated while you speak."],
-          ["WHISPER_FLOOR", "Whisper floor", 0, 0.4, 0.01, "Minimum level shown whenever ANY voice is detected, so whispers still light the bars. Prod = 0. Try 0.1–0.18."],
+          [
+            "BAR_COUNT",
+            "Bar count",
+            3,
+            13,
+            1,
+            "How many bars. Prod HUD = 5, recorder = 7. The pill you screenshotted reads ~10–11. Weights auto-generate as a symmetric lens.",
+          ],
+          [
+            "CENTER_EMPHASIS",
+            "Center emphasis",
+            0,
+            0.4,
+            0.02,
+            "How much taller the middle bars sit vs the edges — the lens/envelope shape. The center stays elevated while you speak.",
+          ],
+          [
+            "EDGE_WEIGHT",
+            "Edge weight",
+            0.2,
+            0.65,
+            0.005,
+            "How tall the first/last bars are at full signal. Lower = more tapered ends; higher = a flatter, blockier row.",
+          ],
+          [
+            "WHISPER_FLOOR",
+            "Whisper floor",
+            0,
+            0.4,
+            0.01,
+            "Minimum level shown whenever ANY voice is detected, so whispers still light the bars. Prod = 0. Try 0.1–0.18.",
+          ],
         ],
         ballistics: [
-          ["ATTACK_ALPHA", "Attack", 0, 1, 0.01, "Rise speed per frame toward a louder target. 1 = instant snap up."],
-          ["RELEASE_ALPHA", "Release", 0, 1, 0.01, "Fall speed per frame for normal (above-silence) drops. Higher = snappier tail. The main snap-back knob."],
-          ["SILENCE_RELEASE_ALPHA", "Silence release", 0, 1, 0.01, "Fall speed once the target is below the silence threshold."],
-          ["SILENCE_TARGET", "Silence threshold", 0, 0.4, 0.005, "Target at/below this uses the fast 'silence release'. Raise it so the snap-back kicks in while still quiet, not only at dead silence."],
-          ["IDLE_SNAP_DELTA", "Idle snap", 0, 0.03, 0.001, "Dead zone — bars snap to 0 within this distance."],
-          ["LIVE_LEVEL_MIX", "Live/history mix", 0, 1, 0.05, "Blend of current sample vs a slightly older one. Lower = more smear/lag, higher = more reactive."],
+          [
+            "ATTACK_ALPHA",
+            "Attack",
+            0,
+            1,
+            0.01,
+            "Rise speed per frame toward a louder target. 1 = instant snap up.",
+          ],
+          [
+            "RELEASE_ALPHA",
+            "Release",
+            0,
+            1,
+            0.01,
+            "Fall speed per frame for normal (above-silence) drops. Higher = snappier tail. The main snap-back knob.",
+          ],
+          [
+            "SILENCE_RELEASE_ALPHA",
+            "Silence release",
+            0,
+            1,
+            0.01,
+            "Fall speed once the target is below the silence threshold.",
+          ],
+          [
+            "SILENCE_TARGET",
+            "Silence threshold",
+            0,
+            0.4,
+            0.005,
+            "Target at/below this uses the fast 'silence release'. Raise it so the snap-back kicks in while still quiet, not only at dead silence.",
+          ],
+          [
+            "IDLE_SNAP_DELTA",
+            "Idle snap",
+            0,
+            0.03,
+            0.001,
+            "Dead zone — bars snap to 0 within this distance.",
+          ],
+          [
+            "LIVE_LEVEL_MIX",
+            "Live/history mix",
+            0,
+            1,
+            0.05,
+            "Blend of current sample vs a slightly older one. Lower = more smear/lag, higher = more reactive.",
+          ],
         ],
         render: [
-          ["PUSH_HZ", "Push rate (Hz)", 10, 60, 1, "How often a new level is fed in. The app runs ~25Hz; rAF still paints at 60. Lower rates feel steppier."],
-          ["CSS_MS", "CSS transition (ms)", 0, 80, 1, "The SECOND smoothing layer — a linear height tween on top of the ballistics. 0 = let ballistics alone drive it (crispest). This is the prime suspect for mushy snap-back."],
+          [
+            "PUSH_HZ",
+            "Push rate (Hz)",
+            10,
+            60,
+            1,
+            "How often a new level is fed in. The app runs ~25Hz; rAF still paints at 60. Lower rates feel steppier.",
+          ],
+          [
+            "CSS_MS",
+            "CSS transition (ms)",
+            0,
+            80,
+            1,
+            "The SECOND smoothing layer — a linear height tween on top of the ballistics. 0 = let ballistics alone drive it (crispest). This is the prime suspect for mushy snap-back.",
+          ],
         ],
         shapeHud: [
-          ["AUDIO_NOISE_GATE", "Noise gate", 0, 0.05, 0.001, "Below this, input is treated as ambient (quiet zone)."],
-          ["AUDIO_VISUAL_GAIN", "Voice gain", 1, 40, 0.5, "Amplification of speech above the gate."],
-          ["AMBIENT_VISUAL_GAIN", "Ambient gain", 1, 20, 0.5, "Amplification of the quiet/ambient zone."],
-          ["AMBIENT_MAX_LEVEL", "Ambient ceiling", 0, 0.4, 0.01, "Cap on how tall ambient noise can drive the bars."],
+          [
+            "AUDIO_NOISE_GATE",
+            "Noise gate",
+            0,
+            0.05,
+            0.001,
+            "Below this, input is treated as ambient (quiet zone).",
+          ],
+          [
+            "AUDIO_VISUAL_GAIN",
+            "Voice gain",
+            1,
+            40,
+            0.5,
+            "Amplification of speech above the gate.",
+          ],
+          [
+            "AMBIENT_VISUAL_GAIN",
+            "Ambient gain",
+            1,
+            20,
+            0.5,
+            "Amplification of the quiet/ambient zone.",
+          ],
+          [
+            "AMBIENT_MAX_LEVEL",
+            "Ambient ceiling",
+            0,
+            0.4,
+            0.01,
+            "Cap on how tall ambient noise can drive the bars.",
+          ],
         ],
         shapeRec: [
-          ["NOISE_FLOOR", "Noise floor", 0, 0.05, 0.001, "Soft expander gate — at/below this reads as silence."],
-          ["LOW_LIFT", "Low lift", 0.2, 1, 0.02, "Sub-1 power lifting whispers. Lower lifts quiet input more."],
-          ["KNEE", "Knee", 1, 16, 0.5, "Soft-knee steepness for loud speech approaching the ceiling."],
+          [
+            "NOISE_FLOOR",
+            "Noise floor",
+            0,
+            0.05,
+            0.001,
+            "Soft expander gate — at/below this reads as silence.",
+          ],
+          [
+            "LOW_LIFT",
+            "Low lift",
+            0.2,
+            1,
+            0.02,
+            "Sub-1 power lifting whispers. Lower lifts quiet input more.",
+          ],
+          [
+            "KNEE",
+            "Knee",
+            1,
+            16,
+            0.5,
+            "Soft-knee steepness for loud speech approaching the ceiling.",
+          ],
         ],
       };
 
@@ -838,7 +1151,13 @@
           P[key] = parseFloat(sl.value);
           val.textContent = sl.value;
           if (key === "CSS_MS") applyTransition();
-          if (key === "BAR_COUNT" || key === "CENTER_EMPHASIS") rebuildAGeometry();
+          if (
+            key === "BAR_COUNT" ||
+            key === "CENTER_EMPHASIS" ||
+            key === "EDGE_WEIGHT"
+          ) {
+            rebuildAGeometry();
+          }
           updateExport();
         });
         return wrap;
@@ -873,7 +1192,10 @@
           })
           .join("\n");
         document.getElementById("export").textContent =
-          lines + "\n\nweights (yours)        [" + makeSurfaceA().weights.join(", ") + "]";
+          lines +
+          "\n\nweights (yours)        [" +
+          makeSurfaceA().weights.join(", ") +
+          "]";
       }
       updateExport();
 
