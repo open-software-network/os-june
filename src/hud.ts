@@ -69,10 +69,10 @@ const SHIMMER_FRAME_MS = 33;
 // heavily damped) ambient regime — real speech still clears it into the voice
 // path + whisper floor, but room tone no longer crosses over and lights bars.
 const AUDIO_NOISE_GATE = 0.01;
-// Raised 16→24 (2026-06-04) so the sqrt curve saturates at a quieter input
-// — a whisper now fills the bars nearly as much as a shout (Wispr-Flow-style
-// compression, where bar height reads "voice present" more than "how loud").
-const AUDIO_VISUAL_GAIN = 24;
+// Lower than the first Wispr-style pass so normal speech keeps enough headroom
+// for articulation. Whisper visibility comes from HUD_WHISPER_FLOOR below;
+// the gain should not turn steady speech into a flat, full-height wall.
+const AUDIO_VISUAL_GAIN = 8;
 // Ambient floor damped hard (gain 4→3, ceiling 0.11→0.03) so a quiet room rests
 // the bars near zero — the carrier wave, not room tone, is the idle "we're
 // listening" signal. The old 0.11 ceiling pegged the baseline and buried the
@@ -84,7 +84,7 @@ const AMBIENT_MAX_LEVEL = 0.03;
 // Whisper floor: once voice clears the gate, lift it off the baseline so even
 // quiet speech reads tall. Voice-gated (see renderAudioLevel) — ambient/silence
 // stays below the gate and still collapses the bars to zero.
-const HUD_WHISPER_FLOOR = 0.18;
+const HUD_WHISPER_FLOOR = 0.24;
 // The always-on idle carrier wave lives in the shared meter (IDLE_CARRIER_*) so
 // the HUD and recorder shimmer identically.
 
