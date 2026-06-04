@@ -13,7 +13,7 @@
 // pixel geometry and raw-audio shaping differ. The deeper edge taper keeps loud
 // speech from turning the whole row into a blunt block while the center stays
 // elevated enough for whispers to read.
-export const LENS_BAR_WEIGHTS = [0.38, 0.495, 0.725, 0.84, 0.725, 0.495, 0.38];
+export const LENS_BAR_WEIGHTS = [0.28, 0.415, 0.685, 0.82, 0.685, 0.415, 0.28];
 export const LENS_HISTORY_OFFSETS = [1, 0, 1, 0, 1, 0, 1];
 
 export const HUD_BAR_COUNT = 7;
