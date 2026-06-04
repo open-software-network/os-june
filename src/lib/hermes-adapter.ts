@@ -50,11 +50,13 @@ export function normalizeHermesSessionMessagesResponse(
 }
 
 export function sessionTimestamp(session: HermesSessionInfo) {
-  return (
+  return timestampString(
     session.last_active ??
-    session.started_at ??
-    session.ended_at ??
-    new Date(0).toISOString()
+      session.started_at ??
+      session.ended_at ??
+      (session as { lastActive?: unknown }).lastActive ??
+      (session as { startedAt?: unknown }).startedAt ??
+      (session as { endedAt?: unknown }).endedAt,
   );
 }
 
@@ -99,4 +101,15 @@ function isHermesSessionMessage(value: unknown): value is HermesSessionMessage {
       message.role === "assistant" ||
       message.role === "tool")
   );
+}
+
+function timestampString(value: unknown) {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  return new Date(0).toISOString();
 }

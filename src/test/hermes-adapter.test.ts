@@ -63,6 +63,18 @@ describe("Hermes adapter", () => {
         started_at: "2026-06-04T11:00:00Z",
       }),
     ).toBe("2026-06-04T11:00:00Z");
+    expect(
+      sessionTimestamp({
+        id: "session-2",
+        lastActive: "2026-06-04T12:00:00Z",
+      }),
+    ).toBe("2026-06-04T12:00:00Z");
+    expect(
+      sessionTimestamp({
+        id: "session-3",
+        last_active: 0 as unknown as string,
+      }),
+    ).toBe("1970-01-01T00:00:00.000Z");
     expect(titleFromPrompt("  Write   a note  ")).toBe("Write a note");
     expect(titleFromPrompt("")).toBe("Untitled session");
   });

@@ -415,12 +415,15 @@ export type HermesSessionInfo = {
   model?: string;
   title?: string;
   started_at?: string;
+  startedAt?: string;
   ended_at?: string | null;
+  endedAt?: string | null;
   end_reason?: string | null;
   message_count?: number;
   tool_call_count?: number;
   parent_session_id?: string | null;
   last_active?: string;
+  lastActive?: string;
   preview?: string;
   has_system_prompt?: boolean;
   has_model_config?: boolean;
