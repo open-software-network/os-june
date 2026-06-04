@@ -264,8 +264,19 @@ export function AgentWorkspace() {
         }));
         setPendingHermesMessages((current) => ({
           ...current,
-          [selectedHermesSessionId]: [],
+          [selectedHermesSessionId]: retainUnpersistedPendingMessages(
+            current[selectedHermesSessionId] ?? [],
+            messages,
+          ),
         }));
+        if (sessionHasAssistantAfterLatestUser(messages)) {
+          setSessionWorking(selectedHermesSessionId, false);
+          liveEventsRef.current = {
+            ...liveEventsRef.current,
+            [selectedHermesSessionId]: [],
+          };
+          setLiveEvents(liveEventsRef.current);
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(messageFromError(err));
@@ -325,6 +336,20 @@ export function AgentWorkspace() {
     }, 1000);
     return () => window.clearInterval(interval);
   }, [selectedTask?.id, selectedTask?.status, upsertTask]);
+
+  useEffect(() => {
+    if (
+      !bridge.running ||
+      !selectedHermesSessionId ||
+      !workingSessionIds.has(selectedHermesSessionId)
+    )
+      return;
+    const sessionId = selectedHermesSessionId;
+    const interval = window.setInterval(() => {
+      void refreshHermesSession(sessionId);
+    }, 2500);
+    return () => window.clearInterval(interval);
+  }, [bridge.running, selectedHermesSessionId, workingSessionIds]);
 
   useEffect(() => {
     listRef.current?.scrollTo({
@@ -442,15 +467,12 @@ export function AgentWorkspace() {
         [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
-      if (event.type === "message.complete") {
+      if (isTerminalHermesEvent(event.type)) {
         unlisten();
         setSessionWorking(storedSessionId, false);
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
         }, 300);
-      } else if (event.type === "error") {
-        unlisten();
-        setSessionWorking(storedSessionId, false);
       }
     });
     try {
@@ -525,7 +547,7 @@ export function AgentWorkspace() {
           [task.id]: nextTaskEvents,
         };
         setLiveEvents(liveEventsRef.current);
-        if (event.type === "message.complete") {
+        if (isTerminalHermesEvent(event.type)) {
           unlisten();
           setTaskWorking(task.id, false);
           const completedText =
@@ -533,8 +555,6 @@ export function AgentWorkspace() {
           if (completedText) {
             void persistHermesAssistantMessage(task.id, completedText);
           }
-        } else if (event.type === "error") {
-          setTaskWorking(task.id, false);
         }
       });
       await gateway.request("prompt.submit", {
@@ -568,9 +588,18 @@ export function AgentWorkspace() {
         ...current,
         [sessionId]: messages,
       }));
-      setPendingHermesMessages((current) => ({ ...current, [sessionId]: [] }));
-      liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
-      setLiveEvents(liveEventsRef.current);
+      setPendingHermesMessages((current) => ({
+        ...current,
+        [sessionId]: retainUnpersistedPendingMessages(
+          current[sessionId] ?? [],
+          messages,
+        ),
+      }));
+      if (sessionHasAssistantAfterLatestUser(messages)) {
+        setSessionWorking(sessionId, false);
+        liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
+        setLiveEvents(liveEventsRef.current);
+      }
       await loadHermesSessions();
     } catch (err) {
       setError(messageFromError(err));
@@ -2394,6 +2423,95 @@ function filterFilesystemEntries(
 
 function includesQuery(value: unknown, query: string) {
   return safeText(value).toLowerCase().includes(query);
+}
+
+function retainUnpersistedPendingMessages(
+  pending: HermesSessionMessage[],
+  persisted: HermesSessionMessage[],
+) {
+  return pending.filter(
+    (pendingMessage) =>
+      !persisted.some(
+        (message) =>
+          message.role === pendingMessage.role &&
+          sameVisibleMessageText(
+            visibleHermesMessageText(message),
+            visibleHermesMessageText(pendingMessage),
+          ),
+      ),
+  );
+}
+
+function sessionHasAssistantAfterLatestUser(messages: HermesSessionMessage[]) {
+  let latestUserIndex = -1;
+  let latestAssistantIndex = -1;
+  messages.forEach((message, index) => {
+    if (message.role === "user") {
+      latestUserIndex = index;
+    } else if (message.role === "assistant") {
+      latestAssistantIndex = index;
+    }
+  });
+  if (latestAssistantIndex < 0) return false;
+  if (latestUserIndex < 0) return true;
+  return latestAssistantIndex > latestUserIndex;
+}
+
+function isTerminalHermesEvent(type: string) {
+  const normalized = type.toLowerCase();
+  return (
+    normalized === "error" ||
+    normalized === "message.complete" ||
+    normalized === "message.completed" ||
+    normalized === "turn.complete" ||
+    normalized === "turn.completed" ||
+    normalized === "session.complete" ||
+    normalized === "session.completed" ||
+    normalized === "background.complete" ||
+    normalized === "background.completed"
+  );
+}
+
+function visibleHermesMessageText(message: HermesSessionMessage) {
+  const text =
+    textFromHermesValue(message.content) ??
+    textFromHermesValue(message.text) ??
+    "";
+  return stripHermesVisibleContext(text);
+}
+
+function textFromHermesValue(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") return value.trim() ? value.trim() : undefined;
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  if (Array.isArray(value)) {
+    const text = value.map((item) => textFromHermesValue(item) ?? "").join("");
+    return text.trim() ? text.trim() : undefined;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["text", "content", "message", "output_text"]) {
+      const text = textFromHermesValue(record[key]);
+      if (text) return text;
+    }
+  }
+  return undefined;
+}
+
+function sameVisibleMessageText(left: string, right: string) {
+  return left.replace(/\s+/g, " ").trim() === right.replace(/\s+/g, " ").trim();
+}
+
+function stripHermesVisibleContext(value: string) {
+  const withoutWarnings = value.replace(
+    /\n*--- Context Warnings ---[\s\S]*$/m,
+    "",
+  );
+  const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
+  return (
+    marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings
+  ).trim();
 }
 
 function compactPath(path: string) {
