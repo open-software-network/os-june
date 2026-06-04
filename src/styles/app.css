@@ -2333,7 +2333,7 @@ input:focus-visible,
   border-radius: 999px;
   background: var(--foreground);
   transform: translateY(50%);
-  transition: height 24ms linear;
+  transition: height 18ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {

@@ -505,6 +505,7 @@
         IDLE_AMP: 0, // base height of the wave (0 = off / shipping)
         IDLE_SPEED: 0.5, // cycles per second
         IDLE_SPREAD: 0.9, // radians of phase per bar = the "across" wavelength
+        IDLE_DUCKING: 1, // 1 = carrier fully recedes at high levels
         // speaking-wave propagation: each bar reads the audio envelope delayed by
         // its distance × PROP_DELAY (pushes), so a loud moment travels across the
         // row instead of all centre bars spiking at once. 0 = original (no travel).
@@ -519,13 +520,13 @@
       // Andrew's tuned set — now mirrors what shipped to the real HUD
       // (src/hud.ts, src/lib/audio-meter.ts) so the top A/B row matches the app:
       //   • Whisper≈yell compression: AUDIO_VISUAL_GAIN 16→28, WHISPER_FLOOR 0→0.2.
-      //   • Idle carrier "shimmer across" at IDLE_AMP 0.05.
+      //   • Idle carrier "shimmer across" at IDLE_AMP 0.07.
       //   • Ambient floor damped hard (AMBIENT_VISUAL_GAIN 4→3, AMBIENT_MAX_LEVEL
       //     0.11→0.03, AUDIO_NOISE_GATE 0.008→0.01) so a quiet room rests the bars
       //     near zero and the carrier reads against a flat floor instead of being
       //     buried in ambient jitter — the fix for "shimmer wasn't clear in-app",
       //     where the mic is always live (the silent playground idle hid this).
-      // CSS_MS sharpened 40→24 so the low-mix shimmer reads crisp; whisper floor
+      // CSS_MS sharpened 40→18 so the low-mix shimmer reads crisp; whisper floor
       // is voice-gated (see pushTick). The bottom A/B row still runs DEFAULTS
       // (prod), so every one of these shows as "← changed".
       const TUNED = {
@@ -533,8 +534,8 @@
         CENTER_EMPHASIS: 0.22,
         EDGE_WEIGHT: 0.28,
         WHISPER_FLOOR: 0.24,
-        LIVE_LEVEL_MIX: 0.3,
-        CSS_MS: 24,
+        LIVE_LEVEL_MIX: 0.25,
+        CSS_MS: 18,
         // compress speaking so a whisper fills the pill nearly as much as a yell
         AUDIO_VISUAL_GAIN: 8,
         // damp the ambient floor so the idle carrier reads against a flat baseline
@@ -542,13 +543,17 @@
         AMBIENT_VISUAL_GAIN: 3,
         AMBIENT_MAX_LEVEL: 0.03,
         // always-on travelling carrier wave (the "shimmer across" at base level)
-        IDLE_AMP: 0.05,
+        IDLE_AMP: 0.07,
         IDLE_SPEED: 0.45,
         IDLE_SPREAD: 0.9,
+        IDLE_DUCKING: 0.72,
         // speaking wave spreads across the row instead of spiking in the middle
-        PROP_DELAY: 0.85,
+        PROP_DELAY: 1,
         PROP_MODE: "across",
-        SPATIAL: 0.4,
+        SPATIAL: 0.32,
+        RELEASE_ALPHA: 0.85,
+        SILENCE_RELEASE_ALPHA: 0.96,
+        SILENCE_TARGET: 0.12,
       };
 
       // live params (meter A) start from defaults, overlaid with the tuned set
@@ -732,8 +737,9 @@
           f.style.transition = `height ${DEFAULTS.CSS_MS}ms linear`;
       }
       // Paint the bars, layering the audio-driven displayed level with the
-      // always-on travelling carrier wave. The wave recedes as a bar gets loud
-      // (× (1 - lvl)) so it reads as a baseline shimmer, not noise on top.
+      // always-on travelling carrier wave. The wave recedes as a bar gets loud,
+      // but tuned rows keep a little of it alive under speech so the waveform
+      // continues moving smoothly while talking.
       function paint(fills, meter, p, now) {
         const t = now / 1000;
         for (let i = 0; i < meter.count; i++) {
@@ -744,7 +750,7 @@
               0.5 *
               (1 +
                 Math.sin(2 * Math.PI * p.IDLE_SPEED * t - i * p.IDLE_SPREAD));
-            lvl = clamp(lvl + ripple * (1 - lvl), 0, 1);
+            lvl = clamp(lvl + ripple * (1 - lvl * p.IDLE_DUCKING), 0, 1);
           }
           fills[i].style.height = (3 + lvl * surface.growth).toFixed(2) + "px";
         }
@@ -950,6 +956,14 @@
             2,
             0.05,
             "Phase shift per bar = wavelength across the row. Higher = a tight wave clearly travelling left→right; 0 = all bars pulse in unison (no travel).",
+          ],
+          [
+            "IDLE_DUCKING",
+            "Speech ducking",
+            0,
+            1,
+            0.02,
+            "How much the carrier disappears while speaking. 1 = fully ducked at high levels; lower keeps shimmer moving across under speech.",
           ],
         ],
         spread: [

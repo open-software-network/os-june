@@ -164,9 +164,9 @@ body {
   border-radius: 999px;
   background: var(--hud-bar);
   transform: translateY(50%);
-  /* Sharpened 40→24ms (2026-06-04) so the low-mix shimmer reads crisp rather
+  /* Sharpened 40→18ms (2026-06-04) so the low-mix shimmer reads crisp rather
    * than smeared on top of the ballistics. */
-  transition: height 24ms linear;
+  transition: height 18ms linear;
 }
 
 .hud-braille,

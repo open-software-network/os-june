@@ -54,19 +54,22 @@ export type BarMeterOptions = {
 // smoothed between neighbours, instead of center bars spiking. Pass to
 // createBarMeter so both surfaces move identically.
 export const LIVE_WAVE_OPTIONS: BarMeterOptions = {
-  liveLevelMix: 0.3,
-  propDelay: 0.85,
+  liveLevelMix: 0.25,
+  propDelay: 1,
   propMode: "across",
-  spatial: 0.4,
+  spatial: 0.32,
 };
 
 // Idle carrier wave — a slow sine travelling across the bars at a low baseline
 // so a live listening/recording surface shimmers as an "active" / time-passing
 // signifier. Layered UNDER the audio response (recedes as a bar gets loud).
 // Shared so the HUD and recorder shimmer identically.
-export const IDLE_CARRIER_AMP = 0.05;
+export const IDLE_CARRIER_AMP = 0.07;
 export const IDLE_CARRIER_SPEED = 0.45; // cycles per second
 export const IDLE_CARRIER_SPREAD = 0.9; // radians of phase per bar
+// How much the carrier recedes under speech. 1 = fully disappears at high
+// levels; lower values keep a subtle travelling shimmer visible while talking.
+export const IDLE_CARRIER_DUCKING = 0.72;
 
 // Blend the carrier ripple into a displayed `level` for bar `index` at `timeMs`
 // (a monotonic clock, e.g. an rAF timestamp). Returns `level` unchanged when the
@@ -81,19 +84,19 @@ export function withIdleCarrier(level: number, index: number, timeMs: number) {
       Math.sin(
         2 * Math.PI * IDLE_CARRIER_SPEED * t - index * IDLE_CARRIER_SPREAD,
       ));
-  return clamp(level + ripple * (1 - level), 0, 1);
+  return clamp(level + ripple * (1 - level * IDLE_CARRIER_DUCKING), 0, 1);
 }
 
 // Ballistics, applied per rAF frame (~60fps). Fast attack on the way up, a
 // quick release on the way down, and an even quicker collapse once the input
 // drops into the "quiet" zone so the tail snaps back instead of lingering.
 export const ATTACK_ALPHA = 0.7;
-export const RELEASE_ALPHA = 0.78;
-export const SILENCE_RELEASE_ALPHA = 0.92;
+export const RELEASE_ALPHA = 0.85;
+export const SILENCE_RELEASE_ALPHA = 0.96;
 // Targets at/below this are treated as "going silent" → fast release. Set above
 // zero so the snap-back kicks in as soon as you stop talking, not only once the
 // level reaches dead silence.
-export const SILENCE_TARGET = 0.08;
+export const SILENCE_TARGET = 0.12;
 export const IDLE_SNAP_DELTA = 0.004;
 
 export function clamp(value: number, min: number, max: number) {
