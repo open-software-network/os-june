@@ -169,7 +169,7 @@ jobs:
           echo "path=$key_path" >> "$GITHUB_OUTPUT"
 
       - name: Build, sign, notarize, and publish updater release
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
