@@ -2327,13 +2327,13 @@ input:focus-visible,
   bottom: 50%;
   width: 100%;
   /* Grows toward the 30px box with a little headroom at the edges. The shared
-   * meter drives --level per frame; the 40ms transition smooths sub-frame
-   * steps. */
+   * meter drives --level per frame; the 24ms transition smooths sub-frame steps
+   * (sharpened from 40ms to match the HUD so the carrier shimmer reads crisp). */
   height: calc(3px + var(--level, 0) * 24px);
   border-radius: 999px;
   background: var(--foreground);
   transform: translateY(50%);
-  transition: height 40ms linear;
+  transition: height 24ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {

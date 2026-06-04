@@ -7,18 +7,22 @@
 // Inputs are already-shaped 0..1 levels (each surface shapes its own raw audio
 // before pushing — the HUD from the helper's level, the recorder from peaks).
 
-// HUD: 7 bars, a symmetric lens (low edges, tall center) tuned 2026-06-04 to
-// match Wispr Flow's waveform. The center stays elevated while speaking; the
-// HUD drives motion via the travelling-wave options rather than these offsets.
-export const HUD_BAR_COUNT = 7;
-export const HUD_BAR_WEIGHTS = [0.55, 0.633, 0.797, 0.88, 0.797, 0.633, 0.55];
-export const HUD_BAR_HISTORY_OFFSETS = [1, 0, 1, 0, 1, 0, 1];
+// 7-bar symmetric "lens": low edges, tall center (raised cosine between),
+// tuned 2026-06-04 to match Wispr Flow. Shared by BOTH surfaces so the
+// dictation HUD and the note recorder read as one waveform family — only their
+// pixel geometry and raw-audio shaping differ. The center stays elevated while
+// speaking; motion comes from the travelling-wave options below, not the
+// offsets (which only matter on the legacy propDelay=0 path).
+export const LENS_BAR_WEIGHTS = [0.55, 0.633, 0.797, 0.88, 0.797, 0.633, 0.55];
+export const LENS_HISTORY_OFFSETS = [1, 0, 1, 0, 1, 0, 1];
 
-// Recorder: 7 bars, symmetric with a taller center, to fill its wider/taller
-// meter area.
+export const HUD_BAR_COUNT = 7;
+export const HUD_BAR_WEIGHTS = LENS_BAR_WEIGHTS;
+export const HUD_BAR_HISTORY_OFFSETS = LENS_HISTORY_OFFSETS;
+
 export const RECORDER_BAR_COUNT = 7;
-export const RECORDER_BAR_WEIGHTS = [0.6, 0.84, 0.72, 0.9, 0.72, 0.84, 0.6];
-export const RECORDER_BAR_HISTORY_OFFSETS = [1, 0, 1, 0, 1, 0, 1];
+export const RECORDER_BAR_WEIGHTS = LENS_BAR_WEIGHTS;
+export const RECORDER_BAR_HISTORY_OFFSETS = LENS_HISTORY_OFFSETS;
 
 // Long enough that the HUD's per-bar propagation delays (a loud moment travels
 // across the row over several pushes) have history to read back from. The
@@ -34,7 +38,7 @@ export type BarMeterOptions = {
   // >0 makes the speaking envelope travel across the row: each bar reads the
   // history delayed by its distance × propDelay (in pushes), so a loud moment
   // sweeps across instead of every center bar spiking at once. 0 = the original
-  // fixed [1,0,1,0,…] one-push offset shimmer (what the recorder uses).
+  // fixed [1,0,1,0,…] one-push offset shimmer.
   propDelay?: number;
   // Where the travelling wave originates: "across" = left→right sweep,
   // "center" = ripple outward from the middle.
@@ -43,6 +47,41 @@ export type BarMeterOptions = {
   // single bars spike. 0 = off.
   spatial?: number;
 };
+
+// The travelling-wave motion shared by both live surfaces (HUD + recorder): a
+// smearier blend plus a speaking envelope that sweeps left→right across the row,
+// smoothed between neighbours, instead of center bars spiking. Pass to
+// createBarMeter so both surfaces move identically.
+export const LIVE_WAVE_OPTIONS: BarMeterOptions = {
+  liveLevelMix: 0.35,
+  propDelay: 0.7,
+  propMode: "across",
+  spatial: 0.3,
+};
+
+// Idle carrier wave — a slow sine travelling across the bars at a low baseline
+// so a live listening/recording surface shimmers as an "active" / time-passing
+// signifier. Layered UNDER the audio response (recedes as a bar gets loud).
+// Shared so the HUD and recorder shimmer identically.
+export const IDLE_CARRIER_AMP = 0.05;
+export const IDLE_CARRIER_SPEED = 0.45; // cycles per second
+export const IDLE_CARRIER_SPREAD = 0.9; // radians of phase per bar
+
+// Blend the carrier ripple into a displayed `level` for bar `index` at `timeMs`
+// (a monotonic clock, e.g. an rAF timestamp). Returns `level` unchanged when the
+// carrier is disabled (amp 0).
+export function withIdleCarrier(level: number, index: number, timeMs: number) {
+  if (IDLE_CARRIER_AMP <= 0) return level;
+  const t = timeMs / 1000;
+  const ripple =
+    IDLE_CARRIER_AMP *
+    0.5 *
+    (1 +
+      Math.sin(
+        2 * Math.PI * IDLE_CARRIER_SPEED * t - index * IDLE_CARRIER_SPREAD,
+      ));
+  return clamp(level + ripple * (1 - level), 0, 1);
+}
 
 // Ballistics, applied per rAF frame (~60fps). Fast attack on the way up, a
 // quick release on the way down, and an even quicker collapse once the input

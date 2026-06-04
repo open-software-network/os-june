@@ -7,7 +7,10 @@ import {
   createBarMeter,
   HUD_BAR_HISTORY_OFFSETS,
   HUD_BAR_WEIGHTS,
+  IDLE_CARRIER_AMP,
   IDLE_LEVEL,
+  LIVE_WAVE_OPTIONS,
+  withIdleCarrier,
 } from "./lib/audio-meter";
 import "./styles/hud.css";
 
@@ -49,15 +52,7 @@ const meter = createBarMeter(
   bars.length,
   HUD_BAR_WEIGHTS,
   HUD_BAR_HISTORY_OFFSETS,
-  {
-    // Tuned 2026-06-04 to match Wispr Flow (see playground/waveform-playground.html):
-    // a smearier blend plus a speaking wave that sweeps left→right across the
-    // row and is smoothed between neighbours, instead of center bars spiking.
-    liveLevelMix: 0.35,
-    propDelay: 0.7,
-    propMode: "across",
-    spatial: 0.3,
-  },
+  LIVE_WAVE_OPTIONS,
 );
 
 let rafHandle: number | undefined;
@@ -83,13 +78,8 @@ const AMBIENT_MAX_LEVEL = 0.03;
 // quiet speech reads tall. Voice-gated (see renderAudioLevel) — ambient/silence
 // stays below the gate and still collapses the bars to zero.
 const HUD_WHISPER_FLOOR = 0.2;
-// Always-on carrier wave: a slow sine travelling across the bars at a low
-// baseline while listening, so the pill shimmers as an active-listening / time
-// signifier. Layered UNDER the audio response so it recedes as bars get loud.
-// Nudged 0.04→0.05 to sit clearly above the damped ambient floor (0.03).
-const HUD_IDLE_AMP = 0.05;
-const HUD_IDLE_SPEED = 0.45;
-const HUD_IDLE_SPREAD = 0.9;
+// The always-on idle carrier wave lives in the shared meter (IDLE_CARRIER_*) so
+// the HUD and recorder shimmer identically.
 
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
@@ -125,26 +115,15 @@ function startBarLoop() {
   if (rafHandle !== undefined) return;
   const tick = (now: number) => {
     const stillAnimating = meter.step();
-    const t = now / 1000;
     for (let i = 0; i < bars.length; i++) {
-      let level = meter.displayed[i];
-      if (HUD_IDLE_AMP > 0) {
-        // Carrier rides under the audio (× (1 - level)) so it reads as a
-        // baseline shimmer, not noise on top of a loud bar.
-        const ripple =
-          HUD_IDLE_AMP *
-          0.5 *
-          (1 +
-            Math.sin(2 * Math.PI * HUD_IDLE_SPEED * t - i * HUD_IDLE_SPREAD));
-        level = clamp(level + ripple * (1 - level), 0, 1);
-      }
+      const level = withIdleCarrier(meter.displayed[i], i, now);
       bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
     // Keep painting while bars move or audio is recent — and, once the carrier
     // wave is on, for as long as we're listening so the shimmer never freezes.
     const keepShimmering =
-      HUD_IDLE_AMP > 0 && hud?.dataset.state === "listening";
+      IDLE_CARRIER_AMP > 0 && hud?.dataset.state === "listening";
     if (stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS || keepShimmering) {
       rafHandle = window.requestAnimationFrame(tick);
     } else {

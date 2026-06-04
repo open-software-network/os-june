@@ -8,13 +8,18 @@ import {
   clamp,
   createBarMeter,
   IDLE_LEVEL,
+  LIVE_WAVE_OPTIONS,
   RECORDER_BAR_COUNT,
   RECORDER_BAR_HISTORY_OFFSETS,
   RECORDER_BAR_WEIGHTS,
+  withIdleCarrier,
 } from "../../lib/audio-meter";
 
 type WaveformProps = {
   level: AudioLevelDto;
+  // Whether recording is live. The idle carrier shimmer only travels while
+  // active; when paused the bars settle and hold (CSS also dims them).
+  active?: boolean;
 };
 
 // Below this the input reads as silence — a soft downward expander that keeps
@@ -28,17 +33,21 @@ const LOW_LIFT = 0.6;
 // instead of slamming flat. Higher reaches the ceiling sooner.
 const KNEE = 6;
 
-export function Waveform({ level }: WaveformProps) {
+export function Waveform({ level, active = true }: WaveformProps) {
   const refs = useRef<Array<HTMLSpanElement | null>>([]);
-  // Shares the dictation HUD's synthesis + ballistics, with the recorder's own
-  // taller 7-bar layout.
+  // Shares the dictation HUD's synthesis + ballistics AND its travelling-wave
+  // motion, with the recorder's own taller 7-bar layout and peak-based shaping.
   const meterRef = useRef(
     createBarMeter(
       RECORDER_BAR_COUNT,
       RECORDER_BAR_WEIGHTS,
       RECORDER_BAR_HISTORY_OFFSETS,
+      LIVE_WAVE_OPTIONS,
     ),
   );
+  // Read the latest `active` from inside the rAF loop without re-subscribing it.
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   // Feed a sample into the meter on every poll (keyed on the level prop, not the
   // shaped value — silence collapses to a constant 0, and we still want the
@@ -55,11 +64,15 @@ export function Waveform({ level }: WaveformProps) {
   useEffect(() => {
     const meter = meterRef.current;
     let raf = 0;
-    const tick = () => {
+    const tick = (now: number) => {
       meter.step();
       for (let i = 0; i < RECORDER_BAR_COUNT; i++) {
         const el = refs.current[i];
-        if (el) el.style.setProperty("--level", meter.displayed[i].toFixed(3));
+        if (!el) continue;
+        const value = activeRef.current
+          ? withIdleCarrier(meter.displayed[i], i, now)
+          : meter.displayed[i];
+        el.style.setProperty("--level", value.toFixed(3));
       }
       raf = requestAnimationFrame(tick);
     };
