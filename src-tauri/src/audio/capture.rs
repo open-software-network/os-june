@@ -115,7 +115,7 @@ pub fn start_capture(
     if active.is_some() {
         return Err(AppError::new(
             "recording_already_active",
-            "A recording is already active.",
+            "A previous recording is still active. Scribe will save it locally before starting another recording.",
         ));
     }
 
@@ -324,6 +324,13 @@ pub fn capture_status(session_id: &str) -> Result<RecordingStatusDto, AppError> 
     let active = lock_active()?;
     let recording = active_for_session(active.as_ref(), session_id)?;
     Ok(recording.status())
+}
+
+pub fn active_capture_session_id() -> Result<Option<String>, AppError> {
+    let active = lock_active()?;
+    Ok(active
+        .as_ref()
+        .map(|recording| recording.session_id.clone()))
 }
 
 pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
