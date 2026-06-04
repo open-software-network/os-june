@@ -25,3 +25,4 @@ Thumbs.db
 .pnpm-store/
 .pre-flight-reviews/
 keys/
+.tmp/
