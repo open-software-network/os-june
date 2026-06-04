@@ -852,23 +852,97 @@ input:focus-visible,
   color: color-mix(in oklch, var(--primary-foreground) 72%, transparent);
 }
 
-.agent-message p {
-  margin: var(--sp-2) 0 0;
-  white-space: pre-wrap;
-}
-
 .agent-hermes-message {
   width: min(760px, 100%);
   padding: var(--sp-1) var(--sp-2);
   color: var(--foreground);
 }
 
-.agent-hermes-message p {
-  margin: 0;
+.agent-markdown {
   color: var(--foreground);
   font-size: var(--fs-md);
   line-height: 1.55;
+}
+
+.agent-message .agent-markdown {
+  margin-top: var(--sp-2);
+}
+
+.agent-message[data-role="user"] .agent-markdown,
+.agent-message[data-role="user"] .agent-markdown strong {
+  color: var(--primary-foreground);
+}
+
+.agent-markdown > :first-child {
+  margin-top: 0;
+}
+
+.agent-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-markdown p {
+  margin: 0 0 var(--sp-4);
   white-space: pre-wrap;
+}
+
+.agent-markdown h2,
+.agent-markdown h3 {
+  margin: var(--sp-5) 0 var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.agent-markdown h3 {
+  font-size: var(--fs-sm);
+}
+
+.agent-markdown ul,
+.agent-markdown ol {
+  margin: 0 0 var(--sp-4);
+  padding-left: var(--sp-5);
+}
+
+.agent-markdown li {
+  margin: var(--sp-1) 0;
+}
+
+.agent-markdown strong {
+  color: var(--foreground);
+  font-weight: 700;
+}
+
+.agent-markdown code {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-1);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.agent-markdown pre {
+  overflow: auto;
+  margin: 0 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3);
+  background: var(--surface-subtle);
+}
+
+.agent-markdown pre code {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+
+.agent-markdown a {
+  color: var(--primary);
+  text-decoration: none;
 }
 
 .agent-hermes-note {
@@ -907,14 +981,12 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-hermes-note > p {
+.agent-hermes-note > .agent-markdown {
   margin: var(--sp-2) 0 0 calc(var(--control-sm) + var(--sp-2));
   color: var(--muted-foreground);
-  line-height: 1.45;
-  white-space: pre-wrap;
 }
 
-.agent-hermes-note:not([open]) > p {
+.agent-hermes-note:not([open]) > .agent-markdown {
   display: none;
 }
 

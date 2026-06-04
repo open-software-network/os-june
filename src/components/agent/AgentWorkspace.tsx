@@ -1371,9 +1371,13 @@ function MessageBubble({ message }: { message: AgentMessageDto }) {
         {message.role === "assistant" ? "Agent" : "You"}
         <span>{relativeDate(message.createdAt)}</span>
       </div>
-      <p>{message.content}</p>
+      <MarkdownContent markdown={message.content} />
     </article>
   );
+}
+
+function MarkdownContent({ markdown }: { markdown: string }) {
+  return <div className="agent-markdown">{renderMarkdownBlocks(markdown)}</div>;
 }
 
 function ToolEventRow({ event }: { event: AgentToolEventDto }) {
@@ -1399,7 +1403,7 @@ function ToolEventRow({ event }: { event: AgentToolEventDto }) {
 function HermesMessageRow({ item }: { item: HermesMessageItem }) {
   return (
     <article className="agent-hermes-message" data-status={item.status}>
-      <p>{item.text}</p>
+      <MarkdownContent markdown={item.text} />
     </article>
   );
 }
@@ -1438,9 +1442,134 @@ function HermesNoteRow({ item }: { item: HermesNoteItem }) {
         <span>{item.label}</span>
         <p>{item.text}</p>
       </summary>
-      <p>{item.text}</p>
+      <MarkdownContent markdown={item.text} />
     </details>
   );
+}
+
+function renderMarkdownBlocks(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let paragraph: string[] = [];
+  let key = 0;
+
+  const flushParagraph = () => {
+    const text = paragraph.join("\n").trim();
+    paragraph = [];
+    if (!text) return;
+    blocks.push(<p key={`p-${key++}`}>{renderInlineMarkdown(text, key)}</p>);
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      blocks.push(
+        <pre key={`code-${key++}`}>
+          <code>{code.join("\n")}</code>
+        </pre>,
+      );
+      continue;
+    }
+
+    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      const level = Math.min(heading[1].length, 3);
+      const content = renderInlineMarkdown(heading[2], key);
+      blocks.push(
+        level === 1 ? (
+          <h2 key={`h-${key++}`}>{content}</h2>
+        ) : (
+          <h3 key={`h-${key++}`}>{content}</h3>
+        ),
+      );
+      continue;
+    }
+
+    const unordered = /^[-*]\s+(.+)$/.exec(trimmed);
+    const ordered = /^\d+\.\s+(.+)$/.exec(trimmed);
+    if (unordered || ordered) {
+      flushParagraph();
+      const orderedList = Boolean(ordered);
+      const items: string[] = [];
+      while (index < lines.length) {
+        const candidate = lines[index].trim();
+        const match = orderedList
+          ? /^\d+\.\s+(.+)$/.exec(candidate)
+          : /^[-*]\s+(.+)$/.exec(candidate);
+        if (!match) break;
+        items.push(match[1]);
+        index += 1;
+      }
+      index -= 1;
+      const listItems = items.map((item, itemIndex) => (
+        <li key={`li-${key}-${itemIndex}`}>
+          {renderInlineMarkdown(item, key + itemIndex)}
+        </li>
+      ));
+      blocks.push(
+        orderedList ? (
+          <ol key={`list-${key++}`}>{listItems}</ol>
+        ) : (
+          <ul key={`list-${key++}`}>{listItems}</ul>
+        ),
+      );
+      continue;
+    }
+
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  return blocks;
+}
+
+function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = pattern.exec(text))) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+    if (match[2]) {
+      nodes.push(<strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>);
+    } else if (match[3]) {
+      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[3]}</code>);
+    } else if (match[4] && match[5]) {
+      nodes.push(
+        <a
+          key={`link-${keySeed}-${index}`}
+          href={match[5]}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {match[4]}
+        </a>,
+      );
+    }
+    lastIndex = pattern.lastIndex;
+    index += 1;
+  }
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+  return nodes;
 }
 
 function eventText(event: HermesGatewayEvent) {
