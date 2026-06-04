@@ -70,6 +70,18 @@ func requestMicrophonePermission() {
     }
 }
 
+func requestAccessibilityPermission() {
+    // Prompting variant of AXIsProcessTrusted(): registers THIS helper in the
+    // Accessibility list and surfaces the system "control this computer"
+    // dialog. The silent AXIsProcessTrusted() used elsewhere never adds the
+    // helper to the list, so a fresh install would otherwise have nothing to
+    // toggle — the synthetic Cmd+V paste needs the helper trusted.
+    let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+    let options = [promptKey: true] as CFDictionary
+    _ = AXIsProcessTrustedWithOptions(options)
+    emit("permission_status", permissionPayload())
+}
+
 func helperBundleIdentifier() -> String {
     Bundle.main.bundleIdentifier ?? "unknown"
 }
@@ -1488,6 +1500,10 @@ func handleCommandLine(_ line: String) {
         emit("permission_status", permissionPayload())
     case "request_microphone_permission":
         requestMicrophonePermission()
+    case "request_accessibility_permission":
+        runOnMain {
+            requestAccessibilityPermission()
+        }
     case "list_microphones":
         runOnMain {
             dictation.emitMicrophones()
