@@ -15,6 +15,13 @@ concurrency:
   group: production-desktop-release
   cancel-in-progress: false
 
+# Opt the bundled JS actions (checkout, cache, setup-node, create-github-app-token,
+# pnpm/action-setup) into the Node 24 runtime — Node 20 is deprecated and will be
+# forced off the runners. Independent of node-version below (the Node our own build
+# scripts run on).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   release:
     name: Release production macOS app
@@ -53,7 +60,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Setup Rust
