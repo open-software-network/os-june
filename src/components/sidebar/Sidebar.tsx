@@ -1,7 +1,6 @@
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
-import { IconFolders } from "central-icons/IconFolders";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
@@ -11,11 +10,20 @@ import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { BotIcon } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SELECT_SESSION_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+  type AgentSessionsChangedDetail,
+} from "../agent/AgentWorkspace";
+import { listHermesSessions, sessionTimestamp } from "../../lib/hermes-adapter";
 import { NOTE_DND_MIME } from "../../lib/dnd";
-import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
+import type { HermesSessionInfo, NoteListItemDto } from "../../lib/tauri";
 
 export type SidebarView =
   | "notes"
+  | "meetings"
   | "all-notes"
   | "settings"
   | "folders"
@@ -23,16 +31,9 @@ export type SidebarView =
   | "agent";
 
 type SidebarProps = {
-  folders: FolderDto[];
   notes: NoteListItemDto[];
-  selectedNoteId?: string;
-  selectedFolderId?: string;
   activeView: SidebarView;
   onChangeView: (view: SidebarView) => void;
-  onCreateFolder: () => void;
-  onCreateNote: () => void;
-  onSelectAll: () => void;
-  onSelectFolder: (folderId: string) => void;
   onSelectNote: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
@@ -48,12 +49,9 @@ type MenuState = {
 };
 
 export function Sidebar({
-  folders,
   notes,
-  selectedNoteId,
   activeView,
   onChangeView,
-  onCreateNote,
   onSelectNote,
   onDeleteNote,
   onOpenMoveDialog,
@@ -63,6 +61,12 @@ export function Sidebar({
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [selectedAgentSessionId, setSelectedAgentSessionId] =
+    useState<string>();
+  const [workingAgentSessionIds, setWorkingAgentSessionIds] = useState<
+    Set<string>
+  >(() => new Set());
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return notes;
@@ -70,6 +74,22 @@ export function Sidebar({
       `${note.title} ${note.preview}`.toLowerCase().includes(normalized),
     );
   }, [notes, query]);
+
+  const filteredAgentSessions = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return agentSessions;
+    return agentSessions.filter((session) =>
+      `${session.title ?? ""} ${session.preview ?? ""}`
+        .toLowerCase()
+        .includes(normalized),
+    );
+  }, [agentSessions, query]);
+
+  function dispatchAgentEvent<T>(name: string, detail?: T) {
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent(name, { detail }));
+    }, 0);
+  }
 
   useEffect(() => {
     if (!menu) return;
@@ -89,6 +109,47 @@ export function Sidebar({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [menu]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listHermesSessions({ limit: 12 })
+      .then((sessions) => {
+        if (!cancelled) {
+          setAgentSessions((current) =>
+            current.length > 0 ? current : sessions,
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAgentSessions((current) => (current.length > 0 ? current : []));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleSessionsChanged(event: Event) {
+      const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
+      if (!detail) return;
+      setAgentSessions(detail.sessions);
+      setSelectedAgentSessionId(detail.selectedSessionId);
+      setWorkingAgentSessionIds(new Set(detail.workingSessionIds));
+    }
+
+    window.addEventListener(
+      AGENT_SESSIONS_CHANGED_EVENT,
+      handleSessionsChanged,
+    );
+    return () => {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        handleSessionsChanged,
+      );
+    };
+  }, []);
 
   // Right-aligns the popover with the overflow button and parks it just
   // below — keeps it tucked next to the trigger rather than flying off to
@@ -140,29 +201,33 @@ export function Sidebar({
           type="button"
           className="sidebar-nav-item"
           onClick={() => {
-            onChangeView("notes");
-            onCreateNote();
+            markAgentNewSessionPending();
+            onChangeView("agent");
+            dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
           }}
         >
           <span className="sidebar-nav-icon">
             <IconPlusMedium size={15} />
           </span>
-          <span className="sidebar-nav-label">New note</span>
-          <kbd className="sidebar-search-kbd sidebar-nav-shortcut" aria-hidden>
-            ⌘N
-          </kbd>
+          <span className="sidebar-nav-label">New Session</span>
         </button>
         <button
           type="button"
           className="sidebar-nav-item"
-          data-active={activeView === "folders"}
-          aria-current={activeView === "folders" ? "page" : undefined}
-          onClick={() => onChangeView("folders")}
+          data-active={activeView === "meetings" || activeView === "notes"}
+          aria-current={
+            activeView === "meetings" || activeView === "notes"
+              ? "page"
+              : undefined
+          }
+          onClick={() => {
+            onChangeView("notes");
+          }}
         >
           <span className="sidebar-nav-icon">
-            <IconFolders size={16} />
+            <IconNoteText size={15} />
           </span>
-          <span className="sidebar-nav-label">Folders</span>
+          <span className="sidebar-nav-label">Notes</span>
         </button>
         <button
           type="button"
@@ -176,62 +241,46 @@ export function Sidebar({
           </span>
           <span className="sidebar-nav-label">Dictation</span>
         </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "agent"}
-          aria-current={activeView === "agent" ? "page" : undefined}
-          onClick={() => onChangeView("agent")}
-        >
-          <span className="sidebar-nav-icon">
-            <BotIcon size={16} />
-          </span>
-          <span className="sidebar-nav-label">Agent</span>
-        </button>
       </nav>
 
       <section
-        className="sidebar-section"
-        aria-label="Notes"
-        data-active={activeView === "notes"}
+        className="sidebar-section sidebar-agent-section"
+        aria-label="Agent sessions"
+        data-active={activeView === "agent"}
       >
         <div className="section-title section-title-with-action">
           <button
             type="button"
             className="section-title-label section-title-open"
-            onClick={() => onChangeView("all-notes")}
+            onClick={() => onChangeView("agent")}
           >
-            Notes <span className="section-count">{notes.length}</span>
-          </button>
-          <button
-            type="button"
-            className="section-view-all"
-            onClick={() => onChangeView("all-notes")}
-          >
-            View all
+            Agent
           </button>
         </div>
         <div className="notes-nav-wrap">
           <div className="notes-nav">
-            {filteredNotes.length > 0 ? (
-              filteredNotes.map((note) => (
-                <NoteRow
-                  key={note.id}
-                  note={note}
+            {filteredAgentSessions.length > 0 ? (
+              filteredAgentSessions.map((session) => (
+                <AgentSessionRow
+                  key={session.id}
+                  session={session}
                   selected={
-                    activeView === "notes" && selectedNoteId === note.id
+                    activeView === "agent" &&
+                    selectedAgentSessionId === session.id
                   }
-                  recoverable={recoverableNoteIds?.has(note.id) ?? false}
+                  working={workingAgentSessionIds.has(session.id)}
                   onSelect={() => {
-                    onChangeView("notes");
-                    onSelectNote(note.id);
+                    onChangeView("agent");
+                    setSelectedAgentSessionId(session.id);
+                    dispatchAgentEvent(AGENT_SELECT_SESSION_EVENT, {
+                      sessionId: session.id,
+                    });
                   }}
-                  onOpenMenu={(anchor) => openMenuForNote(note.id, anchor)}
                 />
               ))
             ) : (
               <div className="sidebar-empty">
-                {notes.length === 0 ? "No notes yet" : "No matches"}
+                {agentSessions.length === 0 ? "No sessions yet" : "No matches"}
               </div>
             )}
           </div>
@@ -268,6 +317,18 @@ export function Sidebar({
       ) : null}
     </aside>
   );
+}
+
+function markAgentNewSessionPending() {
+  try {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      String(Date.now()),
+    );
+  } catch {
+    // Session storage can be unavailable in restricted webviews; the event path
+    // still handles already-mounted Agent workspaces.
+  }
 }
 
 function NoteRow({
@@ -364,6 +425,50 @@ function NoteRow({
   );
 }
 
+function AgentSessionRow({
+  session,
+  selected,
+  working,
+  onSelect,
+}: {
+  session: HermesSessionInfo;
+  selected: boolean;
+  working: boolean;
+  onSelect: () => void;
+}) {
+  const title = session.title || session.preview || "Untitled session";
+  return (
+    <article className="note-row agent-sidebar-row" data-selected={selected}>
+      <div
+        className="note-row-main"
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
+      >
+        <span className="note-row-icon">
+          <BotIcon size={15} />
+        </span>
+        <span className="note-row-title">
+          <span className="note-row-title-text">{title}</span>
+          {working ? (
+            <span
+              className="agent-sidebar-working"
+              aria-label="Working"
+              title="Working"
+            />
+          ) : null}
+        </span>
+      </div>
+    </article>
+  );
+}
+
 function NoteContextMenu({
   noteId,
   right,
@@ -437,4 +542,15 @@ function NoteContextMenu({
       </button>
     </div>
   );
+}
+
+function relativeDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }

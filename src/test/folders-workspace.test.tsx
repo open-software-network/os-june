@@ -64,22 +64,15 @@ function baseProps() {
   };
 }
 
-describe("Sidebar — Folders nav item", () => {
-  it("activates the folders view when clicked", async () => {
+describe("Sidebar primary navigation", () => {
+  it("shows Notes instead of Folders in primary navigation", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
     render(
       <Sidebar
-        folders={folders}
         notes={notes}
-        selectedNoteId={undefined}
-        selectedFolderId={undefined}
         activeView="notes"
         onChangeView={onChangeView}
-        onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
@@ -87,32 +80,9 @@ describe("Sidebar — Folders nav item", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /Folders/ }));
-    expect(onChangeView).toHaveBeenCalledWith("folders");
-  });
-
-  it("does not render the folder count badge", () => {
-    render(
-      <Sidebar
-        folders={folders}
-        notes={notes}
-        selectedNoteId={undefined}
-        selectedFolderId={undefined}
-        activeView="notes"
-        onChangeView={vi.fn()}
-        onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
-        onSelectNote={vi.fn()}
-        onDeleteNote={vi.fn()}
-        onOpenMoveDialog={vi.fn()}
-        onRemoveNoteFromFolder={vi.fn()}
-      />,
-    );
-
-    const button = screen.getByRole("button", { name: /Folders/ });
-    expect(button.textContent?.replace(/\s/g, "")).toBe("Folders");
+    expect(screen.queryByRole("button", { name: /Folders/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    expect(onChangeView).toHaveBeenCalledWith("notes");
   });
 
   it("renders settings as a sidebar footer action", async () => {
@@ -120,16 +90,9 @@ describe("Sidebar — Folders nav item", () => {
     const onChangeView = vi.fn();
     render(
       <Sidebar
-        folders={folders}
         notes={notes}
-        selectedNoteId={undefined}
-        selectedFolderId={undefined}
         activeView="notes"
         onChangeView={onChangeView}
-        onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
@@ -149,16 +112,9 @@ describe("Sidebar — Folders nav item", () => {
     const onChangeView = vi.fn();
     render(
       <Sidebar
-        folders={folders}
         notes={notes}
-        selectedNoteId={undefined}
-        selectedFolderId={undefined}
         activeView="settings"
         onChangeView={onChangeView}
-        onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
@@ -179,6 +135,8 @@ describe("FoldersWorkspace — list view", () => {
       screen.getByRole("heading", { name: "Folders" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("All notes")).toBeNull();
+    expect(screen.getByRole("button", { name: /Notes/ })).toBeInTheDocument();
+    expect(screen.queryByText("Roadmap")).toBeNull();
     expect(screen.getByText("Ideas")).toBeInTheDocument();
     expect(screen.getByText("Work")).toBeInTheDocument();
     const workCard = screen.getByText("Work").closest("article");
@@ -191,6 +149,19 @@ describe("FoldersWorkspace — list view", () => {
     expect(
       within(ideasCard as HTMLElement).getByText(/0 notes/),
     ).toBeInTheDocument();
+  });
+
+  it("opens the notes folder before showing saved notes", async () => {
+    const user = userEvent.setup();
+    const props = baseProps();
+    render(<FoldersWorkspace {...props} />);
+
+    await user.click(screen.getByRole("button", { name: /Notes/ }));
+
+    expect(screen.getByRole("heading", { name: "Notes" })).toBeInTheDocument();
+    expect(screen.getByText("Roadmap")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Roadmap/ }));
+    expect(props.onSelectNote).toHaveBeenCalledWith("note-1");
   });
 
   it("opens the create dialog and submits name + description", async () => {

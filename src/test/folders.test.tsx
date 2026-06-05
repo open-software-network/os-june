@@ -1,16 +1,16 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import {
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_SELECT_SESSION_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+} from "../components/agent/AgentWorkspace";
 import { NotesList } from "../components/notes-list/NotesList";
 import { Sidebar } from "../components/sidebar/Sidebar";
-import type { FolderDto, NoteListItemDto } from "../lib/tauri";
+import type { NoteListItemDto } from "../lib/tauri";
 
 const now = "2026-05-19T10:00:00Z";
-
-const folders: FolderDto[] = [
-  { id: "folder-1", name: "Ideas", createdAt: now, updatedAt: now },
-  { id: "folder-2", name: "Work", createdAt: now, updatedAt: now },
-];
 
 const notes: NoteListItemDto[] = [
   {
@@ -34,23 +34,17 @@ const notes: NoteListItemDto[] = [
 ];
 
 describe("folders UI", () => {
-  it("renders notes in the sidebar and filters them", async () => {
+  it("renders the notes entry and starts agent sessions from the sidebar", async () => {
     const user = userEvent.setup();
-    const onSelectNote = vi.fn();
-    const onCreateNote = vi.fn();
+    const onChangeView = vi.fn();
+    const onNewSession = vi.fn();
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
     render(
       <Sidebar
-        folders={folders}
         notes={notes}
-        selectedNoteId="note-2"
-        selectedFolderId={undefined}
         activeView="notes"
-        onChangeView={vi.fn()}
-        onCreateFolder={vi.fn()}
-        onCreateNote={onCreateNote}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
-        onSelectNote={onSelectNote}
+        onChangeView={onChangeView}
+        onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
@@ -58,32 +52,30 @@ describe("folders UI", () => {
     );
 
     expect(screen.getByText("Scribe")).toBeInTheDocument();
-    expect(screen.getByText("Second")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Notes" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("Search"), "second");
-    await user.click(screen.getAllByRole("button", { name: /Second/ })[0]);
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    await user.click(screen.getByRole("button", { name: "New Session" }));
 
-    await user.click(screen.getByRole("button", { name: "New note" }));
+    expect(onChangeView).toHaveBeenCalledWith("notes");
+    expect(onChangeView).toHaveBeenCalledWith("agent");
+    await waitFor(() => expect(onNewSession).toHaveBeenCalled());
 
-    expect(onSelectNote).toHaveBeenCalledWith("note-2");
-    expect(onCreateNote).toHaveBeenCalled();
+    window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
   });
 
-  it("opens the all-notes view from the Notes header actions", async () => {
+  it("renders agent sessions in the sidebar and selects them", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
+    const onSelectAgentSession = vi.fn();
+    window.addEventListener(AGENT_SELECT_SESSION_EVENT, onSelectAgentSession);
     render(
       <Sidebar
-        folders={folders}
         notes={notes}
-        selectedNoteId="note-2"
-        selectedFolderId={undefined}
         activeView="notes"
         onChangeView={onChangeView}
-        onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
@@ -91,39 +83,42 @@ describe("folders UI", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /^Notes/ }));
-    await user.click(screen.getByRole("button", { name: "View all" }));
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [
+              {
+                id: "session-1",
+                title: "Researching Google",
+                preview: "Generate a PDF",
+                last_active: "2026-06-04T19:00:00Z",
+              },
+            ],
+            selectedSessionId: "session-1",
+            workingSessionIds: ["session-1"],
+          },
+        }),
+      );
+    });
 
-    expect(onChangeView).toHaveBeenCalledWith("all-notes");
-    expect(onChangeView).toHaveBeenCalledTimes(2);
-  });
+    expect(await screen.findByText("Researching Google")).toBeInTheDocument();
+    expect(screen.getByLabelText("Working")).toBeInTheDocument();
 
-  it("opens note actions from right click and deletes", async () => {
-    const user = userEvent.setup();
-    const onDeleteNote = vi.fn();
-    render(
-      <Sidebar
-        folders={folders}
-        notes={notes}
-        selectedNoteId="note-2"
-        selectedFolderId={undefined}
-        activeView="notes"
-        onChangeView={vi.fn()}
-        onCreateFolder={vi.fn()}
-        onCreateNote={vi.fn()}
-        onSelectAll={vi.fn()}
-        onSelectFolder={vi.fn()}
-        onSelectNote={vi.fn()}
-        onDeleteNote={onDeleteNote}
-        onOpenMoveDialog={vi.fn()}
-        onRemoveNoteFromFolder={vi.fn()}
-      />,
+    await user.click(
+      screen.getByRole("button", { name: /Researching Google/ }),
     );
 
-    fireEvent.contextMenu(screen.getByText("Second").closest("article")!);
-    await user.click(screen.getByRole("menuitem", { name: "Delete note" }));
+    expect(onChangeView).toHaveBeenCalledWith("agent");
+    await waitFor(() => expect(onSelectAgentSession).toHaveBeenCalled());
+    const detail = (onSelectAgentSession.mock.calls[0][0] as CustomEvent)
+      .detail;
+    expect(detail).toEqual({ sessionId: "session-1" });
 
-    expect(onDeleteNote).toHaveBeenCalledWith("note-2");
+    window.removeEventListener(
+      AGENT_SELECT_SESSION_EVENT,
+      onSelectAgentSession,
+    );
   });
 
   it("shows notes with placeholders and selects notes", async () => {

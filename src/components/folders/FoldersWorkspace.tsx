@@ -2,7 +2,6 @@ import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolder1 } from "central-icons/IconFolder1";
-import { IconFolders as IconFoldersFilled } from "central-icons-filled/IconFolders";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconFolderOpen } from "central-icons/IconFolderOpen";
@@ -14,8 +13,10 @@ import { IconPageSearch } from "central-icons/IconPageSearch";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
+import { type FolderDto, type NoteListItemDto } from "../../lib/tauri";
 import {
   type DragEvent,
+  type ReactNode,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -23,10 +24,8 @@ import {
   useState,
 } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
-import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { EmptyState } from "../ui/EmptyState";
 import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
@@ -77,6 +76,7 @@ export function FoldersWorkspace(props: FoldersWorkspaceProps) {
 /* List view -------------------------------------------------------- */
 
 type SortKey = "updated" | "created" | "name" | "nameDesc";
+type VirtualFolderId = "meetings";
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "updated", label: "Recent" },
@@ -88,6 +88,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
 function FolderList({
   folders,
   notes,
+  onSelectNote,
   onSelectFolder,
   onCreateFolder,
   onRenameFolder,
@@ -100,6 +101,8 @@ function FolderList({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
+  const [selectedVirtualFolder, setSelectedVirtualFolder] =
+    useState<VirtualFolderId | null>(null);
   const deleteFolderTarget = folders.find((f) => f.id === deleteId);
   const editFolderTarget = folders.find((f) => f.id === editId);
 
@@ -119,13 +122,14 @@ function FolderList({
     };
   }, [menu]);
 
+  const normalizedQuery = query.trim().toLowerCase();
+
   const sortedAndFiltered = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const filtered = normalized
+    const filtered = normalizedQuery
       ? folders.filter((folder) =>
           `${folder.name} ${folder.description ?? ""}`
             .toLowerCase()
-            .includes(normalized),
+            .includes(normalizedQuery),
         )
       : folders;
     return [...filtered].sort((a, b) => {
@@ -145,7 +149,89 @@ function FolderList({
           return b.updatedAt.localeCompare(a.updatedAt);
       }
     });
-  }, [folders, query, sort]);
+  }, [folders, normalizedQuery, sort]);
+
+  const filteredMeetingNotes = useMemo(() => {
+    const filtered = normalizedQuery
+      ? notes.filter((note) =>
+          `${note.title} ${note.preview}`
+            .toLowerCase()
+            .includes(normalizedQuery),
+        )
+      : notes;
+    return [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }, [notes, normalizedQuery]);
+
+  const showNotesFolder =
+    !normalizedQuery ||
+    "notes saved notes recording editing".includes(normalizedQuery) ||
+    filteredMeetingNotes.length > 0;
+
+  const hasTopLevelMatches = showNotesFolder || sortedAndFiltered.length > 0;
+
+  const closeVirtualFolder = () => setSelectedVirtualFolder(null);
+
+  let content: ReactNode;
+  if (selectedVirtualFolder === "meetings") {
+    content = (
+      <NotesFolderDetail
+        notes={filteredMeetingNotes}
+        totalNotes={notes.length}
+        query={query}
+        onBack={closeVirtualFolder}
+        onSelectNote={onSelectNote}
+      />
+    );
+  } else {
+    content = hasTopLevelMatches ? (
+      <div className="folders-grid" role="list">
+        {showNotesFolder ? (
+          <VirtualFolderCard
+            name="Notes"
+            description="Saved notes from recording and editing."
+            meta={`${notes.length} ${notes.length === 1 ? "note" : "notes"}`}
+            icon={<IconNoteText size={18} />}
+            onOpen={() => setSelectedVirtualFolder("meetings")}
+          />
+        ) : null}
+        {sortedAndFiltered.map((folder) => (
+          <FolderCard
+            key={folder.id}
+            folder={folder}
+            notes={notes}
+            menuOpen={menu?.folderId === folder.id}
+            onOpen={() => onSelectFolder(folder.id)}
+            onDropNote={(noteId) => {
+              const note = notes.find((item) => item.id === noteId);
+              if (
+                !note ||
+                (note.folderIds.length === 1 && note.folderIds[0] === folder.id)
+              ) {
+                return;
+              }
+              void onAssignNoteToFolder(noteId, folder.id);
+            }}
+            onOpenMenu={(anchor) => {
+              if (menu?.folderId === folder.id) {
+                setMenu(null);
+                return;
+              }
+              const rect = anchor.getBoundingClientRect();
+              setMenu({
+                folderId: folder.id,
+                right: window.innerWidth - rect.right,
+                top: rect.bottom + 4,
+              });
+            }}
+          />
+        ))}
+      </div>
+    ) : (
+      <div className="folders-empty">
+        <p>No folders match “{query.trim()}”.</p>
+      </div>
+    );
+  }
 
   return (
     <section className="folders-workspace" aria-label="Folders">
@@ -153,7 +239,7 @@ function FolderList({
         <div className="folders-heading">
           <h1>Folders</h1>
           <p className="folders-subtitle">
-            Group notes by project, client, or topic.
+            Top-level folders for notes and saved folders.
           </p>
         </div>
         <button
@@ -166,68 +252,21 @@ function FolderList({
         </button>
       </header>
 
-      {folders.length > 0 ? (
-        <div className="folders-controls">
-          <label className="folders-search">
-            <IconMagnifyingGlass size={14} />
-            <input
-              type="search"
-              placeholder="Search"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-            />
-          </label>
-          <SortDropdown value={sort} onChange={setSort} />
-        </div>
-      ) : null}
+      <div className="folders-controls">
+        <label className="folders-search">
+          <IconMagnifyingGlass size={14} />
+          <input
+            type="search"
+            aria-label="Search folders and notes"
+            placeholder="Search"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
+        </label>
+        <SortDropdown value={sort} onChange={setSort} />
+      </div>
 
-      {folders.length === 0 ? (
-        <EmptyState
-          label="No folders yet"
-          icon={<IconFoldersFilled size={28} />}
-          title="No folders yet"
-          description="Group related notes by project, client, or topic."
-        />
-      ) : sortedAndFiltered.length === 0 ? (
-        <div className="folders-empty">
-          <p>No folders match “{query.trim()}”.</p>
-        </div>
-      ) : (
-        <div className="folders-grid" role="list">
-          {sortedAndFiltered.map((folder) => (
-            <FolderCard
-              key={folder.id}
-              folder={folder}
-              notes={notes}
-              menuOpen={menu?.folderId === folder.id}
-              onOpen={() => onSelectFolder(folder.id)}
-              onDropNote={(noteId) => {
-                const note = notes.find((item) => item.id === noteId);
-                if (
-                  !note ||
-                  (note.folderIds.length === 1 &&
-                    note.folderIds[0] === folder.id)
-                ) {
-                  return;
-                }
-                void onAssignNoteToFolder(noteId, folder.id);
-              }}
-              onOpenMenu={(anchor) => {
-                if (menu?.folderId === folder.id) {
-                  setMenu(null);
-                  return;
-                }
-                const rect = anchor.getBoundingClientRect();
-                setMenu({
-                  folderId: folder.id,
-                  right: window.innerWidth - rect.right,
-                  top: rect.bottom + 4,
-                });
-              }}
-            />
-          ))}
-        </div>
-      )}
+      {content}
 
       {menu ? (
         <FolderCardMenu
@@ -351,6 +390,111 @@ function SortDropdown({
 }
 
 type MenuState = { folderId: string; right: number; top: number };
+
+function VirtualFolderCard({
+  name,
+  meta,
+  description,
+  icon,
+  badge,
+  onOpen,
+}: {
+  name: string;
+  meta: string;
+  description: string;
+  icon: ReactNode;
+  badge?: ReactNode;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="folder-card folders-virtual-folder-card"
+      onClick={onOpen}
+    >
+      <span className="folder-card-icon folders-virtual-folder-icon">
+        {icon}
+        {badge ? (
+          <span
+            className="folders-agent-folder-badge"
+            aria-label="Agent folder"
+          >
+            {badge}
+          </span>
+        ) : null}
+      </span>
+      <span className="folder-card-name">{name}</span>
+      <span className="folder-card-meta">{meta}</span>
+      <span className="folder-card-description">{description}</span>
+    </button>
+  );
+}
+
+function NotesFolderDetail({
+  notes,
+  totalNotes,
+  query,
+  onBack,
+  onSelectNote,
+}: {
+  notes: NoteListItemDto[];
+  totalNotes: number;
+  query: string;
+  onBack: () => void;
+  onSelectNote: (noteId: string) => void;
+}) {
+  return (
+    <section className="folders-virtual-detail" aria-label="Notes">
+      <BreadcrumbBar
+        backLabel="Back to folders"
+        onBack={onBack}
+        items={[{ label: "Folders", onClick: onBack }, { label: "Notes" }]}
+      />
+      <section className="folders-meetings-files">
+        <header className="folders-hermes-header">
+          <div>
+            <h2>Notes</h2>
+            <p>Saved notes from recording and editing.</p>
+          </div>
+          <span className="folders-section-count">
+            {totalNotes} {totalNotes === 1 ? "note" : "notes"}
+          </span>
+        </header>
+        {notes.length ? (
+          <div className="folders-meetings-list">
+            {notes.map((note) => (
+              <button
+                key={note.id}
+                type="button"
+                className="folders-meeting-row"
+                onClick={() => onSelectNote(note.id)}
+              >
+                <span className="folders-meeting-icon">
+                  <IconNoteText size={14} />
+                </span>
+                <span className="folders-meeting-body">
+                  <span className="folders-meeting-title">
+                    {note.title.trim() || "New note"}
+                  </span>
+                  <span className="folders-meeting-preview">
+                    {note.preview.trim() || "No preview yet"}
+                  </span>
+                </span>
+                <span className="folders-meeting-time">
+                  {formatNoteTime(note.updatedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="folders-empty">
+            {query.trim() ? "No notes match." : "No notes yet."}
+          </p>
+        )}
+      </section>
+    </section>
+  );
+}
 
 function FolderCard({
   folder,

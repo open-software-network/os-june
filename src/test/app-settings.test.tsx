@@ -18,6 +18,13 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsTopUp: vi.fn(),
+  hermesBridgeSkills: vi.fn(),
+  hermesBridgeToolsets: vi.fn(),
+  hermesBridgeMessagingPlatforms: vi.fn(),
+  hermesBridgeFilesystemSnapshot: vi.fn(),
+  toggleHermesBridgeSkill: vi.fn(),
+  toggleHermesBridgeToolset: vi.fn(),
+  updateHermesBridgeMessagingPlatform: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -35,6 +42,14 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsTopUp: mocks.osAccountsTopUp,
+  hermesBridgeSkills: mocks.hermesBridgeSkills,
+  hermesBridgeToolsets: mocks.hermesBridgeToolsets,
+  hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
+  hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
+  toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
+  toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
+  updateHermesBridgeMessagingPlatform:
+    mocks.updateHermesBridgeMessagingPlatform,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -192,6 +207,50 @@ describe("AppSettings", () => {
       ...baseSettings,
       microphone: { id, name },
     }));
+    mocks.hermesBridgeSkills.mockResolvedValue([]);
+    mocks.hermesBridgeToolsets.mockResolvedValue([]);
+    mocks.hermesBridgeMessagingPlatforms.mockResolvedValue({ platforms: [] });
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "sample.pdf",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf",
+              kind: "file",
+              size: 1700,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+        {
+          id: "memory",
+          label: "Memory",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/memory",
+          description: "Persistent Hermes memory files and stores.",
+          entries: [
+            {
+              name: "USER.md",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/memory/USER.md",
+              kind: "file",
+              size: 39,
+              modifiedAt: "2026-06-04T18:47:00Z",
+            },
+          ],
+        },
+        {
+          id: "logs",
+          label: "Logs",
+          path: "/tmp/hermes/logs",
+          description: "Internal logs.",
+          entries: [],
+        },
+      ],
+    });
     mocks.listen.mockImplementation((_event, handler) => {
       mocks.eventHandler = handler;
       return Promise.resolve(vi.fn());
@@ -226,6 +285,7 @@ describe("AppSettings", () => {
       }),
     });
 
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
     await user.click(
       screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
     );
@@ -254,6 +314,7 @@ describe("AppSettings", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: "Dictation" }));
     expect(await screen.findByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
     expect(
@@ -368,6 +429,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
     );
+    await user.click(screen.getByRole("tab", { name: "Models" }));
     await user.click(
       await screen.findByRole("button", {
         name: "Change transcription model",
@@ -420,9 +482,36 @@ describe("AppSettings", () => {
       />,
     );
 
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
     expect(await screen.findByText("Release version")).toBeInTheDocument();
     expect(screen.getByText(APP_VERSION)).toBeInTheDocument();
     expect(screen.getByText("Commit")).toBeInTheDocument();
     expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
+  });
+
+  it("shows agent workspace and memory files inside Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    await user.click(screen.getByRole("button", { name: "Files" }));
+
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
+    expect(screen.getByText("sample.pdf")).toBeInTheDocument();
+    expect(screen.getByText("USER.md")).toBeInTheDocument();
+    expect(screen.queryByText("Logs")).toBeNull();
   });
 });

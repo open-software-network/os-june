@@ -109,6 +109,7 @@ export function App() {
   const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">(
     "none",
   );
+  const [bootstrapped, setBootstrapped] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
@@ -227,6 +228,7 @@ export function App() {
   // session, so a later install toggle can't re-trigger it.
   const launchCheckedRef = useRef(false);
   useEffect(() => {
+    if (import.meta.env.DEV) return;
     if (appBlocked || launchCheckedRef.current) return;
     launchCheckedRef.current = true;
     runUpdateCheck("launch");
@@ -284,13 +286,15 @@ export function App() {
         dispatch({ type: "bootstrapLoaded", payload: seeded.payload });
         if (seeded.fakeNote) {
           dispatch({ type: "noteLoaded", note: seeded.fakeNote });
+          setBootstrapped(true);
           return;
         }
         if (startOnFreshNoteRef.current || seeded.payload.notes.length === 0) {
           startOnFreshNoteRef.current = false;
           const note = await createNote(undefined);
           dispatch({ type: "noteLoaded", note });
-          setActiveView("notes");
+          setActiveView("meetings");
+          setBootstrapped(true);
           return;
         }
         const firstNoteId = seeded.payload.notes[0]?.id;
@@ -300,6 +304,7 @@ export function App() {
         } else {
           setActiveView("settings");
         }
+        setBootstrapped(true);
       })
       .catch((err: unknown) => setError(messageFromError(err)));
   }, [appBlocked]);
@@ -445,13 +450,33 @@ export function App() {
         dispatch({ type: "noteLoaded", note });
         setOriginFolderId(undefined);
         setOriginAllNotes(false);
-        setActiveView("notes");
+        setActiveView("meetings");
       } catch (err) {
         setError(messageFromError(err));
       }
     },
     [state.selectedFolderId],
   );
+
+  useEffect(() => {
+    if (
+      appBlocked ||
+      !bootstrapped ||
+      activeView !== "meetings" ||
+      selectedNote ||
+      state.selectedNoteId
+    ) {
+      return;
+    }
+    void handleCreateNote(null);
+  }, [
+    activeView,
+    appBlocked,
+    bootstrapped,
+    handleCreateNote,
+    selectedNote,
+    state.selectedNoteId,
+  ]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -474,7 +499,7 @@ export function App() {
     if (state.selectedNoteId !== noteId) {
       await handleSelectNote(noteId);
     }
-    setActiveView("notes");
+    setActiveView("meetings");
     setFolderReturnTarget(undefined);
   }
 
@@ -571,7 +596,7 @@ export function App() {
       setOriginFolderId(undefined);
       setOriginAllNotes(true);
       setFolderReturnTarget(undefined);
-      setActiveView("notes");
+      setActiveView("meetings");
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -607,7 +632,7 @@ export function App() {
       setOriginFolderId(folderId);
       setOriginAllNotes(false);
       setFolderReturnTarget(undefined);
-      setActiveView("notes");
+      setActiveView("meetings");
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -795,10 +820,7 @@ export function App() {
         <SidebarToggleGlyph />
       </button>
       <Sidebar
-        folders={state.folders}
         notes={state.notes}
-        selectedNoteId={state.selectedNoteId}
-        selectedFolderId={state.selectedFolderId}
         activeView={activeView}
         onChangeView={(view) => {
           setActiveView(view);
@@ -806,20 +828,12 @@ export function App() {
             setFolderReturnTarget(undefined);
             dispatch({ type: "folderSelected", folderId: undefined });
           }
-          if (view !== "notes") {
+          if (view !== "meetings" && view !== "notes") {
             setOriginFolderId(undefined);
             setOriginAllNotes(false);
             setFolderReturnTarget(undefined);
           }
         }}
-        onCreateFolder={() => {
-          setActiveView("folders");
-          setFolderReturnTarget(undefined);
-          dispatch({ type: "folderSelected", folderId: undefined });
-        }}
-        onCreateNote={() => void handleCreateNote(null)}
-        onSelectAll={() => handleSelectFolder(undefined)}
-        onSelectFolder={(folderId) => handleSelectFolder(folderId)}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
         onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
@@ -893,7 +907,7 @@ export function App() {
               />
             ) : activeView === "agent" ? (
               <AgentWorkspace />
-            ) : activeView === "all-notes" ? (
+            ) : activeView === "notes" || activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}
                 selectedNoteId={state.selectedNoteId}
@@ -933,7 +947,7 @@ export function App() {
                     void handleSelectNoteFromFolder(noteId, folderId);
                   } else {
                     void handleSelectNote(noteId).then(() =>
-                      setActiveView("notes"),
+                      setActiveView("meetings"),
                     );
                   }
                 }}
@@ -976,14 +990,14 @@ export function App() {
                   />
                 ) : originAllNotes ? (
                   <BreadcrumbBar
-                    backLabel="Back to All notes"
+                    backLabel="Back to Notes"
                     onBack={() => {
                       setActiveView("all-notes");
                       setOriginAllNotes(false);
                     }}
                     items={[
                       {
-                        label: "All notes",
+                        label: "Notes",
                         onClick: () => {
                           setActiveView("all-notes");
                           setOriginAllNotes(false);
@@ -1070,15 +1084,7 @@ export function App() {
                 />
               </div>
             ) : (
-              <section className="editor-empty">
-                <button
-                  type="button"
-                  className="primary-action"
-                  onClick={() => void handleCreateNote(null)}
-                >
-                  New note
-                </button>
-              </section>
+              <section className="editor-empty" aria-label="Opening note" />
             )}
           </div>
         </div>

@@ -194,6 +194,9 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
+    await user.click(
+      await screen.findByRole("button", { name: /^First note/ }),
+    );
     await screen.findByDisplayValue("First note");
     fireEvent.click(
       screen.getByRole("button", { name: "Open Testing folder" }),
@@ -263,6 +266,11 @@ describe("App shortcuts", () => {
       balance: { usdMillis: 1200 },
     });
 
-    expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Notes" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^First note/ }),
+    ).toBeInTheDocument();
   });
 });
