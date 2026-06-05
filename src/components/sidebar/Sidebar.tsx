@@ -12,6 +12,7 @@ import { BotIcon } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SELECT_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   type AgentSessionsChangedDetail,
@@ -200,6 +201,7 @@ export function Sidebar({
           type="button"
           className="sidebar-nav-item"
           onClick={() => {
+            markAgentNewSessionPending();
             onChangeView("agent");
             dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
           }}
@@ -336,6 +338,18 @@ export function Sidebar({
       ) : null}
     </aside>
   );
+}
+
+function markAgentNewSessionPending() {
+  try {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      String(Date.now()),
+    );
+  } catch {
+    // Session storage can be unavailable in restricted webviews; the event path
+    // still handles already-mounted Agent workspaces.
+  }
 }
 
 function NoteRow({

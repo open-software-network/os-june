@@ -87,6 +87,7 @@ type AgentPanel = "chat" | "skills" | "messaging";
 export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
 export const AGENT_SELECT_SESSION_EVENT = "scribe:agent:select-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
+export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
 
 export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
@@ -123,6 +124,7 @@ export function AgentWorkspace() {
   >([]);
   const [selectedHermesSessionId, setSelectedHermesSessionId] =
     useState<string>();
+  const [newSessionMode, setNewSessionMode] = useState(false);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
@@ -164,6 +166,7 @@ export function AgentWorkspace() {
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
+  const newSessionModeRef = useRef(false);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const setTaskWorking = useCallback((taskId: string, working: boolean) => {
@@ -226,7 +229,11 @@ export function AgentWorkspace() {
     try {
       const response = await listAgentTasks();
       setTasks(response.items);
-      setSelectedTaskId((current) => current ?? response.items[0]?.id);
+      setSelectedTaskId((current) =>
+        newSessionModeRef.current
+          ? undefined
+          : (current ?? response.items[0]?.id),
+      );
       setError(null);
     } catch (err) {
       setError(messageFromError(err));
@@ -242,6 +249,7 @@ export function AgentWorkspace() {
       const sessions = await listHermesSessions();
       setHermesSessionItems(sessions);
       setSelectedHermesSessionId((current) => {
+        if (newSessionModeRef.current) return undefined;
         if (current && sessions.some((session) => session.id === current)) {
           return current;
         }
@@ -294,9 +302,15 @@ export function AgentWorkspace() {
     function handleSelectSession(event: Event) {
       const detail = (event as CustomEvent<AgentSelectSessionDetail>).detail;
       if (!detail?.sessionId) return;
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
       setActivePanel("chat");
       setSelectedHermesSessionId(detail.sessionId);
       setSelectedTaskId(undefined);
+    }
+
+    if (hasPendingNewSessionRequest()) {
+      void startNewTask();
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
@@ -410,7 +424,8 @@ export function AgentWorkspace() {
   }, [bridge.running, selectedHermesSessionId, workingSessionIds]);
 
   useEffect(() => {
-    listRef.current?.scrollTo({
+    if (typeof listRef.current?.scrollTo !== "function") return;
+    listRef.current.scrollTo({
       top: listRef.current.scrollHeight,
       behavior: "smooth",
     });
@@ -472,6 +487,8 @@ export function AgentWorkspace() {
     if (!runtimeSessionId)
       throw new Error("Hermes did not resume the session.");
     const createdAt = new Date().toISOString();
+    newSessionModeRef.current = false;
+    setNewSessionMode(false);
     setRuntimeSessionIds((current) => ({
       ...current,
       [storedSessionId]: runtimeSessionId,
@@ -694,6 +711,9 @@ export function AgentWorkspace() {
   }
 
   async function startNewTask() {
+    clearPendingNewSessionRequest();
+    newSessionModeRef.current = true;
+    setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     setSelectedHermesSessionId(undefined);
@@ -857,7 +877,7 @@ export function AgentWorkspace() {
     <section className="agent-workspace" aria-label="Agent">
       <section className="agent-main" aria-label="Agent task details">
         {error ? <p className="error-banner">{error}</p> : null}
-        {selectedHermesSessionId ? (
+        {!newSessionMode && selectedHermesSessionId ? (
           <>
             <header className="agent-detail-header">
               <div className="agent-detail-title">
@@ -895,7 +915,7 @@ export function AgentWorkspace() {
               ))}
             </div>
           </>
-        ) : selectedTask ? (
+        ) : !newSessionMode && selectedTask ? (
           <>
             <header className="agent-detail-header">
               <div className="agent-detail-title">
@@ -2695,4 +2715,20 @@ function messageFromError(err: unknown) {
     return String((err as { message: unknown }).message);
   }
   return String(err);
+}
+
+function hasPendingNewSessionRequest() {
+  try {
+    return window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingNewSessionRequest() {
+  try {
+    window.sessionStorage.removeItem(AGENT_NEW_SESSION_PENDING_KEY);
+  } catch {
+    // Session storage can be unavailable in restricted webviews.
+  }
 }
