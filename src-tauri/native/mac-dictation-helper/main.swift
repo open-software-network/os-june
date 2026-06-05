@@ -927,7 +927,9 @@ enum SelectedDeviceRecorderError: LocalizedError {
 }
 
 final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    private static let levelEmitInterval: TimeInterval = 0.04
+    // 50Hz (20ms) so the HUD has a fresh sample roughly every rAF frame — at the
+    // old 40ms a level spanned ~2.5 frames and read as steppy under speech.
+    private static let levelEmitInterval: TimeInterval = 0.02
     private static let visualLevelScale: Float = 0.25
 
     private let session = AVCaptureSession()
@@ -1338,9 +1340,10 @@ final class DictationController {
 
     private func startMetering() {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        // 25Hz audio-level emit rate: keeps the HUD's bars feeling reactive
-        // to voice without flooding the IPC channel.
-        timer.schedule(deadline: .now(), repeating: .milliseconds(40))
+        // 50Hz (20ms) emit rate: a fresh level roughly every rAF frame so the
+        // bars track speech without the steppiness of the old 40ms cadence.
+        // Tiny JSON lines, so the IPC channel handles it comfortably.
+        timer.schedule(deadline: .now(), repeating: .milliseconds(20))
         timer.setEventHandler { [weak self] in
             self?.emitAudioRecorderLevel()
         }
@@ -1354,9 +1357,16 @@ final class DictationController {
         }
 
         audioRecorder.updateMeters()
-        let averagePower = max(audioRecorder.averagePower(forChannel: 0), -80)
-        let level = Float(pow(10.0, Double(averagePower) / 20.0))
-        observeAudioLevel(level)
+        // averagePower is heavily time-smoothed — it reads dead under speech and
+        // is why production never shimmered like the playground. peakPower tracks
+        // per-syllable dynamics; bias hard toward it and keep a little average so
+        // the floor between syllables doesn't flicker.
+        let peakDb = max(audioRecorder.peakPower(forChannel: 0), -80)
+        let averageDb = max(audioRecorder.averagePower(forChannel: 0), -80)
+        let peak = Float(pow(10.0, Double(peakDb) / 20.0))
+        let average = Float(pow(10.0, Double(averageDb) / 20.0))
+        let level = peak * 0.8 + average * 0.2
+        observeAudioLevel(min(1, level))
     }
 
     private func observeAudioLevel(_ level: Float) {

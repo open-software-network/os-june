@@ -321,7 +321,10 @@
             <option value="recorder">Recorder — 7 bars</option>
           </select>
           <select id="source">
-            <option value="rms">Raw = RMS (HUD-like)</option>
+            <option value="blend" selected>
+              Raw = 0.8·peak + 0.2·rms (HUD helper)
+            </option>
+            <option value="rms">Raw = RMS (old HUD)</option>
             <option value="peak">Raw = peak (recorder-like)</option>
           </select>
           <span id="status" class="status"></span>
@@ -333,8 +336,16 @@
         </div>
 
         <div class="group">
-          <h3>Idle wave <span class="tag">carrier · "shimmer across"</span></h3>
+          <h3>Idle pulse <span class="tag">flat row · travels across (timing)</span></h3>
           <div id="waveCtl"></div>
+        </div>
+
+        <div class="group">
+          <h3>
+            Speech wave
+            <span class="tag">fine vibration while talking (texture)</span>
+          </h3>
+          <div id="speechCtl"></div>
         </div>
 
         <div class="group">
@@ -351,6 +362,27 @@
               read jumpy in the middle; "left → right" sweeps cleanly across.
             </div>
           </div>
+        </div>
+
+        <div class="group">
+          <h3>
+            Spectrum <span class="tag">FFT bands · "shimmer across" (Part 2)</span>
+          </h3>
+          <div class="knob">
+            <label
+              class="top"
+              style="cursor: pointer; justify-content: flex-start; gap: 8px"
+            >
+              <input type="checkbox" id="cb-FFT_BANDS" />
+              <span class="name">Drive bars from FFT bands (top row)</span>
+            </label>
+            <div class="hint">
+              Each bar = a real frequency band from your mic, so bars dance to
+              your voice's spectrum instead of one shared envelope. Live mic
+              only. Bottom row stays single-envelope for A/B.
+            </div>
+          </div>
+          <div id="fftCtl"></div>
         </div>
 
         <div class="group">
@@ -502,16 +534,35 @@
         // idle "carrier" wave — a slow sine travelling across the bars at a base
         // level, present even in silence, to signify active listening / time.
         // Layered UNDER the audio response (recedes as bars get loud).
-        IDLE_AMP: 0, // base height of the wave (0 = off / shipping)
-        IDLE_SPEED: 0.5, // cycles per second
-        IDLE_SPREAD: 0.9, // radians of phase per bar = the "across" wavelength
-        IDLE_DUCKING: 1, // 1 = carrier fully recedes at high levels
+        IDLE_AMP: 0, // height of the idle pulse (0 = off / shipping)
+        IDLE_SPEED: 0.5, // passes per second the pulse travels across
+        IDLE_SPREAD: 0.9, // (legacy sine carrier — unused by the pulse model)
+        IDLE_DUCKING: 1, // 1 = pulse fully recedes once speaking
+        IDLE_PULSE_WIDTH: 1.1, // bars — how wide the travelling pulse is
+        IDLE_PULSE_GAP: 3, // bars of empty space before the pulse loops back
         // speaking-wave propagation: each bar reads the audio envelope delayed by
         // its distance × PROP_DELAY (pushes), so a loud moment travels across the
         // row instead of all centre bars spiking at once. 0 = original (no travel).
         PROP_DELAY: 0,
         PROP_MODE: "across", // "across" = left→right sweep, "center" = ripple out
         SPATIAL: 0, // 0..1 neighbour blend — smooths the wave across bars
+        // ---- FFT spectrum mode (Part 2) ----
+        // When on, each bar is driven by a real frequency band from the mic's
+        // FFT (AnalyserNode) instead of the single envelope — so bars dance to
+        // your voice's spectrum (the Whisper-style "shimmer across"). 0 = off.
+        FFT_BANDS: 0,
+        BAND_LO_HZ: 120, // lowest band's start frequency
+        BAND_HI_HZ: 6000, // highest band's end frequency (voice lives below this)
+        BAND_TILT: 1.2, // HF lift — treble energy is naturally quieter than bass
+        BAND_FLOOR: 0.04, // per-band noise gate (below this a band reads as 0)
+        BAND_GAIN: 1.6, // overall band amplification before the ballistics
+        // ---- Speech-coupled travelling wave (layer 3 in paint) ----
+        // A shimmer that sweeps across the row, amplitude scaled by how loud you
+        // are RIGHT NOW — so talking adds movement on top of the bounce. 0 = off.
+        SPEECH_WAVE_AMP: 0,
+        SPEECH_WAVE_SPEED: 1.1, // cycles/sec — faster than the idle carrier
+        SPEECH_WAVE_SPREAD: 1.3, // phase/bar — tighter = a clearer travelling crest
+        SPEECH_WAVE_CURVE: 0.7, // <1 blooms early as you start talking; >1 only when loud
       };
       // Longer ring so the per-bar propagation delays have history to read from.
       const LEVEL_HISTORY_LENGTH = 32;
@@ -529,31 +580,63 @@
       // CSS_MS sharpened 40→18 so the low-mix shimmer reads crisp; whisper floor
       // is voice-gated (see pushTick). The bottom A/B row still runs DEFAULTS
       // (prod), so every one of these shows as "← changed".
+      // RESET (2026-06-04): amplitude-driven LENS, not per-band FFT. The spectrum
+      // mode was inherently jumpy (frame-to-frame noise) and bass-loaded the LEFT
+      // bars at ambient. This model instead:
+      //   • idle = flat row + one pulse travelling across (a timing signifier),
+      //   • speech = one loudness envelope → symmetric centre-peaked lens, driven
+      //     REACTIVE so the middle physically bounces with each syllable (punchy
+      //     attack, quick die-down) instead of pegging tall,
+      //   • a fine fast vibration overlay for the tangible "Whisper" texture.
+      // Edges stay calm by construction (low lens weights); life lives in the
+      // middle. FFT_BANDS is OFF here on purpose.
       const TUNED = {
         BAR_COUNT: 7,
-        CENTER_EMPHASIS: 0.22,
-        EDGE_WEIGHT: 0.28,
-        WHISPER_FLOOR: 0.24,
-        LIVE_LEVEL_MIX: 0.25,
-        CSS_MS: 18,
-        // compress speaking so a whisper fills the pill nearly as much as a yell
-        AUDIO_VISUAL_GAIN: 8,
-        // damp the ambient floor so the idle carrier reads against a flat baseline
-        AUDIO_NOISE_GATE: 0.01,
+        CENTER_EMPHASIS: 0.3, // taller middle — the lens peak
+        EDGE_WEIGHT: 0.2, // low edges — calm, near-flat ends
+        // Low floor so the middle drops back toward flat between syllables =
+        // BOUNCE. (A high floor is what pegged it continuously tall before.)
+        WHISPER_FLOOR: 0.06,
+        // Reactive, not smeared: the envelope follows syllables so it dips and
+        // rises instead of gliding as one blob.
+        LIVE_LEVEL_MIX: 0.6,
+        CSS_MS: 16,
+        PUSH_HZ: 50,
+        // Lower gain = more dynamic range left in the curve = more visible
+        // bounce between quiet and loud (vs slamming everything to the ceiling).
+        AUDIO_VISUAL_GAIN: 5,
+        AUDIO_NOISE_GATE: 0.02,
         AMBIENT_VISUAL_GAIN: 3,
         AMBIENT_MAX_LEVEL: 0.03,
-        // always-on travelling carrier wave (the "shimmer across" at base level)
-        IDLE_AMP: 0.07,
-        IDLE_SPEED: 0.45,
-        IDLE_SPREAD: 0.9,
-        IDLE_DUCKING: 0.72,
-        // speaking wave spreads across the row instead of spiking in the middle
-        PROP_DELAY: 1,
+        // Idle = flat baseline with ONE pulse travelling across (timing). Ducks
+        // away once you speak so the lens bounce takes over.
+        IDLE_AMP: 0.13,
+        IDLE_SPEED: 0.5,
+        IDLE_PULSE_WIDTH: 1.0,
+        IDLE_PULSE_GAP: 3,
+        IDLE_DUCKING: 0.9,
+        // A little travel so the bounce has motion across it, but small so the
+        // peak stays centred.
+        PROP_DELAY: 0.4,
         PROP_MODE: "across",
-        SPATIAL: 0.32,
-        RELEASE_ALPHA: 0.85,
+        // Light neighbour blend — enough to keep edges cohesive without flattening
+        // the centre bounce.
+        SPATIAL: 0.22,
+        // Punchy rise + quick die-down on the back end = physical, tangible.
+        ATTACK_ALPHA: 0.78,
+        RELEASE_ALPHA: 0.86,
         SILENCE_RELEASE_ALPHA: 0.96,
-        SILENCE_TARGET: 0.12,
+        SILENCE_TARGET: 0.14,
+        // Spectrum mode OFF — this is the reset away from the jumpy per-band path.
+        FFT_BANDS: 0,
+        // Fine, fast vibration while speaking — the tangible "Whisper" shimmer.
+        // Per-bar phase (SPREAD) makes bars vibrate slightly out of sync so it
+        // reads as texture, not a single pulsing block. Small amp so it rides on
+        // top of the bounce rather than becoming the movement.
+        SPEECH_WAVE_AMP: 0.06,
+        SPEECH_WAVE_SPEED: 2.2,
+        SPEECH_WAVE_SPREAD: 1.7,
+        SPEECH_WAVE_CURVE: 1.0,
       };
 
       // live params (meter A) start from defaults, overlaid with the tuned set
@@ -667,6 +750,33 @@
             targets[i] = clamp(v, 0, 1);
           }
         }
+        // Per-bar path: each bar's target comes straight from its own frequency
+        // band (no single-scalar synthesis / propagation). Spatial smoothing and
+        // the ballistics still apply so neighbours stay cohesive and the bars
+        // attack/release naturally. History advances with the overall level so
+        // the idle carrier and scope keep working.
+        function pushBands(bands) {
+          let overall = 0;
+          for (let i = 0; i < count; i++) overall = Math.max(overall, bands[i] || 0);
+          head = (head + 1) % len;
+          history[head] = overall;
+          // Apply the lens weights so the silhouette stays CENTER-peaked (middle
+          // tall, edges taper to dots) instead of following raw spectral tilt,
+          // which is bass-heavy and lit the LEFT bars at ambient.
+          const shaped = new Array(count);
+          for (let i = 0; i < count; i++)
+            shaped[i] = (bands[i] || 0) * (weights[i] ?? 1);
+          const s = p.SPATIAL || 0;
+          for (let i = 0; i < count; i++) {
+            let v = shaped[i];
+            if (s > 0) {
+              const l = shaped[i - 1] ?? v;
+              const r = shaped[i + 1] ?? v;
+              v = v * (1 - s) + ((l + r) / 2) * s;
+            }
+            targets[i] = clamp(v, 0, 1);
+          }
+        }
         function step() {
           let animating = false;
           for (let i = 0; i < count; i++) {
@@ -697,7 +807,7 @@
           displayed.fill(IDLE_LEVEL);
           head = 0;
         }
-        return { targets, displayed, pushLevel, step, reset, count };
+        return { targets, displayed, pushLevel, pushBands, step, reset, count };
       }
 
       // ===================================================================
@@ -736,21 +846,43 @@
         for (const f of fillsB)
           f.style.transition = `height ${DEFAULTS.CSS_MS}ms linear`;
       }
-      // Paint the bars, layering the audio-driven displayed level with the
-      // always-on travelling carrier wave. The wave recedes as a bar gets loud,
-      // but tuned rows keep a little of it alive under speech so the waveform
-      // continues moving smoothly while talking.
+      // Paint the bars in three layers:
+      //   1. the audio-driven displayed level (per-bar bounce / FFT band),
+      //   2. the always-on idle carrier (recedes under speech — the silent
+      //      "we're listening" shimmer),
+      //   3. a SPEECH-COUPLED travelling wave whose amplitude GROWS with how
+      //      loud you're talking, so speaking adds a shimmer sweeping across on
+      //      top of the bounce instead of ducking it out.
       function paint(fills, meter, p, now) {
         const t = now / 1000;
+        // Current loudness = the tallest bar right now (0..1). Drives layer 3.
+        let speech = 0;
+        for (let i = 0; i < meter.count; i++)
+          speech = Math.max(speech, meter.displayed[i]);
         for (let i = 0; i < meter.count; i++) {
           let lvl = meter.displayed[i];
           if (p.IDLE_AMP > 0) {
-            const ripple =
-              p.IDLE_AMP *
-              0.5 *
-              (1 +
-                Math.sin(2 * Math.PI * p.IDLE_SPEED * t - i * p.IDLE_SPREAD));
-            lvl = clamp(lvl + ripple * (1 - lvl * p.IDLE_DUCKING), 0, 1);
+            // One soft pulse travelling left→right across an otherwise flat row —
+            // the idle "timing" signifier. Ducks away as a bar gets loud so the
+            // speech lens takes over.
+            const span = meter.count - 1 + p.IDLE_PULSE_GAP;
+            const pos = ((p.IDLE_SPEED * t) % 1) * span;
+            const d = i - pos;
+            const bump = Math.exp(
+              -(d * d) / (2 * p.IDLE_PULSE_WIDTH * p.IDLE_PULSE_WIDTH),
+            );
+            lvl = clamp(lvl + p.IDLE_AMP * bump * (1 - lvl * p.IDLE_DUCKING), 0, 1);
+          }
+          if (p.SPEECH_WAVE_AMP > 0) {
+            // Bipolar (−1..1): bars rise AND dip as the crest sweeps past their
+            // speech level, so it reads as movement, not just a lift.
+            const crest = Math.sin(
+              2 * Math.PI * p.SPEECH_WAVE_SPEED * t - i * p.SPEECH_WAVE_SPREAD,
+            );
+            // Scale by speech^curve so it's invisible at rest and blooms as you
+            // talk — the "more movement when speaking" you asked for.
+            const drive = Math.pow(speech, p.SPEECH_WAVE_CURVE);
+            lvl = clamp(lvl + p.SPEECH_WAVE_AMP * drive * crest, 0, 1);
           }
           fills[i].style.height = (3 + lvl * surface.growth).toFixed(2) + "px";
         }
@@ -779,6 +911,7 @@
       let audioCtx = null;
       let analyser = null;
       let timeData = null;
+      let freqData = null; // FFT magnitude bins for the spectral band mode
       let micOn = false;
       let injected = null; // {level, until} synthetic override
 
@@ -804,7 +937,12 @@
           const src = audioCtx.createMediaStreamSource(stream);
           analyser = audioCtx.createAnalyser();
           analyser.fftSize = 1024;
+          // Higher = the FFT magnitudes are averaged more across frames, so the
+          // per-band bars stop twitching on spectral noise (the main "too jumpy"
+          // source). 0.72 reads smooth while still tracking syllables.
+          analyser.smoothingTimeConstant = 0.72;
           timeData = new Float32Array(analyser.fftSize);
+          freqData = new Uint8Array(analyser.frequencyBinCount);
           src.connect(analyser);
           micOn = true;
           document.getElementById("mic").textContent = "Stop mic";
@@ -834,6 +972,35 @@
         return { rms: Math.sqrt(sum / timeData.length), peak };
       }
 
+      // Real per-bar FFT: average the mic's frequency bins into `count`
+      // log-spaced voice bands (so low bars = bass, high bars = treble), lift the
+      // naturally-quieter highs (tilt), gate, and amplify. This is what makes the
+      // bars dance to your actual voice spectrum instead of one shared envelope.
+      function computeBands(count) {
+        if (!analyser || !freqData) return new Array(count).fill(0);
+        analyser.getByteFrequencyData(freqData);
+        const nyquist = audioCtx.sampleRate / 2;
+        const binHz = nyquist / freqData.length;
+        const lo = P.BAND_LO_HZ;
+        const hi = P.BAND_HI_HZ;
+        const ratio = hi / lo;
+        const bands = new Array(count).fill(0);
+        for (let b = 0; b < count; b++) {
+          const f0 = lo * Math.pow(ratio, b / count);
+          const f1 = lo * Math.pow(ratio, (b + 1) / count);
+          const i0 = clamp(Math.floor(f0 / binHz), 0, freqData.length - 1);
+          const i1 = clamp(Math.ceil(f1 / binHz), i0, freqData.length - 1);
+          let sum = 0;
+          for (let i = i0; i <= i1; i++) sum += freqData[i];
+          let v = (sum / (i1 - i0 + 1) / 255) * P.BAND_GAIN;
+          // tilt: 1 at the lowest band → (1 + BAND_TILT) at the highest
+          v *= 1 + P.BAND_TILT * (count > 1 ? b / (count - 1) : 0);
+          if (v < P.BAND_FLOOR) v = 0;
+          bands[b] = clamp(v, 0, 1);
+        }
+        return bands;
+      }
+
       // ===================================================================
       // Loops:  push at PUSH_HZ (like the app's ~25Hz audio_level),
       //         step + paint on rAF (60Hz), exactly like hud.ts.
@@ -842,7 +1009,7 @@
       let lastShaped = 0,
         lastRms = 0,
         lastPeak = 0;
-      let sourceMode = "rms";
+      let sourceMode = "blend";
 
       function pushTick(now) {
         const interval = 1000 / P.PUSH_HZ;
@@ -851,7 +1018,15 @@
         const { rms, peak } = readRaw();
         lastRms = rms;
         lastPeak = peak;
-        const raw = sourceMode === "peak" ? peak : rms;
+        // "blend" mirrors the helper's shipped level (0.8·peak + 0.2·rms) so the
+        // playground shapes the SAME signal the real HUD now receives — tuning
+        // here transfers faithfully. "rms"/"peak" kept for comparison.
+        const raw =
+          sourceMode === "peak"
+            ? peak
+            : sourceMode === "blend"
+              ? peak * 0.8 + rms * 0.2
+              : rms;
         // meter A uses your shaping params; meter B uses defaults — same raw.
         const surfShape = surfaceKey === "recorder" ? shapeRecorder : shapeHud;
         let shapedA = surfShape(raw, P);
@@ -865,7 +1040,14 @@
         }
         const shapedB = surfShape(raw, DEFAULTS);
         lastShaped = shapedA;
-        meterA.pushLevel(shapedA);
+        // Meter A: real per-bar FFT bands when enabled (live mic only), else the
+        // single-envelope synthesis. Meter B always stays single-envelope so the
+        // bottom row is a true A/B of the spectral engine vs the shipping one.
+        if (P.FFT_BANDS && micOn) {
+          meterA.pushBands(computeBands(meterA.count));
+        } else {
+          meterA.pushLevel(shapedA);
+        }
         meterB.pushLevel(shapedB);
       }
 
@@ -950,12 +1132,20 @@
             "How fast the wave travels across the bars (cycles/sec). ~0.4 reads as a calm breathing time-signifier; faster feels busier.",
           ],
           [
-            "IDLE_SPREAD",
-            "Idle spread",
+            "IDLE_PULSE_WIDTH",
+            "Idle pulse width",
+            0.4,
+            3,
+            0.1,
+            "How wide the travelling idle pulse is, in bars. Narrow = a tight scanning dot; wide = a soft swell moving across.",
+          ],
+          [
+            "IDLE_PULSE_GAP",
+            "Idle pulse gap",
             0,
-            2,
-            0.05,
-            "Phase shift per bar = wavelength across the row. Higher = a tight wave clearly travelling left→right; 0 = all bars pulse in unison (no travel).",
+            6,
+            0.5,
+            "Empty bars before the pulse loops back to the left. Larger = a longer pause between passes.",
           ],
           [
             "IDLE_DUCKING",
@@ -963,7 +1153,7 @@
             0,
             1,
             0.02,
-            "How much the carrier disappears while speaking. 1 = fully ducked at high levels; lower keeps shimmer moving across under speech.",
+            "How much the idle pulse disappears while speaking. 1 = fully gone once you talk; lower keeps it travelling under speech.",
           ],
         ],
         spread: [
@@ -1016,6 +1206,82 @@
             0.4,
             0.01,
             "Minimum level shown whenever ANY voice is detected, so whispers still light the bars. Prod = 0. Try 0.1–0.18.",
+          ],
+        ],
+        speechwave: [
+          [
+            "SPEECH_WAVE_AMP",
+            "Speech wave amount",
+            0,
+            0.4,
+            0.01,
+            "How much shimmer sweeps across WHILE you talk, on top of the bounce. This is the 'more movement when speaking' knob. 0 = off.",
+          ],
+          [
+            "SPEECH_WAVE_SPEED",
+            "Speech wave speed",
+            0.2,
+            3,
+            0.05,
+            "How fast the speaking shimmer travels across (cycles/sec). Faster = busier, more energetic.",
+          ],
+          [
+            "SPEECH_WAVE_SPREAD",
+            "Speech wave spread",
+            0,
+            2.5,
+            0.05,
+            "Phase per bar = wavelength. Higher = a tight crest clearly travelling left→right; 0 = all bars pulse together (no travel).",
+          ],
+          [
+            "SPEECH_WAVE_CURVE",
+            "Speech wave bloom",
+            0.3,
+            2.5,
+            0.1,
+            "How loudness scales the wave. <1 = blooms as soon as you speak; >1 = only the loud moments sweep.",
+          ],
+        ],
+        fft: [
+          [
+            "BAND_LO_HZ",
+            "Low frequency",
+            40,
+            400,
+            10,
+            "Start frequency of the lowest bar. Lower = the left bars catch more bass/chest voice.",
+          ],
+          [
+            "BAND_HI_HZ",
+            "High frequency",
+            2000,
+            12000,
+            100,
+            "End frequency of the highest bar. Most voice energy lives under ~6kHz; higher adds airy sibilance to the right bars.",
+          ],
+          [
+            "BAND_GAIN",
+            "Band gain",
+            0.5,
+            4,
+            0.1,
+            "Overall amplification of the band magnitudes before the ballistics. Raise until normal speech fills the bars.",
+          ],
+          [
+            "BAND_TILT",
+            "HF tilt",
+            0,
+            3,
+            0.1,
+            "Lifts the higher bars (treble is naturally quieter than bass). 0 = flat; higher makes the right side as lively as the left.",
+          ],
+          [
+            "BAND_FLOOR",
+            "Band floor",
+            0,
+            0.2,
+            0.005,
+            "Per-band noise gate — below this a band reads as silence so quiet bins don't shimmer.",
           ],
         ],
         ballistics: [
@@ -1183,8 +1449,18 @@
       }
       mount("barsCtl", SLIDERS.bars);
       mount("waveCtl", SLIDERS.wave);
+      mount("speechCtl", SLIDERS.speechwave);
       mount("spreadCtl", SLIDERS.spread);
+      mount("fftCtl", SLIDERS.fft);
       mount("ballistics", SLIDERS.ballistics);
+
+      // FFT-bands toggle (boolean param, outside the slider system).
+      const fftBandsCb = document.getElementById("cb-FFT_BANDS");
+      fftBandsCb.checked = !!P.FFT_BANDS;
+      fftBandsCb.addEventListener("change", () => {
+        P.FFT_BANDS = fftBandsCb.checked ? 1 : 0;
+        updateExport();
+      });
 
       // Spread-origin select (string param, so it's outside the slider system).
       const propModeSel = document.getElementById("sl-PROP_MODE");
@@ -1222,7 +1498,7 @@
         document.getElementById("shapingRec").style.display =
           surfaceKey === "recorder" ? "" : "none";
         // sensible default raw source per surface
-        sourceMode = surfaceKey === "recorder" ? "peak" : "rms";
+        sourceMode = surfaceKey === "recorder" ? "peak" : "blend";
         document.getElementById("source").value = sourceMode;
         // sync the bar-count slider to the new preset's prod count
         P.BAR_COUNT = surface.count;
@@ -1265,6 +1541,7 @@
           if (sl) sl.value = DEFAULTS[key];
           if (val) val.textContent = DEFAULTS[key];
         }
+        fftBandsCb.checked = !!P.FFT_BANDS;
         rebuildAGeometry();
         applyTransition();
         updateExport();

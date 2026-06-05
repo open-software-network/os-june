@@ -65,14 +65,15 @@ const IDLE_RAF_TIMEOUT_MS = 260;
 // CPU at 60fps compositing — the carrier (a 0.45Hz sine) reads smooth either
 // way. Full rAF resumes the moment audio or bar motion returns.
 const SHIMMER_FRAME_MS = 33;
-// Nudged 0.008→0.01 (2026-06-04) so quiet room ambient stays in the (now
-// heavily damped) ambient regime — real speech still clears it into the voice
-// path + whisper floor, but room tone no longer crosses over and lights bars.
-const AUDIO_NOISE_GATE = 0.01;
-// Lower than the first Wispr-style pass so normal speech keeps enough headroom
-// for articulation. Whisper visibility comes from HUD_WHISPER_FLOOR below;
-// the gain should not turn steady speech into a flat, full-height wall.
-const AUDIO_VISUAL_GAIN = 8;
+// The helper now ships a peak-biased level (0.8·peak + 0.2·avg) instead of the
+// old time-smoothed averagePower, so the raw signal sits higher and spikier.
+// Gate raised 0.01→0.02 so the louder ambient peaks still rest below the voice
+// path; real speech clears it easily into the whisper floor.
+const AUDIO_NOISE_GATE = 0.02;
+// Halved 8→4 for the peak-biased signal: peaks run ~2–3× the old averagePower,
+// so the previous gain slammed steady speech into a flat, full-height wall.
+// Whisper visibility comes from HUD_WHISPER_FLOOR below, not from the gain.
+const AUDIO_VISUAL_GAIN = 4;
 // Ambient floor damped hard (gain 4→3, ceiling 0.11→0.03) so a quiet room rests
 // the bars near zero — the carrier wave, not room tone, is the idle "we're
 // listening" signal. The old 0.11 ceiling pegged the baseline and buried the
