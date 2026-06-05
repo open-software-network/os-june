@@ -54,6 +54,8 @@ type MenuState = {
   top: number;
 };
 
+const AGENT_SIDEBAR_SESSION_LIMIT = 12;
+
 export function Sidebar({
   notes,
   activeView,
@@ -126,7 +128,7 @@ export function Sidebar({
 
   useEffect(() => {
     let cancelled = false;
-    listHermesSessions({ limit: 12 })
+    listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_LIMIT })
       .then((sessions) => {
         if (!cancelled) {
           setAgentSessions((current) =>
@@ -148,7 +150,7 @@ export function Sidebar({
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      setAgentSessions(detail.sessions);
+      setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_LIMIT));
       setSelectedAgentSessionId(detail.selectedSessionId);
       setWorkingAgentSessionIds(new Set(detail.workingSessionIds));
     }

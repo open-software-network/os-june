@@ -140,6 +140,43 @@ describe("folders UI", () => {
     );
   });
 
+  it("keeps the sidebar agent session list capped after workspace refreshes", async () => {
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="agent"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+      />,
+    );
+
+    const sessions = Array.from({ length: 13 }, (_, index) => ({
+      id: `session-${index + 1}`,
+      title: `Agent session ${index + 1}`,
+      preview: "",
+      last_active: `2026-06-04T19:${String(59 - index).padStart(2, "0")}:00Z`,
+    }));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions,
+            selectedSessionId: "session-1",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Agent session 1")).toBeInTheDocument();
+    expect(screen.getByText("Agent session 12")).toBeInTheDocument();
+    expect(screen.queryByText("Agent session 13")).toBeNull();
+  });
+
   it("deletes agent sessions from the sidebar action", async () => {
     const user = userEvent.setup();
     const onDeleteAgentSession = vi.fn();
