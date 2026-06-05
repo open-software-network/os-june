@@ -164,9 +164,9 @@ body {
   border-radius: 999px;
   background: var(--hud-bar);
   transform: translateY(50%);
-  /* Sharpened 40→18ms (2026-06-04) so the low-mix shimmer reads crisp rather
-   * than smeared on top of the ballistics. */
-  transition: height 18ms linear;
+  /* 22ms linear height tween — matches the playground's CSS_MS so the
+   * inter-syllable motion smooths identically to the tuning tool. */
+  transition: height 22ms linear;
 }
 
 .hud-braille,

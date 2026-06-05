@@ -597,10 +597,11 @@
         // Low floor so the middle drops back toward flat between syllables =
         // BOUNCE. (A high floor is what pegged it continuously tall before.)
         WHISPER_FLOOR: 0.06,
-        // Reactive, not smeared: the envelope follows syllables so it dips and
-        // rises instead of gliding as one blob.
-        LIVE_LEVEL_MIX: 0.6,
-        CSS_MS: 16,
+        // Reactive enough to bounce, but eased back from 0.6 so the movement
+        // BETWEEN syllables glides rather than twitches.
+        LIVE_LEVEL_MIX: 0.45,
+        // A slightly longer height tween smooths the inter-syllable motion.
+        CSS_MS: 22,
         PUSH_HZ: 50,
         // Lower gain = more dynamic range left in the curve = more visible
         // bounce between quiet and loud (vs slamming everything to the ceiling).
@@ -622,20 +623,23 @@
         // Light neighbour blend — enough to keep edges cohesive without flattening
         // the centre bounce.
         SPATIAL: 0.22,
-        // Punchy rise + quick die-down on the back end = physical, tangible.
-        ATTACK_ALPHA: 0.78,
-        RELEASE_ALPHA: 0.86,
+        // Eased the rise + inter-syllable fall so the movement while speaking is
+        // smoother (less jumpy). The QUICK die-down when you actually stop is
+        // preserved separately via the high silence-release below, so the back
+        // end still snaps back fast.
+        ATTACK_ALPHA: 0.64,
+        RELEASE_ALPHA: 0.7,
         SILENCE_RELEASE_ALPHA: 0.96,
         SILENCE_TARGET: 0.14,
         // Spectrum mode OFF — this is the reset away from the jumpy per-band path.
         FFT_BANDS: 0,
-        // Fine, fast vibration while speaking — the tangible "Whisper" shimmer.
-        // Per-bar phase (SPREAD) makes bars vibrate slightly out of sync so it
-        // reads as texture, not a single pulsing block. Small amp so it rides on
-        // top of the bounce rather than becoming the movement.
-        SPEECH_WAVE_AMP: 0.06,
-        SPEECH_WAVE_SPEED: 2.2,
-        SPEECH_WAVE_SPREAD: 1.7,
+        // A very subtle shimmer that CARRIES ACROSS while you speak: slowed from
+        // a fast vibration (2.2) to a gentle travelling crest, with the per-bar
+        // phase (SPREAD) giving it the left→right travel. Low amp so it's a
+        // whisper of motion on top of the peak, not the main movement.
+        SPEECH_WAVE_AMP: 0.05,
+        SPEECH_WAVE_SPEED: 1.3,
+        SPEECH_WAVE_SPREAD: 1.6,
         SPEECH_WAVE_CURVE: 1.0,
       };
 

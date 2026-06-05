@@ -13,7 +13,10 @@
 // pixel geometry and raw-audio shaping differ. The deeper edge taper keeps loud
 // speech from turning the whole row into a blunt block while the center stays
 // elevated enough for whispers to read.
-export const LENS_BAR_WEIGHTS = [0.28, 0.415, 0.685, 0.82, 0.685, 0.415, 0.28];
+// Mirror of the playground's genWeights(7, centerEmphasis 0.3, edgeWeight 0.2):
+// a symmetric raised-cosine lens — tall centre (0.9), edges near-flat (0.2) so
+// the row reads as a calm baseline with the life concentrated in the middle.
+export const LENS_BAR_WEIGHTS = [0.2, 0.375, 0.725, 0.9, 0.725, 0.375, 0.2];
 export const LENS_HISTORY_OFFSETS = [1, 0, 1, 0, 1, 0, 1];
 
 export const HUD_BAR_COUNT = 7;
@@ -54,49 +57,74 @@ export type BarMeterOptions = {
 // smoothed between neighbours, instead of center bars spiking. Pass to
 // createBarMeter so both surfaces move identically.
 export const LIVE_WAVE_OPTIONS: BarMeterOptions = {
-  liveLevelMix: 0.25,
-  propDelay: 1,
+  liveLevelMix: 0.45,
+  propDelay: 0.4,
   propMode: "across",
-  spatial: 0.32,
+  spatial: 0.22,
 };
 
-// Idle carrier wave — a slow sine travelling across the bars at a low baseline
-// so a live listening/recording surface shimmers as an "active" / time-passing
-// signifier. Layered UNDER the audio response (recedes as a bar gets loud).
-// Shared so the HUD and recorder shimmer identically.
-export const IDLE_CARRIER_AMP = 0.07;
-export const IDLE_CARRIER_SPEED = 0.45; // cycles per second
-export const IDLE_CARRIER_SPREAD = 0.9; // radians of phase per bar
-// How much the carrier recedes under speech. 1 = fully disappears at high
-// levels; lower values keep a subtle travelling shimmer visible while talking.
-export const IDLE_CARRIER_DUCKING = 0.72;
+// Idle travelling pulse — at rest the row is flat and a single soft pulse sweeps
+// left→right across it as a "we're listening / time passing" signifier. Layered
+// UNDER the audio response (ducks away once a bar gets loud). Shared so the HUD
+// and recorder read identically. Mirror of the playground's idle-pulse model.
+export const IDLE_PULSE_AMP = 0.13;
+export const IDLE_PULSE_SPEED = 0.5; // passes per second across the row
+export const IDLE_PULSE_WIDTH = 1.0; // bars — width of the travelling pulse
+export const IDLE_PULSE_GAP = 3; // empty bars before the pulse loops back
+export const IDLE_PULSE_DUCKING = 0.9; // how much it recedes while speaking
 
-// Blend the carrier ripple into a displayed `level` for bar `index` at `timeMs`
-// (a monotonic clock, e.g. an rAF timestamp). Returns `level` unchanged when the
-// carrier is disabled (amp 0).
-export function withIdleCarrier(level: number, index: number, timeMs: number) {
-  if (IDLE_CARRIER_AMP <= 0) return level;
+// Speech wave — a very subtle shimmer that carries across WHILE speaking, its
+// amplitude scaled by current loudness (so it's invisible at rest and rides on
+// top of the peak). The per-bar phase gives it the left→right travel.
+export const SPEECH_WAVE_AMP = 0.05;
+export const SPEECH_WAVE_SPEED = 1.3; // cycles per second
+export const SPEECH_WAVE_SPREAD = 1.6; // radians of phase per bar
+export const SPEECH_WAVE_CURVE = 1.0; // loudness exponent (>1 = only when loud)
+
+// Paint helper shared by both live surfaces: layer the idle pulse + speech wave
+// onto a bar's displayed `level`. `speech` is the current overall loudness (the
+// max displayed bar, 0..1) and `barCount` sizes the pulse travel. Mirrors the
+// playground's paint() exactly so the HUD and recorder match the tuning tool.
+export function withWaveLayers(
+  level: number,
+  index: number,
+  timeMs: number,
+  speech: number,
+  barCount: number,
+) {
   const t = timeMs / 1000;
-  const ripple =
-    IDLE_CARRIER_AMP *
-    0.5 *
-    (1 +
-      Math.sin(
-        2 * Math.PI * IDLE_CARRIER_SPEED * t - index * IDLE_CARRIER_SPREAD,
-      ));
-  return clamp(level + ripple * (1 - level * IDLE_CARRIER_DUCKING), 0, 1);
+  let lvl = level;
+  if (IDLE_PULSE_AMP > 0) {
+    const span = barCount - 1 + IDLE_PULSE_GAP;
+    const pos = ((IDLE_PULSE_SPEED * t) % 1) * span;
+    const d = index - pos;
+    const bump = Math.exp(-(d * d) / (2 * IDLE_PULSE_WIDTH * IDLE_PULSE_WIDTH));
+    lvl = clamp(
+      lvl + IDLE_PULSE_AMP * bump * (1 - lvl * IDLE_PULSE_DUCKING),
+      0,
+      1,
+    );
+  }
+  if (SPEECH_WAVE_AMP > 0) {
+    const crest = Math.sin(
+      2 * Math.PI * SPEECH_WAVE_SPEED * t - index * SPEECH_WAVE_SPREAD,
+    );
+    const drive = Math.pow(speech, SPEECH_WAVE_CURVE);
+    lvl = clamp(lvl + SPEECH_WAVE_AMP * drive * crest, 0, 1);
+  }
+  return lvl;
 }
 
 // Ballistics, applied per rAF frame (~60fps). Fast attack on the way up, a
 // quick release on the way down, and an even quicker collapse once the input
 // drops into the "quiet" zone so the tail snaps back instead of lingering.
-export const ATTACK_ALPHA = 0.7;
-export const RELEASE_ALPHA = 0.85;
+export const ATTACK_ALPHA = 0.64;
+export const RELEASE_ALPHA = 0.7;
 export const SILENCE_RELEASE_ALPHA = 0.96;
 // Targets at/below this are treated as "going silent" → fast release. Set above
 // zero so the snap-back kicks in as soon as you stop talking, not only once the
 // level reaches dead silence.
-export const SILENCE_TARGET = 0.12;
+export const SILENCE_TARGET = 0.14;
 export const IDLE_SNAP_DELTA = 0.004;
 
 export function clamp(value: number, min: number, max: number) {

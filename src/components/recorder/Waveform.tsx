@@ -12,7 +12,7 @@ import {
   RECORDER_BAR_COUNT,
   RECORDER_BAR_HISTORY_OFFSETS,
   RECORDER_BAR_WEIGHTS,
-  withIdleCarrier,
+  withWaveLayers,
 } from "../../lib/audio-meter";
 
 type WaveformProps = {
@@ -66,11 +66,15 @@ export function Waveform({ level, active = true }: WaveformProps) {
     let raf = 0;
     const tick = (now: number) => {
       meter.step();
+      let speech = 0;
+      for (let i = 0; i < RECORDER_BAR_COUNT; i++) {
+        speech = Math.max(speech, meter.displayed[i]);
+      }
       for (let i = 0; i < RECORDER_BAR_COUNT; i++) {
         const el = refs.current[i];
         if (!el) continue;
         const value = activeRef.current
-          ? withIdleCarrier(meter.displayed[i], i, now)
+          ? withWaveLayers(meter.displayed[i], i, now, speech, RECORDER_BAR_COUNT)
           : meter.displayed[i];
         el.style.setProperty("--level", value.toFixed(3));
       }

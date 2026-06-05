@@ -930,7 +930,6 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     // 50Hz (20ms) so the HUD has a fresh sample roughly every rAF frame — at the
     // old 40ms a level spanned ~2.5 frames and read as steppy under speech.
     private static let levelEmitInterval: TimeInterval = 0.02
-    private static let visualLevelScale: Float = 0.25
 
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
@@ -1072,23 +1071,55 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
         ) == noErr, let dataPointer, length > 1 else {
             return
         }
-        let sampleCount = length / MemoryLayout<Int16>.size
+
+        // Detect the actual sample format. AVCaptureAudioDataOutput on macOS
+        // commonly delivers 32-bit FLOAT, not Int16 — reading float bytes as Int16
+        // yields a constant garbage level (frozen bars). Branch on the stream's
+        // real format so the meter is correct for whatever the device delivers.
+        var isFloat = false
+        var bitsPerChannel = 16
+        if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee {
+            isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+            if asbd.mBitsPerChannel > 0 {
+                bitsPerChannel = Int(asbd.mBitsPerChannel)
+            }
+        }
+
+        var sumSquares: Float = 0
+        var peak: Float = 0
+        var sampleCount = 0
+        if isFloat && bitsPerChannel == 32 {
+            sampleCount = length / MemoryLayout<Float32>.size
+            dataPointer.withMemoryRebound(to: Float32.self, capacity: sampleCount) { pointer in
+                for index in 0..<sampleCount {
+                    let value = pointer[index]
+                    sumSquares += value * value
+                    peak = max(peak, abs(value))
+                }
+            }
+        } else {
+            sampleCount = length / MemoryLayout<Int16>.size
+            dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
+                for index in 0..<sampleCount {
+                    let value = Float(pointer[index]) / Float(Int16.max)
+                    sumSquares += value * value
+                    peak = max(peak, abs(value))
+                }
+            }
+        }
         guard sampleCount > 0 else {
             return
         }
-        let samples = dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
-            UnsafeBufferPointer(start: pointer, count: sampleCount)
-        }
-        var sumSquares: Float = 0
-        for sample in samples {
-            let normalized = Float(sample) / Float(Int16.max)
-            sumSquares += normalized * normalized
-        }
         let rms = sqrt(sumSquares / Float(sampleCount))
+        // Peak-biased blend (0.8·peak + 0.2·rms), matching the playground's signal
+        // model. Instantaneous peak (no peak-hold) so the HUD rises AND dies down
+        // immediately — the responsiveness fix, on a correctly-read signal.
+        let level = peak * 0.8 + rms * 0.2
         let now = CFAbsoluteTimeGetCurrent()
         if now - lastLevelEmitAt >= Self.levelEmitInterval {
             lastLevelEmitAt = now
-            levelHandler(min(1, rms * Self.visualLevelScale))
+            levelHandler(min(1, level))
         }
     }
 
@@ -1237,8 +1268,15 @@ final class DictationController {
         resetRecordingState()
 
         let nextRecordingURL = temporaryRecordingURL()
-        if let selectedDevice = microphoneDevice(for: preferredMicrophoneID) {
-            startSelectedDeviceRecording(device: selectedDevice, url: nextRecordingURL)
+        // Auto-detect now resolves to the system default input and records through
+        // the same low-latency capture path as a manually-selected mic, so it's
+        // just as snappy (instantaneous peak, accurate die-down). The
+        // AVAudioRecorder path below is only a fallback for when no capture device
+        // is available at all.
+        let captureDevice =
+            microphoneDevice(for: preferredMicrophoneID) ?? AVCaptureDevice.default(for: .audio)
+        if let captureDevice {
+            startSelectedDeviceRecording(device: captureDevice, url: nextRecordingURL)
             return
         }
 

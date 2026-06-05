@@ -7,10 +7,10 @@ import {
   createBarMeter,
   HUD_BAR_HISTORY_OFFSETS,
   HUD_BAR_WEIGHTS,
-  IDLE_CARRIER_AMP,
+  IDLE_PULSE_AMP,
   IDLE_LEVEL,
   LIVE_WAVE_OPTIONS,
-  withIdleCarrier,
+  withWaveLayers,
 } from "./lib/audio-meter";
 import "./styles/hud.css";
 
@@ -65,15 +65,14 @@ const IDLE_RAF_TIMEOUT_MS = 260;
 // CPU at 60fps compositing — the carrier (a 0.45Hz sine) reads smooth either
 // way. Full rAF resumes the moment audio or bar motion returns.
 const SHIMMER_FRAME_MS = 33;
-// The helper now ships a peak-biased level (0.8·peak + 0.2·avg) instead of the
-// old time-smoothed averagePower, so the raw signal sits higher and spikier.
-// Gate raised 0.01→0.02 so the louder ambient peaks still rest below the voice
-// path; real speech clears it easily into the whisper floor.
+// The helper ships a peak-biased level (0.8·peak + 0.2·avg). These shaping
+// constants mirror the playground's TUNED set exactly (AUDIO source "blend") so
+// the HUD reads identically to the tuning tool.
 const AUDIO_NOISE_GATE = 0.02;
-// Halved 8→4 for the peak-biased signal: peaks run ~2–3× the old averagePower,
-// so the previous gain slammed steady speech into a flat, full-height wall.
-// Whisper visibility comes from HUD_WHISPER_FLOOR below, not from the gain.
-const AUDIO_VISUAL_GAIN = 4;
+// Gain 5 leaves dynamic range in the curve so the centre bounces between quiet
+// and loud instead of slamming the ceiling. Whisper visibility comes from the
+// (low) HUD_WHISPER_FLOOR below, not from the gain.
+const AUDIO_VISUAL_GAIN = 5;
 // Ambient floor damped hard (gain 4→3, ceiling 0.11→0.03) so a quiet room rests
 // the bars near zero — the carrier wave, not room tone, is the idle "we're
 // listening" signal. The old 0.11 ceiling pegged the baseline and buried the
@@ -83,11 +82,13 @@ const AMBIENT_VISUAL_GAIN = 3;
 const AMBIENT_MAX_LEVEL = 0.03;
 
 // Whisper floor: once voice clears the gate, lift it off the baseline so even
-// quiet speech reads tall. Voice-gated (see renderAudioLevel) — ambient/silence
-// stays below the gate and still collapses the bars to zero.
-const HUD_WHISPER_FLOOR = 0.24;
-// The always-on idle carrier wave lives in the shared meter (IDLE_CARRIER_*) so
-// the HUD and recorder shimmer identically.
+// quiet speech reads. Voice-gated (see renderAudioLevel) — ambient/silence stays
+// below the gate and still collapses the bars to zero. Kept low (0.06, matching
+// the playground) so the centre drops back toward flat between syllables and
+// bounces, instead of pegging continuously tall.
+const HUD_WHISPER_FLOOR = 0.06;
+// The idle pulse + speech wave live in the shared meter (IDLE_PULSE_*,
+// SPEECH_WAVE_*, withWaveLayers) so the HUD and recorder move identically.
 
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
@@ -130,16 +131,21 @@ function startBarLoop() {
   const tick = (now: number) => {
     rafHandle = undefined;
     const stillAnimating = meter.step();
+    // Overall loudness = the tallest bar right now; drives the speech wave.
+    let speech = 0;
     for (let i = 0; i < bars.length; i++) {
-      const level = withIdleCarrier(meter.displayed[i], i, now);
+      speech = Math.max(speech, meter.displayed[i]);
+    }
+    for (let i = 0; i < bars.length; i++) {
+      const level = withWaveLayers(meter.displayed[i], i, now, speech, bars.length);
       bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
     const reactive = stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS;
-    // Once the carrier wave is on, keep animating for as long as we're listening
-    // so the shimmer never freezes.
+    // Once the idle pulse is on, keep animating for as long as we're listening
+    // so the travelling pulse never freezes.
     const keepShimmering =
-      IDLE_CARRIER_AMP > 0 && hud?.dataset.state === "listening";
+      IDLE_PULSE_AMP > 0 && hud?.dataset.state === "listening";
     if (reactive) {
       // Bars moving or audio recent → paint every frame for responsiveness.
       rafHandle = window.requestAnimationFrame(tick);
