@@ -228,6 +228,7 @@ export function App() {
   // session, so a later install toggle can't re-trigger it.
   const launchCheckedRef = useRef(false);
   useEffect(() => {
+    if (import.meta.env.DEV) return;
     if (appBlocked || launchCheckedRef.current) return;
     launchCheckedRef.current = true;
     runUpdateCheck("launch");
