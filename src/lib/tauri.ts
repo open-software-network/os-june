@@ -734,6 +734,10 @@ export async function hermesBridgeFilesystemSnapshot() {
   return invoke<HermesFilesystemSnapshot>("hermes_bridge_filesystem_snapshot");
 }
 
+export async function openHermesBridgeFile(path: string) {
+  return invoke<void>("open_hermes_bridge_file", { request: { path } });
+}
+
 export async function hermesBridgeSessions(
   input: {
     limit?: number;
@@ -754,6 +758,12 @@ export async function hermesBridgeSessionMessages(sessionId: string) {
     "hermes_bridge_session_messages",
     { request: { sessionId } },
   );
+}
+
+export async function deleteHermesBridgeSession(sessionId: string) {
+  return invoke<unknown>("delete_hermes_bridge_session", {
+    request: { sessionId },
+  });
 }
 
 export async function updateHermesBridgeMessagingPlatform(input: {

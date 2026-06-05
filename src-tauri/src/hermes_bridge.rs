@@ -18,6 +18,9 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const SCRIBE_HERMES_COMMAND_ENV: &str = "SCRIBE_HERMES_COMMAND";
+const HERMES_AGENT_INSTALL_COMMIT: &str = "31c40c72c03cb11d5e596d015d61e7dd118cecee";
+const HERMES_SOURCE_TARBALL_URL: &str =
+    "https://github.com/NousResearch/hermes-agent/archive/31c40c72c03cb11d5e596d015d61e7dd118cecee.tar.gz";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 
@@ -58,6 +61,21 @@ struct HermesProcess {
 
 struct ScribeProviderProxy {
     shutdown: Option<oneshot::Sender<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct HermesCommandResolution {
+    command: String,
+    source: HermesCommandSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HermesCommandSource {
+    EnvOverride,
+    BundledRuntime,
+    ManagedRuntime,
+    UserLocalFallback,
+    PathFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +137,18 @@ pub struct HermesSessionsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HermesSessionMessagesRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteHermesSessionRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenHermesFileRequest {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,7 +247,6 @@ async fn start_hermes_bridge_inner(
         return Ok(status);
     }
 
-    let command = resolve_hermes_command();
     let port = pick_port()?;
     let token = random_token();
     let base_url = format!("http://127.0.0.1:{port}");
@@ -226,6 +255,9 @@ async fn start_hermes_bridge_inner(
         urlencoding::encode(&token)
     );
     let hermes_home = resolve_scribe_hermes_home(app)?;
+    let command_resolution = resolve_hermes_command(app, &hermes_home).await?;
+    let command = command_resolution.command;
+    let _command_source = command_resolution.source;
     let default_cwd = hermes_home.join("workspace");
     std::fs::create_dir_all(&default_cwd)
         .map_err(|error| AppError::new("hermes_bridge_workspace_failed", error.to_string()))?;
@@ -259,7 +291,7 @@ async fn start_hermes_bridge_inner(
     let child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
-            format!("Could not start Hermes. Install Hermes or set {SCRIBE_HERMES_COMMAND_ENV}. {error}"),
+            format!("Could not start the Scribe-managed Hermes runtime. {error}"),
         )
     })?;
     let pid = child.id();
@@ -460,6 +492,20 @@ pub async fn hermes_bridge_session_messages(
 }
 
 #[tauri::command]
+pub async fn delete_hermes_bridge_session(
+    bridge: State<'_, HermesBridge>,
+    request: DeleteHermesSessionRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::DELETE,
+        &format!("/api/sessions/{}", urlencoding::encode(&request.session_id)),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn hermes_bridge_filesystem_snapshot(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
@@ -488,6 +534,40 @@ pub async fn hermes_bridge_filesystem_snapshot(
         .collect();
 
     Ok(HermesFilesystemSnapshot { roots })
+}
+
+#[tauri::command]
+pub async fn open_hermes_bridge_file(
+    app: AppHandle,
+    request: OpenHermesFileRequest,
+) -> Result<(), AppError> {
+    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let requested = PathBuf::from(&request.path)
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_file_open_failed", error.to_string()))?;
+    if !requested.is_file() {
+        return Err(AppError::new(
+            "hermes_file_open_failed",
+            "Only files in the Hermes workspace or memory can be opened.",
+        ));
+    }
+    if is_hidden_secret_path(&requested) {
+        return Err(AppError::new(
+            "hermes_file_open_denied",
+            "This Hermes file is hidden or sensitive.",
+        ));
+    }
+    let allowed = filesystem_roots(&hermes_home)?
+        .into_iter()
+        .filter_map(|root| root.path.canonicalize().ok())
+        .any(|root| requested.starts_with(root));
+    if !allowed {
+        return Err(AppError::new(
+            "hermes_file_open_denied",
+            "Only files in this app's Hermes workspace or memory can be opened.",
+        ));
+    }
+    open_file_with_system(&requested)
 }
 
 pub fn shutdown(app: &tauri::AppHandle) {
@@ -606,21 +686,233 @@ fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
     Ok(())
 }
 
-fn resolve_hermes_command() -> String {
-    std::env::var(SCRIBE_HERMES_COMMAND_ENV).unwrap_or_else(|_| {
-        std::env::var("HOME")
-            .ok()
-            .map(|home| {
-                [
-                    std::path::PathBuf::from(&home).join(".hermes/hermes-agent/venv/bin/hermes"),
-                    std::path::PathBuf::from(&home).join(".local/bin/hermes"),
-                ]
-            })
-            .and_then(|paths| paths.into_iter().find(|path| path.exists()))
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "hermes".to_string())
+async fn resolve_hermes_command(
+    app: &AppHandle,
+    hermes_home: &Path,
+) -> Result<HermesCommandResolution, AppError> {
+    if let Ok(command) = std::env::var(SCRIBE_HERMES_COMMAND_ENV) {
+        let command = command.trim();
+        if !command.is_empty() {
+            return Ok(HermesCommandResolution {
+                command: command.to_string(),
+                source: HermesCommandSource::EnvOverride,
+            });
+        }
+    }
+
+    if let Some(command) = bundled_hermes_command(app) {
+        return Ok(HermesCommandResolution {
+            command: command.to_string_lossy().into_owned(),
+            source: HermesCommandSource::BundledRuntime,
+        });
+    }
+
+    let managed_command = managed_hermes_command(app)?;
+    if managed_command.exists() && managed_hermes_runtime_current(app)? {
+        return Ok(HermesCommandResolution {
+            command: managed_command.to_string_lossy().into_owned(),
+            source: HermesCommandSource::ManagedRuntime,
+        });
+    }
+
+    if let Err(error) = install_managed_hermes_runtime(app, hermes_home).await {
+        if let Some(command) = user_local_hermes_command() {
+            eprintln!(
+                "failed to install Scribe-managed Hermes runtime; using existing user-local Hermes fallback: {}",
+                error.message
+            );
+            return Ok(HermesCommandResolution {
+                command: command.to_string_lossy().into_owned(),
+                source: HermesCommandSource::UserLocalFallback,
+            });
+        }
+        return Err(error);
+    }
+
+    if managed_command.exists() {
+        return Ok(HermesCommandResolution {
+            command: managed_command.to_string_lossy().into_owned(),
+            source: HermesCommandSource::ManagedRuntime,
+        });
+    }
+
+    if let Some(command) = user_local_hermes_command() {
+        return Ok(HermesCommandResolution {
+            command: command.to_string_lossy().into_owned(),
+            source: HermesCommandSource::UserLocalFallback,
+        });
+    }
+
+    Ok(HermesCommandResolution {
+        command: "hermes".to_string(),
+        source: HermesCommandSource::PathFallback,
     })
 }
+
+fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
+    let resource_dir = app.path().resource_dir().ok()?;
+    let candidates = [
+        resource_dir.join("native/hermes/hermes-agent/venv/bin/hermes"),
+        resource_dir.join("native/hermes/bin/hermes"),
+    ];
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| AppError::new("hermes_runtime_home_failed", error.to_string()))?
+        .join("hermes-runtime"))
+}
+
+fn managed_hermes_command(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(managed_hermes_runtime_dir(app)?
+        .join("hermes-agent")
+        .join("venv/bin/hermes"))
+}
+
+fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
+    let metadata_path = managed_hermes_runtime_dir(app)?.join("runtime.json");
+    let Ok(metadata) = fs::read_to_string(metadata_path) else {
+        return Ok(false);
+    };
+    Ok(metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#)))
+}
+
+fn user_local_hermes_command() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    [
+        PathBuf::from(&home).join(".hermes/hermes-agent/venv/bin/hermes"),
+        PathBuf::from(&home).join(".local/bin/hermes"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+async fn install_managed_hermes_runtime(
+    app: &AppHandle,
+    hermes_home: &Path,
+) -> Result<(), AppError> {
+    let runtime_dir = managed_hermes_runtime_dir(app)?;
+    let install_dir = runtime_dir.join("hermes-agent");
+    fs::create_dir_all(&runtime_dir)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if install_dir.exists() && !managed_hermes_runtime_current(app)? {
+        fs::remove_dir_all(&install_dir)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+    let install_log = runtime_dir.join("install.log");
+
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&install_log)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let log_file_for_stderr = log_file
+        .try_clone()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+
+    let status = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(MANAGED_HERMES_INSTALL_SCRIPT)
+        .env("SCRIBE_HERMES_RUNTIME_DIR", &runtime_dir)
+        .env("SCRIBE_HERMES_INSTALL_DIR", &install_dir)
+        .env("SCRIBE_HERMES_HOME", hermes_home)
+        .env("SCRIBE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+        .env(
+            "SCRIBE_HERMES_SOURCE_TARBALL_URL",
+            HERMES_SOURCE_TARBALL_URL,
+        )
+        .env("HERMES_HOME", hermes_home)
+        .env("HERMES_INSTALL_DIR", &install_dir)
+        .env("UV_NO_CONFIG", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_for_stderr))
+        .status()
+        .map_err(|error| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                format!(
+                    "Could not run the Hermes runtime installer. Install log: {}. {error}",
+                    install_log.display()
+                ),
+            )
+        })?;
+
+    if !status.success() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "Could not set up the Scribe-managed Hermes runtime. Install log: {}.",
+                install_log.display()
+            ),
+        ));
+    }
+
+    if !install_dir.join("venv/bin/hermes").exists() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "Hermes setup completed but the runtime command was not created. Install log: {}.",
+                install_log.display()
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+const MANAGED_HERMES_INSTALL_SCRIPT: &str = r#"
+set -euo pipefail
+
+runtime_dir="${SCRIBE_HERMES_RUNTIME_DIR:?}"
+install_dir="${SCRIBE_HERMES_INSTALL_DIR:?}"
+hermes_home="${SCRIBE_HERMES_HOME:?}"
+install_commit="${SCRIBE_HERMES_INSTALL_COMMIT:?}"
+source_tarball_url="${SCRIBE_HERMES_SOURCE_TARBALL_URL:?}"
+
+mkdir -p "$runtime_dir" "$hermes_home"
+
+if [ ! -f "$install_dir/pyproject.toml" ] || [ ! -f "$install_dir/scripts/install.sh" ]; then
+  tmp_dir="$(mktemp -d "$runtime_dir/download.XXXXXX")"
+  cleanup() { rm -rf "$tmp_dir"; }
+  trap cleanup EXIT
+  curl -LsSf "$source_tarball_url" -o "$tmp_dir/hermes-agent.tar.gz"
+  tar -xzf "$tmp_dir/hermes-agent.tar.gz" -C "$tmp_dir"
+  unpacked_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'hermes-agent-*' | head -n 1)"
+  if [ -z "$unpacked_dir" ]; then
+    echo "Hermes source archive did not contain a hermes-agent directory." >&2
+    exit 1
+  fi
+  rm -rf "$install_dir"
+  mkdir -p "$(dirname "$install_dir")"
+  mv "$unpacked_dir" "$install_dir"
+fi
+
+run_stage() {
+  local stage="$1"
+  HERMES_HOME="$hermes_home" HERMES_INSTALL_DIR="$install_dir" \
+    bash "$install_dir/scripts/install.sh" \
+      --dir "$install_dir" \
+      --hermes-home "$hermes_home" \
+      --stage "$stage" \
+      --json \
+      --non-interactive
+}
+
+run_stage venv
+run_stage python-deps
+run_stage node-deps
+run_stage config
+run_stage complete
+
+cat > "$runtime_dir/runtime.json" <<EOF
+{"source":"NousResearch/hermes-agent","commit":"$install_commit","installDir":"$install_dir"}
+EOF
+"#;
 
 fn apply_isolated_hermes_env(cmd: &mut Command, hermes_home: &std::path::Path, token: &str) {
     for name in ISOLATED_HERMES_ENV_VARS {
@@ -776,6 +1068,30 @@ fn is_hidden_secret_path(path: &Path) -> bool {
     ) || name.ends_with(".lock")
         || name.ends_with(".key")
         || name.ends_with(".pem")
+}
+
+#[cfg(target_os = "macos")]
+fn open_file_with_system(path: &Path) -> Result<(), AppError> {
+    let status = Command::new("/usr/bin/open")
+        .arg(path)
+        .status()
+        .map_err(|error| AppError::new("hermes_file_open_failed", error.to_string()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "hermes_file_open_failed",
+            format!("open exited with status {status}"),
+        ))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_file_with_system(_path: &Path) -> Result<(), AppError> {
+    Err(AppError::new(
+        "hermes_file_open_unsupported",
+        "Opening Hermes files is only supported on macOS.",
+    ))
 }
 
 fn system_time_to_iso(value: std::time::SystemTime) -> String {

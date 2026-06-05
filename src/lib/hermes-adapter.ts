@@ -1,4 +1,5 @@
 import {
+  deleteHermesBridgeSession,
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
   type HermesSessionInfo,
@@ -33,6 +34,10 @@ export async function listHermesSessions(
 export async function listHermesSessionMessages(sessionId: string) {
   const response = await hermesBridgeSessionMessages(sessionId);
   return normalizeHermesSessionMessagesResponse(response);
+}
+
+export async function deleteHermesSession(sessionId: string) {
+  await deleteHermesBridgeSession(sessionId);
 }
 
 export function normalizeHermesSessionsResponse(

@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_SELECT_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
@@ -9,6 +10,18 @@ import {
 import { NotesList } from "../components/notes-list/NotesList";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { NoteListItemDto } from "../lib/tauri";
+
+const hermesMocks = vi.hoisted(() => ({
+  deleteHermesSession: vi.fn(),
+  listHermesSessions: vi.fn(),
+}));
+
+vi.mock("../lib/hermes-adapter", () => ({
+  deleteHermesSession: hermesMocks.deleteHermesSession,
+  listHermesSessions: hermesMocks.listHermesSessions,
+  sessionTimestamp: (session: { last_active?: string; started_at?: string }) =>
+    session.last_active ?? session.started_at ?? "",
+}));
 
 const now = "2026-05-19T10:00:00Z";
 
@@ -34,6 +47,12 @@ const notes: NoteListItemDto[] = [
 ];
 
 describe("folders UI", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hermesMocks.listHermesSessions.mockResolvedValue([]);
+    hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
+  });
+
   it("renders the notes entry and starts agent sessions from the sidebar", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
@@ -118,6 +137,110 @@ describe("folders UI", () => {
     window.removeEventListener(
       AGENT_SELECT_SESSION_EVENT,
       onSelectAgentSession,
+    );
+  });
+
+  it("keeps the sidebar agent session list capped after workspace refreshes", async () => {
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="agent"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+      />,
+    );
+
+    const sessions = Array.from({ length: 13 }, (_, index) => ({
+      id: `session-${index + 1}`,
+      title: `Agent session ${index + 1}`,
+      preview: "",
+      last_active: `2026-06-04T19:${String(59 - index).padStart(2, "0")}:00Z`,
+    }));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions,
+            selectedSessionId: "session-1",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Agent session 1")).toBeInTheDocument();
+    expect(screen.getByText("Agent session 12")).toBeInTheDocument();
+    expect(screen.queryByText("Agent session 13")).toBeNull();
+  });
+
+  it("deletes agent sessions from the sidebar action", async () => {
+    const user = userEvent.setup();
+    const onDeleteAgentSession = vi.fn();
+    window.addEventListener(AGENT_DELETE_SESSION_EVENT, onDeleteAgentSession);
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="agent"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [
+              {
+                id: "session-1",
+                title: "Researching Google",
+                preview: "Generate a PDF",
+                last_active: "2026-06-04T19:00:00Z",
+              },
+            ],
+            selectedSessionId: "session-1",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Researching Google")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete session" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: 'Delete "Researching Google"?',
+    });
+    expect(
+      within(dialog).getByText("This agent session cannot be restored."),
+    ).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete session" }),
+    );
+
+    await waitFor(() =>
+      expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith(
+        "session-1",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Researching Google")).toBeNull(),
+    );
+    await waitFor(() => expect(onDeleteAgentSession).toHaveBeenCalled());
+    const detail = (onDeleteAgentSession.mock.calls[0][0] as CustomEvent)
+      .detail;
+    expect(detail).toEqual({ sessionId: "session-1" });
+
+    window.removeEventListener(
+      AGENT_DELETE_SESSION_EVENT,
+      onDeleteAgentSession,
     );
   });
 

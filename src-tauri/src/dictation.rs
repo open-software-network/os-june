@@ -1527,20 +1527,60 @@ fn outcome_from_transcription_result(
             })),
             transcript: None,
         },
-        Ok(transcript) => DictationTranscriptionOutcome {
-            helper_command: serde_json::json!({
-                "type": "paste_text",
-                "text": transcript.text.clone(),
-            }),
-            event: None,
-            transcript: Some(transcript),
-        },
+        Ok(transcript) => {
+            if let Some(prompt) = agent_session_prompt_from_dictation(&transcript.text) {
+                DictationTranscriptionOutcome {
+                    helper_command: serde_json::json!({ "type": "discard_recording" }),
+                    event: Some(serde_json::json!({
+                        "type": "agent_session_prompt",
+                        "payload": { "prompt": prompt },
+                    })),
+                    transcript: Some(transcript),
+                }
+            } else {
+                DictationTranscriptionOutcome {
+                    helper_command: serde_json::json!({
+                        "type": "paste_text",
+                        "text": transcript.text.clone(),
+                    }),
+                    event: None,
+                    transcript: Some(transcript),
+                }
+            }
+        }
         Err(error) => DictationTranscriptionOutcome {
             helper_command: serde_json::json!({ "type": "discard_recording" }),
             event: Some(app_error_event(error)),
             transcript: None,
         },
     }
+}
+
+fn agent_session_prompt_from_dictation(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let (first, after_first) = take_ascii_word(trimmed)?;
+    if !first.eq_ignore_ascii_case("hey") {
+        return None;
+    }
+    let after_first = skip_word_separators(after_first);
+    let (second, after_second) = take_ascii_word(after_first)?;
+    if !second.eq_ignore_ascii_case("june") {
+        return None;
+    }
+    Some(skip_word_separators(after_second).trim().to_string())
+}
+
+fn take_ascii_word(value: &str) -> Option<(&str, &str)> {
+    let end = value
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_alphabetic())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .last()?;
+    Some(value.split_at(end))
+}
+
+fn skip_word_separators(value: &str) -> &str {
+    value.trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch.is_ascii_punctuation())
 }
 
 async fn store_dictation_history_item(app: &AppHandle, transcript: &TranscriptionProviderResult) {
@@ -2217,6 +2257,47 @@ mod tests {
         assert_eq!(
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
             Some("Paste this transcript.")
+        );
+    }
+
+    #[test]
+    fn hey_june_transcription_maps_to_agent_session_event() {
+        let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
+            text: "Hey, June, summarize the open document.".to_string(),
+            language: Some("en".to_string()),
+            provider: crate::providers::VENICE_PROVIDER.to_string(),
+        }));
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({ "type": "discard_recording" })
+        );
+        assert_eq!(
+            outcome.event,
+            Some(serde_json::json!({
+                "type": "agent_session_prompt",
+                "payload": { "prompt": "summarize the open document." },
+            }))
+        );
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("Hey, June, summarize the open document.")
+        );
+    }
+
+    #[test]
+    fn hey_june_detection_requires_first_two_words() {
+        assert_eq!(
+            agent_session_prompt_from_dictation("Hey June open settings").as_deref(),
+            Some("open settings")
+        );
+        assert_eq!(
+            agent_session_prompt_from_dictation("well hey june open"),
+            None
+        );
+        assert_eq!(
+            agent_session_prompt_from_dictation("hey juniper open"),
+            None
         );
     }
 

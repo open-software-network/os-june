@@ -11,7 +11,12 @@ import {
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
-import { AgentWorkspace } from "../components/agent/AgentWorkspace";
+import {
+  AGENT_NEW_SESSION_EVENT,
+  AgentWorkspace,
+  markAgentNewSessionPending,
+  type AgentNewSessionDetail,
+} from "../components/agent/AgentWorkspace";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
@@ -251,6 +256,19 @@ export function App() {
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationEvent(event.payload);
       if (!helperEvent) return;
+      if (helperEvent.type === "agent_session_prompt") {
+        const prompt = stringPayloadValue(helperEvent.payload?.prompt);
+        markAgentNewSessionPending(prompt);
+        setActiveView("agent");
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+              detail: { prompt },
+            }),
+          );
+        }, 0);
+        return;
+      }
       if (
         helperEvent.type !== "permission_status" &&
         helperEvent.type !== "dictation_diagnostics"

@@ -35,6 +35,7 @@ import {
   hermesBridgeStatus,
   hermesBridgeToolsets,
   listAgentTasks,
+  openHermesBridgeFile,
   retryAgentTask,
   saveAgentAssistantMessage,
   saveAgentHermesSession,
@@ -86,6 +87,7 @@ type AgentPanel = "chat" | "skills" | "messaging";
 
 export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
 export const AGENT_SELECT_SESSION_EVENT = "scribe:agent:select-session";
+export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
 
@@ -97,6 +99,21 @@ export type AgentSessionsChangedDetail = {
 
 type AgentSelectSessionDetail = {
   sessionId: string;
+};
+
+export type AgentNewSessionDetail = {
+  prompt?: string;
+};
+
+type AgentDeleteSessionDetail = {
+  sessionId: string;
+};
+
+type AgentArtifact = {
+  name: string;
+  path: string;
+  rootLabel: string;
+  size?: number | null;
 };
 
 type HermesRuntimeSessionResponse = {
@@ -214,6 +231,10 @@ export function AgentWorkspace() {
       ...(pendingHermesMessages[selectedHermesSessionId] ?? []),
     ];
   }, [hermesSessionMessages, pendingHermesMessages, selectedHermesSessionId]);
+  const chatArtifacts = useMemo(
+    () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
+    [filesystemSnapshot],
+  );
 
   const upsertTask = useCallback((task: AgentTaskDto) => {
     setTasks((prev) => {
@@ -295,8 +316,9 @@ export function AgentWorkspace() {
   }, [hermesSessionItems, selectedHermesSessionId, workingSessionIds]);
 
   useEffect(() => {
-    function handleNewSession() {
-      void startNewTask();
+    function handleNewSession(event: Event) {
+      const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
+      void startNewTask(detail?.prompt);
     }
 
     function handleSelectSession(event: Event) {
@@ -309,17 +331,45 @@ export function AgentWorkspace() {
       setSelectedTaskId(undefined);
     }
 
-    if (hasPendingNewSessionRequest()) {
-      void startNewTask();
+    function handleDeleteSession(event: Event) {
+      const detail = (event as CustomEvent<AgentDeleteSessionDetail>).detail;
+      if (!detail?.sessionId) return;
+      const { sessionId } = detail;
+      setHermesSessionItems((current) => {
+        const next = current.filter((session) => session.id !== sessionId);
+        setSelectedHermesSessionId((selected) =>
+          selected === sessionId ? next[0]?.id : selected,
+        );
+        return next;
+      });
+      setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
+      setPendingHermesMessages((current) => omitRecordKey(current, sessionId));
+      setWorkingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
+      setLiveEvents(liveEventsRef.current);
+    }
+
+    const pending = pendingNewSessionRequest();
+    if (pending) {
+      void startNewTask(pending.prompt);
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
     window.addEventListener(AGENT_SELECT_SESSION_EVENT, handleSelectSession);
+    window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
     return () => {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
       window.removeEventListener(
         AGENT_SELECT_SESSION_EVENT,
         handleSelectSession,
+      );
+      window.removeEventListener(
+        AGENT_DELETE_SESSION_EVENT,
+        handleDeleteSession,
       );
     };
   }, []);
@@ -357,6 +407,11 @@ export function AgentWorkspace() {
       cancelled = true;
     };
   }, [bridge.running, selectedHermesSessionId]);
+
+  useEffect(() => {
+    if (!bridge.running || !selectedHermesSessionId) return;
+    void loadFilesystemSnapshot();
+  }, [bridge.running, selectedHermesSessionId, selectedHermesMessages.length]);
 
   useEffect(() => {
     if (!selectedTaskId) return;
@@ -572,10 +627,15 @@ export function AgentWorkspace() {
 
   async function startBridge() {
     setBridgeStarting(true);
+    setError(null);
     try {
       const status = await startHermesBridge();
       setBridge(status);
       return status;
+    } catch (err) {
+      const message = messageFromError(err);
+      setError(message);
+      throw err;
     } finally {
       setBridgeStarting(false);
     }
@@ -710,14 +770,27 @@ export function AgentWorkspace() {
     }
   }
 
-  async function startNewTask() {
+  async function startNewTask(prompt?: string) {
     clearPendingNewSessionRequest();
     newSessionModeRef.current = true;
     setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     setSelectedHermesSessionId(undefined);
-    setDraft("");
+    const initialPrompt = prompt?.trim() ?? "";
+    setDraft(initialPrompt);
+    if (!initialPrompt) return;
+    setSubmitting(true);
+    try {
+      await submitHermesSession(initialPrompt);
+      setDraft("");
+      setError(null);
+    } catch (err) {
+      setDraft(initialPrompt);
+      setError(messageFromError(err));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function cancelTask(taskId: string) {
@@ -903,7 +976,13 @@ export function AgentWorkspace() {
                 <AgentChatTurnRow
                   key={turn.id}
                   turn={turn}
+                  artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
+                  onOpenArtifact={(artifact) =>
+                    void openHermesBridgeFile(artifact.path).catch(
+                      (err: unknown) => setError(messageFromError(err)),
+                    )
+                  }
                   onApproval={(part, choice) =>
                     void respondToApproval(
                       part.sessionId ?? selectedHermesSessionId,
@@ -965,7 +1044,13 @@ export function AgentWorkspace() {
                 <AgentChatTurnRow
                   key={turn.id}
                   turn={turn}
+                  artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
+                  onOpenArtifact={(artifact) =>
+                    void openHermesBridgeFile(artifact.path).catch(
+                      (err: unknown) => setError(messageFromError(err)),
+                    )
+                  }
                   onApproval={(part, choice) => {
                     const sessionId =
                       part.sessionId ??
@@ -986,9 +1071,11 @@ export function AgentWorkspace() {
                 <div>
                   <h2>Agent</h2>
                   <p>
-                    {bridge.running
-                      ? `Hermes bridge running on ${bridge.connection?.port ?? "local"}`
-                      : "Desktop tasks with private local-tool policy."}
+                    {bridgeStarting
+                      ? "Setting up the local agent runtime..."
+                      : bridge.running
+                        ? `Hermes bridge running on ${bridge.connection?.port ?? "local"}`
+                        : "Desktop tasks with private local-tool policy."}
                   </p>
                 </div>
               </div>
@@ -998,9 +1085,9 @@ export function AgentWorkspace() {
                     type="button"
                     className="agent-new-task"
                     disabled={bridgeStarting}
-                    onClick={() => void startBridge()}
+                    onClick={() => void startBridge().catch(() => undefined)}
                   >
-                    {bridgeStarting ? "Starting Hermes" : "Start Hermes"}
+                    {bridgeStarting ? "Setting up Agent" : "Start Agent"}
                   </button>
                 ) : null}
               </div>
@@ -1945,14 +2032,18 @@ type ApprovalChoice = "once" | "session" | "always" | "deny";
 
 function AgentChatTurnRow({
   approvalSubmitting,
+  artifacts,
   onApproval,
+  onOpenArtifact,
   turn,
 }: {
   approvalSubmitting: Record<string, string>;
+  artifacts?: AgentArtifact[];
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: ApprovalChoice,
   ) => void;
+  onOpenArtifact?: (artifact: AgentArtifact) => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -1987,10 +2078,13 @@ function AgentChatTurnRow({
       <div className="agent-assistant-turn-body">
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
-            <MarkdownContent
-              key={`${turn.id}:text:${index}`}
-              markdown={part.text}
-            />
+            <div key={`${turn.id}:text:${index}`}>
+              <MarkdownContent markdown={part.text} />
+              <AgentArtifactList
+                artifacts={artifactsMentionedInText(artifacts ?? [], part.text)}
+                onOpen={onOpenArtifact}
+              />
+            </div>
           ) : part.type === "reasoning" ? (
             <ReasoningPart key={`${turn.id}:reasoning:${index}`} part={part} />
           ) : part.type === "approval" ? (
@@ -2129,6 +2223,42 @@ function AgentToolPartRow({
         {part.text ? <p>{part.text}</p> : null}
       </div>
     </article>
+  );
+}
+
+function AgentArtifactList({
+  artifacts,
+  onOpen,
+}: {
+  artifacts: AgentArtifact[];
+  onOpen?: (artifact: AgentArtifact) => void;
+}) {
+  if (!artifacts.length) return null;
+  return (
+    <div className="agent-artifact-list" aria-label="Generated files">
+      {artifacts.map((artifact) => (
+        <article key={artifact.path} className="agent-artifact-card">
+          <span className="agent-tool-icon">
+            <FileIcon size={14} />
+          </span>
+          <div>
+            <div className="agent-artifact-title">
+              <span>{artifact.name}</span>
+              <em>{artifact.rootLabel}</em>
+            </div>
+            <p>
+              {formatBytes(artifact.size)}
+              <span>{compactPath(artifact.path)}</span>
+            </p>
+          </div>
+          {onOpen ? (
+            <button type="button" onClick={() => onOpen(artifact)}>
+              Open
+            </button>
+          ) : null}
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -2495,6 +2625,58 @@ function filterFilesystemEntries(
   });
 }
 
+function artifactsFromFilesystemSnapshot(
+  snapshot: HermesFilesystemSnapshot | null,
+): AgentArtifact[] {
+  return (snapshot?.roots ?? []).flatMap((root) =>
+    filesystemEntriesToArtifacts(root.entries, root.label),
+  );
+}
+
+function filesystemEntriesToArtifacts(
+  entries: HermesFilesystemEntry[],
+  rootLabel: string,
+): AgentArtifact[] {
+  return entries.flatMap((entry) => {
+    const children = filesystemEntriesToArtifacts(
+      entry.children ?? [],
+      rootLabel,
+    );
+    if (entry.kind !== "file") return children;
+    return [
+      {
+        name: entry.name,
+        path: entry.path,
+        rootLabel,
+        size: entry.size,
+      },
+      ...children,
+    ];
+  });
+}
+
+function artifactsMentionedInText(
+  artifacts: AgentArtifact[],
+  text: string,
+): AgentArtifact[] {
+  if (!artifacts.length || !text.trim()) return [];
+  const normalized = text.toLowerCase();
+  const seen = new Set<string>();
+  return artifacts.filter((artifact) => {
+    const name = artifact.name.toLowerCase();
+    const path = artifact.path.toLowerCase();
+    if (
+      !name ||
+      seen.has(artifact.path) ||
+      (!normalized.includes(name) && !normalized.includes(path))
+    ) {
+      return false;
+    }
+    seen.add(artifact.path);
+    return true;
+  });
+}
+
 function includesQuery(value: unknown, query: string) {
   return safeText(value).toLowerCase().includes(query);
 }
@@ -2717,11 +2899,38 @@ function messageFromError(err: unknown) {
   return String(err);
 }
 
-function hasPendingNewSessionRequest() {
+function omitRecordKey<T>(record: Record<string, T>, key: string) {
+  if (!(key in record)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
+export function markAgentNewSessionPending(prompt?: string) {
   try {
-    return window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY) != null;
+    const payload = JSON.stringify({
+      createdAt: Date.now(),
+      prompt: prompt?.trim() || undefined,
+    });
+    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, payload);
   } catch {
-    return false;
+    // Session storage can be unavailable in restricted webviews; the event path
+    // still handles already-mounted Agent workspaces.
+  }
+}
+
+function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
+  try {
+    const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
+    if (value == null) return undefined;
+    try {
+      const parsed = JSON.parse(value) as AgentNewSessionDetail;
+      return typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {};
+    } catch {
+      return {};
+    }
+  } catch {
+    return undefined;
   }
 }
 

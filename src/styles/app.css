@@ -1210,6 +1210,70 @@ input:focus-visible,
   white-space: pre-wrap;
 }
 
+.agent-artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.agent-artifact-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: 440px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: var(--surface-subtle);
+}
+
+.agent-artifact-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-artifact-title span {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifact-title em {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-style: normal;
+}
+
+.agent-artifact-card p {
+  display: flex;
+  gap: var(--sp-2);
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-artifact-card p span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifact-card button {
+  min-height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+}
+
 .agent-reasoning {
   width: 100%;
   color: var(--muted-foreground);
@@ -2077,6 +2141,15 @@ input:focus-visible,
 .note-row-menu:hover {
   background: oklch(0% 0 none / 6%);
   color: var(--foreground);
+}
+
+.note-row-menu:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.agent-session-delete:hover:not(:disabled) {
+  color: var(--destructive);
 }
 
 .agent-sidebar-row .note-row-main {
