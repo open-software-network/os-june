@@ -226,6 +226,7 @@ describe("AppSettings", () => {
       }),
     });
 
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
     await user.click(
       screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
     );
@@ -254,6 +255,7 @@ describe("AppSettings", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: "Dictation" }));
     expect(await screen.findByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
     expect(
@@ -368,6 +370,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
     );
+    await user.click(screen.getByRole("tab", { name: "Models" }));
     await user.click(
       await screen.findByRole("button", {
         name: "Change transcription model",
@@ -420,6 +423,8 @@ describe("AppSettings", () => {
       />,
     );
 
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
     expect(await screen.findByText("Release version")).toBeInTheDocument();
     expect(screen.getByText(APP_VERSION)).toBeInTheDocument();
     expect(screen.getByText("Commit")).toBeInTheDocument();

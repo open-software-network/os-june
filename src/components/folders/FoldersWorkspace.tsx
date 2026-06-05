@@ -11,6 +11,7 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPageSearch } from "central-icons/IconPageSearch";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconRobot } from "central-icons/IconRobot";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import {
@@ -291,6 +292,7 @@ function FolderList({
               root.entries.length === 1 ? "entry" : "entries"
             }`}
             icon={<IconFolderOpen size={18} />}
+            badge={<IconRobot size={12} />}
             onOpen={() => setSelectedVirtualFolder(root.id as VirtualFolderId)}
           />
         ))}
@@ -466,12 +468,14 @@ function VirtualFolderCard({
   meta,
   description,
   icon,
+  badge,
   onOpen,
 }: {
   name: string;
   meta: string;
   description: string;
   icon: ReactNode;
+  badge?: ReactNode;
   onOpen: () => void;
 }) {
   return (
@@ -480,7 +484,17 @@ function VirtualFolderCard({
       className="folder-card folders-virtual-folder-card"
       onClick={onOpen}
     >
-      <span className="folder-card-icon">{icon}</span>
+      <span className="folder-card-icon folders-virtual-folder-icon">
+        {icon}
+        {badge ? (
+          <span
+            className="folders-agent-folder-badge"
+            aria-label="Agent folder"
+          >
+            {badge}
+          </span>
+        ) : null}
+      </span>
       <span className="folder-card-name">{name}</span>
       <span className="folder-card-meta">{meta}</span>
       <span className="folder-card-description">{description}</span>

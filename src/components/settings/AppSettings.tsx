@@ -125,6 +125,23 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   generationModel: "zai-org-glm-5",
 };
 
+type SettingsTab =
+  | "account"
+  | "dictation"
+  | "audio"
+  | "models"
+  | "agent"
+  | "about";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "account", label: "Account" },
+  { id: "dictation", label: "Dictation" },
+  { id: "audio", label: "Audio" },
+  { id: "models", label: "Models" },
+  { id: "agent", label: "Agent" },
+  { id: "about", label: "About" },
+];
+
 type AppSettingsProps = {
   account: AccountStatus;
   accountLoading: boolean;
@@ -170,6 +187,7 @@ export function AppSettings({
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
+  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
   const micWrapRef = useRef<HTMLDivElement>(null);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemReadiness = sourceReadiness?.sources.find(
@@ -435,265 +453,317 @@ export function AppSettings({
         </p>
       </header>
 
-      <nav className="settings-nav" aria-label="Settings sections">
-        <a href="#account-heading">Account</a>
-        <a href="#dictation-heading">Dictation</a>
-        <a href="#audio-heading">Audio</a>
-        <a href="#models-heading">Models</a>
-        <a href="#agent-heading">Agent</a>
-        <a href="#about-heading">About</a>
+      <nav
+        className="settings-nav"
+        role="tablist"
+        aria-label="Settings sections"
+      >
+        {SETTINGS_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`settings-panel-${tab.id}`}
+            id={`settings-tab-${tab.id}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
       </nav>
 
-      <AccountSettingsSection
-        account={account}
-        loading={accountLoading}
-        onAccountChanged={onAccountChanged}
-        onRefresh={onAccountRefresh}
-      />
-
-      <section className="settings-group" aria-labelledby="appearance-heading">
-        <h2 id="appearance-heading" className="settings-group-heading">
-          Appearance
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Theme</h3>
-                <p className="settings-row-description">
-                  Match the system or force light or dark mode.
-                </p>
-              </div>
-              <div className="settings-row-control">
-                <SegmentedControl<ThemePreference>
-                  aria-label="App theme"
-                  value={theme}
-                  options={THEME_OPTIONS}
-                  onValueChange={(next) => {
-                    setTheme(next);
-                    setStoredTheme(next);
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="settings-group" aria-labelledby="dictation-heading">
-        <h2 id="dictation-heading" className="settings-group-heading">
-          Dictation
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <ShortcutRow
-              title="Push to talk"
-              description="Hold this shortcut to dictate, then release to paste."
-              shortcut={settings.pushToTalkShortcut}
-              capturing={capturingShortcut === "push_to_talk"}
-              disabled={
-                !!capturingShortcut && capturingShortcut !== "push_to_talk"
-              }
-              error={
-                capturingShortcut === "push_to_talk" ? shortcutError : undefined
-              }
-              onChange={() => void startShortcutCapture("push_to_talk")}
-              onCancel={() => void cancelShortcutCapture()}
+      <div
+        className="settings-tab-panel"
+        role="tabpanel"
+        id={`settings-panel-${activeTab}`}
+        aria-labelledby={`settings-tab-${activeTab}`}
+      >
+        {activeTab === "account" ? (
+          <>
+            <AccountSettingsSection
+              account={account}
+              loading={accountLoading}
+              onAccountChanged={onAccountChanged}
+              onRefresh={onAccountRefresh}
             />
 
-            <ShortcutRow
-              title="Toggle dictation"
-              description="Press this shortcut to start or stop dictation."
-              shortcut={settings.toggleShortcut}
-              capturing={capturingShortcut === "toggle"}
-              disabled={!!capturingShortcut && capturingShortcut !== "toggle"}
-              error={capturingShortcut === "toggle" ? shortcutError : undefined}
-              onChange={() => void startShortcutCapture("toggle")}
-              onCancel={() => void cancelShortcutCapture()}
-            />
-          </div>
-        </div>
-      </section>
-
-      <StyleSettingsSection />
-
-      <section className="settings-group" aria-labelledby="audio-heading">
-        <h2 id="audio-heading" className="settings-group-heading">
-          Audio
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">Microphone</h3>
-                <p className="settings-row-description">
-                  Input device used for dictation.
-                </p>
-              </div>
-              <div className="settings-row-control" ref={micWrapRef}>
-                <button
-                  type="button"
-                  className="select-trigger"
-                  aria-haspopup="listbox"
-                  aria-expanded={micOpen}
-                  onClick={() => {
-                    setMicOpen((value) => !value);
-                    void requestMicrophones();
-                  }}
-                >
-                  <span>{microphoneName}</span>
-                  <IconChevronDownSmall size={14} />
-                </button>
-                {micOpen ? (
-                  // 2px = (trigger 32 - item 28) / 2, so the selected item
-                  // overlays the trigger label exactly with no visual jump.
-                  <ul
-                    className="select-popover"
-                    role="listbox"
-                    style={{ top: -(2 + selectedMicrophoneIndex * 28) }}
-                  >
-                    {microphoneOptions.map((option) => {
-                      const selected =
-                        (option.id ?? "") === (settings.microphone.id ?? "");
-                      return (
-                        <li key={option.id ?? "auto"}>
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            data-selected={selected}
-                            onClick={() =>
-                              void selectMicrophone(
-                                option.id,
-                                option.id ? option.name : undefined,
-                              )
-                            }
-                          >
-                            <span>{option.name}</span>
-                            <span className="select-check" aria-hidden>
-                              {selected ? (
-                                <IconCheckmark1Small size={14} />
-                              ) : null}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : null}
-              </div>
-            </div>
-
-            {systemUnsupported ? null : (
-              <div className="settings-row">
-                <div className="settings-row-info">
-                  <h3 className="settings-row-title">System audio</h3>
-                  <p className="settings-row-description">
-                    Capture audio from other apps along with your microphone.
-                  </p>
+            <section
+              className="settings-group"
+              aria-labelledby="appearance-heading"
+            >
+              <h2 id="appearance-heading" className="settings-group-heading">
+                Appearance
+              </h2>
+              <div className="settings-card">
+                <div className="settings-rows">
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Theme</h3>
+                      <p className="settings-row-description">
+                        Match the system or force light or dark mode.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <SegmentedControl<ThemePreference>
+                        aria-label="App theme"
+                        value={theme}
+                        options={THEME_OPTIONS}
+                        onValueChange={(next) => {
+                          setTheme(next);
+                          setStoredTheme(next);
+                        }}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div className="settings-row-control">
-                  {systemDenied ? (
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={onEnableSystemAudio}
-                    >
-                      Enable
-                    </button>
-                  ) : null}
-                  <Switch
-                    checked={systemOn}
-                    disabled={checkingSourceReadiness || systemDenied}
-                    aria-label="Capture system audio for notes"
-                    onCheckedChange={(next) =>
-                      onSourceModeChange(
-                        next ? "microphonePlusSystem" : "microphoneOnly",
-                      )
+              </div>
+            </section>
+          </>
+        ) : null}
+
+        {activeTab === "dictation" ? (
+          <>
+            <section
+              className="settings-group"
+              aria-labelledby="dictation-heading"
+            >
+              <h2 id="dictation-heading" className="settings-group-heading">
+                Dictation
+              </h2>
+              <div className="settings-card">
+                <div className="settings-rows">
+                  <ShortcutRow
+                    title="Push to talk"
+                    description="Hold this shortcut to dictate, then release to paste."
+                    shortcut={settings.pushToTalkShortcut}
+                    capturing={capturingShortcut === "push_to_talk"}
+                    disabled={
+                      !!capturingShortcut &&
+                      capturingShortcut !== "push_to_talk"
                     }
+                    error={
+                      capturingShortcut === "push_to_talk"
+                        ? shortcutError
+                        : undefined
+                    }
+                    onChange={() => void startShortcutCapture("push_to_talk")}
+                    onCancel={() => void cancelShortcutCapture()}
+                  />
+
+                  <ShortcutRow
+                    title="Toggle dictation"
+                    description="Press this shortcut to start or stop dictation."
+                    shortcut={settings.toggleShortcut}
+                    capturing={capturingShortcut === "toggle"}
+                    disabled={
+                      !!capturingShortcut && capturingShortcut !== "toggle"
+                    }
+                    error={
+                      capturingShortcut === "toggle" ? shortcutError : undefined
+                    }
+                    onChange={() => void startShortcutCapture("toggle")}
+                    onCancel={() => void cancelShortcutCapture()}
                   />
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-      </section>
+            </section>
 
-      <ModelPickerDialog
-        open={!!pickerMode}
-        mode={pickerMode ?? "transcription"}
-        value={pickerValue}
-        options={pickerOptions}
-        search={modelSearch}
-        onSearchChange={setModelSearch}
-        onClose={() => setPickerMode(undefined)}
-        onSelect={(modelId) => {
-          if (!pickerMode) return;
-          void selectVeniceModel(pickerMode, modelId);
-          setPickerMode(undefined);
-        }}
-      />
+            <StyleSettingsSection />
 
-      <section className="settings-group" aria-labelledby="models-heading">
-        <h2 id="models-heading" className="settings-group-heading">
-          AI models
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <ModelRow
-              title="Transcription"
-              description="Speech-to-text for note recordings and dictation."
-              value={providerSettings.transcriptionModel}
-              options={transcriptionOptions}
-              onOpen={() => openModelPicker("transcription")}
-            />
-            <ModelRow
-              title="Text"
-              description="Used for generated notes and agent responses."
-              value={providerSettings.generationModel}
-              options={generationOptions}
-              onOpen={() => openModelPicker("generation")}
-            />
-          </div>
-        </div>
-      </section>
+            <DictionarySettingsSection />
+          </>
+        ) : null}
 
-      <DictionarySettingsSection />
+        {activeTab === "audio" ? (
+          <section className="settings-group" aria-labelledby="audio-heading">
+            <h2 id="audio-heading" className="settings-group-heading">
+              Audio
+            </h2>
+            <div className="settings-card">
+              <div className="settings-rows">
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Microphone</h3>
+                    <p className="settings-row-description">
+                      Input device used for dictation.
+                    </p>
+                  </div>
+                  <div className="settings-row-control" ref={micWrapRef}>
+                    <button
+                      type="button"
+                      className="select-trigger"
+                      aria-haspopup="listbox"
+                      aria-expanded={micOpen}
+                      onClick={() => {
+                        setMicOpen((value) => !value);
+                        void requestMicrophones();
+                      }}
+                    >
+                      <span>{microphoneName}</span>
+                      <IconChevronDownSmall size={14} />
+                    </button>
+                    {micOpen ? (
+                      // 2px = (trigger 32 - item 28) / 2, so the selected item
+                      // overlays the trigger label exactly with no visual jump.
+                      <ul
+                        className="select-popover"
+                        role="listbox"
+                        style={{ top: -(2 + selectedMicrophoneIndex * 28) }}
+                      >
+                        {microphoneOptions.map((option) => {
+                          const selected =
+                            (option.id ?? "") ===
+                            (settings.microphone.id ?? "");
+                          return (
+                            <li key={option.id ?? "auto"}>
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={selected}
+                                data-selected={selected}
+                                onClick={() =>
+                                  void selectMicrophone(
+                                    option.id,
+                                    option.id ? option.name : undefined,
+                                  )
+                                }
+                              >
+                                <span>{option.name}</span>
+                                <span className="select-check" aria-hidden>
+                                  {selected ? (
+                                    <IconCheckmark1Small size={14} />
+                                  ) : null}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : null}
+                  </div>
+                </div>
 
-      <AgentSettingsSection />
-
-      <section className="settings-group" aria-labelledby="about-heading">
-        <h2 id="about-heading" className="settings-group-heading">
-          About
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <div className="settings-row settings-row-meta">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title settings-meta-label">
-                  Release version
-                </h3>
-              </div>
-              <div className="settings-row-control">
-                <span className="settings-meta-value">{APP_VERSION}</span>
+                {systemUnsupported ? null : (
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">System audio</h3>
+                      <p className="settings-row-description">
+                        Capture audio from other apps along with your
+                        microphone.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      {systemDenied ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={onEnableSystemAudio}
+                        >
+                          Enable
+                        </button>
+                      ) : null}
+                      <Switch
+                        checked={systemOn}
+                        disabled={checkingSourceReadiness || systemDenied}
+                        aria-label="Capture system audio for notes"
+                        onCheckedChange={(next) =>
+                          onSourceModeChange(
+                            next ? "microphonePlusSystem" : "microphoneOnly",
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
+          </section>
+        ) : null}
 
-            <div className="settings-row settings-row-meta">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title settings-meta-label">
-                  Commit
-                </h3>
+        {activeTab === "models" ? (
+          <>
+            <ModelPickerDialog
+              open={!!pickerMode}
+              mode={pickerMode ?? "transcription"}
+              value={pickerValue}
+              options={pickerOptions}
+              search={modelSearch}
+              onSearchChange={setModelSearch}
+              onClose={() => setPickerMode(undefined)}
+              onSelect={(modelId) => {
+                if (!pickerMode) return;
+                void selectVeniceModel(pickerMode, modelId);
+                setPickerMode(undefined);
+              }}
+            />
+
+            <section
+              className="settings-group"
+              aria-labelledby="models-heading"
+            >
+              <h2 id="models-heading" className="settings-group-heading">
+                AI models
+              </h2>
+              <div className="settings-card">
+                <div className="settings-rows">
+                  <ModelRow
+                    title="Transcription"
+                    description="Speech-to-text for note recordings and dictation."
+                    value={providerSettings.transcriptionModel}
+                    options={transcriptionOptions}
+                    onOpen={() => openModelPicker("transcription")}
+                  />
+                  <ModelRow
+                    title="Text"
+                    description="Used for generated notes and agent responses."
+                    value={providerSettings.generationModel}
+                    options={generationOptions}
+                    onOpen={() => openModelPicker("generation")}
+                  />
+                </div>
               </div>
-              <div className="settings-row-control">
-                <span className="settings-meta-value settings-meta-value-mono">
-                  {APP_COMMIT_HASH}
-                </span>
+            </section>
+          </>
+        ) : null}
+
+        {activeTab === "agent" ? <AgentSettingsSection /> : null}
+
+        {activeTab === "about" ? (
+          <section className="settings-group" aria-labelledby="about-heading">
+            <h2 id="about-heading" className="settings-group-heading">
+              About
+            </h2>
+            <div className="settings-card">
+              <div className="settings-rows">
+                <div className="settings-row settings-row-meta">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title settings-meta-label">
+                      Release version
+                    </h3>
+                  </div>
+                  <div className="settings-row-control">
+                    <span className="settings-meta-value">{APP_VERSION}</span>
+                  </div>
+                </div>
+
+                <div className="settings-row settings-row-meta">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title settings-meta-label">
+                      Commit
+                    </h3>
+                  </div>
+                  <div className="settings-row-control">
+                    <span className="settings-meta-value settings-meta-value-mono">
+                      {APP_COMMIT_HASH}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      </section>
+          </section>
+        ) : null}
+      </div>
     </div>
   );
 }
