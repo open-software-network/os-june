@@ -353,7 +353,38 @@ describe("NoteEditor", () => {
 
     await user.click(recordButton);
 
+    expect(onStartRecording).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", { name: "Recording consent reminder" }),
+    ).toHaveTextContent(/everyone has agreed to be recorded/i);
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
     expect(onStartRecording).toHaveBeenCalledOnce();
+  });
+
+  it("lets users dismiss the recording consent reminder", async () => {
+    const user = userEvent.setup();
+    const onStartRecording = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        onStartRecording={onStartRecording}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Record" }));
+    expect(
+      screen.getByRole("dialog", { name: "Recording consent reminder" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(
+      screen.queryByRole("dialog", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+    expect(onStartRecording).not.toHaveBeenCalled();
   });
 
   it("keeps existing notes visible while showing processing status below them", () => {

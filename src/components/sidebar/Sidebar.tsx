@@ -256,15 +256,6 @@ export function Sidebar({
           >
             Agent
           </button>
-          <button
-            type="button"
-            className="section-view-all"
-            onClick={() => {
-              onChangeView("agent");
-            }}
-          >
-            View all
-          </button>
         </div>
         <div className="notes-nav-wrap">
           <div className="notes-nav">

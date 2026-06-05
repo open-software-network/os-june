@@ -3182,6 +3182,38 @@ input:focus-visible,
   height: 40px;
 }
 
+.record-consent-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 4;
+  width: min(280px, calc(100vw - var(--sp-8)));
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--card) 96%, var(--warm-soft));
+  box-shadow: var(--shadow-lg);
+}
+
+.record-consent-popover p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+}
+
+.record-consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.record-consent-actions .btn {
+  height: var(--control-sm);
+  padding-inline: var(--sp-3);
+}
+
 .record-options-trigger {
   display: inline-grid;
   place-items: center;

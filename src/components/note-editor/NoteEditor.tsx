@@ -127,6 +127,7 @@ export function NoteEditor({
   const sourceTranscripts = visibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [recordConsentOpen, setRecordConsentOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   // The source filter is ephemeral view state — reset it when navigating
   // to a different note so it never leaks across transcripts.
@@ -170,6 +171,12 @@ export function NoteEditor({
   useEffect(() => {
     if (recordingForNote) setOptionsOpen(false);
   }, [recordingForNote]);
+  useEffect(() => {
+    if (recordingForNote) setRecordConsentOpen(false);
+  }, [recordingForNote]);
+  useEffect(() => {
+    setRecordConsentOpen(false);
+  }, [note.id]);
   const processingLock =
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating" ||
@@ -453,7 +460,8 @@ export function NoteEditor({
                         className="record-button"
                         aria-label="Record"
                         title="Record"
-                        onClick={onStartRecording}
+                        aria-expanded={recordConsentOpen}
+                        onClick={() => setRecordConsentOpen(true)}
                       >
                         <IconMicrophone size={20} />
                       </button>
@@ -468,6 +476,37 @@ export function NoteEditor({
                         <IconChevronBottom size={16} />
                       </button>
                     </div>
+                    {recordConsentOpen ? (
+                      <div
+                        className="record-consent-popover"
+                        role="dialog"
+                        aria-label="Recording consent reminder"
+                      >
+                        <p>
+                          Make sure everyone has agreed to be recorded before
+                          you start.
+                        </p>
+                        <div className="record-consent-actions">
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setRecordConsentOpen(false)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => {
+                              setRecordConsentOpen(false);
+                              onStartRecording();
+                            }}
+                          >
+                            Continue
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </motion.div>
                 )}
               </AnimatePresence>
