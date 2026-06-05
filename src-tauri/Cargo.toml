@@ -1,6 +1,6 @@
 [package]
 name = "os-scribe"
-version = "0.0.2"
+version = "0.0.3"
 description = "OS Scribe"
 authors = ["Open Software Network"]
 edition = "2021"
