@@ -109,6 +109,7 @@ export function App() {
   const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">(
     "none",
   );
+  const [bootstrapped, setBootstrapped] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("meetings");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
@@ -284,6 +285,7 @@ export function App() {
         dispatch({ type: "bootstrapLoaded", payload: seeded.payload });
         if (seeded.fakeNote) {
           dispatch({ type: "noteLoaded", note: seeded.fakeNote });
+          setBootstrapped(true);
           return;
         }
         if (startOnFreshNoteRef.current || seeded.payload.notes.length === 0) {
@@ -291,6 +293,7 @@ export function App() {
           const note = await createNote(undefined);
           dispatch({ type: "noteLoaded", note });
           setActiveView("meetings");
+          setBootstrapped(true);
           return;
         }
         const firstNoteId = seeded.payload.notes[0]?.id;
@@ -300,6 +303,7 @@ export function App() {
         } else {
           setActiveView("settings");
         }
+        setBootstrapped(true);
       })
       .catch((err: unknown) => setError(messageFromError(err)));
   }, [appBlocked]);
@@ -450,6 +454,26 @@ export function App() {
     },
     [state.selectedFolderId],
   );
+
+  useEffect(() => {
+    if (
+      appBlocked ||
+      !bootstrapped ||
+      activeView !== "meetings" ||
+      selectedNote ||
+      state.selectedNoteId
+    ) {
+      return;
+    }
+    void handleCreateNote(null);
+  }, [
+    activeView,
+    appBlocked,
+    bootstrapped,
+    handleCreateNote,
+    selectedNote,
+    state.selectedNoteId,
+  ]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -1068,15 +1092,7 @@ export function App() {
                 />
               </div>
             ) : (
-              <section className="editor-empty">
-                <button
-                  type="button"
-                  className="primary-action"
-                  onClick={() => void handleCreateNote(null)}
-                >
-                  New meeting
-                </button>
-              </section>
+              <section className="editor-empty" aria-label="Opening meeting" />
             )}
           </div>
         </div>

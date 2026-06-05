@@ -95,6 +95,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
 function FolderList({
   folders,
   notes,
+  onSelectNote,
   onSelectFolder,
   onCreateFolder,
   onRenameFolder,
@@ -183,13 +184,23 @@ function FolderList({
     });
   }, [folders, query, sort]);
 
+  const filteredMeetingNotes = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    const filtered = normalized
+      ? notes.filter((note) =>
+          `${note.title} ${note.preview}`.toLowerCase().includes(normalized),
+        )
+      : notes;
+    return [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }, [notes, query]);
+
   return (
     <section className="folders-workspace" aria-label="Folders">
       <header className="folders-header">
         <div className="folders-heading">
           <h1>Folders</h1>
           <p className="folders-subtitle">
-            Group notes by project, client, or topic.
+            Saved meetings, folders, and agent files.
           </p>
         </div>
         <button
@@ -202,27 +213,69 @@ function FolderList({
         </button>
       </header>
 
-      {folders.length > 0 ? (
-        <div className="folders-controls">
-          <label className="folders-search">
-            <IconMagnifyingGlass size={14} />
-            <input
-              type="search"
-              placeholder="Search"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-            />
-          </label>
-          <SortDropdown value={sort} onChange={setSort} />
-        </div>
-      ) : null}
+      <div className="folders-controls">
+        <label className="folders-search">
+          <IconMagnifyingGlass size={14} />
+          <input
+            type="search"
+            aria-label="Search folders and meetings"
+            placeholder="Search"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
+        </label>
+        <SortDropdown value={sort} onChange={setSort} />
+      </div>
+
+      <section className="folders-meetings-files" aria-label="Meetings">
+        <header className="folders-hermes-header">
+          <div>
+            <h2>Meetings</h2>
+            <p>Saved meeting notes from recording and editing.</p>
+          </div>
+          <span className="folders-section-count">
+            {notes.length} {notes.length === 1 ? "meeting" : "meetings"}
+          </span>
+        </header>
+        {filteredMeetingNotes.length ? (
+          <div className="folders-meetings-list">
+            {filteredMeetingNotes.slice(0, 12).map((note) => (
+              <button
+                key={note.id}
+                type="button"
+                className="folders-meeting-row"
+                onClick={() => onSelectNote(note.id)}
+              >
+                <span className="folders-meeting-icon">
+                  <IconNoteText size={14} />
+                </span>
+                <span className="folders-meeting-body">
+                  <span className="folders-meeting-title">
+                    {note.title.trim() || "New meeting"}
+                  </span>
+                  <span className="folders-meeting-preview">
+                    {note.preview.trim() || "No preview yet"}
+                  </span>
+                </span>
+                <span className="folders-meeting-time">
+                  {formatNoteTime(note.updatedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="folders-empty">
+            {notes.length === 0 ? "No meetings yet." : "No meetings match."}
+          </p>
+        )}
+      </section>
 
       {folders.length === 0 ? (
         <EmptyState
           label="No folders yet"
           icon={<IconFoldersFilled size={28} />}
           title="No folders yet"
-          description="Group related notes by project, client, or topic."
+          description="Group related meetings by project, client, or topic."
         />
       ) : sortedAndFiltered.length === 0 ? (
         <div className="folders-empty">
