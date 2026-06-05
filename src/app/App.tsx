@@ -390,9 +390,11 @@ export function App() {
       return;
     }
     const sessionId = state.recordingStatus.sessionId;
-    // ~10Hz so the waveform has enough fresh peaks to interpolate smoothly.
-    // The HUD is event-driven; this is the polled equivalent for the recorder.
-    // (Audio is sampled every ~5–10ms in Rust; 250ms left the bars starved.)
+    // ~20Hz so the waveform tracks speech as snappily as the dictation HUD
+    // (which is event-driven at ~25Hz). The polled equivalent for the recorder;
+    // each poll coalesces the peaks since the last one (see Waveform.tsx). Audio
+    // is sampled every ~5–10ms in Rust, so there's always a fresh peak waiting;
+    // 100ms left the bars a beat behind the voice.
     const interval = window.setInterval(() => {
       getRecordingStatus(sessionId)
         .then((status) => dispatch({ type: "recordingStatusChanged", status }))
@@ -401,7 +403,7 @@ export function App() {
             setError(messageFromError(err));
           }
         });
-    }, 100);
+    }, 50);
     return () => window.clearInterval(interval);
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
 

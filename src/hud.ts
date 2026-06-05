@@ -294,6 +294,20 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "audio_level") {
+    // The helper flushes a final coalesced level when the recorder stops, which
+    // arrives AFTER finalizing_transcript. Once we've moved past listening, that
+    // stray level must NOT pull the HUD back to "listening" — otherwise it kills
+    // the transcribing braille and the pill looks stuck until the paste lands.
+    const state = hud?.dataset.state;
+    if (
+      state === "transcribing" ||
+      state === "pasting" ||
+      state === "error" ||
+      state === "silent-error" ||
+      state === "exiting"
+    ) {
+      return;
+    }
     const level = Number(dictationEvent.payload?.level || 0);
     renderAudioLevel(level);
     setHud("listening", "Listening");

@@ -54,10 +54,14 @@ export function Waveform({ level, active = true }: WaveformProps) {
   // history ring to advance each poll). The rAF loop animates the bars toward
   // it (fast attack, smooth release, snap-to-zero on silence).
   useEffect(() => {
+    // Model the HUD's signal: coalesce the peak over the poll window (the few
+    // freshest callback peaks) so transients between polls aren't missed, but
+    // only over that short window — no long peak-hold, so the bars die down
+    // immediately instead of feeling "unsure". The cumulative `peak` is a
+    // since-start max (frozen), so it's only the empty-history fallback.
+    const recent = level.recentPeaks;
     const raw =
-      level.recentPeaks.length > 0
-        ? level.recentPeaks[level.recentPeaks.length - 1]
-        : level.peak;
+      recent.length > 0 ? Math.max(...recent.slice(-4)) : level.peak;
     meterRef.current.pushLevel(visualPeakScale(raw));
   }, [level]);
 
