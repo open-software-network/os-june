@@ -131,7 +131,10 @@ impl Config {
         load_local_env();
         Self {
             accounts_url: env_or_build_trimmed("OS_ACCOUNTS_URL", option_env!("OS_ACCOUNTS_URL")),
-            api_url: env_or_build_trimmed("OS_ACCOUNTS_API_URL", option_env!("OS_ACCOUNTS_API_URL")),
+            api_url: env_or_build_trimmed(
+                "OS_ACCOUNTS_API_URL",
+                option_env!("OS_ACCOUNTS_API_URL"),
+            ),
             client_id: env_or_build_trimmed(
                 "OS_ACCOUNTS_CLIENT_ID",
                 option_env!("OS_ACCOUNTS_CLIENT_ID"),

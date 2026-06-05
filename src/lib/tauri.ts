@@ -274,6 +274,220 @@ export type RecoverableSourceDto = {
   lastError?: string;
 };
 
+export type AgentSafetyProfile = "autonomousPrivate";
+
+export type AgentTaskStatus =
+  | "draft"
+  | "queued"
+  | "running"
+  | "waitingForUser"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AgentMessageRole = "system" | "assistant" | "user";
+
+export type AgentToolEventStatus =
+  | "proposed"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked";
+
+export type AgentMessageDto = {
+  id: string;
+  taskId: string;
+  role: AgentMessageRole;
+  content: string;
+  createdAt: string;
+};
+
+export type AgentToolEventDto = {
+  id: string;
+  taskId: string;
+  toolName: string;
+  status: AgentToolEventStatus;
+  summary: string;
+  argumentsJson?: string;
+  resultJson?: string;
+  redacted: boolean;
+  createdAt: string;
+  completedAt?: string;
+};
+
+export type AgentTaskDto = {
+  id: string;
+  title: string;
+  prompt: string;
+  status: AgentTaskStatus;
+  safetyProfile: AgentSafetyProfile;
+  hermesSessionId?: string;
+  progressSummary?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  messages: AgentMessageDto[];
+  toolEvents: AgentToolEventDto[];
+};
+
+export type AgentTaskListResponse = {
+  items: AgentTaskDto[];
+};
+
+export type HermesBridgeConnection = {
+  baseUrl: string;
+  wsUrl: string;
+  token: string;
+  port: number;
+  command: string;
+  hermesHome: string;
+  cwd?: string | null;
+  providerProxyPort: number;
+  pid: number;
+};
+
+export type HermesBridgeStatus = {
+  running: boolean;
+  connection?: HermesBridgeConnection;
+  message?: string;
+};
+
+export type HermesFilesystemEntry = {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | string;
+  size?: number | null;
+  modifiedAt?: string | null;
+  children?: HermesFilesystemEntry[] | null;
+};
+
+export type HermesFilesystemRoot = {
+  id: string;
+  label: string;
+  path: string;
+  description: string;
+  entries: HermesFilesystemEntry[];
+};
+
+export type HermesFilesystemSnapshot = {
+  roots: HermesFilesystemRoot[];
+};
+
+export type HermesSkillInfo = {
+  name: string;
+  description?: string;
+  category?: string;
+  enabled?: boolean;
+};
+
+export type HermesToolsetInfo = {
+  name: string;
+  label?: string;
+  description?: string;
+  enabled?: boolean;
+  available?: boolean;
+  tools?: string[];
+  provider?: string;
+};
+
+export type HermesMessagingEnvVarInfo = {
+  key: string;
+  prompt?: string;
+  description?: string;
+  required?: boolean;
+  advanced?: boolean;
+  isSet?: boolean;
+  is_set?: boolean;
+  isPassword?: boolean;
+  is_password?: boolean;
+  redactedValue?: string | null;
+  redacted_value?: string | null;
+  url?: string | null;
+};
+
+export type HermesMessagingPlatformInfo = {
+  id: string;
+  name: string;
+  description?: string;
+  docsUrl?: string;
+  docs_url?: string;
+  enabled?: boolean;
+  configured?: boolean;
+  gatewayRunning?: boolean;
+  gateway_running?: boolean;
+  state?: string | null;
+  errorCode?: string | null;
+  error_code?: string | null;
+  errorMessage?: string | null;
+  error_message?: string | null;
+  envVars?: HermesMessagingEnvVarInfo[];
+  env_vars?: HermesMessagingEnvVarInfo[];
+};
+
+export type HermesMessagingPlatformsResponse = {
+  platforms: HermesMessagingPlatformInfo[];
+};
+
+export type HermesSessionInfo = {
+  id: string;
+  source?: string;
+  user_id?: string;
+  model?: string;
+  title?: string;
+  started_at?: string;
+  startedAt?: string;
+  ended_at?: string | null;
+  endedAt?: string | null;
+  end_reason?: string | null;
+  message_count?: number;
+  tool_call_count?: number;
+  parent_session_id?: string | null;
+  last_active?: string;
+  lastActive?: string;
+  preview?: string;
+  has_system_prompt?: boolean;
+  has_model_config?: boolean;
+};
+
+export type HermesSessionsResponse = {
+  sessions?: HermesSessionInfo[];
+  items?: HermesSessionInfo[];
+  data?: HermesSessionInfo[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+};
+
+export type HermesSessionMessage = {
+  id: string;
+  session_id?: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content?: unknown;
+  text?: unknown;
+  context?: unknown;
+  name?: string | null;
+  tool_call_id?: string | null;
+  tool_calls?: unknown;
+  tool_name?: string | null;
+  timestamp?: string | number;
+  created_at?: string | number;
+  token_count?: number | null;
+  finish_reason?: string | null;
+  reasoning?: string | null;
+  reasoning_content?: string | null;
+  reasoning_details?: unknown;
+  codex_reasoning_items?: unknown;
+  codex_message_items?: unknown;
+};
+
+export type HermesSessionMessagesResponse = {
+  messages?: HermesSessionMessage[];
+  items?: HermesSessionMessage[];
+  data?: HermesSessionMessage[];
+};
+
 export type BootstrapResponse = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
@@ -419,6 +633,148 @@ export async function deleteDictionaryEntry(entryId: string) {
   return invoke<void>("delete_dictionary_entry", {
     request: { entryId },
   });
+}
+
+export async function listAgentTasks() {
+  return invoke<AgentTaskListResponse>("list_agent_tasks");
+}
+
+export async function createAgentTask(input: {
+  prompt: string;
+  title?: string;
+  safetyProfile?: AgentSafetyProfile;
+  runPlaceholder?: boolean;
+}) {
+  return invoke<AgentTaskDto>("create_agent_task", { request: input });
+}
+
+export async function getAgentTask(taskId: string) {
+  return invoke<AgentTaskDto>("get_agent_task", { request: { taskId } });
+}
+
+export async function sendAgentMessage(input: {
+  taskId: string;
+  content: string;
+  runPlaceholder?: boolean;
+}) {
+  return invoke<AgentTaskDto>("send_agent_message", { request: input });
+}
+
+export async function saveAgentAssistantMessage(input: {
+  taskId: string;
+  content: string;
+}) {
+  return invoke<AgentTaskDto>("save_agent_assistant_message", {
+    request: input,
+  });
+}
+
+export async function saveAgentHermesSession(input: {
+  taskId: string;
+  hermesSessionId: string;
+}) {
+  return invoke<AgentTaskDto>("save_agent_hermes_session", {
+    request: input,
+  });
+}
+
+export async function cancelAgentTask(taskId: string) {
+  return invoke<AgentTaskDto>("cancel_agent_task", { request: { taskId } });
+}
+
+export async function retryAgentTask(taskId: string) {
+  return invoke<AgentTaskDto>("retry_agent_task", { request: { taskId } });
+}
+
+export async function listAgentToolEvents(taskId: string) {
+  return invoke<AgentToolEventDto[]>("list_agent_tool_events", {
+    request: { taskId },
+  });
+}
+
+export async function hermesBridgeStatus() {
+  return invoke<HermesBridgeStatus>("hermes_bridge_status");
+}
+
+export async function hermesBridgeSkills() {
+  return invoke<HermesSkillInfo[]>("hermes_bridge_skills");
+}
+
+export async function toggleHermesBridgeSkill(input: {
+  name: string;
+  enabled: boolean;
+}) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
+    "toggle_hermes_bridge_skill",
+    { request: input },
+  );
+}
+
+export async function hermesBridgeToolsets() {
+  return invoke<HermesToolsetInfo[]>("hermes_bridge_toolsets");
+}
+
+export async function toggleHermesBridgeToolset(input: {
+  name: string;
+  enabled: boolean;
+}) {
+  return invoke<{ ok: boolean; name: string; enabled: boolean }>(
+    "toggle_hermes_bridge_toolset",
+    { request: input },
+  );
+}
+
+export async function hermesBridgeMessagingPlatforms() {
+  return invoke<HermesMessagingPlatformsResponse>(
+    "hermes_bridge_messaging_platforms",
+  );
+}
+
+export async function hermesBridgeFilesystemSnapshot() {
+  return invoke<HermesFilesystemSnapshot>("hermes_bridge_filesystem_snapshot");
+}
+
+export async function hermesBridgeSessions(
+  input: {
+    limit?: number;
+    offset?: number;
+    archived?: "exclude" | "include" | "only";
+    minMessages?: number;
+    order?: string;
+    query?: string;
+  } = {},
+) {
+  return invoke<HermesSessionsResponse>("hermes_bridge_sessions", {
+    request: input,
+  });
+}
+
+export async function hermesBridgeSessionMessages(sessionId: string) {
+  return invoke<HermesSessionMessagesResponse>(
+    "hermes_bridge_session_messages",
+    { request: { sessionId } },
+  );
+}
+
+export async function updateHermesBridgeMessagingPlatform(input: {
+  platformId: string;
+  enabled?: boolean;
+  env?: Record<string, string>;
+}) {
+  return invoke<{ ok: boolean; platform: string }>(
+    "update_hermes_bridge_messaging_platform",
+    { request: input },
+  );
+}
+
+export async function startHermesBridge(cwd?: string) {
+  return invoke<HermesBridgeStatus>("start_hermes_bridge", {
+    request: { cwd },
+  });
+}
+
+export async function stopHermesBridge() {
+  return invoke<HermesBridgeStatus>("stop_hermes_bridge");
 }
 
 export async function listNotes(folderId?: string) {

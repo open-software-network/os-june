@@ -261,7 +261,7 @@ impl Default for AppConfig {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
-                request_timeout_secs: 30,
+                request_timeout_secs: 600,
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
             },

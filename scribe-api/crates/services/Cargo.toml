@@ -14,6 +14,7 @@ workspace = true
 scribe-config.workspace = true
 scribe-domain.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -4,12 +4,17 @@ pub mod commands;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod hermes_bridge;
 pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
 
+use tauri::Emitter;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
+
+const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
+const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
 
 pub fn run() {
     providers::load_local_env();
@@ -36,7 +41,17 @@ pub fn run() {
     }
 
     builder
+        // deep-link registers immediately after single-instance to keep the
+        // single-instance -> deep-link handoff (documented above) adjacent and
+        // obvious; process/updater are order-independent so they follow.
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
+                let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,
             commands::create_note,
@@ -54,6 +69,27 @@ pub fn run() {
             commands::create_dictionary_entry,
             commands::update_dictionary_entry,
             commands::delete_dictionary_entry,
+            commands::list_agent_tasks,
+            commands::create_agent_task,
+            commands::get_agent_task,
+            commands::send_agent_message,
+            commands::save_agent_assistant_message,
+            commands::save_agent_hermes_session,
+            commands::cancel_agent_task,
+            commands::retry_agent_task,
+            commands::list_agent_tool_events,
+            hermes_bridge::hermes_bridge_status,
+            hermes_bridge::hermes_bridge_skills,
+            hermes_bridge::hermes_bridge_toolsets,
+            hermes_bridge::hermes_bridge_messaging_platforms,
+            hermes_bridge::hermes_bridge_filesystem_snapshot,
+            hermes_bridge::hermes_bridge_sessions,
+            hermes_bridge::hermes_bridge_session_messages,
+            hermes_bridge::start_hermes_bridge,
+            hermes_bridge::stop_hermes_bridge,
+            hermes_bridge::toggle_hermes_bridge_skill,
+            hermes_bridge::toggle_hermes_bridge_toolset,
+            hermes_bridge::update_hermes_bridge_messaging_platform,
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
@@ -84,10 +120,14 @@ pub fn run() {
             os_accounts::os_accounts_logout,
             os_accounts::os_accounts_top_up
         ])
+        .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
         .setup(|app| {
+            setup_app_menu(app)?;
             providers::setup(app);
             dictation::setup(app);
+            repair_agent_task_statuses_on_app_start(app);
+            hermes_bridge::start_on_app_start(app);
             os_accounts::setup_deep_link(app);
             #[cfg(target_os = "macos")]
             setup_main_window_lifecycle(app);
@@ -96,11 +136,131 @@ pub fn run() {
         .build(context)
         .expect("failed to build OS Scribe")
         .run(|app, event| match event {
-            tauri::RunEvent::Exit => dictation::stop_helper(app),
+            tauri::RunEvent::Exit => {
+                dictation::stop_helper(app);
+                hermes_bridge::shutdown(app);
+            }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });
+}
+
+fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{
+        AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
+        WINDOW_SUBMENU_ID,
+    };
+
+    let handle = app.handle();
+    let pkg_info = handle.package_info();
+    let config = handle.config();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config
+            .bundle
+            .publisher
+            .clone()
+            .map(|publisher| vec![publisher]),
+        ..Default::default()
+    };
+
+    let app_menu = Submenu::with_items(
+        handle,
+        pkg_info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, None, Some(about_metadata))?,
+            &PredefinedMenuItem::separator(handle)?,
+            &MenuItem::with_id(
+                handle,
+                CHECK_FOR_UPDATES_MENU_ID,
+                "Check for updates…",
+                true,
+                Some("CmdOrCtrl+Shift+U"),
+            )?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::services(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::hide(handle, None)?,
+            &PredefinedMenuItem::hide_others(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::quit(handle, None)?,
+        ],
+    )?;
+
+    let file_menu = Submenu::with_items(
+        handle,
+        "File",
+        true,
+        &[&PredefinedMenuItem::close_window(handle, None)?],
+    )?;
+    let edit_menu = Submenu::with_items(
+        handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(handle, None)?,
+            &PredefinedMenuItem::redo(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::cut(handle, None)?,
+            &PredefinedMenuItem::copy(handle, None)?,
+            &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
+        ],
+    )?;
+    let view_menu = Submenu::with_items(
+        handle,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(handle, None)?],
+    )?;
+    let window_menu = Submenu::with_id_and_items(
+        handle,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(handle, None)?,
+            &PredefinedMenuItem::maximize(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::close_window(handle, None)?,
+        ],
+    )?;
+    let help_menu = Submenu::with_id_and_items(handle, HELP_SUBMENU_ID, "Help", true, &[])?;
+
+    let menu = Menu::with_items(
+        handle,
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ],
+    )?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
+fn repair_agent_task_statuses_on_app_start(app: &tauri::App) {
+    let app = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        match commands::repositories(&app).await {
+            Ok(repos) => {
+                if let Err(error) = repos.complete_agent_tasks_with_assistant_messages().await {
+                    eprintln!("failed to repair agent task statuses on app startup: {error}");
+                }
+            }
+            Err(error) => eprintln!(
+                "failed to open repositories for agent task status repair: {}",
+                error.message
+            ),
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]

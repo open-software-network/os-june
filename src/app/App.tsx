@@ -11,6 +11,7 @@ import {
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
+import { AgentWorkspace } from "../components/agent/AgentWorkspace";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
@@ -20,6 +21,7 @@ import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
+import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
   bootstrapApp,
@@ -61,13 +63,25 @@ import type {
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { shouldBlockOnSignIn } from "../lib/account-gate";
+import {
+  checkScribeUpdate,
+  relaunchScribe,
+  type ScribeUpdate,
+} from "../lib/updater";
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
+import {
+  checkForScribeUpdate,
+  installScribeUpdate,
+  type UpdateInstallProgress,
+  type UpdatePromptPayload,
+} from "./update-decision";
 
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 188;
 const SIDEBAR_MAX_WIDTH = 320;
 const SIDEBAR_COLLAPSE_WIDTH = 160;
+const CHECK_FOR_UPDATES_EVENT = "scribe://check-for-updates";
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -114,6 +128,12 @@ export function App() {
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
+  const [pendingUpdate, setPendingUpdate] =
+    useState<UpdatePromptPayload<ScribeUpdate> | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] =
+    useState<UpdateInstallProgress | null>(null);
   const systemGranted = !!sourceReadiness?.sources.find(
     (source) => source.source === "system",
   )?.ready;
@@ -174,6 +194,56 @@ export function App() {
     preloadRecordingSounds();
   }, []);
 
+  // installingUpdate is read through a ref so runUpdateCheck keeps a stable
+  // identity across installs. Otherwise the launch effect and the manual-check
+  // listener below would tear down and re-fire every time installingUpdate
+  // toggles — re-triggering an unwanted launch-time check after an install.
+  const installingUpdateRef = useRef(false);
+  useEffect(() => {
+    installingUpdateRef.current = installingUpdate;
+  }, [installingUpdate]);
+
+  const runUpdateCheck = useCallback((mode: "launch" | "manual") => {
+    if (installingUpdateRef.current) return;
+    setUpdateStatus(mode === "manual" ? "Checking for updates..." : null);
+    void checkForScribeUpdate(
+      {
+        check: checkScribeUpdate,
+        prompt: (payload) => {
+          setUpdateStatus(null);
+          setUpdateProgress(null);
+          setPendingUpdate(payload);
+        },
+        reportNoUpdate: () => setUpdateStatus("OS Scribe is up to date."),
+        reportFailure: (message) =>
+          setUpdateStatus(`Update check failed: ${message}`),
+      },
+      mode,
+    );
+  }, []);
+
+  // Launch check: silent by design — a "no update" result shows nothing so it
+  // never interrupts the user (PRD user story 7) — and fired at most once per
+  // session, so a later install toggle can't re-trigger it.
+  const launchCheckedRef = useRef(false);
+  useEffect(() => {
+    if (appBlocked || launchCheckedRef.current) return;
+    launchCheckedRef.current = true;
+    runUpdateCheck("launch");
+  }, [appBlocked, runUpdateCheck]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen(CHECK_FOR_UPDATES_EVENT, () => runUpdateCheck("manual")).then(
+      (cleanup) => {
+        unlisten = cleanup;
+      },
+    );
+    return () => {
+      unlisten?.();
+    };
+  }, [runUpdateCheck]);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
@@ -199,7 +269,7 @@ export function App() {
     };
   }, []);
 
-  const accessibilityBlocked = isDeniedPermission(accessibilityStatus);
+  const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
@@ -259,6 +329,13 @@ export function App() {
     void dictationHelperCommand({
       type: "request_microphone_permission",
     }).catch(() => undefined);
+    // Check Accessibility on every app open. The helper grant is what lets
+    // dictation paste into other apps; without this poll a fresh install
+    // never learns the helper is untrusted (the focus refresh below doesn't
+    // fire at launch), so the paste-permission banner would stay hidden.
+    void dictationHelperCommand({ type: "get_permission_status" }).catch(
+      () => undefined,
+    );
     return () => {
       cancelled = true;
     };
@@ -270,17 +347,24 @@ export function App() {
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
+    const recordingState = state.recordingStatus?.state;
+    const captureActive =
+      recordingState === "recording" ||
+      recordingState === "paused" ||
+      recordingState === "finalizing" ||
+      recordingState === "validating";
     function refresh() {
-      void checkRecordingSourceReadiness("microphonePlusSystem")
-        .then(setSourceReadiness)
-        .catch(() => undefined);
       void dictationHelperCommand({ type: "get_permission_status" }).catch(
         () => undefined,
       );
+      if (captureActive) return;
+      void checkRecordingSourceReadiness("microphonePlusSystem")
+        .then(setSourceReadiness)
+        .catch(() => undefined);
     }
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [appBlocked]);
+  }, [appBlocked, state.recordingStatus?.state]);
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
@@ -777,7 +861,7 @@ export function App() {
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
-        <div className="main-panel-body">
+        <div className="main-panel-body" data-active-view={activeView}>
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
             {activeView === "settings" ? (
@@ -805,6 +889,8 @@ export function App() {
                   }, 80);
                 }}
               />
+            ) : activeView === "agent" ? (
+              <AgentWorkspace />
             ) : activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}
@@ -1008,7 +1094,132 @@ export function App() {
           handleSetNoteFolder(noteId, folderId)
         }
       />
+      <UpdateDialog
+        payload={pendingUpdate}
+        status={updateStatus}
+        installing={installingUpdate}
+        progress={updateProgress}
+        onClose={() => {
+          if (installingUpdate) return;
+          setPendingUpdate(null);
+          setUpdateStatus(null);
+          setUpdateProgress(null);
+        }}
+        onInstall={() => {
+          if (!pendingUpdate || installingUpdate) return;
+          setInstallingUpdate(true);
+          setUpdateStatus(null);
+          void installScribeUpdate({
+            update: pendingUpdate.update,
+            relaunch: relaunchScribe,
+            reportProgress: setUpdateProgress,
+            reportFailure: (message) => {
+              setInstallingUpdate(false);
+              setUpdateProgress(null);
+              setUpdateStatus(`Update failed: ${message}`);
+            },
+          });
+        }}
+      />
     </main>
+  );
+}
+
+function UpdateDialog({
+  payload,
+  status,
+  installing,
+  progress,
+  onClose,
+  onInstall,
+}: {
+  payload: UpdatePromptPayload<ScribeUpdate> | null;
+  status: string | null;
+  installing: boolean;
+  progress: UpdateInstallProgress | null;
+  onClose: () => void;
+  onInstall: () => void;
+}) {
+  const percent =
+    progress?.contentLength && progress.contentLength > 0
+      ? Math.min(
+          100,
+          Math.round(
+            ((progress.downloadedBytes ?? 0) / progress.contentLength) * 100,
+          ),
+        )
+      : undefined;
+
+  return (
+    <Dialog
+      open={!!payload || !!status}
+      onClose={onClose}
+      title={payload ? `OS Scribe ${payload.version}` : "Software update"}
+      description={
+        payload
+          ? "A new version is available."
+          : (status ?? "Checking for updates...")
+      }
+      width={460}
+      disableBackdropClose={installing}
+      footer={
+        payload ? (
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              disabled={installing}
+              onClick={onClose}
+            >
+              Later
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={installing}
+              onClick={onInstall}
+            >
+              {installing ? "Installing..." : "Install & relaunch"}
+            </button>
+          </>
+        ) : (
+          <button type="button" className="primary-action" onClick={onClose}>
+            Close
+          </button>
+        )
+      }
+    >
+      {payload ? (
+        <div className="update-dialog-body">
+          {payload.notes ? (
+            <div className="update-release-notes">{payload.notes}</div>
+          ) : (
+            <p className="dialog-field-hint">No release notes were provided.</p>
+          )}
+          {progress ? (
+            <div className="update-progress" aria-live="polite">
+              <div className="update-progress-row">
+                <span>
+                  {progress.state === "installing"
+                    ? "Installing update..."
+                    : "Downloading update..."}
+                </span>
+                {percent !== undefined ? <span>{percent}%</span> : null}
+              </div>
+              <div className="update-progress-track">
+                <div
+                  className="update-progress-fill"
+                  style={{ width: `${percent ?? 0}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+          {status ? <p className="dialog-field-hint">{status}</p> : null}
+        </div>
+      ) : (
+        <div />
+      )}
+    </Dialog>
   );
 }
 
@@ -1102,7 +1313,10 @@ function handleSidebarResizeStart(
     // rides the white, not the gray) since the bar is positioned off it too.
     if (mainPanel)
       mainPanel.style.marginLeft = width === 0 ? "var(--sp-3)" : "0px";
-    shell?.style.setProperty("--main-gutter", width === 0 ? "var(--sp-3)" : "0px");
+    shell?.style.setProperty(
+      "--main-gutter",
+      width === 0 ? "var(--sp-3)" : "0px",
+    );
     latestWidth = width;
   }
 
@@ -1162,6 +1376,15 @@ function handleSidebarResizeStart(
 
 function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
+}
+
+// Accessibility is a plain bool from the helper (AXIsProcessTrusted),
+// surfaced as "granted" | "missing" — not the mic's denied/restricted
+// vocabulary. Treat any known non-granted value as blocked so the paste
+// permission banner actually shows when access is missing. Undefined stays
+// non-blocking so the banner doesn't flash before the helper's first report.
+export function isAccessibilityBlocked(state?: string) {
+  return state !== undefined && state !== "granted";
 }
 
 function isCreateNoteShortcut(event: KeyboardEvent) {

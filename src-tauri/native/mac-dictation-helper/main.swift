@@ -70,6 +70,18 @@ func requestMicrophonePermission() {
     }
 }
 
+func requestAccessibilityPermission() {
+    // Prompting variant of AXIsProcessTrusted(): registers THIS helper in the
+    // Accessibility list and surfaces the system "control this computer"
+    // dialog. The silent AXIsProcessTrusted() used elsewhere never adds the
+    // helper to the list, so a fresh install would otherwise have nothing to
+    // toggle — the synthetic Cmd+V paste needs the helper trusted.
+    let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+    let options = [promptKey: true] as CFDictionary
+    _ = AXIsProcessTrustedWithOptions(options)
+    emit("permission_status", permissionPayload())
+}
+
 func helperBundleIdentifier() -> String {
     Bundle.main.bundleIdentifier ?? "unknown"
 }
@@ -927,10 +939,6 @@ enum SelectedDeviceRecorderError: LocalizedError {
 }
 
 final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    // 50Hz (20ms) so the HUD has a fresh sample roughly every rAF frame — at the
-    // old 40ms a level spanned ~2.5 frames and read as steppy under speech.
-    private static let levelEmitInterval: TimeInterval = 0.02
-
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
     private let queue = DispatchQueue(label: "co.opensoftware.scribe.dictation-recorder")
@@ -939,9 +947,19 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     private var didStartWriting = false
     private var isStopping = false
     private var finishHandler: ((Error?) -> Void)?
-    private var lastLevelEmitAt = 0.0
     private let failureHandler: (Error) -> Void
     private let levelHandler: (Float) -> Void
+    // Coalesce per-buffer levels to ~25Hz before emitting, matching the
+    // AVAudioRecorder metering timer. AVCaptureAudioDataOutput delivers buffers
+    // far faster than that (faster still for aggregate "system + mic" devices),
+    // so emitting one event per buffer floods the IPC channel — the HUD's event
+    // queue grows unbounded over a long recording until the waveform visibly
+    // lags and then freezes. Track the peak across skipped buffers so loud
+    // transients still register. All accesses happen on `queue` (the capture
+    // delegate queue), so no locking is needed.
+    private var lastLevelEmit: TimeInterval = 0
+    private var pendingPeak: Float = 0
+    private let levelEmitInterval: TimeInterval = 0.04
 
     init(
         device: AVCaptureDevice,
@@ -1000,6 +1018,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
             isStopping = true
             finishHandler = completion
             session.stopRunning()
+            flushPendingLevel()
             output.setSampleBufferDelegate(nil, queue: nil)
 
             guard didStartWriting else {
@@ -1112,15 +1131,32 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
             return
         }
         let rms = sqrt(sumSquares / Float(sampleCount))
-        // Peak-biased blend (0.8·peak + 0.2·rms), matching the playground's signal
-        // model. Instantaneous peak (no peak-hold) so the HUD rises AND dies down
-        // immediately — the responsiveness fix, on a correctly-read signal.
-        let level = peak * 0.8 + rms * 0.2
-        let now = CFAbsoluteTimeGetCurrent()
-        if now - lastLevelEmitAt >= Self.levelEmitInterval {
-            lastLevelEmitAt = now
-            levelHandler(min(1, level))
+        // Peak-biased blend (0.8·peak + 0.2·rms) on a correctly-read, no-peak-hold
+        // signal so the HUD rises AND dies down immediately. Coalesced by max into
+        // the pending level so transients between emit ticks aren't missed, then
+        // emitted at the interval / flushed on stop — emitting per buffer floods
+        // the IPC channel and grew the HUD event queue until the waveform froze.
+        let level = min(1, peak * 0.8 + rms * 0.2)
+        pendingPeak = max(pendingPeak, level)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastLevelEmit >= levelEmitInterval else {
+            return
         }
+        emitPendingLevel(at: now)
+    }
+
+    private func flushPendingLevel() {
+        guard pendingPeak > 0 else {
+            return
+        }
+        emitPendingLevel(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func emitPendingLevel(at now: TimeInterval) {
+        lastLevelEmit = now
+        let coalesced = pendingPeak
+        pendingPeak = 0
+        levelHandler(coalesced)
     }
 
     private func fail(_ error: Error) {
@@ -1546,6 +1582,10 @@ func handleCommandLine(_ line: String) {
         emit("permission_status", permissionPayload())
     case "request_microphone_permission":
         requestMicrophonePermission()
+    case "request_accessibility_permission":
+        runOnMain {
+            requestAccessibilityPermission()
+        }
     case "list_microphones":
         runOnMain {
             dictation.emitMicrophones()

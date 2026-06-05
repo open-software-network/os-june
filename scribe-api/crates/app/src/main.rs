@@ -3,11 +3,13 @@ use scribe_api::{ApiLimits, ApiState, ApiStateParams};
 use scribe_config::{AppConfig, ModelPriceConfig, ModelProvider};
 use scribe_providers::{
     JwksTokenVerifier, MultiFormatDurationProbe, OsAccountsHttpClient, RoutingTranscriber,
-    VeniceCleaner, VeniceGenerator, VeniceModelCatalog, default_client, jwks_client,
+    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, default_client,
+    jwks_client,
 };
 use scribe_services::{
-    DictateService, DictateServiceDeps, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
+    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
+    PricingTable,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -92,6 +94,9 @@ fn build_router(
         http.clone(),
         &config.upstreams.venice,
     ));
+    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
+        VeniceAgentChat::from_config(http.clone(), &config.upstreams.venice),
+    );
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier: Arc<dyn scribe_domain::TokenVerifier> = Arc::new(
@@ -115,6 +120,13 @@ fn build_router(
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_note_generate_secs,
         flat_estimate_credits,
     }));
+    let agent_chat = Arc::new(AgentChatService::new(AgentChatServiceDeps {
+        pricing: pricing.clone(),
+        os_accounts: os_accounts.clone(),
+        chat_completer: agent_chat_completer,
+        hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_note_generate_secs,
+        flat_estimate_credits,
+    }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
         pricing: pricing.clone(),
         os_accounts,
@@ -133,6 +145,7 @@ fn build_router(
         token_verifier,
         note_transcribe,
         note_generate,
+        agent_chat,
         dictate,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,

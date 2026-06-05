@@ -2,8 +2,8 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_status, finish_capture, microphone_permission_state, pause_capture,
-            resume_capture, start_capture,
+            capture_status, finish_active_capture, finish_capture, is_capture_active,
+            microphone_permission_state, pause_capture, resume_capture, start_capture,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -19,20 +19,25 @@ use crate::{
         },
         processing_queue,
         types::{
-            AppError, AssignNoteToFolderRequest, BootstrapResponse,
-            CheckRecordingSourceReadinessRequest, CreateDictionaryEntryRequest,
-            CreateFolderRequest, CreateNoteRequest, DeleteDictionaryEntryRequest,
-            DeleteFolderRequest, DeleteNoteRequest, DictionaryEntryDto, FinishRecordingResponse,
+            AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
+            AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
+            AssignNoteToFolderRequest, BootstrapResponse, CheckRecordingSourceReadinessRequest,
+            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
+            CreateNoteRequest, DeleteDictionaryEntryRequest, DeleteFolderRequest,
+            DeleteNoteRequest, DictionaryEntryDto, FinishRecordingResponse, GetAgentTaskRequest,
             GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
             NoteDto, OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource,
             RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
             RemoveNoteFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
+            SendAgentMessageRequest, SessionRequest, SourceReadinessDto, StartRecordingRequest,
             UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
+use chrono::{TimeZone, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::Row;
 use std::str::FromStr;
 use std::{path::PathBuf, time::Instant};
 use tauri::{AppHandle, Manager};
@@ -40,6 +45,8 @@ use tauri::{AppHandle, Manager};
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
+    repos.pause_running_agent_tasks_on_launch().await?;
+    repos.complete_agent_tasks_with_assistant_messages().await?;
     let active_recoveries = scan_recoverable_recordings(&repos.pool)
         .await
         .map_err(|error| AppError::new("recovery_scan_failed", error.to_string()))?;
@@ -203,6 +210,185 @@ pub async fn list_dictionary_entries(app: AppHandle) -> Result<Vec<DictionaryEnt
 }
 
 #[tauri::command]
+pub async fn list_agent_tasks(app: AppHandle) -> Result<AgentTaskListResponse, AppError> {
+    let repos = repositories(&app).await?;
+    repos.complete_agent_tasks_with_assistant_messages().await?;
+    let response = repos.list_agent_tasks().await?;
+    for task in &response.items {
+        if let Err(error) = hydrate_agent_task_from_hermes(&app, &repos, &task.id).await {
+            eprintln!(
+                "failed to hydrate agent task {} from Hermes state: {}",
+                task.id, error.message
+            );
+        }
+    }
+    Ok(repos.list_agent_tasks().await?)
+}
+
+#[tauri::command]
+pub async fn create_agent_task(
+    app: AppHandle,
+    request: CreateAgentTaskRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let prompt = request.prompt.trim();
+    if prompt.is_empty() {
+        return Err(AppError::new(
+            "agent_prompt_required",
+            "Describe what the agent should do.",
+        ));
+    }
+    let repos = repositories(&app).await?;
+    let task = repos
+        .create_agent_task(
+            prompt,
+            request.title.as_deref(),
+            request.safety_profile.unwrap_or_default(),
+        )
+        .await?;
+    if request.run_placeholder.unwrap_or(true) {
+        schedule_agent_runtime_placeholder(repos, task.id.clone());
+    }
+    Ok(task)
+}
+
+#[tauri::command]
+pub async fn get_agent_task(
+    app: AppHandle,
+    request: GetAgentTaskRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let repos = repositories(&app).await?;
+    if let Err(error) = hydrate_agent_task_from_hermes(&app, &repos, &request.task_id).await {
+        eprintln!(
+            "failed to hydrate agent task {} from Hermes state: {}",
+            request.task_id, error.message
+        );
+    }
+    Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn send_agent_message(
+    app: AppHandle,
+    request: SendAgentMessageRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err(AppError::new(
+            "agent_message_required",
+            "Message content is required.",
+        ));
+    }
+    let repos = repositories(&app).await?;
+    repos
+        .add_agent_message(&request.task_id, AgentMessageRole::User, content)
+        .await?;
+    repos
+        .update_agent_task_status(
+            &request.task_id,
+            AgentTaskStatus::Queued,
+            Some("Queued for the agent runtime."),
+            None,
+        )
+        .await?;
+    if request.run_placeholder.unwrap_or(true) {
+        schedule_agent_runtime_placeholder(repos.clone(), request.task_id.clone());
+    }
+    Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn save_agent_assistant_message(
+    app: AppHandle,
+    request: SaveAgentAssistantMessageRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err(AppError::new(
+            "agent_message_required",
+            "Message content is required.",
+        ));
+    }
+    let repos = repositories(&app).await?;
+    repos
+        .add_agent_message(&request.task_id, AgentMessageRole::Assistant, content)
+        .await?;
+    repos
+        .update_agent_task_status(
+            &request.task_id,
+            AgentTaskStatus::Completed,
+            Some("Completed."),
+            None,
+        )
+        .await?;
+    Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn save_agent_hermes_session(
+    app: AppHandle,
+    request: SaveAgentHermesSessionRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let hermes_session_id = request.hermes_session_id.trim();
+    if hermes_session_id.is_empty() {
+        return Err(AppError::new(
+            "agent_hermes_session_required",
+            "Hermes session id is required.",
+        ));
+    }
+    let repos = repositories(&app).await?;
+    repos
+        .set_agent_task_hermes_session(&request.task_id, hermes_session_id)
+        .await?;
+    Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn cancel_agent_task(
+    app: AppHandle,
+    request: AgentTaskRequest,
+) -> Result<AgentTaskDto, AppError> {
+    repositories(&app)
+        .await?
+        .update_agent_task_status(
+            &request.task_id,
+            AgentTaskStatus::Cancelled,
+            Some("Cancelled by the user."),
+            None,
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+pub async fn retry_agent_task(
+    app: AppHandle,
+    request: AgentTaskRequest,
+) -> Result<AgentTaskDto, AppError> {
+    let repos = repositories(&app).await?;
+    repos
+        .update_agent_task_status(
+            &request.task_id,
+            AgentTaskStatus::Queued,
+            Some("Queued for the agent runtime."),
+            None,
+        )
+        .await?;
+    schedule_agent_runtime_placeholder(repos.clone(), request.task_id.clone());
+    Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn list_agent_tool_events(
+    app: AppHandle,
+    request: AgentTaskRequest,
+) -> Result<Vec<AgentToolEventDto>, AppError> {
+    Ok(repositories(&app)
+        .await?
+        .agent_tool_events(&request.task_id)
+        .await?)
+}
+
+#[tauri::command]
 pub async fn create_dictionary_entry(
     app: AppHandle,
     request: CreateDictionaryEntryRequest,
@@ -322,6 +508,7 @@ pub async fn start_recording(
             .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
         return Err(AppError::new("source_not_ready", message));
     }
+    finish_active_capture_before_start(&repos).await?;
     let started = start_capture(&paths, request.note_id.clone(), source_mode)?;
     repos
         .create_recording_session(
@@ -378,13 +565,29 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
+    finish_recording_session(&repos, finished, finalization_started).await
+}
+
+async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {
+    let finalization_started = Instant::now();
+    if let Some(finished) = finish_active_capture()? {
+        finish_recording_session(repos, finished, finalization_started).await?;
+    }
+    Ok(())
+}
+
+async fn finish_recording_session(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    let repos = repositories(&app).await?;
     repos
         .add_checkpoint(
             &finished.session_id,
@@ -576,7 +779,7 @@ pub async fn finish_recording(
     let mut note = repos.get_note(&finished.note_id).await?;
     note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
 
-    let task_repos = repos.clone();
+    let task_repos = (*repos).clone();
     let task_note_id = finished.note_id.clone();
     let task_session_id = finished.session_id.clone();
     let task_source_mode = finished.source_mode;
@@ -664,7 +867,7 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
         let mut system = crate::audio::system_macos::system_audio_readiness();
-        if system.ready {
+        if should_probe_system_audio_permission(system.ready, is_capture_active()) {
             if let Err(error) = crate::audio::system_macos::helper_permission_check() {
                 system.ready = false;
                 system.permission_state = "denied".to_string();
@@ -683,6 +886,10 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         checked_at: crate::db::repositories::timestamp(),
         sources,
     }
+}
+
+fn should_probe_system_audio_permission(system_ready: bool, capture_active: bool) -> bool {
+    system_ready && !capture_active
 }
 
 #[tauri::command]
@@ -895,6 +1102,169 @@ fn recovery_source_path(info: &crate::db::repositories::SourceArtifactPath) -> O
     None
 }
 
+fn schedule_agent_runtime_placeholder(repos: Repositories, task_id: String) {
+    tokio::spawn(async move {
+        let _ = repos
+            .update_agent_task_status(
+                &task_id,
+                AgentTaskStatus::Running,
+                Some("Preparing local privacy and tool policy."),
+                None,
+            )
+            .await;
+        let _ = repos
+            .add_agent_tool_event(
+                &task_id,
+                "local_tool_policy",
+                AgentToolEventStatus::Completed,
+                "Autonomous private mode is active. Sensitive actions will be blocked or escalated.",
+                Some(r#"{"profile":"autonomous_private"}"#),
+                Some(r#"{"localToolsReady":true,"rawOutputShared":false}"#),
+                true,
+            )
+            .await;
+        let _ = repos
+            .add_agent_tool_event(
+                &task_id,
+                "backend_agent_runtime",
+                AgentToolEventStatus::Blocked,
+                "Backend agent orchestration is not configured in this build.",
+                Some(r#"{"endpoint":"/v1/agent/tasks"}"#),
+                Some(r#"{"reason":"agent_backend_unavailable"}"#),
+                true,
+            )
+            .await;
+        let _ = repos
+            .add_agent_message(
+                &task_id,
+                AgentMessageRole::Assistant,
+                "I created the task and set up the local privacy/tool policy. The backend agent runtime endpoint is not configured yet, so I paused execution before taking desktop actions.",
+            )
+            .await;
+        let _ = repos
+            .update_agent_task_status(
+                &task_id,
+                AgentTaskStatus::Paused,
+                Some("Paused until the backend agent runtime is configured."),
+                Some("Backend agent orchestration is not configured in this build."),
+            )
+            .await;
+    });
+}
+
+async fn hydrate_agent_task_from_hermes(
+    app: &AppHandle,
+    repos: &Repositories,
+    task_id: &str,
+) -> Result<(), AppError> {
+    let task = repos.get_agent_task(task_id).await?;
+    let already_has_assistant_message = task
+        .messages
+        .iter()
+        .any(|message| message.role == AgentMessageRole::Assistant);
+    let paths = app_paths(app)?;
+    let hermes_db_path = paths.data_dir.join("hermes").join("state.db");
+    if !hermes_db_path.exists() {
+        return Ok(());
+    }
+
+    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", hermes_db_path.display()))
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+
+    let session_id = match task.hermes_session_id.clone() {
+        Some(session_id) if !session_id.trim().is_empty() => Some(session_id),
+        _ => {
+            let task_started_at = chrono::DateTime::parse_from_rfc3339(&task.created_at)
+                .map(|value| value.timestamp_millis() as f64 / 1000.0)
+                .unwrap_or(0.0);
+            let row = sqlx::query(
+                "SELECT id
+                 FROM sessions
+                 WHERE title = ?
+                 ORDER BY ABS(started_at - ?) ASC
+                 LIMIT 1",
+            )
+            .bind(&task.title)
+            .bind(task_started_at)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+            let session_id = row.map(|row| row.get::<String, _>("id"));
+            if let Some(session_id) = &session_id {
+                repos
+                    .set_agent_task_hermes_session(task_id, session_id)
+                    .await?;
+            }
+            session_id
+        }
+    };
+
+    let Some(session_id) = session_id else {
+        return Ok(());
+    };
+
+    let rows = sqlx::query(
+        "SELECT content, timestamp
+         FROM messages
+         WHERE session_id = ?
+           AND role = 'assistant'
+           AND active = 1
+           AND content IS NOT NULL
+           AND trim(content) != ''
+         ORDER BY timestamp ASC, id ASC",
+    )
+    .bind(session_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+    let found_hermes_assistant_messages = !rows.is_empty();
+
+    for row in rows {
+        let content: String = row.get("content");
+        let timestamp: f64 = row.get("timestamp");
+        let created_at = unix_timestamp_to_rfc3339(timestamp);
+        repos
+            .add_agent_message_if_absent(
+                task_id,
+                AgentMessageRole::Assistant,
+                content.trim(),
+                &created_at,
+            )
+            .await?;
+    }
+    if (already_has_assistant_message || found_hermes_assistant_messages)
+        && matches!(
+            task.status,
+            AgentTaskStatus::Queued | AgentTaskStatus::Running
+        )
+    {
+        repos
+            .update_agent_task_status(
+                task_id,
+                AgentTaskStatus::Completed,
+                Some("Completed."),
+                None,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
+    let seconds = timestamp.trunc() as i64;
+    let nanos = ((timestamp.fract() * 1_000_000_000.0).round() as u32).min(999_999_999);
+    Utc.timestamp_opt(seconds, nanos)
+        .single()
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppError> {
     let paths = app_paths(app)?;
     let options =
@@ -919,4 +1289,20 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
     AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_probe_system_audio_permission;
+
+    #[test]
+    fn skips_system_audio_permission_probe_while_capture_is_active() {
+        assert!(!should_probe_system_audio_permission(true, true));
+    }
+
+    #[test]
+    fn probes_system_audio_permission_only_when_available_and_idle() {
+        assert!(should_probe_system_audio_permission(true, false));
+        assert!(!should_probe_system_audio_permission(false, false));
+    }
 }

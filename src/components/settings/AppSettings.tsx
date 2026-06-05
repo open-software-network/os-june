@@ -380,7 +380,7 @@ export function AppSettings({
       setStatus(
         mode === "transcription"
           ? "Transcription model updated."
-          : "Note generation model updated.",
+          : "Text model updated.",
       );
     } catch (error) {
       setStatus(messageFromError(error));
@@ -638,8 +638,8 @@ export function AppSettings({
               onOpen={() => openModelPicker("transcription")}
             />
             <ModelRow
-              title="Note generation"
-              description="Used to write generated notes from transcripts."
+              title="Text"
+              description="Used for generated notes and agent responses."
               value={providerSettings.generationModel}
               options={generationOptions}
               onOpen={() => openModelPicker("generation")}
@@ -867,8 +867,7 @@ function ModelPickerDialog({
         .includes(query),
     );
   }, [options, search]);
-  const title =
-    mode === "transcription" ? "Transcription model" : "Note generation model";
+  const title = mode === "transcription" ? "Transcription model" : "Text model";
 
   return (
     <Dialog

@@ -48,6 +48,11 @@ pub fn router(state: ApiState) -> Router {
             post(handlers::notes::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
+            "/v1/chat/completions",
+            post(handlers::agent::chat_completions)
+                .layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
             "/v1/dictate",
             post(handlers::dictate::transcribe)
                 .layer(DefaultBodyLimit::max(limits.max_audio_bytes)),

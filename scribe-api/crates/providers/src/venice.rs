@@ -3,8 +3,9 @@ use async_trait::async_trait;
 use reqwest::multipart::{Form, Part};
 use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig};
 use scribe_domain::{
-    CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator,
-    TokenUsage, Transcriber, Transcript, TranscriptionRequest,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, CleanedText, Cleaner,
+    CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator, TokenUsage,
+    Transcriber, Transcript, TranscriptionRequest,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -211,6 +212,28 @@ pub struct VeniceCleaner {
     chat: VeniceChat,
 }
 
+pub struct VeniceAgentChat {
+    chat: VeniceChat,
+}
+
+impl VeniceAgentChat {
+    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+        Self {
+            chat: VeniceChat::new(http, config),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentChatCompleter for VeniceAgentChat {
+    async fn complete(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatCompletion, DomainError> {
+        self.chat.complete_raw(request.body, request.model).await
+    }
+}
+
 impl VeniceCleaner {
     pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
         Self {
@@ -288,6 +311,71 @@ impl VeniceChat {
             .await
             .map_err(|_| DomainError::UpstreamProvider)
     }
+
+    async fn complete_raw(
+        &self,
+        mut body: serde_json::Value,
+        model: scribe_domain::ModelId,
+    ) -> Result<AgentChatCompletion, DomainError> {
+        let Some(object) = body.as_object_mut() else {
+            return Err(DomainError::InvalidInput {
+                reason: "invalid_chat_completion_body".to_string(),
+            });
+        };
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(model.0.clone()),
+        );
+        if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+            let stream_options = object
+                .entry("stream_options")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(options) = stream_options.as_object_mut() {
+                options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
+            }
+        }
+        let url = format!("{}/chat/completions", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
+                DomainError::UpstreamProvider
+            })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        let body = response.bytes().await.map_err(|error| {
+            tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+            DomainError::UpstreamProvider
+        })?;
+        if !status.is_success() {
+            let body_preview = String::from_utf8_lossy(&body);
+            tracing::error!(
+                %status,
+                %url,
+                model = %model.0,
+                body = %body_preview,
+                "venice: agent chat non-success response"
+            );
+            return Err(DomainError::UpstreamProvider);
+        }
+        let usage = usage_from_chat_body(&body, &content_type)?;
+        Ok(AgentChatCompletion {
+            body: body.to_vec(),
+            content_type,
+            provider: PROVIDER_NAME.to_string(),
+            usage,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -353,6 +441,43 @@ struct ChatCompletionMessage {
 struct ChatCompletionUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
+}
+
+fn usage_from_chat_body(body: &[u8], content_type: &str) -> Result<TokenUsage, DomainError> {
+    if content_type.contains("text/event-stream") {
+        return usage_from_sse(body);
+    }
+    let parsed = serde_json::from_slice::<ChatCompletionResponse>(body)
+        .map_err(|_| DomainError::UpstreamProvider)?;
+    parsed.usage_or_error()
+}
+
+fn usage_from_sse(body: &[u8]) -> Result<TokenUsage, DomainError> {
+    let text = std::str::from_utf8(body).map_err(|_| DomainError::UpstreamProvider)?;
+    let mut usage = None;
+    for line in text.lines() {
+        let Some(data) = line.trim().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" || data.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        if let Some(parsed) = value.get("usage").and_then(token_usage_from_value) {
+            usage = Some(parsed);
+        }
+    }
+    usage.ok_or(DomainError::UpstreamProvider)
+}
+
+fn token_usage_from_value(value: &serde_json::Value) -> Option<TokenUsage> {
+    Some(TokenUsage {
+        prompt_tokens: value.get("prompt_tokens")?.as_u64()?,
+        completion_tokens: value.get("completion_tokens")?.as_u64()?,
+    })
 }
 
 #[derive(Debug, Deserialize)]

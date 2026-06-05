@@ -43,7 +43,8 @@ phrase, releases, and expects cleaned-up text inserted into the foreground
 app within a few hundred milliseconds. Distinct from **note transcription**
 (long-form, recorded session, async). Dictation goes through Scribe API in
 v1, so the binary holds no upstream provider key, but the request shape and
-charge timing are tuned for low latency (see ADR-0001 if/when written).
+charge timing are tuned for low latency (a dictation ADR may capture this
+if/when written).
 _Avoid_: speech-to-text (too generic; covers both dictation and note
 transcription).
 

@@ -1,5 +1,7 @@
 use scribe_domain::TokenVerifier;
-use scribe_services::{DictateService, NoteGenerateService, NoteTranscribeService, PricingTable};
+use scribe_services::{
+    AgentChatService, DictateService, NoteGenerateService, NoteTranscribeService, PricingTable,
+};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -12,6 +14,7 @@ struct ApiStateInner {
     token_verifier: Arc<dyn TokenVerifier>,
     note_transcribe: Arc<NoteTranscribeService>,
     note_generate: Arc<NoteGenerateService>,
+    agent_chat: Arc<AgentChatService>,
     dictate: Arc<DictateService>,
     limits: ApiLimits,
 }
@@ -28,6 +31,7 @@ pub struct ApiStateParams {
     pub token_verifier: Arc<dyn TokenVerifier>,
     pub note_transcribe: Arc<NoteTranscribeService>,
     pub note_generate: Arc<NoteGenerateService>,
+    pub agent_chat: Arc<AgentChatService>,
     pub dictate: Arc<DictateService>,
     pub limits: ApiLimits,
 }
@@ -40,6 +44,7 @@ impl ApiState {
                 token_verifier: params.token_verifier,
                 note_transcribe: params.note_transcribe,
                 note_generate: params.note_generate,
+                agent_chat: params.agent_chat,
                 dictate: params.dictate,
                 limits: params.limits,
             }),
@@ -60,6 +65,10 @@ impl ApiState {
 
     pub(crate) fn note_generate(&self) -> &NoteGenerateService {
         &self.inner.note_generate
+    }
+
+    pub(crate) fn agent_chat(&self) -> &AgentChatService {
+        &self.inner.agent_chat
     }
 
     pub(crate) fn dictate(&self) -> &DictateService {

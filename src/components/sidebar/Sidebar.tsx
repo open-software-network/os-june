@@ -9,6 +9,7 @@ import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconTrashCan } from "central-icons/IconTrashCan";
+import { BotIcon } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
@@ -18,7 +19,8 @@ export type SidebarView =
   | "all-notes"
   | "settings"
   | "folders"
-  | "dictation";
+  | "dictation"
+  | "agent";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -173,6 +175,18 @@ export function Sidebar({
             <IconMicrophone size={16} />
           </span>
           <span className="sidebar-nav-label">Dictation</span>
+        </button>
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "agent"}
+          aria-current={activeView === "agent" ? "page" : undefined}
+          onClick={() => onChangeView("agent")}
+        >
+          <span className="sidebar-nav-icon">
+            <BotIcon size={16} />
+          </span>
+          <span className="sidebar-nav-label">Agent</span>
         </button>
       </nav>
 

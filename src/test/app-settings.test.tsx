@@ -390,7 +390,7 @@ describe("AppSettings", () => {
 
     await user.click(
       screen.getByRole("button", {
-        name: "Change note generation model",
+        name: "Change text model",
       }),
     );
     expect(

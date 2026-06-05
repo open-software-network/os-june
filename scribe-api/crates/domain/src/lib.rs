@@ -15,6 +15,7 @@ pub struct Credits(pub u64);
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionSlug {
+    AgentChat,
     DictateCleanup,
     DictateTranscribe,
     NoteGenerate,
@@ -24,6 +25,7 @@ pub enum ActionSlug {
 impl ActionSlug {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::AgentChat => "agent_chat",
             Self::DictateCleanup => "dictate_cleanup",
             Self::DictateTranscribe => "dictate_transcribe",
             Self::NoteGenerate => "note_generate",
@@ -66,6 +68,15 @@ pub struct GeneratedNote {
 #[serde(rename_all = "camelCase")]
 pub struct CleanedText {
     pub text: String,
+    pub provider: String,
+    pub usage: TokenUsage,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatCompletion {
+    pub body: Vec<u8>,
+    pub content_type: String,
     pub provider: String,
     pub usage: TokenUsage,
 }
@@ -129,6 +140,12 @@ pub struct CleanupRequest {
 }
 
 #[derive(Clone, Debug)]
+pub struct AgentChatRequest {
+    pub body: serde_json::Value,
+    pub model: ModelId,
+}
+
+#[derive(Clone, Debug)]
 pub struct AuthorizeRequest {
     pub user_id: UserId,
     pub action: ActionSlug,
@@ -176,6 +193,12 @@ pub trait Generator: Send + Sync {
 #[async_trait]
 pub trait Cleaner: Send + Sync {
     async fn cleanup(&self, request: CleanupRequest) -> Result<CleanedText, DomainError>;
+}
+
+#[async_trait]
+pub trait AgentChatCompleter: Send + Sync {
+    async fn complete(&self, request: AgentChatRequest)
+    -> Result<AgentChatCompletion, DomainError>;
 }
 
 #[async_trait]
