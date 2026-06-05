@@ -32,6 +32,11 @@ const LOW_LIFT = 0.6;
 // Soft-knee steepness — loud speech approaches the ceiling asymptotically
 // instead of slamming flat. Higher reaches the ceiling sooner.
 const KNEE = 6;
+// How many of the freshest `recentPeaks` to coalesce per poll — sized to ~the
+// 50ms poll window at the default audio buffer (~11ms/callback ≈ 4–5 peaks, +1
+// headroom for smaller buffers). Deliberately a short window, not the full
+// deque, so the bars die down immediately. See the push effect below.
+const POLL_WINDOW_PEAKS = 6;
 
 export function Waveform({ level, active = true }: WaveformProps) {
   const refs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -54,14 +59,18 @@ export function Waveform({ level, active = true }: WaveformProps) {
   // history ring to advance each poll). The rAF loop animates the bars toward
   // it (fast attack, smooth release, snap-to-zero on silence).
   useEffect(() => {
-    // Model the HUD's signal: coalesce the peak over the poll window (the few
-    // freshest callback peaks) so transients between polls aren't missed, but
-    // only over that short window — no long peak-hold, so the bars die down
-    // immediately instead of feeling "unsure". The cumulative `peak` is a
-    // since-start max (frozen), so it's only the empty-history fallback.
+    // Model the HUD's signal: coalesce the peak over roughly the poll window so
+    // transients between polls aren't missed. `recentPeaks` is a fixed ~24-entry
+    // deque (~260ms at the default audio buffer), NOT the poll window — maxing
+    // the whole thing would reintroduce a long peak-hold and a mushy die-down,
+    // so we max only the freshest few entries (~the 50ms poll at typical buffer
+    // sizes). The cumulative `peak` is a since-start max (frozen), so it's only
+    // the empty-history fallback.
     const recent = level.recentPeaks;
     const raw =
-      recent.length > 0 ? Math.max(...recent.slice(-4)) : level.peak;
+      recent.length > 0
+        ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS))
+        : level.peak;
     meterRef.current.pushLevel(visualPeakScale(raw));
   }, [level]);
 

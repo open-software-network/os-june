@@ -954,11 +954,11 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     // far faster than that (faster still for aggregate "system + mic" devices),
     // so emitting one event per buffer floods the IPC channel — the HUD's event
     // queue grows unbounded over a long recording until the waveform visibly
-    // lags and then freezes. Track the peak across skipped buffers so loud
+    // lags and then freezes. Track the max level across skipped buffers so loud
     // transients still register. All accesses happen on `queue` (the capture
     // delegate queue), so no locking is needed.
     private var lastLevelEmit: TimeInterval = 0
-    private var pendingPeak: Float = 0
+    private var pendingLevel: Float = 0
     private let levelEmitInterval: TimeInterval = 0.04
 
     init(
@@ -1117,7 +1117,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
                     peak = max(peak, abs(value))
                 }
             }
-        } else {
+        } else if !isFloat && bitsPerChannel == 16 {
             sampleCount = length / MemoryLayout<Int16>.size
             dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
                 for index in 0..<sampleCount {
@@ -1126,6 +1126,20 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
                     peak = max(peak, abs(value))
                 }
             }
+        } else if !isFloat && bitsPerChannel == 32 {
+            sampleCount = length / MemoryLayout<Int32>.size
+            dataPointer.withMemoryRebound(to: Int32.self, capacity: sampleCount) { pointer in
+                for index in 0..<sampleCount {
+                    let value = Float(pointer[index]) / Float(Int32.max)
+                    sumSquares += value * value
+                    peak = max(peak, abs(value))
+                }
+            }
+        } else {
+            // Unhandled format (e.g. packed 24-bit): the Int16 path would misread
+            // the stride and systematically underread, leaving the HUD quieter
+            // than reality. Skip this buffer rather than emit a wrong level.
+            return
         }
         guard sampleCount > 0 else {
             return
@@ -1137,7 +1151,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
         // emitted at the interval / flushed on stop — emitting per buffer floods
         // the IPC channel and grew the HUD event queue until the waveform froze.
         let level = min(1, peak * 0.8 + rms * 0.2)
-        pendingPeak = max(pendingPeak, level)
+        pendingLevel = max(pendingLevel, level)
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastLevelEmit >= levelEmitInterval else {
             return
@@ -1146,7 +1160,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     }
 
     private func flushPendingLevel() {
-        guard pendingPeak > 0 else {
+        guard pendingLevel > 0 else {
             return
         }
         emitPendingLevel(at: ProcessInfo.processInfo.systemUptime)
@@ -1154,8 +1168,8 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
 
     private func emitPendingLevel(at now: TimeInterval) {
         lastLevelEmit = now
-        let coalesced = pendingPeak
-        pendingPeak = 0
+        let coalesced = pendingLevel
+        pendingLevel = 0
         levelHandler(coalesced)
     }
 

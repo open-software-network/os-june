@@ -300,6 +300,7 @@ async function handleDictationEventPayload(payload: unknown) {
     // the transcribing braille and the pill looks stuck until the paste lands.
     const state = hud?.dataset.state;
     if (
+      state === "idle" ||
       state === "transcribing" ||
       state === "pasting" ||
       state === "error" ||
