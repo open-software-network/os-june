@@ -75,6 +75,7 @@ pub fn run() {
             commands::send_agent_message,
             commands::save_agent_assistant_message,
             commands::save_agent_hermes_session,
+            commands::suggest_agent_session_title,
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,

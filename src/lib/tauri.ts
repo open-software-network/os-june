@@ -336,6 +336,10 @@ export type AgentTaskListResponse = {
   items: AgentTaskDto[];
 };
 
+export type SuggestAgentSessionTitleResponse = {
+  title: string;
+};
+
 export type HermesBridgeConnection = {
   baseUrl: string;
   wsUrl: string;
@@ -676,6 +680,15 @@ export async function saveAgentHermesSession(input: {
   return invoke<AgentTaskDto>("save_agent_hermes_session", {
     request: input,
   });
+}
+
+export async function suggestAgentSessionTitle(prompt: string) {
+  return invoke<SuggestAgentSessionTitleResponse>(
+    "suggest_agent_session_title",
+    {
+      request: { prompt },
+    },
+  );
 }
 
 export async function cancelAgentTask(taskId: string) {

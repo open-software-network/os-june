@@ -14,6 +14,7 @@ const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.network";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
+const AGENT_TITLE_MAX_CHARS: usize = 48;
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 
@@ -321,12 +322,96 @@ pub async fn proxy_agent_chat_completions(
     Err(AppError::new("unauthorized", "Not signed in."))
 }
 
+pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppError> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(AppError::new(
+            "agent_title_empty",
+            "Cannot title an empty agent request.",
+        ));
+    }
+    let response = proxy_agent_chat_completions(serde_json::json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": "Create a concise title for an agent session from the user's first request. Return only the title. Use 2 to 6 words. No quotes, punctuation wrappers, markdown, or explanations."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 24
+    }))
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(AppError::new(
+            "agent_title_failed",
+            format!("Title generation returned status {}.", response.status),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&response.body)
+        .map_err(|error| AppError::new("agent_title_invalid", error.to_string()))?;
+    let text = extract_chat_completion_text(&value).ok_or_else(|| {
+        AppError::new(
+            "agent_title_invalid",
+            "Title generation did not return text.",
+        )
+    })?;
+    clean_agent_session_title(&text).ok_or_else(|| {
+        AppError::new(
+            "agent_title_empty",
+            "Title generation returned an empty title.",
+        )
+    })
+}
+
 pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
     crate::providers::transcription_provider_for_model(model_id)
 }
 
 pub fn configured() -> bool {
     !scribe_api_url().is_empty()
+}
+
+fn extract_chat_completion_text(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .get("content")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn clean_agent_session_title(value: &str) -> Option<String> {
+    let mut title = value
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .replace(['\r', '\n'], " ");
+    for prefix in ["Title:", "Session title:", "Request:"] {
+        if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
+            title = title[prefix.len()..].trim_start().to_string();
+        }
+    }
+    title = title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    if title.chars().count() > AGENT_TITLE_MAX_CHARS {
+        title = title.chars().take(AGENT_TITLE_MAX_CHARS).collect();
+        title = title.trim_end().to_string();
+    }
+    Some(title)
 }
 
 async fn post_json<T, B>(path: &str, body: &B) -> Result<T, AppError>
@@ -468,6 +553,27 @@ fn scribe_api_url() -> String {
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or_else(|| DEFAULT_SCRIBE_API_URL.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleans_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("Title: \"Open GarageBand\"").as_deref(),
+            Some("Open GarageBand")
+        );
+        assert_eq!(
+            clean_agent_session_title(
+                "Create a Quarterly Planning Briefing With Follow Up Action Items",
+            )
+            .as_deref(),
+            Some("Create a Quarterly Planning Briefing With Follow")
+        );
+        assert_eq!(clean_agent_session_title("   "), None);
+    }
 }
 
 async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {

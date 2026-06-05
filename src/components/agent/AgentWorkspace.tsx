@@ -41,6 +41,7 @@ import {
   saveAgentHermesSession,
   sendAgentMessage,
   startHermesBridge,
+  suggestAgentSessionTitle,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
@@ -82,6 +83,7 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "running",
   "waitingForUser",
 ]);
+const AGENT_TITLE_TIMEOUT_MS = 2500;
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
@@ -184,6 +186,8 @@ export function AgentWorkspace() {
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(false);
+  const sessionTitleOverridesRef = useRef<Record<string, string>>({});
+  const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const setTaskWorking = useCallback((taskId: string, working: boolean) => {
@@ -267,7 +271,7 @@ export function AgentWorkspace() {
     if (!bridge.running) return;
     setHermesSessionsLoading(true);
     try {
-      const sessions = await listHermesSessions();
+      const sessions = applySessionTitleOverrides(await listHermesSessions());
       setHermesSessionItems(sessions);
       setSelectedHermesSessionId((current) => {
         if (newSessionModeRef.current) return undefined;
@@ -391,6 +395,7 @@ export function AgentWorkspace() {
             messages,
           ),
         }));
+        void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
         if (sessionHasAssistantAfterLatestUser(messages)) {
           setSessionWorking(selectedHermesSessionId, false);
           liveEventsRef.current = {
@@ -518,11 +523,15 @@ export function AgentWorkspace() {
   }
 
   async function submitHermesSession(content: string) {
+    const titlePromise = selectedHermesSessionId
+      ? undefined
+      : agentSessionTitleForPrompt(content);
     const gateway = await ensureHermesGateway();
+    const sessionTitle = titlePromise ? await titlePromise : undefined;
     const created = selectedHermesSessionId
       ? undefined
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
-          title: titleFromPrompt(content),
+          title: sessionTitle ?? titleFromPrompt(content),
           cols: 96,
         });
     const storedSessionId =
@@ -530,6 +539,12 @@ export function AgentWorkspace() {
       created?.stored_session_id ??
       created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    if (sessionTitle) {
+      sessionTitleOverridesRef.current = {
+        ...sessionTitleOverridesRef.current,
+        [storedSessionId]: sessionTitle,
+      };
+    }
     const runtimeSessionId =
       created?.session_id ??
       runtimeSessionIds[storedSessionId] ??
@@ -556,7 +571,7 @@ export function AgentWorkspace() {
       return [
         {
           id: storedSessionId,
-          title: titleFromPrompt(content),
+          title: sessionTitle ?? titleFromPrompt(content),
           preview: content,
           started_at: createdAt,
           last_active: createdAt,
@@ -727,6 +742,7 @@ export function AgentWorkspace() {
           messages,
         ),
       }));
+      void suggestTitleForUntitledSession(sessionId, messages);
       if (sessionHasAssistantAfterLatestUser(messages)) {
         setSessionWorking(sessionId, false);
         liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
@@ -858,6 +874,46 @@ export function AgentWorkspace() {
     } finally {
       setFilesystemLoading(false);
     }
+  }
+
+  function applySessionTitleOverrides(sessions: HermesSessionInfo[]) {
+    const overrides = sessionTitleOverridesRef.current;
+    return sessions.map((session) => {
+      const title = overrides[session.id];
+      return title ? { ...session, title } : session;
+    });
+  }
+
+  async function suggestTitleForUntitledSession(
+    sessionId: string,
+    messages: HermesSessionMessage[],
+  ) {
+    if (
+      sessionTitleOverridesRef.current[sessionId] ||
+      titleSuggestionSessionIdsRef.current.has(sessionId)
+    ) {
+      return;
+    }
+    const session = hermesSessionItems.find((item) => item.id === sessionId);
+    if (!session || !isReplaceableAgentSessionTitle(session.title)) return;
+    const firstUserMessage = messages.find(
+      (message) => message.role === "user",
+    );
+    const prompt = firstUserMessage
+      ? visibleHermesMessageText(firstUserMessage).trim()
+      : "";
+    if (!prompt) return;
+    titleSuggestionSessionIdsRef.current.add(sessionId);
+    const title = await agentSessionTitleForPrompt(prompt);
+    sessionTitleOverridesRef.current = {
+      ...sessionTitleOverridesRef.current,
+      [sessionId]: title,
+    };
+    setHermesSessionItems((current) =>
+      current.map((item) =>
+        item.id === sessionId ? { ...item, title } : item,
+      ),
+    );
   }
 
   async function setSkillEnabled(skill: HermesSkillInfo, enabled: boolean) {
@@ -1078,18 +1134,6 @@ export function AgentWorkspace() {
                         : "Desktop tasks with private local-tool policy."}
                   </p>
                 </div>
-              </div>
-              <div className="agent-actions">
-                {!bridge.running ? (
-                  <button
-                    type="button"
-                    className="agent-new-task"
-                    disabled={bridgeStarting}
-                    onClick={() => void startBridge().catch(() => undefined)}
-                  >
-                    {bridgeStarting ? "Setting up Agent" : "Start Agent"}
-                  </button>
-                ) : null}
               </div>
             </header>
             <div className="agent-compose-empty">
@@ -1395,6 +1439,41 @@ function SafetyPanel() {
       </div>
     </section>
   );
+}
+
+async function agentSessionTitleForPrompt(prompt: string) {
+  try {
+    const response = await withTimeout(
+      suggestAgentSessionTitle(prompt),
+      AGENT_TITLE_TIMEOUT_MS,
+    );
+    return response.title.trim() || titleFromPrompt(prompt);
+  } catch {
+    return titleFromPrompt(prompt);
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error("Agent title generation timed out."));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isReplaceableAgentSessionTitle(title: unknown) {
+  const normalized = safeText(title).trim().toLowerCase();
+  return !normalized || normalized === "untitled session";
 }
 
 function PanelTabs({
@@ -2051,6 +2130,10 @@ function AgentChatTurnRow({
       part.type === "text",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const mentionedArtifacts = artifactsMentionedInText(
+    artifacts ?? [],
+    turn.parts.map((part) => ("text" in part ? part.text : "")).join("\n"),
+  );
 
   if (turn.role === "user") {
     return (
@@ -2080,10 +2163,6 @@ function AgentChatTurnRow({
           part.type === "text" ? (
             <div key={`${turn.id}:text:${index}`}>
               <MarkdownContent markdown={part.text} />
-              <AgentArtifactList
-                artifacts={artifactsMentionedInText(artifacts ?? [], part.text)}
-                onOpen={onOpenArtifact}
-              />
             </div>
           ) : part.type === "reasoning" ? (
             <ReasoningPart key={`${turn.id}:reasoning:${index}`} part={part} />
@@ -2098,6 +2177,10 @@ function AgentChatTurnRow({
             <AgentToolPartRow key={`${turn.id}:tool:${part.id}`} part={part} />
           ),
         )}
+        <AgentArtifactList
+          artifacts={mentionedArtifacts}
+          onOpen={onOpenArtifact}
+        />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">Waiting for Hermes...</p>
         ) : null}

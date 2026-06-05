@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   saveAgentHermesSession: vi.fn(),
   sendAgentMessage: vi.fn(),
   startHermesBridge: vi.fn(),
+  suggestAgentSessionTitle: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("../lib/tauri", () => ({
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
   startHermesBridge: mocks.startHermesBridge,
+  suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
@@ -107,6 +109,9 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.openHermesBridgeFile.mockResolvedValue(undefined);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "Summarize Current Page",
+    });
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
         return Promise.resolve({
@@ -152,6 +157,14 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ prompt: "summarize the current page" }),
     );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
 
     render(<AgentWorkspace />);
 
@@ -161,6 +174,14 @@ describe("AgentWorkspace", () => {
         text: "summarize the current page",
       }),
     );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "Summarize Current Page",
+      cols: 96,
+    });
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
