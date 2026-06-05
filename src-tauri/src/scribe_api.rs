@@ -13,10 +13,12 @@ use std::{
 const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.network";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionRequest {
@@ -90,6 +92,13 @@ pub struct DictateCleanupRequestParams {
     pub style: String,
     pub session_id: String,
     pub utterance_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawScribeResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -272,6 +281,46 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
     parse_response("/v1/models", response).await
 }
 
+pub async fn proxy_agent_chat_completions(
+    mut body: serde_json::Value,
+) -> Result<RawScribeResponse, AppError> {
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(crate::providers::generation_model()),
+        );
+    }
+    let url = format!("{}/v1/chat/completions", scribe_api_url());
+    let mut token = crate::os_accounts::access_token().await?;
+    for attempt in 0..2 {
+        let response = agent_http_client()
+            .post(&url)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
+            token = crate::os_accounts::refresh_access_token().await?;
+            continue;
+        }
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        let body = response.bytes().await.map_err(network_error)?.to_vec();
+        return Ok(RawScribeResponse {
+            status,
+            content_type,
+            body,
+        });
+    }
+    Err(AppError::new("unauthorized", "Not signed in."))
+}
+
 pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
     crate::providers::transcription_provider_for_model(model_id)
 }
@@ -373,6 +422,19 @@ fn http_client() -> &'static reqwest::Client {
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .user_agent("os-scribe/0.1")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+fn agent_http_client() -> &'static reqwest::Client {
+    AGENT_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(AGENT_HTTP_TIMEOUT)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .user_agent("os-scribe-agent/0.1")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })

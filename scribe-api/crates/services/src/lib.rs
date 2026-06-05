@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
 
+mod agent_chat;
 mod charge_flow;
 mod dictate;
 mod error;
@@ -9,6 +10,7 @@ mod pricing;
 mod prompts;
 mod util;
 
+pub use agent_chat::{AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps};
 pub use dictate::{
     DictateCleanupOutput, DictateCleanupParams, DictateService, DictateServiceDeps,
     DictateTranscribeOutput, DictateTranscribeParams,

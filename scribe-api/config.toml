@@ -1,7 +1,7 @@
 [server]
 host = "0.0.0.0"
 port = 8080
-request_timeout_secs = 30
+request_timeout_secs = 600
 max_audio_bytes = 26214400
 max_json_bytes = 524288
 

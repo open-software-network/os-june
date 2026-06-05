@@ -1,7 +1,9 @@
 use crate::domain::types::{
-    AppError, AudioArtifactDto, DictationHistoryItemDto, DictionaryEntryDto, FolderDto,
-    ListDictationHistoryResponse, ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus,
-    RecordingSourceMode, TranscriptDto,
+    AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
+    AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
+    DictationHistoryItemDto, DictionaryEntryDto, FolderDto, ListDictationHistoryResponse,
+    ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus, RecordingSourceMode,
+    TranscriptDto,
 };
 use chrono::{Duration, SecondsFormat, Utc};
 use sqlx::{Row, SqlitePool};
@@ -335,6 +337,319 @@ impl Repositories {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn pause_running_agent_tasks_on_launch(&self) -> Result<(), sqlx::Error> {
+        let now = timestamp();
+        sqlx::query(
+            "UPDATE agent_tasks
+             SET status = 'paused',
+                 progress_summary = 'Paused when OS Scribe restarted.',
+                 updated_at = ?
+             WHERE status IN ('queued', 'running')",
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn complete_agent_tasks_with_assistant_messages(&self) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE agent_tasks
+             SET status = 'completed',
+                 progress_summary = 'Completed.',
+                 updated_at = COALESCE(
+                     (SELECT MAX(created_at)
+                      FROM agent_messages
+                      WHERE task_id = agent_tasks.id AND role = 'assistant'),
+                     updated_at
+                 ),
+                 completed_at = COALESCE(
+                     completed_at,
+                     (SELECT MAX(created_at)
+                      FROM agent_messages
+                      WHERE task_id = agent_tasks.id AND role = 'assistant'),
+                     updated_at
+                 )
+             WHERE status IN ('queued', 'running', 'paused', 'waiting_for_user')
+               AND EXISTS (
+                   SELECT 1
+                   FROM agent_messages
+                   WHERE task_id = agent_tasks.id AND role = 'assistant'
+               )",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_agent_tasks(&self) -> Result<AgentTaskListResponse, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
+                    hermes_session_id, created_at, updated_at, completed_at
+             FROM agent_tasks
+             ORDER BY updated_at DESC, rowid DESC
+             LIMIT 200",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(AgentTaskListResponse {
+            items: rows.into_iter().map(agent_task_from_row).collect(),
+        })
+    }
+
+    pub async fn create_agent_task(
+        &self,
+        prompt: &str,
+        title: Option<&str>,
+        safety_profile: AgentSafetyProfile,
+    ) -> Result<AgentTaskDto, sqlx::Error> {
+        let now = timestamp();
+        let task_id = Uuid::new_v4().to_string();
+        let trimmed_prompt = prompt.trim();
+        let title = title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| title_from_prompt(trimmed_prompt));
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO agent_tasks
+             (id, title, prompt, status, safety_profile, progress_summary, created_at, updated_at)
+             VALUES (?, ?, ?, 'queued', ?, 'Queued for the agent runtime.', ?, ?)",
+        )
+        .bind(&task_id)
+        .bind(title)
+        .bind(trimmed_prompt)
+        .bind(safety_profile.as_db())
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
+             VALUES (?, ?, 'user', ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&task_id)
+        .bind(trimmed_prompt)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.get_agent_task(&task_id).await
+    }
+
+    pub async fn get_agent_task(&self, task_id: &str) -> Result<AgentTaskDto, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
+                    hermes_session_id, created_at, updated_at, completed_at
+             FROM agent_tasks
+             WHERE id = ?",
+        )
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let mut task = agent_task_from_row(row);
+        task.messages = self.agent_messages(task_id).await?;
+        task.tool_events = self.agent_tool_events(task_id).await?;
+        Ok(task)
+    }
+
+    pub async fn set_agent_task_hermes_session(
+        &self,
+        task_id: &str,
+        hermes_session_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE agent_tasks SET hermes_session_id = ? WHERE id = ?")
+            .bind(hermes_session_id)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn add_agent_message(
+        &self,
+        task_id: &str,
+        role: AgentMessageRole,
+        content: &str,
+    ) -> Result<AgentMessageDto, sqlx::Error> {
+        let now = timestamp();
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(task_id)
+        .bind(role.as_db())
+        .bind(content)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("UPDATE agent_tasks SET updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        let row = sqlx::query(
+            "SELECT id, task_id, role, content, created_at
+             FROM agent_messages
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(agent_message_from_row(row))
+    }
+
+    pub async fn add_agent_message_if_absent(
+        &self,
+        task_id: &str,
+        role: AgentMessageRole,
+        content: &str,
+        created_at: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let existing = sqlx::query(
+            "SELECT 1 FROM agent_messages
+             WHERE task_id = ? AND role = ? AND content = ?
+             LIMIT 1",
+        )
+        .bind(task_id)
+        .bind(role.as_db())
+        .bind(content)
+        .fetch_optional(&self.pool)
+        .await?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(task_id)
+        .bind(role.as_db())
+        .bind(content)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
+    }
+
+    pub async fn update_agent_task_status(
+        &self,
+        task_id: &str,
+        status: AgentTaskStatus,
+        progress_summary: Option<&str>,
+        last_error: Option<&str>,
+    ) -> Result<AgentTaskDto, sqlx::Error> {
+        let now = timestamp();
+        let completed_at = match status {
+            AgentTaskStatus::Completed | AgentTaskStatus::Cancelled => Some(now.clone()),
+            _ => None,
+        };
+        sqlx::query(
+            "UPDATE agent_tasks
+             SET status = ?, progress_summary = ?, last_error = ?, updated_at = ?,
+                 completed_at = COALESCE(?, completed_at)
+             WHERE id = ?",
+        )
+        .bind(status.as_db())
+        .bind(progress_summary)
+        .bind(last_error)
+        .bind(&now)
+        .bind(completed_at)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        self.get_agent_task(task_id).await
+    }
+
+    pub async fn add_agent_tool_event(
+        &self,
+        task_id: &str,
+        tool_name: &str,
+        status: AgentToolEventStatus,
+        summary: &str,
+        arguments_json: Option<&str>,
+        result_json: Option<&str>,
+        redacted: bool,
+    ) -> Result<AgentToolEventDto, sqlx::Error> {
+        let now = timestamp();
+        let completed_at = match status {
+            AgentToolEventStatus::Completed
+            | AgentToolEventStatus::Failed
+            | AgentToolEventStatus::Blocked => Some(now.clone()),
+            _ => None,
+        };
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO agent_tool_events
+             (id, task_id, tool_name, status, summary, arguments_json, result_json,
+              redacted, created_at, completed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(task_id)
+        .bind(tool_name)
+        .bind(status.as_db())
+        .bind(summary)
+        .bind(arguments_json)
+        .bind(result_json)
+        .bind(if redacted { 1 } else { 0 })
+        .bind(&now)
+        .bind(completed_at)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("UPDATE agent_tasks SET updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?;
+        let row = sqlx::query(
+            "SELECT id, task_id, tool_name, status, summary, arguments_json, result_json,
+                    redacted, created_at, completed_at
+             FROM agent_tool_events
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(agent_tool_event_from_row(row))
+    }
+
+    pub async fn agent_tool_events(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<AgentToolEventDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, task_id, tool_name, status, summary, arguments_json, result_json,
+                    redacted, created_at, completed_at
+             FROM agent_tool_events
+             WHERE task_id = ?
+             ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(agent_tool_event_from_row).collect())
+    }
+
+    async fn agent_messages(&self, task_id: &str) -> Result<Vec<AgentMessageDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, task_id, role, content, created_at
+             FROM agent_messages
+             WHERE task_id = ?
+             ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(agent_message_from_row).collect())
     }
 
     pub async fn delete_dictation_history_item(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -1969,9 +2284,62 @@ fn dictation_history_item_from_row(row: sqlx::sqlite::SqliteRow) -> DictationHis
     }
 }
 
+fn agent_task_from_row(row: sqlx::sqlite::SqliteRow) -> AgentTaskDto {
+    AgentTaskDto {
+        id: row.get("id"),
+        title: row.get("title"),
+        prompt: row.get("prompt"),
+        status: AgentTaskStatus::from(row.get::<String, _>("status").as_str()),
+        safety_profile: AgentSafetyProfile::from(row.get::<String, _>("safety_profile").as_str()),
+        hermes_session_id: row.get("hermes_session_id"),
+        progress_summary: row.get("progress_summary"),
+        last_error: row.get("last_error"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        completed_at: row.get("completed_at"),
+        messages: Vec::new(),
+        tool_events: Vec::new(),
+    }
+}
+
+fn agent_message_from_row(row: sqlx::sqlite::SqliteRow) -> AgentMessageDto {
+    AgentMessageDto {
+        id: row.get("id"),
+        task_id: row.get("task_id"),
+        role: AgentMessageRole::from(row.get::<String, _>("role").as_str()),
+        content: row.get("content"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn agent_tool_event_from_row(row: sqlx::sqlite::SqliteRow) -> AgentToolEventDto {
+    AgentToolEventDto {
+        id: row.get("id"),
+        task_id: row.get("task_id"),
+        tool_name: row.get("tool_name"),
+        status: AgentToolEventStatus::from(row.get::<String, _>("status").as_str()),
+        summary: row.get("summary"),
+        arguments_json: row.get("arguments_json"),
+        result_json: row.get("result_json"),
+        redacted: row.get::<i64, _>("redacted") != 0,
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+    }
+}
+
 fn dictation_history_cutoff_timestamp() -> String {
     (Utc::now() - Duration::days(DICTATION_HISTORY_RETENTION_DAYS))
         .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn title_from_prompt(prompt: &str) -> String {
+    let compact = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title: String = compact.chars().take(64).collect();
+    if title.trim().is_empty() {
+        "New task".to_string()
+    } else {
+        title
+    }
 }
 
 fn preview_for(title: &str, content: &str) -> String {

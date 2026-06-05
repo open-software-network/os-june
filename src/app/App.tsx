@@ -11,6 +11,7 @@ import {
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
+import { AgentWorkspace } from "../components/agent/AgentWorkspace";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
@@ -860,7 +861,7 @@ export function App() {
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
-        <div className="main-panel-body">
+        <div className="main-panel-body" data-active-view={activeView}>
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
             {activeView === "settings" ? (
@@ -888,6 +889,8 @@ export function App() {
                   }, 80);
                 }}
               />
+            ) : activeView === "agent" ? (
+              <AgentWorkspace />
             ) : activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}
