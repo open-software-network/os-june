@@ -6,7 +6,7 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, State};
@@ -21,8 +21,12 @@ const SCRIBE_HERMES_COMMAND_ENV: &str = "SCRIBE_HERMES_COMMAND";
 const HERMES_AGENT_INSTALL_COMMIT: &str = "31c40c72c03cb11d5e596d015d61e7dd118cecee";
 const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/31c40c72c03cb11d5e596d015d61e7dd118cecee.tar.gz";
+const HERMES_SOURCE_TARBALL_SHA256: &str =
+    "287ead740a444d7e8c8e00a6d6e073d9b3329034f649a07b42e0a3f5b14686e4";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
+const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
+const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
@@ -226,6 +230,9 @@ pub async fn start_hermes_bridge(
 pub fn start_on_app_start(app: &tauri::App) {
     let app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
+        if !hermes_runtime_available_for_auto_start(&app) {
+            return;
+        }
         let bridge = app.state::<HermesBridge>();
         if let Err(error) =
             start_hermes_bridge_inner(&app, &bridge, StartHermesBridgeRequest { cwd: None }).await
@@ -269,8 +276,9 @@ async fn start_hermes_bridge_inner(
         .map(std::path::PathBuf::from)
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
-    let provider_proxy = start_scribe_provider_proxy().await?;
-    sync_hermes_config(&hermes_home, provider_proxy.port)?;
+    let provider_proxy_token = random_token();
+    let provider_proxy = start_scribe_provider_proxy(provider_proxy_token.clone()).await?;
+    sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
 
     let mut cmd = Command::new(&command);
     cmd.args([
@@ -841,6 +849,16 @@ fn user_local_hermes_command() -> Option<PathBuf> {
     .find(|path| path.exists())
 }
 
+fn hermes_runtime_available_for_auto_start(app: &AppHandle) -> bool {
+    if bundled_hermes_command(app).is_some() {
+        return true;
+    }
+    let Ok(command) = managed_hermes_command(app) else {
+        return false;
+    };
+    command.exists() && managed_hermes_runtime_current(app).unwrap_or(false)
+}
+
 async fn install_managed_hermes_runtime(
     app: &AppHandle,
     hermes_home: &Path,
@@ -875,6 +893,10 @@ async fn install_managed_hermes_runtime(
         .env(
             "SCRIBE_HERMES_SOURCE_TARBALL_URL",
             HERMES_SOURCE_TARBALL_URL,
+        )
+        .env(
+            "SCRIBE_HERMES_SOURCE_TARBALL_SHA256",
+            HERMES_SOURCE_TARBALL_SHA256,
         )
         .env("HERMES_HOME", hermes_home)
         .env("HERMES_INSTALL_DIR", &install_dir)
@@ -924,6 +946,7 @@ install_dir="${SCRIBE_HERMES_INSTALL_DIR:?}"
 hermes_home="${SCRIBE_HERMES_HOME:?}"
 install_commit="${SCRIBE_HERMES_INSTALL_COMMIT:?}"
 source_tarball_url="${SCRIBE_HERMES_SOURCE_TARBALL_URL:?}"
+source_tarball_sha256="${SCRIBE_HERMES_SOURCE_TARBALL_SHA256:?}"
 
 mkdir -p "$runtime_dir" "$hermes_home"
 
@@ -932,6 +955,13 @@ if [ ! -f "$install_dir/pyproject.toml" ] || [ ! -f "$install_dir/scripts/instal
   cleanup() { rm -rf "$tmp_dir"; }
   trap cleanup EXIT
   curl -LsSf "$source_tarball_url" -o "$tmp_dir/hermes-agent.tar.gz"
+  actual_sha256="$(shasum -a 256 "$tmp_dir/hermes-agent.tar.gz" | awk '{print $1}')"
+  if [ "$actual_sha256" != "$source_tarball_sha256" ]; then
+    echo "Hermes source archive checksum mismatch." >&2
+    echo "expected: $source_tarball_sha256" >&2
+    echo "actual:   $actual_sha256" >&2
+    exit 1
+  fi
   tar -xzf "$tmp_dir/hermes-agent.tar.gz" -C "$tmp_dir"
   unpacked_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'hermes-agent-*' | head -n 1)"
   if [ -z "$unpacked_dir" ]; then
@@ -989,6 +1019,7 @@ fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
 fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
+    provider_proxy_token: &str,
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
@@ -997,7 +1028,7 @@ fn sync_hermes_config(
   default: {model}
   provider: custom
   base_url: {base_url}
-  api_key: scribe-backend
+  api_key: {provider_proxy_token}
   api_mode: chat_completions
 agent:
   max_turns: 90
@@ -1006,6 +1037,7 @@ display:
 "#,
         model = yaml_string(&model),
         base_url = yaml_string(&base_url),
+        provider_proxy_token = yaml_string(provider_proxy_token),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -1130,7 +1162,9 @@ fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-async fn start_scribe_provider_proxy() -> Result<RunningScribeProviderProxy, AppError> {
+async fn start_scribe_provider_proxy(
+    token: String,
+) -> Result<RunningScribeProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
     listener
@@ -1143,7 +1177,11 @@ async fn start_scribe_provider_proxy() -> Result<RunningScribeProviderProxy, App
     let listener = tokio::net::TcpListener::from_std(listener)
         .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
     let (shutdown, shutdown_rx) = oneshot::channel();
-    tauri::async_runtime::spawn(run_scribe_provider_proxy(listener, shutdown_rx));
+    tauri::async_runtime::spawn(run_scribe_provider_proxy(
+        listener,
+        Arc::new(token),
+        shutdown_rx,
+    ));
     Ok(RunningScribeProviderProxy { port, shutdown })
 }
 
@@ -1154,6 +1192,7 @@ struct RunningScribeProviderProxy {
 
 async fn run_scribe_provider_proxy(
     listener: tokio::net::TcpListener,
+    token: Arc<String>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
     loop {
@@ -1162,8 +1201,9 @@ async fn run_scribe_provider_proxy(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _)) => {
+                        let token = token.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = handle_scribe_provider_connection(stream).await;
+                            let _ = handle_scribe_provider_connection(stream, token).await;
                         });
                     }
                     Err(_) => break,
@@ -1173,7 +1213,10 @@ async fn run_scribe_provider_proxy(
     }
 }
 
-async fn handle_scribe_provider_connection(mut stream: tokio::net::TcpStream) -> io::Result<()> {
+async fn handle_scribe_provider_connection(
+    mut stream: tokio::net::TcpStream,
+    token: Arc<String>,
+) -> io::Result<()> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
         Err(error) => {
@@ -1186,6 +1229,15 @@ async fn handle_scribe_provider_connection(mut stream: tokio::net::TcpStream) ->
             return Ok(());
         }
     };
+    if !provider_proxy_authorized(&request, &token) {
+        write_json_response(
+            &mut stream,
+            401,
+            serde_json::json!({ "error": { "message": "Unauthorized" } }),
+        )
+        .await?;
+        return Ok(());
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
             let model = crate::providers::generation_model();
@@ -1243,6 +1295,7 @@ async fn handle_scribe_provider_connection(mut stream: tokio::net::TcpStream) ->
 struct HttpRequest {
     method: String,
     path: String,
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
@@ -1258,7 +1311,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
             break;
         }
-        if buffer.len() > 1024 * 1024 {
+        if buffer.len() > SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "HTTP headers are too large",
@@ -1284,16 +1337,26 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         .next()
         .unwrap_or("")
         .to_string();
-    let content_length = lines
+    let headers = lines
         .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .collect::<Vec<_>>();
+    let content_length = headers
+        .iter()
         .find_map(|(name, value)| {
             if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
+                value.parse::<usize>().ok()
             } else {
                 None
             }
         })
         .unwrap_or(0);
+    if content_length > SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP body is too large",
+        ));
+    }
     let mut body = buffer[header_end..].to_vec();
     while body.len() < content_length {
         let read = stream.read(&mut chunk).await?;
@@ -1303,7 +1366,41 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(content_length);
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
+    request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .and_then(|(_, value)| bearer_token(value))
+        .is_some_and(|candidate| constant_time_eq(candidate, token))
+}
+
+fn bearer_token(value: &str) -> Option<&str> {
+    let mut parts = value.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    Some(token)
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut diff = left.len() ^ right.len();
+    for (left, right) in left.iter().zip(right.iter()) {
+        diff |= usize::from(*left ^ *right);
+    }
+    diff == 0
 }
 
 async fn write_json_response(
@@ -1378,4 +1475,42 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
         "hermes_bridge_ready_timeout",
         format!("Hermes backend did not become ready: {last_error}"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_with_authorization(value: &str) -> HttpRequest {
+        HttpRequest {
+            method: "GET".to_string(),
+            path: "/v1/models".to_string(),
+            headers: vec![("Authorization".to_string(), value.to_string())],
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn provider_proxy_requires_matching_bearer_token() {
+        let request = request_with_authorization("Bearer proxy-secret");
+
+        assert!(provider_proxy_authorized(&request, "proxy-secret"));
+        assert!(!provider_proxy_authorized(&request, "other-secret"));
+    }
+
+    #[test]
+    fn provider_proxy_rejects_missing_or_malformed_authorization() {
+        let missing = HttpRequest {
+            method: "GET".to_string(),
+            path: "/v1/models".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let basic = request_with_authorization("Basic proxy-secret");
+        let extra = request_with_authorization("Bearer proxy-secret extra");
+
+        assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
+        assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
+        assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
 }
