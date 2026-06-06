@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHmac } from "crypto";
 import { MockBillingProvider, StripeBillingProvider } from "@/lib/providers/billing";
 
 describe("MockBillingProvider", () => {
@@ -72,20 +73,23 @@ describe("StripeBillingProvider", () => {
   });
 
   it("parses checkout completion webhook payloads", async () => {
-    const provider = new StripeBillingProvider("sk_test_123", "price_123");
+    const webhookSecret = "whsec_test";
+    const provider = new StripeBillingProvider("sk_test_123", "price_123", webhookSecret);
+    const payload = JSON.stringify({
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_test_123",
+          client_reference_id: "workspace_1",
+          customer: "cus_123",
+          subscription: "sub_123",
+        },
+      },
+    });
     const request = new Request("http://localhost/api/billing/webhook", {
       method: "POST",
-      body: JSON.stringify({
-        type: "checkout.session.completed",
-        data: {
-          object: {
-            id: "cs_test_123",
-            client_reference_id: "workspace_1",
-            customer: "cus_123",
-            subscription: "sub_123",
-          },
-        },
-      }),
+      headers: { "stripe-signature": stripeSignature(payload, webhookSecret) },
+      body: payload,
     });
 
     await expect(provider.parseWebhook(request)).resolves.toMatchObject({
@@ -96,4 +100,20 @@ describe("StripeBillingProvider", () => {
       status: "ACTIVE",
     });
   });
+
+  it("rejects unsigned webhook payloads", async () => {
+    const provider = new StripeBillingProvider("sk_test_123", "price_123", "whsec_test");
+    const request = new Request("http://localhost/api/billing/webhook", {
+      method: "POST",
+      body: JSON.stringify({ type: "checkout.session.completed", data: { object: {} } }),
+    });
+
+    await expect(provider.parseWebhook(request)).rejects.toThrow("Stripe webhook signature missing");
+  });
 });
+
+function stripeSignature(payload: string, secret: string) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = createHmac("sha256", secret).update(`${timestamp}.${payload}`).digest("hex");
+  return `t=${timestamp},v1=${signature}`;
+}

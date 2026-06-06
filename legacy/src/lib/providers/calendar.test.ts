@@ -22,12 +22,12 @@ describe("GoogleCalendarProvider", () => {
       "client_secret",
       "http://localhost:3000/api/calendar/callback",
     );
-    const url = provider.getAuthorizationUrl("workspace_1");
+    const url = provider.getAuthorizationUrl("signed_state");
 
     expect(url).toContain("https://accounts.google.com/o/oauth2/v2/auth?");
     expect(url).toContain("client_id=client_id");
     expect(url).toContain("calendar.readonly");
-    expect(url).toContain("state=workspace_1");
+    expect(url).toContain("state=signed_state");
   });
 
   it("exchanges auth codes and normalizes Google Calendar events", async () => {

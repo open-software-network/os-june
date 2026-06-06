@@ -9,7 +9,7 @@ function encryptionKey() {
     process.env.OPEN_NOTEPAD_SECRET;
 
   if (!secret) {
-    throw new Error("TRANSCRIPTION_SETTINGS_ENCRYPTION_KEY is required to save transcription API keys");
+    throw new Error("APP_ENCRYPTION_KEY is required to save encrypted secrets");
   }
 
   if (/^[a-f0-9]{64}$/i.test(secret)) {

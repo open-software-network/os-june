@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from "crypto";
+
 export type CheckoutInput = {
   workspaceId: string;
   workspaceSlug: string;
@@ -48,6 +50,7 @@ export class StripeBillingProvider implements BillingProvider {
   constructor(
     private readonly secretKey = process.env.STRIPE_SECRET_KEY,
     private readonly priceId = process.env.STRIPE_PRICE_ID,
+    private readonly webhookSecret = process.env.STRIPE_WEBHOOK_SECRET,
   ) {}
 
   async createCheckout(input: CheckoutInput): Promise<CheckoutResult> {
@@ -116,7 +119,16 @@ export class StripeBillingProvider implements BillingProvider {
   }
 
   async parseWebhook(request: Request): Promise<BillingWebhookResult | null> {
-    const event = (await request.json()) as {
+    if (!this.webhookSecret) {
+      throw new Error("STRIPE_WEBHOOK_SECRET is required for Stripe billing webhooks");
+    }
+    const payload = await request.text();
+    verifyStripeWebhookSignature(
+      payload,
+      request.headers.get("stripe-signature"),
+      this.webhookSecret,
+    );
+    const event = JSON.parse(payload) as {
       type?: string;
       data?: {
         object?: {
@@ -167,4 +179,44 @@ export function getBillingProvider(): BillingProvider {
     return new StripeBillingProvider();
   }
   return new MockBillingProvider();
+}
+
+const STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300;
+
+function verifyStripeWebhookSignature(
+  payload: string,
+  signatureHeader: string | null,
+  secret: string,
+) {
+  if (!signatureHeader) {
+    throw new Error("Stripe webhook signature missing");
+  }
+  const pairs = signatureHeader
+    .split(",")
+    .map((part) => part.split("=") as [string, string | undefined]);
+  const timestamp = pairs.find(([key]) => key === "t")?.[1];
+  const signatures = pairs
+    .filter(([key]) => key === "v1")
+    .map(([, value]) => value)
+    .filter(Boolean) as string[];
+  if (!timestamp || signatures.length === 0) {
+    throw new Error("Stripe webhook signature malformed");
+  }
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isFinite(timestampSeconds)) {
+    throw new Error("Stripe webhook timestamp malformed");
+  }
+  const ageSeconds = Math.abs(Date.now() / 1000 - timestampSeconds);
+  if (ageSeconds > STRIPE_WEBHOOK_TOLERANCE_SECONDS) {
+    throw new Error("Stripe webhook timestamp outside tolerance");
+  }
+  const expected = createHmac("sha256", secret).update(`${timestamp}.${payload}`).digest("hex");
+  const expectedBuffer = Buffer.from(expected, "hex");
+  const valid = signatures.some((signature) => {
+    const signatureBuffer = Buffer.from(signature, "hex");
+    return signatureBuffer.length === expectedBuffer.length && timingSafeEqual(signatureBuffer, expectedBuffer);
+  });
+  if (!valid) {
+    throw new Error("Stripe webhook signature invalid");
+  }
 }

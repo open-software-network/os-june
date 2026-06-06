@@ -1,3 +1,6 @@
+packages:
+  - "."
+
 onlyBuiltDependencies:
   - '@prisma/engines'
   - better-sqlite3
