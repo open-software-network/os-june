@@ -1,6 +1,6 @@
 use crate::{
     audio::validate_audio, auth::authenticated_user, envelope::ApiResponse, error::ApiError,
-    multipart::MultipartFields, state::ApiState,
+    multipart::MultipartFields, state::ApiState, validation,
 };
 use axum::{
     Json,
@@ -24,7 +24,18 @@ pub(crate) async fn transcribe(
     let audio = form.required_audio()?;
     validate_audio(&audio)?;
     let model_id = form.required_text("model")?;
+    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id)?;
+    let title = form.required_text("title")?;
+    validation::validate_text_len("title", &title, validation::MAX_TITLE_CHARS)?;
+    let context = form.optional_text("context");
+    validation::validate_optional_text_len(
+        "context",
+        context.as_deref(),
+        validation::MAX_TRANSCRIPTION_CONTEXT_CHARS,
+    )?;
+    let note_id = form.required_text("noteId")?;
+    validation::validate_text_len("note_id", &note_id, validation::MAX_ID_CHARS)?;
     let filename = form
         .take_filename()
         .unwrap_or_else(|| "recording.wav".to_string());
@@ -32,11 +43,11 @@ pub(crate) async fn transcribe(
         .note_transcribe()
         .transcribe(NoteTranscribeParams {
             user_id,
-            note_id: form.required_text("noteId")?,
+            note_id,
             audio,
             filename,
-            title: form.required_text("title")?,
-            context: form.optional_text("context"),
+            title,
+            context,
             model_id: ModelId(model_id),
         })
         .await?;
@@ -49,7 +60,9 @@ pub(crate) async fn generate(
     Json(request): Json<GenerateRequest>,
 ) -> Result<Json<ApiResponse<GenerateResponse>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    request.validate()?;
     let model_id = required(request.model, "model_required")?;
+    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id)?;
     let output = state
         .note_generate()
@@ -66,6 +79,43 @@ pub(crate) async fn generate(
         })
         .await?;
     Ok(Json(ApiResponse::ok(GenerateResponse::from(output))))
+}
+
+impl GenerateRequest {
+    fn validate(&self) -> Result<(), ApiError> {
+        validation::validate_optional_text_len(
+            "note_id",
+            self.note_id.as_deref(),
+            validation::MAX_ID_CHARS,
+        )?;
+        validation::validate_optional_text_len(
+            "prompt_version",
+            self.prompt_version.as_deref(),
+            validation::MAX_ID_CHARS,
+        )?;
+        validation::validate_text_len("title", &self.title, validation::MAX_TITLE_CHARS)?;
+        validation::validate_text_len(
+            "transcript",
+            &self.transcript,
+            validation::MAX_NOTE_TRANSCRIPT_CHARS,
+        )?;
+        validation::validate_optional_text_len(
+            "manual_notes",
+            self.manual_notes.as_deref(),
+            validation::MAX_NOTE_MANUAL_NOTES_CHARS,
+        )?;
+        validation::validate_optional_text_len(
+            "language",
+            self.language.as_deref(),
+            validation::MAX_LANGUAGE_CHARS,
+        )?;
+        validation::validate_optional_text_len(
+            "existing_generated_note",
+            self.existing_generated_note.as_deref(),
+            validation::MAX_EXISTING_NOTE_CHARS,
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]

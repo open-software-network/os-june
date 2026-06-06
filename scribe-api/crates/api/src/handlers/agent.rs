@@ -1,6 +1,6 @@
 use crate::{
     auth::authenticated_user, error::ApiError, handlers::notes::require_priced_model,
-    state::ApiState,
+    state::ApiState, validation,
 };
 use axum::{
     Json,
@@ -24,6 +24,8 @@ pub(crate) async fn chat_completions(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("model_required"))?
         .to_string();
+    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
+    validation::validate_agent_chat_body(&body)?;
     require_priced_model(&state, &model_id)?;
     if let Some(object) = body.as_object_mut() {
         object.insert(
