@@ -137,7 +137,13 @@ function startBarLoop() {
       speech = Math.max(speech, meter.displayed[i]);
     }
     for (let i = 0; i < bars.length; i++) {
-      const level = withWaveLayers(meter.displayed[i], i, now, speech, bars.length);
+      const level = withWaveLayers(
+        meter.displayed[i],
+        i,
+        now,
+        speech,
+        bars.length,
+      );
       bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;

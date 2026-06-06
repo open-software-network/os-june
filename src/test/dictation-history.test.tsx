@@ -118,7 +118,9 @@ describe("DictationHistoryView", () => {
     await waitFor(() =>
       expect(screen.getByText("Send the follow up.")).toBeInTheDocument(),
     );
-    expect(screen.queryByText("Get more from dictation")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Get more from dictation"),
+    ).not.toBeInTheDocument();
   });
 
   it("surfaces only the unconfigured features once adopted", async () => {
@@ -129,8 +131,18 @@ describe("DictationHistoryView", () => {
     // Style is configured, dictionary is not → only dictionary should show.
     mocks.dictationSettings.mockResolvedValue({
       settings: {
-        pushToTalkShortcut: { code: "Fn", label: "Fn", pressCount: 1, modifiers: {} },
-        toggleShortcut: { code: "Space", label: "Ctrl+Opt+Space", pressCount: 1, modifiers: {} },
+        pushToTalkShortcut: {
+          code: "Fn",
+          label: "Fn",
+          pressCount: 1,
+          modifiers: {},
+        },
+        toggleShortcut: {
+          code: "Space",
+          label: "Ctrl+Opt+Space",
+          pressCount: 1,
+          modifiers: {},
+        },
         microphone: {},
         style: "formal",
       },
@@ -152,19 +164,33 @@ describe("DictationHistoryView", () => {
     });
     mocks.dictationSettings.mockResolvedValue({
       settings: {
-        pushToTalkShortcut: { code: "Fn", label: "Fn", pressCount: 1, modifiers: {} },
-        toggleShortcut: { code: "Space", label: "Ctrl+Opt+Space", pressCount: 1, modifiers: {} },
+        pushToTalkShortcut: {
+          code: "Fn",
+          label: "Fn",
+          pressCount: 1,
+          modifiers: {},
+        },
+        toggleShortcut: {
+          code: "Space",
+          label: "Ctrl+Opt+Space",
+          pressCount: 1,
+          modifiers: {},
+        },
         microphone: {},
         style: "casualLowercase",
       },
     });
-    mocks.listDictionaryEntries.mockResolvedValue([{ id: "e1", phrase: "Bismarck" }]);
+    mocks.listDictionaryEntries.mockResolvedValue([
+      { id: "e1", phrase: "Bismarck" },
+    ]);
 
     render(<DictationHistoryView />);
     await waitFor(() =>
       expect(screen.getByText("Transcript 0")).toBeInTheDocument(),
     );
-    expect(screen.queryByText("Get more from dictation")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Get more from dictation"),
+    ).not.toBeInTheDocument();
   });
 
   it("deletes a transcription after confirmation", async () => {

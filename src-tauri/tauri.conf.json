@@ -44,26 +44,19 @@
     ],
     "security": {
       "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' asset: data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*; media-src 'self' asset: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-      "capabilities": [
-        "main",
-        "hud"
-      ]
+      "capabilities": ["main", "hud"]
     }
   },
   "plugins": {
     "deep-link": {
       "mobile": [
         {
-          "scheme": [
-            "osscribe"
-          ],
+          "scheme": ["osscribe"],
           "appLink": false
         }
       ],
       "desktop": {
-        "schemes": [
-          "osscribe"
-        ]
+        "schemes": ["osscribe"]
       }
     },
     "updater": {
@@ -83,10 +76,7 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "targets": [
-      "app",
-      "dmg"
-    ],
+    "targets": ["app", "dmg"],
     "resources": {
       "../.tauri-helper/OS Scribe.app": "native/bin/OS Scribe.app",
       "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app"

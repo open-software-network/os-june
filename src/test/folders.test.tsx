@@ -226,9 +226,7 @@ describe("folders UI", () => {
     );
 
     await waitFor(() =>
-      expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith(
-        "session-1",
-      ),
+      expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("session-1"),
     );
     await waitFor(() =>
       expect(screen.queryByText("Researching Google")).toBeNull(),

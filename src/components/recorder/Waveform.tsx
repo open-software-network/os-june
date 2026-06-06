@@ -87,7 +87,13 @@ export function Waveform({ level, active = true }: WaveformProps) {
         const el = refs.current[i];
         if (!el) continue;
         const value = activeRef.current
-          ? withWaveLayers(meter.displayed[i], i, now, speech, RECORDER_BAR_COUNT)
+          ? withWaveLayers(
+              meter.displayed[i],
+              i,
+              now,
+              speech,
+              RECORDER_BAR_COUNT,
+            )
           : meter.displayed[i];
         el.style.setProperty("--level", value.toFixed(3));
       }

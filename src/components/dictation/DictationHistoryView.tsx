@@ -142,7 +142,8 @@ export function DictationHistoryView({
   // Show each optional feature only while it's still unconfigured, and only
   // once we know its state (avoids the card flashing in then vanishing). The
   // card itself appears only for adopted users who haven't dismissed it.
-  const customizationLoaded = settings !== undefined && dictionaryCount !== null;
+  const customizationLoaded =
+    settings !== undefined && dictionaryCount !== null;
   const styleUnconfigured = settings?.style === DEFAULT_STYLE;
   const dictionaryUnconfigured = (dictionaryCount ?? 0) === 0;
   const showHint =
