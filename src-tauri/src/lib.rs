@@ -84,7 +84,7 @@ pub fn run() {
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
-            hermes_bridge::open_hermes_bridge_file,
+            hermes_bridge::download_hermes_bridge_file,
             hermes_bridge::hermes_bridge_sessions,
             hermes_bridge::hermes_bridge_session_messages,
             hermes_bridge::delete_hermes_bridge_session,

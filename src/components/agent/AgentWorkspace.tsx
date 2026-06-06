@@ -35,7 +35,7 @@ import {
   hermesBridgeStatus,
   hermesBridgeToolsets,
   listAgentTasks,
-  openHermesBridgeFile,
+  downloadHermesBridgeFile,
   retryAgentTask,
   saveAgentAssistantMessage,
   saveAgentHermesSession,
@@ -1034,8 +1034,8 @@ export function AgentWorkspace() {
                   turn={turn}
                   artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
-                  onOpenArtifact={(artifact) =>
-                    void openHermesBridgeFile(artifact.path).catch(
+                  onDownloadArtifact={(artifact) =>
+                    void downloadHermesBridgeFile(artifact.path).catch(
                       (err: unknown) => setError(messageFromError(err)),
                     )
                   }
@@ -1102,8 +1102,8 @@ export function AgentWorkspace() {
                   turn={turn}
                   artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
-                  onOpenArtifact={(artifact) =>
-                    void openHermesBridgeFile(artifact.path).catch(
+                  onDownloadArtifact={(artifact) =>
+                    void downloadHermesBridgeFile(artifact.path).catch(
                       (err: unknown) => setError(messageFromError(err)),
                     )
                   }
@@ -2113,7 +2113,7 @@ function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
   onApproval,
-  onOpenArtifact,
+  onDownloadArtifact,
   turn,
 }: {
   approvalSubmitting: Record<string, string>;
@@ -2122,7 +2122,7 @@ function AgentChatTurnRow({
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: ApprovalChoice,
   ) => void;
-  onOpenArtifact?: (artifact: AgentArtifact) => void;
+  onDownloadArtifact?: (artifact: AgentArtifact) => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -2179,7 +2179,7 @@ function AgentChatTurnRow({
         )}
         <AgentArtifactList
           artifacts={mentionedArtifacts}
-          onOpen={onOpenArtifact}
+          onDownload={onDownloadArtifact}
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">Waiting for Hermes...</p>
@@ -2311,10 +2311,10 @@ function AgentToolPartRow({
 
 function AgentArtifactList({
   artifacts,
-  onOpen,
+  onDownload,
 }: {
   artifacts: AgentArtifact[];
-  onOpen?: (artifact: AgentArtifact) => void;
+  onDownload?: (artifact: AgentArtifact) => void;
 }) {
   if (!artifacts.length) return null;
   return (
@@ -2334,9 +2334,9 @@ function AgentArtifactList({
               <span>{compactPath(artifact.path)}</span>
             </p>
           </div>
-          {onOpen ? (
-            <button type="button" onClick={() => onOpen(artifact)}>
-              Open
+          {onDownload ? (
+            <button type="button" onClick={() => onDownload(artifact)}>
+              Download
             </button>
           ) : null}
         </article>

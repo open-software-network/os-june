@@ -147,7 +147,7 @@ pub struct DeleteHermesSessionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OpenHermesFileRequest {
+pub struct DownloadHermesFileRequest {
     pub path: String,
 }
 
@@ -537,23 +537,37 @@ pub async fn hermes_bridge_filesystem_snapshot(
 }
 
 #[tauri::command]
-pub async fn open_hermes_bridge_file(
+pub async fn download_hermes_bridge_file(
     app: AppHandle,
-    request: OpenHermesFileRequest,
-) -> Result<(), AppError> {
+    request: DownloadHermesFileRequest,
+) -> Result<String, AppError> {
+    let requested = validate_hermes_file_path(&app, &request.path)?;
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+    fs::create_dir_all(&downloads_dir)
+        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+    let destination = unique_download_path(&downloads_dir, &requested)?;
+    fs::copy(&requested, &destination)
+        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
     let hermes_home = resolve_scribe_hermes_home(&app)?;
-    let requested = PathBuf::from(&request.path)
+    let requested = PathBuf::from(path)
         .canonicalize()
-        .map_err(|error| AppError::new("hermes_file_open_failed", error.to_string()))?;
+        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
     if !requested.is_file() {
         return Err(AppError::new(
-            "hermes_file_open_failed",
-            "Only files in the Hermes workspace or memory can be opened.",
+            "hermes_file_download_failed",
+            "Only files in the Hermes workspace or memory can be downloaded.",
         ));
     }
     if is_hidden_secret_path(&requested) {
         return Err(AppError::new(
-            "hermes_file_open_denied",
+            "hermes_file_download_denied",
             "This Hermes file is hidden or sensitive.",
         ));
     }
@@ -563,11 +577,48 @@ pub async fn open_hermes_bridge_file(
         .any(|root| requested.starts_with(root));
     if !allowed {
         return Err(AppError::new(
-            "hermes_file_open_denied",
-            "Only files in this app's Hermes workspace or memory can be opened.",
+            "hermes_file_download_denied",
+            "Only files in this app's Hermes workspace or memory can be downloaded.",
         ));
     }
-    open_file_with_system(&requested)
+    Ok(requested)
+}
+
+fn unique_download_path(downloads_dir: &Path, source: &Path) -> Result<PathBuf, AppError> {
+    let file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_file_download_failed",
+                "The Hermes file does not have a downloadable filename.",
+            )
+        })?;
+    let candidate = downloads_dir.join(file_name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    let stem = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    let extension = source.extension().and_then(|name| name.to_str());
+    for index in 1..1000 {
+        let file_name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem} ({index}).{extension}"),
+            _ => format!("{stem} ({index})"),
+        };
+        let candidate = downloads_dir.join(file_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::new(
+        "hermes_file_download_failed",
+        "Could not find an available Downloads filename.",
+    ))
 }
 
 pub fn shutdown(app: &tauri::AppHandle) {
@@ -1068,30 +1119,6 @@ fn is_hidden_secret_path(path: &Path) -> bool {
     ) || name.ends_with(".lock")
         || name.ends_with(".key")
         || name.ends_with(".pem")
-}
-
-#[cfg(target_os = "macos")]
-fn open_file_with_system(path: &Path) -> Result<(), AppError> {
-    let status = Command::new("/usr/bin/open")
-        .arg(path)
-        .status()
-        .map_err(|error| AppError::new("hermes_file_open_failed", error.to_string()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(AppError::new(
-            "hermes_file_open_failed",
-            format!("open exited with status {status}"),
-        ))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn open_file_with_system(_path: &Path) -> Result<(), AppError> {
-    Err(AppError::new(
-        "hermes_file_open_unsupported",
-        "Opening Hermes files is only supported on macOS.",
-    ))
 }
 
 fn system_time_to_iso(value: std::time::SystemTime) -> String {

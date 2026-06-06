@@ -747,8 +747,8 @@ export async function hermesBridgeFilesystemSnapshot() {
   return invoke<HermesFilesystemSnapshot>("hermes_bridge_filesystem_snapshot");
 }
 
-export async function openHermesBridgeFile(path: string) {
-  return invoke<void>("open_hermes_bridge_file", { request: { path } });
+export async function downloadHermesBridgeFile(path: string) {
+  return invoke<string>("download_hermes_bridge_file", { request: { path } });
 }
 
 export async function hermesBridgeSessions(

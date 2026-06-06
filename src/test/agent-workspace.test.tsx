@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   listAgentTasks: vi.fn(),
-  openHermesBridgeFile: vi.fn(),
+  downloadHermesBridgeFile: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
   saveAgentHermesSession: vi.fn(),
@@ -42,7 +42,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   listAgentTasks: mocks.listAgentTasks,
-  openHermesBridgeFile: mocks.openHermesBridgeFile,
+  downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
@@ -108,7 +108,9 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
-    mocks.openHermesBridgeFile.mockResolvedValue(undefined);
+    mocks.downloadHermesBridgeFile.mockResolvedValue(
+      "/Users/junho/Downloads/sample.pdf",
+    );
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
     });
@@ -187,7 +189,7 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
-  it("renders generated workspace files mentioned by Hermes as openable artifacts", async () => {
+  it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
     const samplePath =
       "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf";
@@ -224,8 +226,8 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
     expect(screen.getAllByText("sample.pdf").length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: "Open" }));
+    await user.click(screen.getByRole("button", { name: "Download" }));
 
-    expect(mocks.openHermesBridgeFile).toHaveBeenCalledWith(samplePath);
+    expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
   });
 });
