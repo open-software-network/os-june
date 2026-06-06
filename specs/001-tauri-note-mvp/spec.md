@@ -169,7 +169,7 @@ A user does not lose a recording if the app is closed, crashes, or loses network
 - The MVP targets a single local user on one Mac; accounts, sync, collaboration, sharing, and cloud note storage are out of scope.
 - The user provides any required AI/transcription credentials through local development configuration or a later settings surface; credential UX is not part of this spec unless required for MVP operation.
 - Batch transcription after recording is acceptable; realtime captions and incremental transcript display are intentionally excluded.
-- Audio is captured only from the microphone; system audio and meeting audio are excluded even if legacy code contains reference implementations.
-- The legacy app in `/legacy` is reference material only. New implementation should not preserve its workspace/auth/billing/calendar/meeting complexity.
+- Audio is captured only from the microphone; system audio and meeting audio are excluded from the original MVP scope.
+- The removed legacy reference app should not be reintroduced; the new implementation should not preserve its workspace/auth/billing/calendar/meeting complexity.
 - Note generation may use a remote AI/transcription service, so the app must gracefully separate local capture success from network-dependent processing.
 - The MVP can use local storage only; import/export, search, tags, reminders, and advanced folder nesting are out of scope unless added later.
