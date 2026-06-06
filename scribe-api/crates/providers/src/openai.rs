@@ -60,7 +60,7 @@ impl Transcriber for OpenAiTranscriber {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model = %model_id, body = %body, "openai: non-success response");
+            tracing::error!(%status, %url, model = %model_id, body_bytes = body.len(), "openai: non-success response");
             return Err(DomainError::UpstreamProvider);
         }
         let parsed = response

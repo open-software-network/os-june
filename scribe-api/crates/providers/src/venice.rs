@@ -58,7 +58,7 @@ impl VeniceModelCatalog {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            tracing::warn!(%status, %url, model_type, body = %body, "venice: model catalog non-success response");
+            tracing::warn!(%status, %url, model_type, body_bytes = body.len(), "venice: model catalog non-success response");
             return Err(DomainError::UpstreamProvider);
         }
         response
@@ -117,7 +117,7 @@ impl Transcriber for VeniceTranscriber {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model = %model_id, body = %body, "venice: non-success response");
+            tracing::error!(%status, %url, model = %model_id, body_bytes = body.len(), "venice: non-success response");
             return Err(DomainError::UpstreamProvider);
         }
         let parsed = response
@@ -358,12 +358,11 @@ impl VeniceChat {
             DomainError::UpstreamProvider
         })?;
         if !status.is_success() {
-            let body_preview = String::from_utf8_lossy(&body);
             tracing::error!(
                 %status,
                 %url,
                 model = %model.0,
-                body = %body_preview,
+                body_bytes = body.len(),
                 "venice: agent chat non-success response"
             );
             return Err(DomainError::UpstreamProvider);
