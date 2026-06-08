@@ -727,15 +727,18 @@ export function App() {
   }, [selectedNoteId, sourceMode]);
 
   useEffect(() => {
+    let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen(MEETING_START_TRANSCRIPTION_EVENT, () => {
       if (appBlocked || !bootstrapped) return;
       setActiveView("meetings");
       void handleStartRecording();
     }).then((cleanup) => {
-      unlisten = cleanup;
+      if (aborted) cleanup();
+      else unlisten = cleanup;
     });
     return () => {
+      aborted = true;
       unlisten?.();
     };
   }, [appBlocked, bootstrapped, handleStartRecording]);
