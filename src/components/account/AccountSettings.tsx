@@ -148,14 +148,24 @@ export function AccountSettingsSection({
               </div>
               <div className="settings-row-control">
                 {account.signedIn ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={busy}
-                    onClick={() => void handleSignOut()}
-                  >
-                    Sign out
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={busy}
+                      onClick={() => void handleTopUp()}
+                    >
+                      Manage
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={busy}
+                      onClick={() => void handleSignOut()}
+                    >
+                      Sign out
+                    </button>
+                  </>
                 ) : busy ? (
                   <button
                     type="button"
