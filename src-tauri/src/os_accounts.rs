@@ -2,6 +2,9 @@
 //!
 //! Tokens live in the OS keychain (never the webview). Metering goes through
 //! Scribe API, which holds the App API key — never this binary.
+//!
+//! Debug builds can opt into a plaintext token file for local development via
+//! `OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE=1`; release builds always use Keychain.
 
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -26,6 +29,10 @@ const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
 const KEYCHAIN_USER: &str = "tokens";
+#[cfg(debug_assertions)]
+const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE";
+#[cfg(debug_assertions)]
+const DEV_PLAINTEXT_TOKEN_FILE: &str = "dev-os-accounts-tokens.json";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(debug_assertions)]
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,7 +50,7 @@ struct Envelope<T> {
     error_code: Option<i64>,
 }
 
-/// Token pair. Stored in the OS keychain, **never** handed to the webview.
+/// Token pair. Stored in the OS keychain by default, **never** handed to the webview.
 /// Zeroizes memory on drop so a refresh-rotated token doesn't linger.
 #[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
 struct TokenPair {
@@ -742,6 +749,10 @@ fn net_error(e: reqwest::Error) -> AppError {
 async fn store_tokens(pair: &TokenPair) -> Result<(), AppError> {
     let json = serde_json::to_string(pair)
         .map_err(|e| AppError::new("token_serialize_failed", e.to_string()))?;
+    #[cfg(debug_assertions)]
+    if use_dev_plaintext_token_store() {
+        return store_dev_plaintext_tokens(json).await;
+    }
     tokio::task::spawn_blocking(move || {
         keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
             .and_then(|entry| entry.set_password(&json))
@@ -752,6 +763,10 @@ async fn store_tokens(pair: &TokenPair) -> Result<(), AppError> {
 }
 
 async fn load_tokens() -> Option<TokenPair> {
+    #[cfg(debug_assertions)]
+    if use_dev_plaintext_token_store() {
+        return load_dev_plaintext_tokens().await;
+    }
     let raw = tokio::task::spawn_blocking(|| {
         keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
             .ok()
@@ -763,12 +778,82 @@ async fn load_tokens() -> Option<TokenPair> {
 }
 
 async fn clear_tokens() {
+    #[cfg(debug_assertions)]
+    if use_dev_plaintext_token_store() {
+        let _ = tokio::task::spawn_blocking(|| {
+            let _ = std::fs::remove_file(dev_plaintext_token_path());
+        })
+        .await;
+        return;
+    }
     let _ = tokio::task::spawn_blocking(|| {
         if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
             let _ = entry.delete_credential();
         }
     })
     .await;
+}
+
+#[cfg(debug_assertions)]
+fn use_dev_plaintext_token_store() -> bool {
+    load_local_env();
+    std::env::var(DEV_PLAINTEXT_TOKEN_STORE_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(debug_assertions)]
+fn dev_plaintext_token_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(DEV_PLAINTEXT_TOKEN_FILE)
+}
+
+#[cfg(debug_assertions)]
+async fn store_dev_plaintext_tokens(json: String) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || {
+        let path = dev_plaintext_token_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&path)?;
+            file.write_all(json.as_bytes())?;
+            let mut permissions = file.metadata()?.permissions();
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(&path, permissions)?;
+            Ok::<(), std::io::Error>(())
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, json)
+        }
+    })
+    .await
+    .map_err(|e| AppError::new("dev_token_store_write_failed", e.to_string()))?
+    .map_err(|e| AppError::new("dev_token_store_write_failed", e.to_string()))
+}
+
+#[cfg(debug_assertions)]
+async fn load_dev_plaintext_tokens() -> Option<TokenPair> {
+    let raw = tokio::task::spawn_blocking(|| std::fs::read_to_string(dev_plaintext_token_path()))
+        .await
+        .ok()?
+        .ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 fn pkce() -> (String, String) {
