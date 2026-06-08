@@ -1579,8 +1579,66 @@ input:focus-visible,
   border-top: 1px solid var(--border-subtle);
 }
 
+.agent-composer[data-drop-active="true"] {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
 .agent-composer[data-hidden="true"] {
   display: none;
+}
+
+.agent-composer-input {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.agent-attachment-chip {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: min(100%, 360px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-attachment-chip span {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-attachment-chip em {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-style: normal;
+}
+
+.agent-attachment-chip button {
+  display: inline-grid;
+  place-items: center;
+  min-width: var(--control-xs);
+  min-height: var(--control-xs);
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.agent-attachment-chip button:hover {
+  color: var(--foreground);
 }
 
 .agent-composer textarea {

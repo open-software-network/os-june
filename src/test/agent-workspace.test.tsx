@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
+  importHermesBridgeFile: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   retryAgentTask: vi.fn(),
@@ -30,6 +31,19 @@ const mocks = vi.hoisted(() => ({
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
+  eventHandlers: new Map<
+    string,
+    (event: { payload?: { paths?: string[] } }) => void
+  >(),
+  listen: vi.fn(
+    async (
+      eventName: string,
+      handler: (event: { payload?: { paths?: string[] } }) => void,
+    ) => {
+      mocks.eventHandlers.set(eventName, handler);
+      return () => mocks.eventHandlers.delete(eventName);
+    },
+  ),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -41,6 +55,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
+  importHermesBridgeFile: mocks.importHermesBridgeFile,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
   retryAgentTask: mocks.retryAgentTask,
@@ -53,6 +68,10 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
     mocks.updateHermesBridgeMessagingPlatform,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: mocks.listen,
 }));
 
 vi.mock("../lib/hermes-adapter", () => ({
@@ -108,6 +127,12 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
+    mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
+      name: path.split("/").pop() ?? "attachment",
+      path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
+      rootLabel: "Workspace",
+      size: 1234,
+    }));
     mocks.downloadHermesBridgeFile.mockResolvedValue(
       "/Users/junho/Downloads/sample.pdf",
     );
@@ -120,6 +145,9 @@ describe("AgentWorkspace", () => {
           session_id: "runtime-session-2",
           stored_session_id: "session-2",
         });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
       }
       return Promise.resolve({});
     });
@@ -231,5 +259,45 @@ describe("AgentWorkspace", () => {
     );
 
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
+  });
+
+  it("imports dropped files into the Hermes workspace before submitting", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/junho/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.type(
+      screen.getByPlaceholderText("Send a follow-up"),
+      "what is in this image?",
+    );
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining(
+          "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
+        ),
+      }),
+    );
+    expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
+      "/Users/junho/Library/Application Support/CleanShot/media/screenshot.png",
+    );
   });
 });

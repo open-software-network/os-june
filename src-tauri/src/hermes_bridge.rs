@@ -25,6 +25,7 @@ const HERMES_SOURCE_TARBALL_SHA256: &str =
     "287ead740a444d7e8c8e00a6d6e073d9b3329034f649a07b42e0a3f5b14686e4";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
+const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
@@ -153,6 +154,21 @@ pub struct DeleteHermesSessionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DownloadHermesFileRequest {
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportHermesFileRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedHermesFile {
+    pub name: String,
+    pub path: String,
+    pub root_label: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -562,6 +578,43 @@ pub async fn download_hermes_bridge_file(
     Ok(destination.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+pub async fn import_hermes_bridge_file(
+    app: AppHandle,
+    request: ImportHermesFileRequest,
+) -> Result<ImportedHermesFile, AppError> {
+    let source = validate_dropped_file_path(&request.path)?;
+    let metadata = fs::metadata(&source)
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
+    if metadata.len() > HERMES_IMPORT_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_file_import_denied",
+            "Dropped files must be 50 MB or smaller.",
+        ));
+    }
+    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let upload_dir = hermes_home.join("workspace").join("uploads");
+    fs::create_dir_all(&upload_dir)
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
+    let destination = unique_upload_path(&upload_dir, &source)?;
+    fs::copy(&source, &destination)
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
+    let size = fs::metadata(&destination)
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?
+        .len();
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment")
+        .to_string();
+    Ok(ImportedHermesFile {
+        name,
+        path: destination.to_string_lossy().into_owned(),
+        root_label: "Workspace".to_string(),
+        size,
+    })
+}
+
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
     let hermes_home = resolve_scribe_hermes_home(&app)?;
     let requested = PathBuf::from(path)
@@ -587,6 +640,25 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
         return Err(AppError::new(
             "hermes_file_download_denied",
             "Only files in this app's Hermes workspace or memory can be downloaded.",
+        ));
+    }
+    Ok(requested)
+}
+
+fn validate_dropped_file_path(path: &str) -> Result<PathBuf, AppError> {
+    let requested = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
+    if !requested.is_file() {
+        return Err(AppError::new(
+            "hermes_file_import_failed",
+            "Only files can be attached to an agent message.",
+        ));
+    }
+    if is_hidden_secret_path(&requested) {
+        return Err(AppError::new(
+            "hermes_file_import_denied",
+            "Hidden or sensitive files cannot be attached.",
         ));
     }
     Ok(requested)
@@ -626,6 +698,43 @@ fn unique_download_path(downloads_dir: &Path, source: &Path) -> Result<PathBuf, 
     Err(AppError::new(
         "hermes_file_download_failed",
         "Could not find an available Downloads filename.",
+    ))
+}
+
+fn unique_upload_path(upload_dir: &Path, source: &Path) -> Result<PathBuf, AppError> {
+    let file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_file_import_failed",
+                "The dropped file does not have a usable filename.",
+            )
+        })?;
+    let candidate = upload_dir.join(file_name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    let stem = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("attachment");
+    let extension = source.extension().and_then(|name| name.to_str());
+    for index in 1..1000 {
+        let file_name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem} ({index}).{extension}"),
+            _ => format!("{stem} ({index})"),
+        };
+        let candidate = upload_dir.join(file_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::new(
+        "hermes_file_import_failed",
+        "Could not find an available attachment filename.",
     ))
 }
 

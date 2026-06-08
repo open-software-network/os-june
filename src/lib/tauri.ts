@@ -379,6 +379,13 @@ export type HermesFilesystemSnapshot = {
   roots: HermesFilesystemRoot[];
 };
 
+export type ImportedHermesFile = {
+  name: string;
+  path: string;
+  rootLabel: string;
+  size: number;
+};
+
 export type HermesSkillInfo = {
   name: string;
   description?: string;
@@ -749,6 +756,12 @@ export async function hermesBridgeFilesystemSnapshot() {
 
 export async function downloadHermesBridgeFile(path: string) {
   return invoke<string>("download_hermes_bridge_file", { request: { path } });
+}
+
+export async function importHermesBridgeFile(path: string) {
+  return invoke<ImportedHermesFile>("import_hermes_bridge_file", {
+    request: { path },
+  });
 }
 
 export async function hermesBridgeSessions(
