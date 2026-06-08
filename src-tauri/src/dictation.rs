@@ -1811,11 +1811,8 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
 fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
     const HUD_TOP_MARGIN: i32 = 12;
-    // The pill is much smaller than the window — the window is intentionally
-    // padded with transparent space so the box-shadow has room to fall off
-    // softly. We anchor the *pill* at top-center, not the window, which
-    // means accounting for the gap above the pill (half the window's slack).
-    const PILL_HEIGHT: i32 = 30;
+    // The native HUD window is sized to the visible pill so dragging and
+    // top-edge placement match what the user can see.
 
     let monitor = hud
         .cursor_position()
@@ -1828,11 +1825,8 @@ fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> 
     let work_top = work_area.position.y;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
-    // The pill is centered inside the window (CSS `place-items: center` on
-    // body), so window_top = pill_center - window_height/2.
-    let pill_center_y = work_top + HUD_TOP_MARGIN + PILL_HEIGHT / 2;
     let x = work_center_x - window_size.width as i32 / 2;
-    let y = pill_center_y - window_size.height as i32 / 2;
+    let y = work_top + HUD_TOP_MARGIN;
     Some((x, y))
 }
 
