@@ -184,6 +184,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Record<string, string>
   >({});
+  const [clarifySubmitting, setClarifySubmitting] = useState<
+    Record<string, string>
+  >({});
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
@@ -789,6 +792,46 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
   }
 
+  async function respondToClarify(
+    liveEventKey: string,
+    requestId: string,
+    answer: string,
+  ) {
+    setClarifySubmitting((current) => ({ ...current, [requestId]: answer }));
+    try {
+      const gateway = await ensureHermesGateway();
+      await gateway.request("clarify.respond", {
+        request_id: requestId,
+        answer,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "clarify.response",
+        payload: { request_id: requestId, answer },
+      });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setClarifySubmitting((current) => {
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+    }
+  }
+
+  function pushLiveEvent(key: string, event: HermesGatewayEvent) {
+    const liveEvent = { ...event, receivedAt: new Date().toISOString() };
+    const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(
+      -200,
+    );
+    liveEventsRef.current = {
+      ...liveEventsRef.current,
+      [key]: nextEvents,
+    };
+    setLiveEvents(liveEventsRef.current);
+  }
+
   async function startNewTask(prompt?: string) {
     clearPendingNewSessionRequest();
     newSessionModeRef.current = true;
@@ -1037,6 +1080,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   turn={turn}
                   artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
+                  clarifySubmitting={clarifySubmitting}
                   onDownloadArtifact={(artifact) =>
                     void downloadHermesBridgeFile(artifact.path).catch(
                       (err: unknown) => setError(messageFromError(err)),
@@ -1047,6 +1091,13 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                       part.sessionId ?? selectedHermesSessionId,
                       part.id,
                       choice,
+                    )
+                  }
+                  onClarify={(part, answer) =>
+                    void respondToClarify(
+                      selectedHermesSessionId,
+                      part.id,
+                      answer,
                     )
                   }
                 />
@@ -1105,6 +1156,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   turn={turn}
                   artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
+                  clarifySubmitting={clarifySubmitting}
                   onDownloadArtifact={(artifact) =>
                     void downloadHermesBridgeFile(artifact.path).catch(
                       (err: unknown) => setError(messageFromError(err)),
@@ -1118,6 +1170,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                     if (!sessionId) return;
                     void respondToApproval(sessionId, part.id, choice);
                   }}
+                  onClarify={(part, answer) =>
+                    void respondToClarify(selectedTask.id, part.id, answer)
+                  }
                 />
               ))}
             </div>
@@ -2115,15 +2170,22 @@ type ApprovalChoice = "once" | "session" | "always" | "deny";
 function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
+  clarifySubmitting,
   onApproval,
+  onClarify,
   onDownloadArtifact,
   turn,
 }: {
   approvalSubmitting: Record<string, string>;
   artifacts?: AgentArtifact[];
+  clarifySubmitting: Record<string, string>;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: ApprovalChoice,
+  ) => void;
+  onClarify: (
+    part: Extract<AgentChatPart, { type: "clarify" }>,
+    answer: string,
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   turn: AgentChatTurn;
@@ -2176,6 +2238,13 @@ function AgentChatTurnRow({
               submitting={approvalSubmitting[part.id]}
               onApproval={onApproval}
             />
+          ) : part.type === "clarify" ? (
+            <ClarifyPart
+              key={`${turn.id}:clarify:${part.id}`}
+              part={part}
+              submitting={clarifySubmitting[part.id]}
+              onClarify={onClarify}
+            />
           ) : (
             <AgentToolPartRow key={`${turn.id}:tool:${part.id}`} part={part} />
           ),
@@ -2186,6 +2255,117 @@ function AgentChatTurnRow({
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">Waiting for Hermes...</p>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ClarifyPart({
+  onClarify,
+  part,
+  submitting,
+}: {
+  onClarify: (
+    part: Extract<AgentChatPart, { type: "clarify" }>,
+    answer: string,
+  ) => void;
+  part: Extract<AgentChatPart, { type: "clarify" }>;
+  submitting?: string;
+}) {
+  const [typing, setTyping] = useState(part.choices.length === 0);
+  const [draft, setDraft] = useState("");
+  const disabled = part.status !== "pending" || submitting !== undefined;
+
+  return (
+    <article className="agent-clarify-card" data-status={part.status}>
+      <span className="agent-tool-icon">
+        <MessageSquareIcon size={14} />
+      </span>
+      <div>
+        <div className="agent-tool-title">
+          <span>Clarify</span>
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
+            {part.status === "pending" ? "Waiting" : "Answered"}
+          </span>
+        </div>
+        <p>{part.question}</p>
+        {part.answer !== undefined ? (
+          <p className="agent-clarify-answer">
+            {part.answer.trim() ? part.answer : "Skipped"}
+          </p>
+        ) : null}
+        {part.status === "pending" ? (
+          <>
+            {!typing && part.choices.length ? (
+              <div className="agent-clarify-choices">
+                {part.choices.map((choice, index) => (
+                  <button
+                    type="button"
+                    key={`${index}:${choice}`}
+                    disabled={disabled}
+                    onClick={() => onClarify(part, choice)}
+                  >
+                    <span>{index + 1}</span>
+                    {choice}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  disabled={submitting !== undefined}
+                  onClick={() => setTyping(true)}
+                >
+                  <span>+</span>
+                  Other
+                </button>
+              </div>
+            ) : null}
+            {typing || !part.choices.length ? (
+              <form
+                className="agent-clarify-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const answer = draft.trim();
+                  if (answer) onClarify(part, answer);
+                }}
+              >
+                <textarea
+                  value={draft}
+                  disabled={disabled}
+                  rows={3}
+                  placeholder="Type your answer"
+                  onChange={(event) => setDraft(event.currentTarget.value)}
+                />
+                <div>
+                  {part.choices.length ? (
+                    <button
+                      type="button"
+                      disabled={submitting !== undefined}
+                      onClick={() => {
+                        setDraft("");
+                        setTyping(false);
+                      }}
+                    >
+                      Back
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onClarify(part, "")}
+                  >
+                    Skip
+                  </button>
+                  <button type="submit" disabled={disabled || !draft.trim()}>
+                    {submitting !== undefined ? "Sending" : "Send"}
+                  </button>
+                </div>
+              </form>
+            ) : null}
+          </>
         ) : null}
       </div>
     </article>

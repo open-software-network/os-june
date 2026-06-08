@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildHermesSessionChatTurns } from "../lib/agent-chat-runtime";
+import {
+  buildAgentChatTurns,
+  buildHermesSessionChatTurns,
+} from "../lib/agent-chat-runtime";
 import type { HermesSessionMessage } from "../lib/tauri";
 
 describe("Agent chat runtime", () => {
@@ -66,5 +69,111 @@ describe("Agent chat runtime", () => {
     );
 
     expect(textParts).toEqual(["Say hello", "Hello there", "Nested reply"]);
+  });
+
+  it("appends live reasoning deltas without inserting log line breaks", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {},
+        },
+        {
+          type: "thinking.delta",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          payload: { text: "I should prefer" },
+        },
+        {
+          type: "thinking.delta",
+          receivedAt: "2026-06-04T10:00:00.200Z",
+          payload: { text: "ably use Homebrew." },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "I should preferably use Homebrew.",
+        status: "running",
+      },
+    ]);
+  });
+
+  it("renders live clarify requests as answerable chat parts", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { tool_id: "tool-1", name: "clarify" },
+        },
+        {
+          type: "clarify.request",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          payload: {
+            request_id: "clarify-1",
+            question: "Which email provider should I configure?",
+            choices: ["Gmail", "Fastmail"],
+          },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "clarify",
+        id: "clarify-1",
+        sessionId: "runtime-session",
+        question: "Which email provider should I configure?",
+        choices: ["Gmail", "Fastmail"],
+        status: "pending",
+      },
+    ]);
+  });
+
+  it("marks clarify requests resolved after responses or tool completion", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "clarify.request",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            request_id: "clarify-1",
+            question: "Use Gmail?",
+            choices: ["Yes", "No"],
+          },
+        },
+        {
+          type: "clarify.response",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { request_id: "clarify-1", answer: "Yes" },
+        },
+        {
+          type: "tool.complete",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: { tool_id: "tool-1", name: "clarify" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "clarify",
+        id: "clarify-1",
+        question: "Use Gmail?",
+        choices: ["Yes", "No"],
+        answer: "Yes",
+        status: "resolved",
+      },
+    ]);
   });
 });
