@@ -11,6 +11,7 @@ export type HermesGatewayEventName =
   | "tool.progress"
   | "tool.complete"
   | "clarify.request"
+  | "clarify.response"
   | "approval.request"
   | "error"
   | (string & {});

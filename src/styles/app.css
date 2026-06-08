@@ -926,7 +926,8 @@ input:focus-visible,
 .agent-safety-panel,
 .agent-tool-event,
 .agent-hermes-event,
-.agent-approval-card {
+.agent-approval-card,
+.agent-clarify-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--sp-4);
@@ -945,10 +946,103 @@ input:focus-visible,
   background: color-mix(in oklch, var(--warm-soft) 10%, var(--surface-subtle));
 }
 
-.agent-approval-card p {
+.agent-approval-card p,
+.agent-clarify-card p {
   margin: var(--sp-2) 0 0;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.agent-clarify-card {
+  width: min(760px, 100%);
+}
+
+.agent-clarify-answer {
+  border-left: 2px solid var(--border-subtle);
+  padding-left: var(--sp-3);
+  color: var(--foreground) !important;
+}
+
+.agent-clarify-choices {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.agent-clarify-choices button,
+.agent-clarify-form button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font: inherit;
+}
+
+.agent-clarify-choices button {
+  justify-content: flex-start;
+  gap: var(--sp-3);
+  text-align: left;
+}
+
+.agent-clarify-choices button span {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-xs);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.agent-clarify-choices button:hover:not(:disabled),
+.agent-clarify-form button:hover:not(:disabled) {
+  background: var(--tertiary);
+}
+
+.agent-clarify-choices button:disabled,
+.agent-clarify-form button:disabled,
+.agent-clarify-form textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.agent-clarify-form {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.agent-clarify-form textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3);
+  background: var(--surface);
+  color: var(--foreground);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.agent-clarify-form textarea:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.agent-clarify-form div {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
 }
 
 .agent-approval-card pre {
@@ -1318,6 +1412,10 @@ input:focus-visible,
 
 .agent-reasoning[data-status="running"] summary span {
   color: var(--warm-strong);
+}
+
+.agent-reasoning[open] summary p {
+  display: none;
 }
 
 .agent-reasoning-body {

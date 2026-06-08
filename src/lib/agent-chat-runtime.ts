@@ -40,11 +40,22 @@ export type AgentChatApprovalPart = {
   status: "pending" | "resolved";
 };
 
+export type AgentChatClarifyPart = {
+  type: "clarify";
+  id: string;
+  sessionId?: string;
+  question: string;
+  choices: string[];
+  answer?: string;
+  status: "pending" | "resolved";
+};
+
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
   | AgentChatToolPart
-  | AgentChatApprovalPart;
+  | AgentChatApprovalPart
+  | AgentChatClarifyPart;
 
 export type AgentChatTurn = {
   id: string;
@@ -239,6 +250,14 @@ function appendLiveHermesEvents(
     }
 
     if (event.type.startsWith("tool.")) {
+      if (isClarifyToolEvent(event)) {
+        if (event.type.includes("complete") || event.type.includes("fail")) {
+          completePendingClarifyParts(
+            (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
+          );
+        }
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status =
         toolEventStatus(event) === "running"
@@ -256,6 +275,44 @@ function appendLiveHermesEvents(
         text,
         status: toolEventStatus(event),
       });
+      continue;
+    }
+
+    if (event.type === "clarify.request") {
+      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+      currentAssistant.status = "running";
+      const payload = event.payload as Record<string, unknown> | undefined;
+      upsertClarifyPart(currentAssistant.parts, {
+        id:
+          stringValue(payload?.request_id) ??
+          stringValue(payload?.id) ??
+          `clarify:${event.receivedAt}`,
+        sessionId: event.session_id,
+        question:
+          stringValue(payload?.question, true) ??
+          "Hermes needs clarification before continuing.",
+        choices: stringArrayValue(payload?.choices),
+        status: "pending",
+      });
+      continue;
+    }
+
+    if (event.type === "clarify.response") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      upsertClarifyPart(
+        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
+        {
+          id:
+            stringValue(payload?.request_id) ??
+            stringValue(payload?.id) ??
+            `clarify:${event.receivedAt}`,
+          sessionId: event.session_id,
+          question: stringValue(payload?.question, true) ?? "",
+          choices: stringArrayValue(payload?.choices),
+          answer: stringValue(payload?.answer, true) ?? "",
+          status: "resolved",
+        },
+      );
       continue;
     }
 
@@ -356,7 +413,7 @@ function appendReasoningPart(parts: AgentChatPart[], delta: string) {
     return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
-    last.text = appendLogText(last.text, delta);
+    last.text = appendMessageText(last.text, delta);
     last.status = "running";
     return;
   }
@@ -370,6 +427,8 @@ function completeRunningParts(parts: AgentChatPart[]) {
     if (part.type === "tool" && part.status === "running")
       part.status = "complete";
     if (part.type === "approval" && part.status === "pending")
+      part.status = "resolved";
+    if (part.type === "clarify" && part.status === "pending")
       part.status = "resolved";
   }
 }
@@ -427,6 +486,34 @@ function upsertApprovalPart(
     command: next.command,
     description: next.description,
     allowPermanent: next.allowPermanent,
+    status: next.status,
+  });
+}
+
+function upsertClarifyPart(
+  parts: AgentChatPart[],
+  next: Pick<AgentChatClarifyPart, "id" | "question" | "choices" | "status"> &
+    Partial<Pick<AgentChatClarifyPart, "answer" | "sessionId">>,
+) {
+  const existing = parts.find(
+    (part): part is AgentChatClarifyPart =>
+      part.type === "clarify" && part.id === next.id,
+  );
+  if (existing) {
+    existing.question = next.question || existing.question;
+    existing.choices = next.choices.length ? next.choices : existing.choices;
+    existing.answer = next.answer ?? existing.answer;
+    existing.sessionId = next.sessionId || existing.sessionId;
+    existing.status = next.status;
+    return;
+  }
+  parts.push({
+    type: "clarify",
+    id: next.id,
+    sessionId: next.sessionId,
+    question: next.question,
+    choices: next.choices,
+    answer: next.answer,
     status: next.status,
   });
 }
@@ -580,6 +667,25 @@ function toolEventKey(event: HermesGatewayEvent) {
   );
 }
 
+function isClarifyToolEvent(event: HermesGatewayEvent) {
+  const payload = event.payload as Record<string, unknown> | undefined;
+  const name =
+    stringValue(payload?.name) ??
+    stringValue(payload?.tool_name) ??
+    stringValue(payload?.tool);
+  return name?.toLowerCase() === "clarify";
+}
+
+function completePendingClarifyParts(parts: AgentChatPart[]) {
+  const pending = [...parts]
+    .reverse()
+    .find(
+      (part): part is AgentChatClarifyPart =>
+        part.type === "clarify" && part.status === "pending",
+    );
+  if (pending) pending.status = "resolved";
+}
+
 function toolEventStatus(
   event: HermesGatewayEvent,
 ): AgentChatToolPart["status"] {
@@ -598,6 +704,8 @@ function toolStatus(status: AgentToolEventStatus): AgentChatToolPart["status"] {
 function partText(part: AgentChatPart) {
   if (part.type === "tool") return part.text;
   if (part.type === "approval") return part.command || part.description;
+  if (part.type === "clarify")
+    return [part.question, part.answer ?? ""].join(" ");
   return part.text;
 }
 
@@ -663,6 +771,12 @@ function appendLogText(current: string, next: string) {
       ? ""
       : "\n";
   return `${current}${separator}${next}`;
+}
+
+function stringArrayValue(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function stringValue(value: unknown, preserveWhitespace = false) {
