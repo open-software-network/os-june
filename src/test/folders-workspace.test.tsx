@@ -77,6 +77,8 @@ describe("Sidebar primary navigation", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
       />,
     );
 
@@ -97,6 +99,8 @@ describe("Sidebar primary navigation", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
       />,
     );
 
@@ -119,6 +123,8 @@ describe("Sidebar primary navigation", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
       />,
     );
 

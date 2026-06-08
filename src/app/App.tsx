@@ -55,12 +55,14 @@ import {
   playRecordingSound,
   preloadRecordingSounds,
 } from "../lib/recording-sounds";
+import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import type {
   BootstrapResponse,
   DictationHelperEvent,
   NoteDto,
   RecordingStatusDto,
   AccountStatus,
+  HermesSessionInfo,
 } from "../lib/tauri";
 import type {
   RecordingSourceMode,
@@ -116,6 +118,8 @@ export function App() {
   );
   const [bootstrapped, setBootstrapped] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("notes");
+  const [activeAgentSession, setActiveAgentSession] =
+    useState<HermesSessionInfo>();
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
@@ -157,6 +161,7 @@ export function App() {
   const signInRequired = shouldBlockOnSignIn(account);
   const appBlocked = accountLoading || signInRequired;
   const selectedNote = state.selectedNote;
+  const selectedNoteId = selectedNote?.id;
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
     : undefined;
@@ -678,8 +683,8 @@ export function App() {
     }
   }
 
-  async function handleStartRecording() {
-    if (!selectedNote) return;
+  const handleStartRecording = useCallback(async () => {
+    if (!selectedNoteId) return;
     dispatch({
       type: "recordingStatusChanged",
       status: startingRecordingStatus(sourceMode),
@@ -710,7 +715,7 @@ export function App() {
           ? "microphoneOnly"
           : sourceMode;
 
-      const recording = await startRecording(selectedNote.id, effectiveMode);
+      const recording = await startRecording(selectedNoteId, effectiveMode);
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
@@ -722,7 +727,24 @@ export function App() {
     } finally {
       setCheckingSourceReadiness(false);
     }
-  }
+  }, [selectedNoteId, sourceMode]);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen(MEETING_START_TRANSCRIPTION_EVENT, () => {
+      if (appBlocked || !bootstrapped) return;
+      setActiveView("meetings");
+      void handleStartRecording();
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [appBlocked, bootstrapped, handleStartRecording]);
 
   async function handleFinishRecording(sessionId: string) {
     // Collapse the shell back to idle the instant stop is pressed so it
@@ -842,6 +864,9 @@ export function App() {
         activeView={activeView}
         onChangeView={(view) => {
           setActiveView(view);
+          if (view !== "agent") {
+            setActiveAgentSession(undefined);
+          }
           if (view === "folders") {
             setFolderReturnTarget(undefined);
             dispatch({ type: "folderSelected", folderId: undefined });
@@ -858,6 +883,14 @@ export function App() {
         onRemoveNoteFromFolder={(noteId, folderId) =>
           void handleRemoveNoteFromFolder(noteId, folderId)
         }
+        onNewAgentSession={() => {
+          setActiveAgentSession(undefined);
+          setActiveView("agent");
+        }}
+        onSelectAgentSession={(session) => {
+          setActiveAgentSession(session);
+          setActiveView("agent");
+        }}
         recoverableNoteIds={recoverableNoteIds}
         collapsed={sidebarCollapsed}
       />
@@ -924,7 +957,7 @@ export function App() {
                 }}
               />
             ) : activeView === "agent" ? (
-              <AgentWorkspace />
+              <AgentWorkspace initialSession={activeAgentSession} />
             ) : activeView === "notes" || activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}

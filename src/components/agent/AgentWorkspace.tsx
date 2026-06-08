@@ -2,6 +2,7 @@ import {
   BotIcon,
   CheckIcon,
   CircleStopIcon,
+  DownloadIcon,
   FileIcon,
   FolderIcon,
   FolderTreeIcon,
@@ -35,12 +36,13 @@ import {
   hermesBridgeStatus,
   hermesBridgeToolsets,
   listAgentTasks,
-  openHermesBridgeFile,
+  downloadHermesBridgeFile,
   retryAgentTask,
   saveAgentAssistantMessage,
   saveAgentHermesSession,
   sendAgentMessage,
   startHermesBridge,
+  suggestAgentSessionTitle,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
@@ -72,6 +74,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText as completedHermesRuntimeMessageText,
+  type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
   type LiveHermesEvent,
@@ -82,11 +85,11 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "running",
   "waitingForUser",
 ]);
+const AGENT_TITLE_TIMEOUT_MS = 2500;
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
 export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
-export const AGENT_SELECT_SESSION_EVENT = "scribe:agent:select-session";
 export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
@@ -95,10 +98,6 @@ export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
   selectedSessionId?: string;
   workingSessionIds: string[];
-};
-
-type AgentSelectSessionDetail = {
-  sessionId: string;
 };
 
 export type AgentNewSessionDetail = {
@@ -121,7 +120,12 @@ type HermesRuntimeSessionResponse = {
   stored_session_id?: string;
 };
 
-export function AgentWorkspace() {
+type AgentWorkspaceProps = {
+  initialSession?: HermesSessionInfo;
+};
+
+export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
+  const initialSessionId = initialSession?.id;
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
@@ -138,9 +142,10 @@ export function AgentWorkspace() {
   );
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
-  >([]);
-  const [selectedHermesSessionId, setSelectedHermesSessionId] =
-    useState<string>();
+  >(() => (initialSession ? [initialSession] : []));
+  const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
+    string | undefined
+  >(initialSessionId);
   const [newSessionMode, setNewSessionMode] = useState(false);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
@@ -178,12 +183,17 @@ export function AgentWorkspace() {
     useState<HermesFilesystemSnapshot | null>(null);
   const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [approvalSubmitting, setApprovalSubmitting] = useState<
+    Partial<Record<string, AgentApprovalChoice>>
+  >({});
+  const [clarifySubmitting, setClarifySubmitting] = useState<
     Record<string, string>
   >({});
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(false);
+  const sessionTitleOverridesRef = useRef<Record<string, string>>({});
+  const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const setTaskWorking = useCallback((taskId: string, working: boolean) => {
@@ -267,7 +277,7 @@ export function AgentWorkspace() {
     if (!bridge.running) return;
     setHermesSessionsLoading(true);
     try {
-      const sessions = await listHermesSessions();
+      const sessions = applySessionTitleOverrides(await listHermesSessions());
       setHermesSessionItems(sessions);
       setSelectedHermesSessionId((current) => {
         if (newSessionModeRef.current) return undefined;
@@ -301,6 +311,22 @@ export function AgentWorkspace() {
   }, [bridge.running, loadHermesSessions]);
 
   useEffect(() => {
+    if (!initialSessionId) return;
+    newSessionModeRef.current = false;
+    setNewSessionMode(false);
+    setActivePanel("chat");
+    setSelectedHermesSessionId(initialSessionId);
+    setSelectedTaskId(undefined);
+    if (initialSession) {
+      setHermesSessionItems((current) =>
+        current.some((session) => session.id === initialSession.id)
+          ? current
+          : [initialSession, ...current],
+      );
+    }
+  }, [initialSession, initialSessionId]);
+
+  useEffect(() => {
     window.dispatchEvent(
       new CustomEvent<AgentSessionsChangedDetail>(
         AGENT_SESSIONS_CHANGED_EVENT,
@@ -319,16 +345,6 @@ export function AgentWorkspace() {
     function handleNewSession(event: Event) {
       const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
       void startNewTask(detail?.prompt);
-    }
-
-    function handleSelectSession(event: Event) {
-      const detail = (event as CustomEvent<AgentSelectSessionDetail>).detail;
-      if (!detail?.sessionId) return;
-      newSessionModeRef.current = false;
-      setNewSessionMode(false);
-      setActivePanel("chat");
-      setSelectedHermesSessionId(detail.sessionId);
-      setSelectedTaskId(undefined);
     }
 
     function handleDeleteSession(event: Event) {
@@ -359,14 +375,9 @@ export function AgentWorkspace() {
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-    window.addEventListener(AGENT_SELECT_SESSION_EVENT, handleSelectSession);
     window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
     return () => {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-      window.removeEventListener(
-        AGENT_SELECT_SESSION_EVENT,
-        handleSelectSession,
-      );
       window.removeEventListener(
         AGENT_DELETE_SESSION_EVENT,
         handleDeleteSession,
@@ -391,6 +402,7 @@ export function AgentWorkspace() {
             messages,
           ),
         }));
+        void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
         if (sessionHasAssistantAfterLatestUser(messages)) {
           setSessionWorking(selectedHermesSessionId, false);
           liveEventsRef.current = {
@@ -518,11 +530,15 @@ export function AgentWorkspace() {
   }
 
   async function submitHermesSession(content: string) {
+    const titlePromise = selectedHermesSessionId
+      ? undefined
+      : agentSessionTitleForPrompt(content);
     const gateway = await ensureHermesGateway();
+    const sessionTitle = titlePromise ? await titlePromise : undefined;
     const created = selectedHermesSessionId
       ? undefined
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
-          title: titleFromPrompt(content),
+          title: sessionTitle ?? titleFromPrompt(content),
           cols: 96,
         });
     const storedSessionId =
@@ -530,6 +546,12 @@ export function AgentWorkspace() {
       created?.stored_session_id ??
       created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    if (sessionTitle) {
+      sessionTitleOverridesRef.current = {
+        ...sessionTitleOverridesRef.current,
+        [storedSessionId]: sessionTitle,
+      };
+    }
     const runtimeSessionId =
       created?.session_id ??
       runtimeSessionIds[storedSessionId] ??
@@ -556,7 +578,7 @@ export function AgentWorkspace() {
       return [
         {
           id: storedSessionId,
-          title: titleFromPrompt(content),
+          title: sessionTitle ?? titleFromPrompt(content),
           preview: content,
           started_at: createdAt,
           last_active: createdAt,
@@ -727,6 +749,7 @@ export function AgentWorkspace() {
           messages,
         ),
       }));
+      void suggestTitleForUntitledSession(sessionId, messages);
       if (sessionHasAssistantAfterLatestUser(messages)) {
         setSessionWorking(sessionId, false);
         liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
@@ -739,9 +762,10 @@ export function AgentWorkspace() {
   }
 
   async function respondToApproval(
+    liveEventKey: string,
     sessionId: string,
     requestId: string,
-    choice: "once" | "session" | "always" | "deny",
+    choice: AgentApprovalChoice,
   ) {
     setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
     try {
@@ -749,6 +773,11 @@ export function AgentWorkspace() {
       await gateway.request("approval.respond", {
         session_id: sessionId,
         choice,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "approval.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, choice },
       });
       setError(null);
     } catch (err) {
@@ -768,6 +797,46 @@ export function AgentWorkspace() {
         return next;
       });
     }
+  }
+
+  async function respondToClarify(
+    liveEventKey: string,
+    requestId: string,
+    answer: string,
+  ) {
+    setClarifySubmitting((current) => ({ ...current, [requestId]: answer }));
+    try {
+      const gateway = await ensureHermesGateway();
+      await gateway.request("clarify.respond", {
+        request_id: requestId,
+        answer,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "clarify.response",
+        payload: { request_id: requestId, answer },
+      });
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setClarifySubmitting((current) => {
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+    }
+  }
+
+  function pushLiveEvent(key: string, event: HermesGatewayEvent) {
+    const liveEvent = { ...event, receivedAt: new Date().toISOString() };
+    const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(
+      -200,
+    );
+    liveEventsRef.current = {
+      ...liveEventsRef.current,
+      [key]: nextEvents,
+    };
+    setLiveEvents(liveEventsRef.current);
   }
 
   async function startNewTask(prompt?: string) {
@@ -858,6 +927,46 @@ export function AgentWorkspace() {
     } finally {
       setFilesystemLoading(false);
     }
+  }
+
+  function applySessionTitleOverrides(sessions: HermesSessionInfo[]) {
+    const overrides = sessionTitleOverridesRef.current;
+    return sessions.map((session) => {
+      const title = overrides[session.id];
+      return title ? { ...session, title } : session;
+    });
+  }
+
+  async function suggestTitleForUntitledSession(
+    sessionId: string,
+    messages: HermesSessionMessage[],
+  ) {
+    if (
+      sessionTitleOverridesRef.current[sessionId] ||
+      titleSuggestionSessionIdsRef.current.has(sessionId)
+    ) {
+      return;
+    }
+    const session = hermesSessionItems.find((item) => item.id === sessionId);
+    if (!session || !isReplaceableAgentSessionTitle(session.title)) return;
+    const firstUserMessage = messages.find(
+      (message) => message.role === "user",
+    );
+    const prompt = firstUserMessage
+      ? visibleHermesMessageText(firstUserMessage).trim()
+      : "";
+    if (!prompt) return;
+    titleSuggestionSessionIdsRef.current.add(sessionId);
+    const title = await agentSessionTitleForPrompt(prompt);
+    sessionTitleOverridesRef.current = {
+      ...sessionTitleOverridesRef.current,
+      [sessionId]: title,
+    };
+    setHermesSessionItems((current) =>
+      current.map((item) =>
+        item.id === sessionId ? { ...item, title } : item,
+      ),
+    );
   }
 
   async function setSkillEnabled(skill: HermesSkillInfo, enabled: boolean) {
@@ -978,16 +1087,25 @@ export function AgentWorkspace() {
                   turn={turn}
                   artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
-                  onOpenArtifact={(artifact) =>
-                    void openHermesBridgeFile(artifact.path).catch(
+                  clarifySubmitting={clarifySubmitting}
+                  onDownloadArtifact={(artifact) =>
+                    void downloadHermesBridgeFile(artifact.path).catch(
                       (err: unknown) => setError(messageFromError(err)),
                     )
                   }
                   onApproval={(part, choice) =>
                     void respondToApproval(
+                      selectedHermesSessionId,
                       part.sessionId ?? selectedHermesSessionId,
                       part.id,
                       choice,
+                    )
+                  }
+                  onClarify={(part, answer) =>
+                    void respondToClarify(
+                      selectedHermesSessionId,
+                      part.id,
+                      answer,
                     )
                   }
                 />
@@ -1046,8 +1164,9 @@ export function AgentWorkspace() {
                   turn={turn}
                   artifacts={chatArtifacts}
                   approvalSubmitting={approvalSubmitting}
-                  onOpenArtifact={(artifact) =>
-                    void openHermesBridgeFile(artifact.path).catch(
+                  clarifySubmitting={clarifySubmitting}
+                  onDownloadArtifact={(artifact) =>
+                    void downloadHermesBridgeFile(artifact.path).catch(
                       (err: unknown) => setError(messageFromError(err)),
                     )
                   }
@@ -1057,8 +1176,16 @@ export function AgentWorkspace() {
                       selectedTask.hermesSessionId ??
                       hermesSessions[selectedTask.id];
                     if (!sessionId) return;
-                    void respondToApproval(sessionId, part.id, choice);
+                    void respondToApproval(
+                      selectedTask.id,
+                      sessionId,
+                      part.id,
+                      choice,
+                    );
                   }}
+                  onClarify={(part, answer) =>
+                    void respondToClarify(selectedTask.id, part.id, answer)
+                  }
                 />
               ))}
             </div>
@@ -1078,18 +1205,6 @@ export function AgentWorkspace() {
                         : "Desktop tasks with private local-tool policy."}
                   </p>
                 </div>
-              </div>
-              <div className="agent-actions">
-                {!bridge.running ? (
-                  <button
-                    type="button"
-                    className="agent-new-task"
-                    disabled={bridgeStarting}
-                    onClick={() => void startBridge().catch(() => undefined)}
-                  >
-                    {bridgeStarting ? "Setting up Agent" : "Start Agent"}
-                  </button>
-                ) : null}
               </div>
             </header>
             <div className="agent-compose-empty">
@@ -1395,6 +1510,41 @@ function SafetyPanel() {
       </div>
     </section>
   );
+}
+
+async function agentSessionTitleForPrompt(prompt: string) {
+  try {
+    const response = await withTimeout(
+      suggestAgentSessionTitle(prompt),
+      AGENT_TITLE_TIMEOUT_MS,
+    );
+    return response.title.trim() || titleFromPrompt(prompt);
+  } catch {
+    return titleFromPrompt(prompt);
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error("Agent title generation timed out."));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isReplaceableAgentSessionTitle(title: unknown) {
+  const normalized = safeText(title).trim().toLowerCase();
+  return !normalized || normalized === "untitled session";
 }
 
 function PanelTabs({
@@ -2028,22 +2178,27 @@ function MessageBubble({ message }: { message: AgentMessageDto }) {
   );
 }
 
-type ApprovalChoice = "once" | "session" | "always" | "deny";
-
 function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
+  clarifySubmitting,
   onApproval,
-  onOpenArtifact,
+  onClarify,
+  onDownloadArtifact,
   turn,
 }: {
-  approvalSubmitting: Record<string, string>;
+  approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
+  clarifySubmitting: Record<string, string>;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
-    choice: ApprovalChoice,
+    choice: AgentApprovalChoice,
   ) => void;
-  onOpenArtifact?: (artifact: AgentArtifact) => void;
+  onClarify: (
+    part: Extract<AgentChatPart, { type: "clarify" }>,
+    answer: string,
+  ) => void;
+  onDownloadArtifact?: (artifact: AgentArtifact) => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -2051,6 +2206,10 @@ function AgentChatTurnRow({
       part.type === "text",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const mentionedArtifacts = artifactsMentionedInText(
+    artifacts ?? [],
+    turn.parts.map((part) => ("text" in part ? part.text : "")).join("\n"),
+  );
 
   if (turn.role === "user") {
     return (
@@ -2080,10 +2239,6 @@ function AgentChatTurnRow({
           part.type === "text" ? (
             <div key={`${turn.id}:text:${index}`}>
               <MarkdownContent markdown={part.text} />
-              <AgentArtifactList
-                artifacts={artifactsMentionedInText(artifacts ?? [], part.text)}
-                onOpen={onOpenArtifact}
-              />
             </div>
           ) : part.type === "reasoning" ? (
             <ReasoningPart key={`${turn.id}:reasoning:${index}`} part={part} />
@@ -2094,12 +2249,134 @@ function AgentChatTurnRow({
               submitting={approvalSubmitting[part.id]}
               onApproval={onApproval}
             />
+          ) : part.type === "clarify" ? (
+            <ClarifyPart
+              key={`${turn.id}:clarify:${part.id}`}
+              part={part}
+              submitting={clarifySubmitting[part.id]}
+              onClarify={onClarify}
+            />
           ) : (
             <AgentToolPartRow key={`${turn.id}:tool:${part.id}`} part={part} />
           ),
         )}
+        <AgentArtifactList
+          artifacts={mentionedArtifacts}
+          onDownload={onDownloadArtifact}
+        />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">Waiting for Hermes...</p>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ClarifyPart({
+  onClarify,
+  part,
+  submitting,
+}: {
+  onClarify: (
+    part: Extract<AgentChatPart, { type: "clarify" }>,
+    answer: string,
+  ) => void;
+  part: Extract<AgentChatPart, { type: "clarify" }>;
+  submitting?: string;
+}) {
+  const [typing, setTyping] = useState(part.choices.length === 0);
+  const [draft, setDraft] = useState("");
+  const disabled = part.status !== "pending" || submitting !== undefined;
+
+  return (
+    <article className="agent-clarify-card" data-status={part.status}>
+      <span className="agent-tool-icon">
+        <MessageSquareIcon size={14} />
+      </span>
+      <div>
+        <div className="agent-tool-title">
+          <span>Clarify</span>
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
+            {part.status === "pending" ? "Waiting" : "Answered"}
+          </span>
+        </div>
+        <p>{part.question}</p>
+        {part.answer !== undefined ? (
+          <p className="agent-clarify-answer">
+            {part.answer.trim() ? part.answer : "Skipped"}
+          </p>
+        ) : null}
+        {part.status === "pending" ? (
+          <>
+            {!typing && part.choices.length ? (
+              <div className="agent-clarify-choices">
+                {part.choices.map((choice, index) => (
+                  <button
+                    type="button"
+                    key={`${index}:${choice}`}
+                    disabled={disabled}
+                    onClick={() => onClarify(part, choice)}
+                  >
+                    <span>{index + 1}</span>
+                    {choice}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  disabled={submitting !== undefined}
+                  onClick={() => setTyping(true)}
+                >
+                  <span>+</span>
+                  Other
+                </button>
+              </div>
+            ) : null}
+            {typing || !part.choices.length ? (
+              <form
+                className="agent-clarify-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const answer = draft.trim();
+                  if (answer) onClarify(part, answer);
+                }}
+              >
+                <textarea
+                  value={draft}
+                  disabled={disabled}
+                  rows={3}
+                  placeholder="Type your answer"
+                  onChange={(event) => setDraft(event.currentTarget.value)}
+                />
+                <div>
+                  {part.choices.length ? (
+                    <button
+                      type="button"
+                      disabled={submitting !== undefined}
+                      onClick={() => {
+                        setDraft("");
+                        setTyping(false);
+                      }}
+                    >
+                      Back
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onClarify(part, "")}
+                  >
+                    Skip
+                  </button>
+                  <button type="submit" disabled={disabled || !draft.trim()}>
+                    {submitting !== undefined ? "Sending" : "Send"}
+                  </button>
+                </div>
+              </form>
+            ) : null}
+          </>
         ) : null}
       </div>
     </article>
@@ -2113,12 +2390,14 @@ function ApprovalPart({
 }: {
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
-    choice: ApprovalChoice,
+    choice: AgentApprovalChoice,
   ) => void;
   part: Extract<AgentChatPart, { type: "approval" }>;
-  submitting?: string;
+  submitting?: AgentApprovalChoice;
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
+  const activeChoice = part.choice ?? submitting;
+  const resolved = part.status !== "pending" || activeChoice !== undefined;
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
@@ -2127,51 +2406,78 @@ function ApprovalPart({
       <div>
         <div className="agent-tool-title">
           <span>Approval required</span>
-          <span className="agent-tool-live-status" data-status="running">
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
             {part.status === "pending" ? "Waiting" : "Resolved"}
           </span>
         </div>
         <p>{part.description}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        <div className="agent-approval-actions">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onApproval(part, "once")}
-          >
-            <CheckIcon size={14} />
-            {submitting === "once" ? "Approving" : "Approve once"}
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onApproval(part, "session")}
-          >
-            <CheckIcon size={14} />
-            {submitting === "session" ? "Approving" : "This session"}
-          </button>
-          {part.allowPermanent ? (
+        {resolved ? (
+          <p className="agent-approval-result" data-choice={activeChoice}>
+            {activeChoice === "deny" ? (
+              <XIcon size={14} />
+            ) : (
+              <CheckIcon size={14} />
+            )}
+            {approvalChoiceLabel(
+              activeChoice,
+              part.status === "pending" && submitting !== undefined,
+            )}
+          </p>
+        ) : (
+          <div className="agent-approval-actions">
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onApproval(part, "always")}
+              onClick={() => onApproval(part, "once")}
             >
               <CheckIcon size={14} />
-              {submitting === "always" ? "Approving" : "Always"}
+              Approve once
             </button>
-          ) : null}
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onApproval(part, "deny")}
-          >
-            <XIcon size={14} />
-            {submitting === "deny" ? "Denying" : "Deny"}
-          </button>
-        </div>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onApproval(part, "session")}
+            >
+              <CheckIcon size={14} />
+              This session
+            </button>
+            {part.allowPermanent ? (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onApproval(part, "always")}
+              >
+                <CheckIcon size={14} />
+                Always
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onApproval(part, "deny")}
+            >
+              <XIcon size={14} />
+              Deny
+            </button>
+          </div>
+        )}
       </div>
     </article>
   );
+}
+
+function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
+  if (choice === "once") return pending ? "Approving once" : "Approved once";
+  if (choice === "session")
+    return pending ? "Approving for this session" : "Approved for this session";
+  if (choice === "always")
+    return pending ? "Approving permanently" : "Always approved";
+  if (choice === "deny") return pending ? "Denying" : "Denied";
+  return "Resolved";
 }
 
 function ReasoningPart({
@@ -2228,10 +2534,10 @@ function AgentToolPartRow({
 
 function AgentArtifactList({
   artifacts,
-  onOpen,
+  onDownload,
 }: {
   artifacts: AgentArtifact[];
-  onOpen?: (artifact: AgentArtifact) => void;
+  onDownload?: (artifact: AgentArtifact) => void;
 }) {
   if (!artifacts.length) return null;
   return (
@@ -2251,9 +2557,14 @@ function AgentArtifactList({
               <span>{compactPath(artifact.path)}</span>
             </p>
           </div>
-          {onOpen ? (
-            <button type="button" onClick={() => onOpen(artifact)}>
-              Open
+          {onDownload ? (
+            <button
+              type="button"
+              aria-label={`Download ${artifact.name}`}
+              title="Download"
+              onClick={() => onDownload(artifact)}
+            >
+              <DownloadIcon size={16} />
             </button>
           ) : null}
         </article>

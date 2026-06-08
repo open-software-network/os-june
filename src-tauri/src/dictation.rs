@@ -7,6 +7,7 @@ use crate::scribe_api::{
     cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
     TranscriptionProviderResult,
 };
+use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     fs,
@@ -23,6 +24,8 @@ use tauri::{
 
 const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
 const DICTATION_CLEANUP_TIMEOUT_MS: u64 = 15_000;
+const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
+const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
 pub struct HelperProcess {
     child: Child,
@@ -48,7 +51,7 @@ pub struct HotkeyStatus {
 
 /// Position the HUD remembers between dictation sessions in the same process.
 /// Intentionally process-scoped, not disk-persisted: every fresh launch of
-/// Scribe should put the pill back at bottom-center, but within a single run
+/// Scribe should put the pill back at top-center, but within a single run
 /// the user's drag-to-corner choice should stick.
 pub struct HudPosition {
     inner: Mutex<Option<(i32, i32)>>,
@@ -777,6 +780,17 @@ pub fn stop_helper(app: &AppHandle) {
     let _ = process.child.wait();
 }
 
+pub(crate) fn dictation_helper_pid(app: &AppHandle) -> Option<u32> {
+    app.try_state::<HelperState>().and_then(|state| {
+        state
+            .process
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|process| process.child.id())
+    })
+}
+
 fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Result<(), AppError> {
     let mut guard = state
         .process
@@ -1178,11 +1192,11 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 
     if matches!(event_type, Some("recording_ready")) {
         if let Some(event) = event.as_ref() {
-            match recording_path_from_event(event) {
-                Ok(audio_path) => {
+            match recording_ready_info_from_event(event) {
+                Ok(info) => {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        transcribe_recording_ready(app, audio_path).await;
+                        transcribe_recording_ready(app, info).await;
                     });
                 }
                 Err(error) => {
@@ -1208,7 +1222,7 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     }
 }
 
-async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
+async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -1240,7 +1254,7 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
         Some(dictation_transcription_context(style).as_str()),
     );
     let result = dictate_transcribe(DictateTranscribeRequest {
-        audio_path,
+        audio_path: recording.audio_path,
         context: transcription_context,
         session_id: session_id.clone(),
         utterance_id: utterance_id.clone(),
@@ -1256,7 +1270,7 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
         utterance_id,
     )
     .await;
-    let outcome = outcome_from_transcription_result(result);
+    let outcome = outcome_from_transcription_result(result, recording.observed_audio_level);
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
         emit_dictation_event_value(&app, app_error_event(error));
@@ -1489,7 +1503,9 @@ fn extract_chat_completion_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn recording_path_from_event(event: &serde_json::Value) -> Result<PathBuf, AppError> {
+fn recording_ready_info_from_event(
+    event: &serde_json::Value,
+) -> Result<RecordingReadyInfo, AppError> {
     let path = event
         .get("payload")
         .and_then(|payload| payload.get("path"))
@@ -1502,7 +1518,25 @@ fn recording_path_from_event(event: &serde_json::Value) -> Result<PathBuf, AppEr
                 "Dictation helper did not provide a recording path.",
             )
         })?;
-    Ok(PathBuf::from(path))
+    Ok(RecordingReadyInfo {
+        audio_path: PathBuf::from(path),
+        observed_audio_level: observed_audio_level_from_event(event),
+    })
+}
+
+fn observed_audio_level_from_event(event: &serde_json::Value) -> Option<f32> {
+    let value = event
+        .get("payload")
+        .and_then(|payload| payload.get("observedAudioLevel"))?;
+    let level = value
+        .as_f64()
+        .map(|level| level as f32)
+        .or_else(|| value.as_str().and_then(|level| level.parse::<f32>().ok()))?;
+    if level.is_finite() {
+        Some(level)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -1512,8 +1546,15 @@ struct DictationTranscriptionOutcome {
     transcript: Option<TranscriptionProviderResult>,
 }
 
+#[derive(Debug)]
+struct RecordingReadyInfo {
+    audio_path: PathBuf,
+    observed_audio_level: Option<f32>,
+}
+
 fn outcome_from_transcription_result(
     result: Result<TranscriptionProviderResult, AppError>,
+    observed_audio_level: Option<f32>,
 ) -> DictationTranscriptionOutcome {
     match result {
         // Recorded silence / nothing to type is not a failure — discard quietly
@@ -1521,10 +1562,7 @@ fn outcome_from_transcription_result(
         // dismisses instead of flashing an error). Don't store an empty item.
         Ok(transcript) if transcript.text.trim().is_empty() => DictationTranscriptionOutcome {
             helper_command: serde_json::json!({ "type": "discard_recording" }),
-            event: Some(serde_json::json!({
-                "type": "error",
-                "payload": { "code": "no_speech", "message": "No speech detected." },
-            })),
+            event: Some(no_text_event_for_observed_audio(observed_audio_level)),
             transcript: None,
         },
         Ok(transcript) => {
@@ -1548,12 +1586,77 @@ fn outcome_from_transcription_result(
                 }
             }
         }
-        Err(error) => DictationTranscriptionOutcome {
-            helper_command: serde_json::json!({ "type": "discard_recording" }),
-            event: Some(app_error_event(error)),
-            transcript: None,
-        },
+        Err(error) => {
+            let event = promote_silent_error_if_audio_detected(
+                app_error_event(error),
+                observed_audio_level,
+            );
+            DictationTranscriptionOutcome {
+                helper_command: serde_json::json!({ "type": "discard_recording" }),
+                event: Some(event),
+                transcript: None,
+            }
+        }
     }
+}
+
+fn no_text_event_for_observed_audio(observed_audio_level: Option<f32>) -> serde_json::Value {
+    if probable_speech_detected(observed_audio_level) {
+        return audio_detected_but_no_text_event(None, None, observed_audio_level);
+    }
+    serde_json::json!({
+        "type": "error",
+        "payload": { "code": "no_speech", "message": "No speech detected." },
+    })
+}
+
+fn promote_silent_error_if_audio_detected(
+    event: serde_json::Value,
+    observed_audio_level: Option<f32>,
+) -> serde_json::Value {
+    if probable_speech_detected(observed_audio_level) && is_silent_transcription_error(&event) {
+        let payload = event.get("payload");
+        let underlying_code = payload
+            .and_then(|payload| payload.get("code"))
+            .and_then(serde_json::Value::as_str);
+        let underlying_message = payload
+            .and_then(|payload| payload.get("message"))
+            .and_then(serde_json::Value::as_str);
+        return audio_detected_but_no_text_event(
+            underlying_code,
+            underlying_message,
+            observed_audio_level,
+        );
+    }
+    event
+}
+
+fn audio_detected_but_no_text_event(
+    underlying_code: Option<&str>,
+    underlying_message: Option<&str>,
+    observed_audio_level: Option<f32>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "code": "dictation_audio_without_text",
+        "message": "Dictation detected audio but produced no text. Try again.",
+    });
+    if let Some(level) = observed_audio_level {
+        payload["observedAudioLevel"] = serde_json::json!(level);
+    }
+    if let Some(code) = underlying_code {
+        payload["underlyingCode"] = serde_json::json!(code);
+    }
+    if let Some(message) = underlying_message {
+        payload["underlyingMessage"] = serde_json::json!(message);
+    }
+    serde_json::json!({
+        "type": "error",
+        "payload": payload,
+    })
+}
+
+fn probable_speech_detected(observed_audio_level: Option<f32>) -> bool {
+    observed_audio_level.is_some_and(|level| level >= DICTATION_AUDIO_ACTIVITY_THRESHOLD)
 }
 
 fn agent_session_prompt_from_dictation(text: &str) -> Option<String> {
@@ -1619,10 +1722,84 @@ fn app_error_event(error: AppError) -> serde_json::Value {
 fn emit_dictation_event_value(app: &AppHandle, mut event: serde_json::Value) {
     annotate_silent_error(&mut event);
     let event_type = event.get("type").and_then(serde_json::Value::as_str);
+    append_dictation_event_log(app, event_type, &event);
     let line = event.to_string();
     update_latest_event(app, event_type, Some(line.clone()));
     update_hud_window(app, event_type, Some(&event));
     let _ = app.emit("dictation-event", line);
+}
+
+fn append_dictation_event_log(
+    app: &AppHandle,
+    event_type: Option<&str>,
+    event: &serde_json::Value,
+) {
+    let Some(event_type) = event_type else {
+        return;
+    };
+    if event_type == "audio_level" {
+        return;
+    }
+    let entry = dictation_event_log_entry(event_type, event);
+    let Ok(directory) = app.path().app_data_dir() else {
+        return;
+    };
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join(DICTATION_EVENT_LOG))
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{entry}");
+}
+
+fn dictation_event_log_entry(event_type: &str, event: &serde_json::Value) -> serde_json::Value {
+    let payload = event.get("payload");
+    let text_chars = payload
+        .and_then(|payload| payload.get("text"))
+        .and_then(serde_json::Value::as_str)
+        .map(|text| text.chars().count());
+    let prompt_chars = payload
+        .and_then(|payload| payload.get("prompt"))
+        .and_then(serde_json::Value::as_str)
+        .map(|prompt| prompt.chars().count());
+    serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "type": event_type,
+        "code": payload
+            .and_then(|payload| payload.get("code"))
+            .and_then(serde_json::Value::as_str),
+        "underlyingCode": payload
+            .and_then(|payload| payload.get("underlyingCode"))
+            .and_then(serde_json::Value::as_str),
+        "message": payload
+            .and_then(|payload| payload.get("message"))
+            .and_then(serde_json::Value::as_str),
+        "underlyingMessage": payload
+            .and_then(|payload| payload.get("underlyingMessage"))
+            .and_then(serde_json::Value::as_str),
+        "silent": payload
+            .and_then(|payload| payload.get("silent"))
+            .and_then(serde_json::Value::as_bool),
+        "path": payload
+            .and_then(|payload| payload.get("path"))
+            .and_then(serde_json::Value::as_str),
+        "observedAudioLevel": payload
+            .and_then(|payload| payload.get("observedAudioLevel"))
+            .cloned(),
+        "pasteTarget": payload
+            .and_then(|payload| payload.get("app"))
+            .and_then(serde_json::Value::as_str),
+        "provider": payload
+            .and_then(|payload| payload.get("provider"))
+            .and_then(serde_json::Value::as_str),
+        "textChars": text_chars,
+        "promptChars": prompt_chars,
+    })
 }
 
 /// Tag error events with `payload.silent: bool` so the HUD doesn't have to
@@ -1735,7 +1912,7 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         || normalized_message.contains("dictation_text_empty")
 }
 
-fn show_hud_window(app: &AppHandle) {
+pub(crate) fn show_hud_window(app: &AppHandle) {
     if let Some(hud) = app.get_webview_window("hud") {
         // Only reposition when the HUD is coming up fresh. Within an active
         // session the user may have dragged the pill to a spot they like;
@@ -1781,7 +1958,7 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
     // Restore the in-memory drag position if it's still on-screen. This
     // doesn't persist across app restarts — that's deliberate; quitting
-    // Scribe resets the HUD to bottom-center so it can't end up lost on a
+    // Scribe resets the HUD to top-center so it can't end up lost on a
     // monitor that's no longer connected.
     if let Some(state) = app.try_state::<HudPosition>() {
         let saved = state.inner.lock().ok().and_then(|guard| *guard);
@@ -1799,12 +1976,9 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 }
 
 fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
-    const HUD_BOTTOM_MARGIN: i32 = 12;
-    // The pill is much smaller than the window — the window is intentionally
-    // padded with transparent space so the box-shadow has room to fall off
-    // softly. We anchor the *pill* at bottom-center, not the window, which
-    // means accounting for the gap below the pill (half the window's slack).
-    const PILL_HEIGHT: i32 = 30;
+    const HUD_TOP_MARGIN: i32 = 12;
+    // The native HUD window is sized to the visible pill so dragging and
+    // top-edge placement match what the user can see.
 
     let monitor = hud
         .cursor_position()
@@ -1814,14 +1988,11 @@ fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> 
         .or_else(|| hud.primary_monitor().ok().flatten())?;
 
     let work_area = monitor.work_area();
-    let work_bottom = work_area.position.y + work_area.size.height as i32;
+    let work_top = work_area.position.y;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
-    // The pill is centered inside the window (CSS `place-items: center` on
-    // body), so window_top = pill_center - window_height/2.
-    let pill_center_y = work_bottom - HUD_BOTTOM_MARGIN - PILL_HEIGHT / 2;
     let x = work_center_x - window_size.width as i32 / 2;
-    let y = pill_center_y - window_size.height as i32 / 2;
+    let y = work_top + HUD_TOP_MARGIN;
     Some((x, y))
 }
 
@@ -2240,11 +2411,14 @@ mod tests {
 
     #[test]
     fn successful_transcription_maps_to_paste_command() {
-        let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
-            text: "Paste this transcript.".to_string(),
-            language: Some("en".to_string()),
-            provider: crate::providers::VENICE_PROVIDER.to_string(),
-        }));
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Paste this transcript.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+        );
 
         assert_eq!(
             outcome.helper_command,
@@ -2262,11 +2436,14 @@ mod tests {
 
     #[test]
     fn hey_june_transcription_maps_to_agent_session_event() {
-        let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
-            text: "Hey, June, summarize the open document.".to_string(),
-            language: Some("en".to_string()),
-            provider: crate::providers::VENICE_PROVIDER.to_string(),
-        }));
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Hey, June, summarize the open document.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+        );
 
         assert_eq!(
             outcome.helper_command,
@@ -2303,11 +2480,14 @@ mod tests {
 
     #[test]
     fn empty_transcription_discards_silently() {
-        let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
-            text: "   ".to_string(),
-            language: None,
-            provider: crate::providers::VENICE_PROVIDER.to_string(),
-        }));
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "   ".to_string(),
+                language: None,
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+        );
 
         assert_eq!(
             outcome.helper_command,
@@ -2316,6 +2496,49 @@ mod tests {
         assert!(outcome.transcript.is_none());
         let event = outcome.event.expect("empty capture emits an event");
         assert!(is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn empty_transcription_with_detected_audio_is_visible_error() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "   ".to_string(),
+                language: None,
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
+        );
+
+        let event = outcome.event.expect("empty capture emits an event");
+        assert_eq!(event["payload"]["code"], "dictation_audio_without_text");
+        assert_eq!(
+            event["payload"]["message"],
+            "Dictation detected audio but produced no text. Try again."
+        );
+        let observed = event["payload"]["observedAudioLevel"]
+            .as_f64()
+            .expect("observed audio level");
+        assert!((observed - 0.04).abs() < 0.001);
+        assert!(!is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn recording_ready_info_includes_observed_audio_level() {
+        let event = serde_json::json!({
+            "type": "recording_ready",
+            "payload": {
+                "path": "/tmp/os-scribe-dictation-test.m4a",
+                "observedAudioLevel": "0.1732",
+            }
+        });
+
+        let info = recording_ready_info_from_event(&event).expect("recording info");
+
+        assert_eq!(
+            info.audio_path,
+            PathBuf::from("/tmp/os-scribe-dictation-test.m4a")
+        );
+        assert_eq!(info.observed_audio_level, Some(0.1732));
     }
 
     #[test]
@@ -2328,11 +2551,52 @@ mod tests {
     }
 
     #[test]
+    fn dictation_event_log_redacts_transcript_text() {
+        let event = serde_json::json!({
+            "type": "final_transcript",
+            "payload": {
+                "text": "Sensitive dictated sentence."
+            }
+        });
+
+        let entry = dictation_event_log_entry("final_transcript", &event);
+
+        assert_eq!(entry["type"], "final_transcript");
+        assert_eq!(entry["textChars"], 28);
+        assert!(entry.to_string().contains("textChars"));
+        assert!(!entry.to_string().contains("Sensitive dictated sentence"));
+    }
+
+    #[test]
+    fn dictation_event_log_records_silent_error_code() {
+        let mut event = serde_json::json!({
+            "type": "error",
+            "payload": {
+                "code": "missing_recording",
+                "message": "No recorded audio was available to transcribe."
+            }
+        });
+        annotate_silent_error(&mut event);
+
+        let entry = dictation_event_log_entry("error", &event);
+
+        assert_eq!(entry["code"], "missing_recording");
+        assert_eq!(entry["silent"], true);
+        assert_eq!(
+            entry["message"],
+            "No recorded audio was available to transcribe."
+        );
+    }
+
+    #[test]
     fn failed_transcription_maps_to_discard_and_error() {
-        let outcome = outcome_from_transcription_result(Err(AppError::new(
-            "transcription_failed",
-            "The provider failed.",
-        )));
+        let outcome = outcome_from_transcription_result(
+            Err(AppError::new(
+                "transcription_failed",
+                "The provider failed.",
+            )),
+            None,
+        );
 
         assert_eq!(
             outcome.helper_command,
@@ -2349,6 +2613,20 @@ mod tests {
             }))
         );
         assert!(outcome.transcript.is_none());
+    }
+
+    #[test]
+    fn no_speech_error_with_detected_audio_is_visible_error() {
+        let outcome = outcome_from_transcription_result(
+            Err(AppError::new("scribe_request_failed", "no_speech")),
+            Some(0.2),
+        );
+
+        let event = outcome.event.expect("no speech emits an event");
+        assert_eq!(event["payload"]["code"], "dictation_audio_without_text");
+        assert_eq!(event["payload"]["underlyingCode"], "scribe_request_failed");
+        assert_eq!(event["payload"]["underlyingMessage"], "no_speech");
+        assert!(!is_silent_transcription_error(&event));
     }
 
     #[test]

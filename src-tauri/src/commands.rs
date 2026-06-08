@@ -31,6 +31,7 @@ use crate::{
             RemoveNoteFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
             SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
             SendAgentMessageRequest, SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
             UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
@@ -340,6 +341,14 @@ pub async fn save_agent_hermes_session(
         .set_agent_task_hermes_session(&request.task_id, hermes_session_id)
         .await?;
     Ok(repos.get_agent_task(&request.task_id).await?)
+}
+
+#[tauri::command]
+pub async fn suggest_agent_session_title(
+    request: SuggestAgentSessionTitleRequest,
+) -> Result<SuggestAgentSessionTitleResponse, AppError> {
+    let title = crate::scribe_api::suggest_agent_session_title(&request.prompt).await?;
+    Ok(SuggestAgentSessionTitleResponse { title })
 }
 
 #[tauri::command]

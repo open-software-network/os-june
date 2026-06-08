@@ -1,7 +1,0 @@
-onlyBuiltDependencies:
-  - '@prisma/engines'
-  - better-sqlite3
-  - electron
-  - electron-winstaller
-  - esbuild
-  - prisma

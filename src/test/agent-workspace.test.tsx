@@ -17,12 +17,13 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   listAgentTasks: vi.fn(),
-  openHermesBridgeFile: vi.fn(),
+  downloadHermesBridgeFile: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
   saveAgentHermesSession: vi.fn(),
   sendAgentMessage: vi.fn(),
   startHermesBridge: vi.fn(),
+  suggestAgentSessionTitle: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
@@ -41,12 +42,13 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   listAgentTasks: mocks.listAgentTasks,
-  openHermesBridgeFile: mocks.openHermesBridgeFile,
+  downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
   startHermesBridge: mocks.startHermesBridge,
+  suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
@@ -106,7 +108,12 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
-    mocks.openHermesBridgeFile.mockResolvedValue(undefined);
+    mocks.downloadHermesBridgeFile.mockResolvedValue(
+      "/Users/junho/Downloads/sample.pdf",
+    );
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "Summarize Current Page",
+    });
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
         return Promise.resolve({
@@ -152,6 +159,14 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ prompt: "summarize the current page" }),
     );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
 
     render(<AgentWorkspace />);
 
@@ -161,12 +176,20 @@ describe("AgentWorkspace", () => {
         text: "summarize the current page",
       }),
     );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "Summarize Current Page",
+      cols: 96,
+    });
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
   });
 
-  it("renders generated workspace files mentioned by Hermes as openable artifacts", async () => {
+  it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
     const samplePath =
       "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf";
@@ -203,8 +226,10 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
     expect(screen.getAllByText("sample.pdf").length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: "Open" }));
+    await user.click(
+      screen.getByRole("button", { name: "Download sample.pdf" }),
+    );
 
-    expect(mocks.openHermesBridgeFile).toHaveBeenCalledWith(samplePath);
+    expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
   });
 });

@@ -14,6 +14,9 @@ const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.network";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
+const AGENT_PROXY_MAX_MESSAGES: usize = 64;
+const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
+const AGENT_TITLE_MAX_CHARS: usize = 48;
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 
@@ -284,6 +287,7 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
 pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
 ) -> Result<RawScribeResponse, AppError> {
+    limit_agent_chat_messages_for_proxy(&mut body);
     if let Some(object) = body.as_object_mut() {
         object.insert(
             "model".to_string(),
@@ -321,12 +325,215 @@ pub async fn proxy_agent_chat_completions(
     Err(AppError::new("unauthorized", "Not signed in."))
 }
 
+fn limit_agent_chat_messages_for_proxy(body: &mut serde_json::Value) {
+    limit_agent_chat_messages(body, AGENT_PROXY_MAX_MESSAGES);
+}
+
+fn limit_agent_chat_messages(body: &mut serde_json::Value, max_messages: usize) {
+    let Some(messages) = body
+        .as_object_mut()
+        .and_then(|object| object.get_mut("messages"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    if max_messages == 0 || messages.len() <= max_messages {
+        return;
+    }
+
+    let instruction_count = messages
+        .iter()
+        .take_while(|message| is_agent_instruction_message(message))
+        .count();
+    let mut next_messages = messages
+        .iter()
+        .take(instruction_count.min(AGENT_PROXY_MAX_INSTRUCTION_MESSAGES))
+        .cloned()
+        .collect::<Vec<_>>();
+    let remaining_capacity = max_messages.saturating_sub(next_messages.len());
+    if remaining_capacity == 0 {
+        *messages = next_messages;
+        return;
+    }
+
+    let tail = agent_message_chunks(&messages[instruction_count..]);
+    let mut suffix = Vec::new();
+    let mut suffix_len = 0usize;
+    for chunk in tail.into_iter().rev() {
+        if suffix_len + chunk.len() > remaining_capacity {
+            break;
+        }
+        suffix_len += chunk.len();
+        suffix.push(chunk);
+    }
+    suffix.reverse();
+
+    for chunk in suffix {
+        next_messages.extend(chunk);
+    }
+    drop_leading_orphan_tool_messages(&mut next_messages);
+    *messages = next_messages;
+}
+
+fn is_agent_instruction_message(message: &serde_json::Value) -> bool {
+    matches!(agent_message_role(message), Some("system" | "developer"))
+}
+
+fn agent_message_chunks(messages: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
+    let mut chunks = Vec::new();
+    let mut index = 0usize;
+    while index < messages.len() {
+        let message = &messages[index];
+        let mut chunk = vec![message.clone()];
+        index += 1;
+
+        if agent_message_role(message) == Some("assistant") {
+            let tool_call_ids = agent_tool_call_ids(message);
+            if !tool_call_ids.is_empty() {
+                while index < messages.len()
+                    && agent_tool_message_matches(&messages[index], &tool_call_ids)
+                {
+                    chunk.push(messages[index].clone());
+                    index += 1;
+                }
+            }
+        }
+
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+fn agent_message_role(message: &serde_json::Value) -> Option<&str> {
+    message.get("role").and_then(serde_json::Value::as_str)
+}
+
+fn agent_tool_call_ids(message: &serde_json::Value) -> Vec<String> {
+    message
+        .get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool_call| tool_call.get("id").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+fn agent_tool_message_matches(message: &serde_json::Value, tool_call_ids: &[String]) -> bool {
+    if agent_message_role(message) != Some("tool") {
+        return false;
+    }
+    message
+        .get("tool_call_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| tool_call_ids.iter().any(|candidate| candidate == id))
+}
+
+fn drop_leading_orphan_tool_messages(messages: &mut Vec<serde_json::Value>) {
+    loop {
+        let first_non_instruction = messages
+            .iter()
+            .position(|message| !is_agent_instruction_message(message));
+        let Some(index) = first_non_instruction else {
+            return;
+        };
+        if agent_message_role(&messages[index]) != Some("tool") {
+            return;
+        }
+        messages.remove(index);
+    }
+}
+
+pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppError> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(AppError::new(
+            "agent_title_empty",
+            "Cannot title an empty agent request.",
+        ));
+    }
+    let response = proxy_agent_chat_completions(serde_json::json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": "Create a concise title for an agent session from the user's first request. Return only the title. Use 2 to 6 words. No quotes, punctuation wrappers, markdown, or explanations."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 24
+    }))
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(AppError::new(
+            "agent_title_failed",
+            format!("Title generation returned status {}.", response.status),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&response.body)
+        .map_err(|error| AppError::new("agent_title_invalid", error.to_string()))?;
+    let text = extract_chat_completion_text(&value).ok_or_else(|| {
+        AppError::new(
+            "agent_title_invalid",
+            "Title generation did not return text.",
+        )
+    })?;
+    clean_agent_session_title(&text).ok_or_else(|| {
+        AppError::new(
+            "agent_title_empty",
+            "Title generation returned an empty title.",
+        )
+    })
+}
+
 pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
     crate::providers::transcription_provider_for_model(model_id)
 }
 
 pub fn configured() -> bool {
     !scribe_api_url().is_empty()
+}
+
+fn extract_chat_completion_text(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .get("content")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn clean_agent_session_title(value: &str) -> Option<String> {
+    let mut title = value
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .replace(['\r', '\n'], " ");
+    for prefix in ["Title:", "Session title:", "Request:"] {
+        if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
+            title = title[prefix.len()..].trim_start().to_string();
+        }
+    }
+    title = title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    if title.chars().count() > AGENT_TITLE_MAX_CHARS {
+        title = title.chars().take(AGENT_TITLE_MAX_CHARS).collect();
+        title = title.trim_end().to_string();
+    }
+    Some(title)
 }
 
 async fn post_json<T, B>(path: &str, body: &B) -> Result<T, AppError>
@@ -468,6 +675,80 @@ fn scribe_api_url() -> String {
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or_else(|| DEFAULT_SCRIBE_API_URL.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleans_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("Title: \"Open GarageBand\"").as_deref(),
+            Some("Open GarageBand")
+        );
+        assert_eq!(
+            clean_agent_session_title(
+                "Create a Quarterly Planning Briefing With Follow Up Action Items",
+            )
+            .as_deref(),
+            Some("Create a Quarterly Planning Briefing With Follow")
+        );
+        assert_eq!(clean_agent_session_title("   "), None);
+    }
+
+    #[test]
+    fn agent_proxy_limits_messages_while_preserving_latest_context() {
+        let mut body = serde_json::json!({
+            "messages": std::iter::once(serde_json::json!({
+                "role": "system",
+                "content": "system prompt"
+            }))
+            .chain((0..8).map(|index| serde_json::json!({
+                "role": "user",
+                "content": format!("message {index}")
+            })))
+            .collect::<Vec<_>>()
+        });
+
+        limit_agent_chat_messages(&mut body, 5);
+
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["content"], "message 4");
+        assert_eq!(messages[4]["content"], "message 7");
+    }
+
+    #[test]
+    fn agent_proxy_keeps_tool_call_messages_together() {
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "system prompt" },
+                { "role": "user", "content": "old context" },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "browser_console", "arguments": "{}" }
+                    }]
+                },
+                { "role": "tool", "tool_call_id": "call_1", "content": "result" },
+                { "role": "user", "content": "next request" }
+            ]
+        });
+
+        limit_agent_chat_messages(&mut body, 4);
+
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[3]["content"], "next request");
+    }
 }
 
 async fn read_audio(path: &Path) -> Result<Vec<u8>, AppError> {

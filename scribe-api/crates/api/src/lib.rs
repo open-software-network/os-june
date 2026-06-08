@@ -5,6 +5,7 @@ mod error;
 mod handlers;
 mod multipart;
 mod state;
+mod validation;
 
 use axum::{
     Router,

@@ -13,7 +13,6 @@ import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
-  AGENT_SELECT_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   markAgentNewSessionPending,
   type AgentSessionsChangedDetail,
@@ -44,6 +43,8 @@ type SidebarProps = {
   onDeleteNote: (noteId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
+  onNewAgentSession: () => void;
+  onSelectAgentSession: (session: HermesSessionInfo) => void;
   recoverableNoteIds?: ReadonlySet<string>;
   collapsed?: boolean;
 };
@@ -64,6 +65,8 @@ export function Sidebar({
   onDeleteNote,
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
+  onNewAgentSession,
+  onSelectAgentSession,
   recoverableNoteIds,
   collapsed = false,
 }: SidebarProps) {
@@ -253,7 +256,7 @@ export function Sidebar({
           className="sidebar-nav-item"
           onClick={() => {
             markAgentNewSessionPending();
-            onChangeView("agent");
+            onNewAgentSession();
             dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
           }}
         >
@@ -322,11 +325,8 @@ export function Sidebar({
                   working={workingAgentSessionIds.has(session.id)}
                   deleting={deletingAgentSessionIds.has(session.id)}
                   onSelect={() => {
-                    onChangeView("agent");
                     setSelectedAgentSessionId(session.id);
-                    dispatchAgentEvent(AGENT_SELECT_SESSION_EVENT, {
-                      sessionId: session.id,
-                    });
+                    onSelectAgentSession(session);
                   }}
                   onDelete={() => {
                     setAgentSessionDeleteError(null);

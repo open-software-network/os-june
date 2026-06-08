@@ -336,6 +336,10 @@ export type AgentTaskListResponse = {
   items: AgentTaskDto[];
 };
 
+export type SuggestAgentSessionTitleResponse = {
+  title: string;
+};
+
 export type HermesBridgeConnection = {
   baseUrl: string;
   wsUrl: string;
@@ -678,6 +682,15 @@ export async function saveAgentHermesSession(input: {
   });
 }
 
+export async function suggestAgentSessionTitle(prompt: string) {
+  return invoke<SuggestAgentSessionTitleResponse>(
+    "suggest_agent_session_title",
+    {
+      request: { prompt },
+    },
+  );
+}
+
 export async function cancelAgentTask(taskId: string) {
   return invoke<AgentTaskDto>("cancel_agent_task", { request: { taskId } });
 }
@@ -734,8 +747,8 @@ export async function hermesBridgeFilesystemSnapshot() {
   return invoke<HermesFilesystemSnapshot>("hermes_bridge_filesystem_snapshot");
 }
 
-export async function openHermesBridgeFile(path: string) {
-  return invoke<void>("open_hermes_bridge_file", { request: { path } });
+export async function downloadHermesBridgeFile(path: string) {
+  return invoke<string>("download_hermes_bridge_file", { request: { path } });
 }
 
 export async function hermesBridgeSessions(

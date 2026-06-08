@@ -5,6 +5,7 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod meeting_detection;
 pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
@@ -75,6 +76,7 @@ pub fn run() {
             commands::send_agent_message,
             commands::save_agent_assistant_message,
             commands::save_agent_hermes_session,
+            commands::suggest_agent_session_title,
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,
@@ -83,7 +85,7 @@ pub fn run() {
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
-            hermes_bridge::open_hermes_bridge_file,
+            hermes_bridge::download_hermes_bridge_file,
             hermes_bridge::hermes_bridge_sessions,
             hermes_bridge::hermes_bridge_session_messages,
             hermes_bridge::delete_hermes_bridge_session,
@@ -128,6 +130,7 @@ pub fn run() {
             setup_app_menu(app)?;
             providers::setup(app);
             dictation::setup(app);
+            meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
             os_accounts::setup_deep_link(app);

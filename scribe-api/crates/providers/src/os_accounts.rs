@@ -54,16 +54,15 @@ impl OsAccountsClient for OsAccountsHttpClient {
         let status = response.status();
         if status.is_server_error() {
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, body = %body, "os_accounts: authorize server error");
+            tracing::error!(%status, %url, body_bytes = body.len(), "os_accounts: authorize server error");
             return Err(DomainError::UpstreamProvider);
         }
-        // Read body once so we can both parse and log it on failure.
         let raw = response.text().await.map_err(|error| {
             tracing::error!(%error, %url, "os_accounts: authorize body read failed");
             DomainError::UpstreamProvider
         })?;
         let envelope: Envelope<AuthorizationWire> = serde_json::from_str(&raw).map_err(|error| {
-            tracing::error!(%error, %url, body = %raw, "os_accounts: authorize JSON parse failed");
+            tracing::error!(%error, %url, body_bytes = raw.len(), "os_accounts: authorize JSON parse failed");
             DomainError::UpstreamProvider
         })?;
         if envelope.success {
@@ -71,7 +70,7 @@ impl OsAccountsClient for OsAccountsHttpClient {
                 .data
                 .map(Authorization::from)
                 .ok_or_else(|| {
-                    tracing::error!(%url, body = %raw, "os_accounts: authorize success envelope missing data");
+                    tracing::error!(%url, body_bytes = raw.len(), "os_accounts: authorize success envelope missing data");
                     DomainError::UpstreamProvider
                 })?;
             tracing::info!(
@@ -92,7 +91,13 @@ impl OsAccountsClient for OsAccountsHttpClient {
                 reason: Some("insufficient_available_balance".to_string()),
             });
         }
-        tracing::error!(%status, %url, body = %raw, "os_accounts: authorize denied");
+        tracing::error!(
+            %status,
+            %url,
+            body_bytes = raw.len(),
+            error_code = ?envelope.error_code,
+            "os_accounts: authorize denied"
+        );
         Err(DomainError::UpstreamProvider)
     }
 
@@ -133,7 +138,7 @@ impl OsAccountsHttpClient {
         let status = response.status();
         if status.is_server_error() {
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, body = %body, "os_accounts: charge server error (retryable)");
+            tracing::error!(%status, %url, body_bytes = body.len(), "os_accounts: charge server error (retryable)");
             return Err(ChargeError::Retryable);
         }
         let raw = response.text().await.map_err(|error| {
@@ -141,7 +146,7 @@ impl OsAccountsHttpClient {
             ChargeError::Domain(DomainError::UpstreamProvider)
         })?;
         let envelope: Envelope<ReceiptWire> = serde_json::from_str(&raw).map_err(|error| {
-            tracing::error!(%error, %url, body = %raw, "os_accounts: charge JSON parse failed");
+            tracing::error!(%error, %url, body_bytes = raw.len(), "os_accounts: charge JSON parse failed");
             ChargeError::Domain(DomainError::UpstreamProvider)
         })?;
         if envelope.success {
@@ -149,12 +154,12 @@ impl OsAccountsHttpClient {
                 .data
                 .map(Receipt::from)
                 .ok_or_else(|| {
-                    tracing::error!(%url, body = %raw, "os_accounts: charge success envelope missing data");
+                    tracing::error!(%url, body_bytes = raw.len(), "os_accounts: charge success envelope missing data");
                     ChargeError::Domain(DomainError::UpstreamProvider)
                 });
         }
         if envelope.error_code == Some(ERR_INSUFFICIENT_CREDITS) {
-            tracing::warn!(%url, body = %raw, "os_accounts: charge denied — insufficient credits");
+            tracing::warn!(%url, body_bytes = raw.len(), "os_accounts: charge denied — insufficient credits");
             return Err(ChargeError::Domain(DomainError::InsufficientCredits));
         }
         if envelope.error_code == Some(ERR_IDEMPOTENCY_KEY_COLLISION) {
@@ -169,7 +174,7 @@ impl OsAccountsHttpClient {
             // value and the original settlement is visible to accounting/audit.
             tracing::warn!(
                 %url,
-                body = %raw,
+                body_bytes = raw.len(),
                 reported_credits = body.credits,
                 "os_accounts: charge replayed — idempotency key already settled; \
                  credits_charged reflects the requested estimate, not the settled amount"
@@ -179,7 +184,13 @@ impl OsAccountsHttpClient {
                 idempotent_replay: true,
             });
         }
-        tracing::error!(%status, %url, body = %raw, "os_accounts: charge denied");
+        tracing::error!(
+            %status,
+            %url,
+            body_bytes = raw.len(),
+            error_code = ?envelope.error_code,
+            "os_accounts: charge denied"
+        );
         Err(ChargeError::Domain(DomainError::UpstreamProvider))
     }
 }

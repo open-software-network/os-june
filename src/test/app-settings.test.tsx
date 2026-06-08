@@ -257,6 +257,28 @@ describe("AppSettings", () => {
     });
   });
 
+  it("opens OS Accounts from Manage and Add funds in account settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Manage" }));
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Add funds" }));
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(2);
+  });
+
   it("updates dictation microphone and note recording source", async () => {
     const user = userEvent.setup();
     const onSourceModeChange = vi.fn();

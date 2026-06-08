@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
-  AGENT_SELECT_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../components/agent/AgentWorkspace";
 import { NotesList } from "../components/notes-list/NotesList";
@@ -67,6 +66,8 @@ describe("folders UI", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={() => onChangeView("agent")}
+        onSelectAgentSession={vi.fn()}
       />,
     );
 
@@ -89,7 +90,6 @@ describe("folders UI", () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
     const onSelectAgentSession = vi.fn();
-    window.addEventListener(AGENT_SELECT_SESSION_EVENT, onSelectAgentSession);
     render(
       <Sidebar
         notes={notes}
@@ -99,6 +99,8 @@ describe("folders UI", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={onSelectAgentSession}
       />,
     );
 
@@ -128,15 +130,9 @@ describe("folders UI", () => {
       screen.getByRole("button", { name: /Researching Google/ }),
     );
 
-    expect(onChangeView).toHaveBeenCalledWith("agent");
-    await waitFor(() => expect(onSelectAgentSession).toHaveBeenCalled());
-    const detail = (onSelectAgentSession.mock.calls[0][0] as CustomEvent)
-      .detail;
-    expect(detail).toEqual({ sessionId: "session-1" });
-
-    window.removeEventListener(
-      AGENT_SELECT_SESSION_EVENT,
-      onSelectAgentSession,
+    expect(onChangeView).not.toHaveBeenCalled();
+    expect(onSelectAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "session-1" }),
     );
   });
 
@@ -150,6 +146,8 @@ describe("folders UI", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
       />,
     );
 
@@ -190,6 +188,8 @@ describe("folders UI", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
       />,
     );
 
@@ -226,9 +226,7 @@ describe("folders UI", () => {
     );
 
     await waitFor(() =>
-      expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith(
-        "session-1",
-      ),
+      expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("session-1"),
     );
     await waitFor(() =>
       expect(screen.queryByText("Researching Google")).toBeNull(),

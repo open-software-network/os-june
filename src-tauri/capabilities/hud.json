@@ -5,6 +5,7 @@
   "windows": ["hud"],
   "permissions": [
     "core:event:allow-listen",
+    "core:event:allow-emit",
     "core:event:allow-unlisten",
     "core:window:allow-hide",
     "core:window:allow-show",
