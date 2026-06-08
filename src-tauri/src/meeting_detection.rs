@@ -69,6 +69,239 @@ pub(crate) fn active_external_pids(
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) use macos::active_input_process_pids;
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn active_input_process_pids() -> Result<Vec<u32>, ProbeError> {
+    Ok(Vec::new())
+}
+
+#[derive(Debug)]
+pub(crate) struct ProbeError {
+    operation: &'static str,
+    status: i32,
+}
+
+impl ProbeError {
+    fn new(operation: &'static str, status: i32) -> Self {
+        Self { operation, status }
+    }
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} failed with OSStatus {}",
+            self.operation, self.status
+        )
+    }
+}
+
+impl std::error::Error for ProbeError {}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::ProbeError;
+    use std::{ffi::c_void, mem, ptr};
+
+    type AudioObjectId = u32;
+    type AudioObjectPropertySelector = u32;
+    type AudioObjectPropertyScope = u32;
+    type AudioObjectPropertyElement = u32;
+    type OsStatus = i32;
+
+    const AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectId = 1;
+    const AUDIO_OBJECT_UNKNOWN: AudioObjectId = 0;
+    const AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: AudioObjectPropertyScope = four_cc(*b"glob");
+    const AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: AudioObjectPropertyElement = 0;
+    const AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: AudioObjectPropertySelector =
+        four_cc(*b"prs#");
+    const AUDIO_PROCESS_PROPERTY_PID: AudioObjectPropertySelector = four_cc(*b"ppid");
+    const AUDIO_PROCESS_PROPERTY_IS_RUNNING_INPUT: AudioObjectPropertySelector =
+        four_cc(*b"piri");
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope,
+        element: AudioObjectPropertyElement,
+    }
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        fn AudioObjectGetPropertyDataSize(
+            object_id: AudioObjectId,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_data_size: u32,
+            qualifier_data: *const c_void,
+            data_size: *mut u32,
+        ) -> OsStatus;
+
+        fn AudioObjectGetPropertyData(
+            object_id: AudioObjectId,
+            address: *const AudioObjectPropertyAddress,
+            qualifier_data_size: u32,
+            qualifier_data: *const c_void,
+            data_size: *mut u32,
+            data: *mut c_void,
+        ) -> OsStatus;
+    }
+
+    pub(crate) fn active_input_process_pids() -> Result<Vec<u32>, ProbeError> {
+        let mut pids = Vec::new();
+        for process_object in process_objects()? {
+            if process_object == AUDIO_OBJECT_UNKNOWN {
+                continue;
+            }
+            let running_input = read_u32_property(
+                process_object,
+                AUDIO_PROCESS_PROPERTY_IS_RUNNING_INPUT,
+                "read process input state",
+            )
+            .unwrap_or_default();
+            if running_input == 0 {
+                continue;
+            }
+            if let Ok(Some(pid)) = read_process_pid(process_object) {
+                pids.push(pid);
+            }
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        Ok(pids)
+    }
+
+    fn process_objects() -> Result<Vec<AudioObjectId>, ProbeError> {
+        let address = property_address(AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST);
+        let mut data_size = 0_u32;
+        status_result(
+            "read process object list size",
+            unsafe {
+                AudioObjectGetPropertyDataSize(
+                    AUDIO_OBJECT_SYSTEM_OBJECT,
+                    &address,
+                    0,
+                    ptr::null(),
+                    &mut data_size,
+                )
+            },
+        )?;
+
+        if data_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let object_count = data_size as usize / mem::size_of::<AudioObjectId>();
+        let mut objects = vec![AUDIO_OBJECT_UNKNOWN; object_count];
+        status_result(
+            "read process object list",
+            unsafe {
+                AudioObjectGetPropertyData(
+                    AUDIO_OBJECT_SYSTEM_OBJECT,
+                    &address,
+                    0,
+                    ptr::null(),
+                    &mut data_size,
+                    objects.as_mut_ptr().cast(),
+                )
+            },
+        )?;
+
+        let actual_count = data_size as usize / mem::size_of::<AudioObjectId>();
+        objects.truncate(actual_count);
+        Ok(objects)
+    }
+
+    fn read_process_pid(process_object: AudioObjectId) -> Result<Option<u32>, ProbeError> {
+        let pid = read_i32_property(process_object, AUDIO_PROCESS_PROPERTY_PID, "read process pid")?;
+        if pid <= 0 {
+            Ok(None)
+        } else {
+            Ok(Some(pid as u32))
+        }
+    }
+
+    fn read_i32_property(
+        object_id: AudioObjectId,
+        selector: AudioObjectPropertySelector,
+        operation: &'static str,
+    ) -> Result<i32, ProbeError> {
+        let mut value = 0_i32;
+        read_scalar_property(object_id, selector, operation, &mut value)?;
+        Ok(value)
+    }
+
+    fn read_u32_property(
+        object_id: AudioObjectId,
+        selector: AudioObjectPropertySelector,
+        operation: &'static str,
+    ) -> Result<u32, ProbeError> {
+        let mut value = 0_u32;
+        read_scalar_property(object_id, selector, operation, &mut value)?;
+        Ok(value)
+    }
+
+    fn read_scalar_property<T>(
+        object_id: AudioObjectId,
+        selector: AudioObjectPropertySelector,
+        operation: &'static str,
+        value: &mut T,
+    ) -> Result<(), ProbeError> {
+        let address = property_address(selector);
+        let mut data_size = mem::size_of::<T>() as u32;
+        status_result(
+            operation,
+            unsafe {
+                AudioObjectGetPropertyData(
+                    object_id,
+                    &address,
+                    0,
+                    ptr::null(),
+                    &mut data_size,
+                    (value as *mut T).cast(),
+                )
+            },
+        )
+    }
+
+    fn property_address(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            selector,
+            scope: AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+            element: AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+        }
+    }
+
+    fn status_result(operation: &'static str, status: OsStatus) -> Result<(), ProbeError> {
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(ProbeError::new(operation, status))
+        }
+    }
+
+    const fn four_cc(value: [u8; 4]) -> u32 {
+        ((value[0] as u32) << 24)
+            | ((value[1] as u32) << 16)
+            | ((value[2] as u32) << 8)
+            | value[3] as u32
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn four_cc_matches_core_audio_constants() {
+            assert_eq!(AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST, 0x7072_7323);
+            assert_eq!(AUDIO_PROCESS_PROPERTY_PID, 0x7070_6964);
+            assert_eq!(AUDIO_PROCESS_PROPERTY_IS_RUNNING_INPUT, 0x7069_7269);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
