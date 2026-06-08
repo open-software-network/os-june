@@ -1341,6 +1341,19 @@ input:focus-visible,
   background: var(--surface-subtle);
 }
 
+.agent-artifact-card[data-has-preview="true"] {
+  max-width: 520px;
+}
+
+.agent-artifact-preview {
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--background);
+}
+
 .agent-artifact-title {
   display: flex;
   align-items: baseline;
@@ -1611,6 +1624,15 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-sm);
+}
+
+.agent-attachment-chip img {
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--background);
 }
 
 .agent-attachment-chip span {

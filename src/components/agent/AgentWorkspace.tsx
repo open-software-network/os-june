@@ -34,6 +34,7 @@ import {
   getAgentTask,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
+  hermesBridgeFilePreview,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
@@ -117,6 +118,7 @@ type AgentArtifact = {
   path: string;
   rootLabel: string;
   size?: number | null;
+  previewDataUrl?: string | null;
 };
 
 type AgentAttachment = ImportedHermesFile & {
@@ -1327,7 +1329,15 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                 <div className="agent-attachment-list" aria-label="Attachments">
                   {attachments.map((attachment) => (
                     <div key={attachment.id} className="agent-attachment-chip">
-                      <FileIcon size={15} />
+                      {attachment.previewDataUrl ? (
+                        <img
+                          src={attachment.previewDataUrl}
+                          alt=""
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <FileIcon size={15} />
+                      )}
                       <span>{attachment.name}</span>
                       <em>{attachment.rootLabel}</em>
                       <button
@@ -2674,33 +2684,82 @@ function AgentArtifactList({
   return (
     <div className="agent-artifact-list" aria-label="Generated files">
       {artifacts.map((artifact) => (
-        <article key={artifact.path} className="agent-artifact-card">
-          <span className="agent-tool-icon">
-            <FileIcon size={14} />
-          </span>
-          <div>
-            <div className="agent-artifact-title">
-              <span>{artifact.name}</span>
-              <em>{artifact.rootLabel}</em>
-            </div>
-            <p>
-              {formatBytes(artifact.size)}
-              <span>{compactPath(artifact.path)}</span>
-            </p>
-          </div>
-          {onDownload ? (
-            <button
-              type="button"
-              aria-label={`Download ${artifact.name}`}
-              title="Download"
-              onClick={() => onDownload(artifact)}
-            >
-              <DownloadIcon size={16} />
-            </button>
-          ) : null}
-        </article>
+        <AgentArtifactCard
+          key={artifact.path}
+          artifact={artifact}
+          onDownload={onDownload}
+        />
       ))}
     </div>
+  );
+}
+
+function AgentArtifactCard({
+  artifact,
+  onDownload,
+}: {
+  artifact: AgentArtifact;
+  onDownload?: (artifact: AgentArtifact) => void;
+}) {
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(
+    artifact.previewDataUrl ?? null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (artifact.previewDataUrl || !isPreviewableImagePath(artifact.path)) {
+      setPreviewDataUrl(artifact.previewDataUrl ?? null);
+      return;
+    }
+    hermesBridgeFilePreview(artifact.path)
+      .then((preview) => {
+        if (!cancelled) setPreviewDataUrl(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.path, artifact.previewDataUrl]);
+
+  return (
+    <article
+      className="agent-artifact-card"
+      data-has-preview={previewDataUrl ? "true" : undefined}
+    >
+      {previewDataUrl ? (
+        <img
+          className="agent-artifact-preview"
+          src={previewDataUrl}
+          alt={artifact.name}
+        />
+      ) : (
+        <span className="agent-tool-icon">
+          <FileIcon size={14} />
+        </span>
+      )}
+      <div>
+        <div className="agent-artifact-title">
+          <span>{artifact.name}</span>
+          <em>{artifact.rootLabel}</em>
+        </div>
+        <p>
+          {formatBytes(artifact.size)}
+          <span>{compactPath(artifact.path)}</span>
+        </p>
+      </div>
+      {onDownload ? (
+        <button
+          type="button"
+          aria-label={`Download ${artifact.name}`}
+          title="Download"
+          onClick={() => onDownload(artifact)}
+        >
+          <DownloadIcon size={16} />
+        </button>
+      ) : null}
+    </article>
   );
 }
 
@@ -3135,6 +3194,10 @@ function artifactsMentionedInText(
     seen.add(artifact.path);
     return true;
   });
+}
+
+function isPreviewableImagePath(path: string) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(path);
 }
 
 function includesQuery(value: unknown, query: string) {

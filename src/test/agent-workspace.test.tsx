@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   createAgentTask: vi.fn(),
   getAgentTask: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
+  hermesBridgeFilePreview: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("../lib/tauri", () => ({
   createAgentTask: mocks.createAgentTask,
   getAgentTask: mocks.getAgentTask,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
+  hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -127,11 +129,15 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
+    mocks.hermesBridgeFilePreview.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
       path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
       rootLabel: "Workspace",
       size: 1234,
+      previewDataUrl: path.endsWith(".png")
+        ? "data:image/png;base64,preview"
+        : null,
     }));
     mocks.downloadHermesBridgeFile.mockResolvedValue(
       "/Users/junho/Downloads/sample.pdf",
@@ -261,6 +267,48 @@ describe("AgentWorkspace", () => {
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
   });
 
+  it("renders generated workspace images as thumbnails", async () => {
+    const screenshotPath =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/screenshot.png";
+    mocks.hermesBridgeFilePreview.mockResolvedValue(
+      "data:image/png;base64,generated-preview",
+    );
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "screenshot.png",
+              path: screenshotPath,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "I saved the screenshot as `screenshot.png`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByRole("img", { name: "screenshot.png" }),
+    ).toHaveAttribute("src", "data:image/png;base64,generated-preview");
+    expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(screenshotPath);
+  });
+
   it("imports dropped files into the Hermes workspace before submitting", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
@@ -282,6 +330,9 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    expect(
+      document.querySelector(".agent-attachment-chip img"),
+    ).toHaveAttribute("src", "data:image/png;base64,preview");
     await user.type(
       screen.getByPlaceholderText("Send a follow-up"),
       "what is in this image?",

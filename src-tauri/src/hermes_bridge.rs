@@ -1,4 +1,5 @@
 use crate::domain::types::AppError;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -26,6 +27,7 @@ const HERMES_SOURCE_TARBALL_SHA256: &str =
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
@@ -158,6 +160,12 @@ pub struct DownloadHermesFileRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HermesFilePreviewRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportHermesFileRequest {
     pub path: String,
 }
@@ -169,6 +177,7 @@ pub struct ImportedHermesFile {
     pub path: String,
     pub root_label: String,
     pub size: u64,
+    pub preview_data_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,6 +588,15 @@ pub async fn download_hermes_bridge_file(
 }
 
 #[tauri::command]
+pub async fn hermes_bridge_file_preview(
+    app: AppHandle,
+    request: HermesFilePreviewRequest,
+) -> Result<Option<String>, AppError> {
+    let requested = validate_hermes_file_path(&app, &request.path)?;
+    image_preview_data_url(&requested)
+}
+
+#[tauri::command]
 pub async fn import_hermes_bridge_file(
     app: AppHandle,
     request: ImportHermesFileRequest,
@@ -612,6 +630,7 @@ pub async fn import_hermes_bridge_file(
         path: destination.to_string_lossy().into_owned(),
         root_label: "Workspace".to_string(),
         size,
+        preview_data_url: image_preview_data_url(&destination)?,
     })
 }
 
@@ -736,6 +755,34 @@ fn unique_upload_path(upload_dir: &Path, source: &Path) -> Result<PathBuf, AppEr
         "hermes_file_import_failed",
         "Could not find an available attachment filename.",
     ))
+}
+
+fn image_preview_data_url(path: &Path) -> Result<Option<String>, AppError> {
+    let Some(mime_type) = image_mime_type(path) else {
+        return Ok(None);
+    };
+    let metadata = fs::metadata(path)
+        .map_err(|error| AppError::new("hermes_file_preview_failed", error.to_string()))?;
+    if metadata.len() > HERMES_IMAGE_PREVIEW_MAX_BYTES {
+        return Ok(None);
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| AppError::new("hermes_file_preview_failed", error.to_string()))?;
+    Ok(Some(format!(
+        "data:{mime_type};base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    )))
+}
+
+fn image_mime_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
 }
 
 pub fn shutdown(app: &tauri::AppHandle) {
