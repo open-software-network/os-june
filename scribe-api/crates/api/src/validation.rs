@@ -11,7 +11,6 @@ pub(crate) const MAX_NOTE_MANUAL_NOTES_CHARS: usize = 50_000;
 pub(crate) const MAX_EXISTING_NOTE_CHARS: usize = 200_000;
 pub(crate) const MAX_DICTATION_TEXT_CHARS: usize = 20_000;
 pub(crate) const MAX_DICTATION_STYLE_CHARS: usize = 4_000;
-pub(crate) const MAX_AGENT_MESSAGES: usize = 64;
 pub(crate) const MAX_AGENT_STRING_CHARS: usize = 100_000;
 pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 240_000;
 pub(crate) const MAX_AGENT_JSON_DEPTH: usize = 16;
@@ -43,11 +42,6 @@ pub(crate) fn validate_agent_chat_body(body: &Value) -> Result<(), ApiError> {
     let Some(object) = body.as_object() else {
         return Err(ApiError::bad_request("invalid_chat_completion_body"));
     };
-    if let Some(messages) = object.get("messages").and_then(Value::as_array)
-        && messages.len() > MAX_AGENT_MESSAGES
-    {
-        return Err(ApiError::bad_request("messages_too_many"));
-    }
     validate_output_tokens(object.get("max_tokens"), "max_tokens")?;
     validate_output_tokens(object.get("max_completion_tokens"), "max_completion_tokens")?;
     let mut total_string_chars = 0usize;
@@ -116,8 +110,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_body_rejects_too_many_messages() {
-        let messages = (0..=MAX_AGENT_MESSAGES)
+    fn agent_body_accepts_many_small_messages() {
+        let messages = (0..128)
             .map(|_| json!({ "role": "user", "content": "hello" }))
             .collect::<Vec<_>>();
 
@@ -126,7 +120,7 @@ mod tests {
                 "model": "text-model",
                 "messages": messages,
             }))
-            .is_err()
+            .is_ok()
         );
     }
 
