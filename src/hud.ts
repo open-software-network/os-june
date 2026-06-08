@@ -381,19 +381,15 @@ async function handleDictationEventPayload(payload: unknown) {
     // Rust pre-classifies via payload.silent so the HUD has one source of
     // truth for what counts as a "Nothing recorded" case.
     if (dictationEvent.payload?.silent === true) {
-      // Silent (nothing recorded) shouldn't look like a failure — just dismiss.
-      void hideHud();
+      setHud("silent-error", "Nothing recorded");
+      await showHud();
+      hideSoon(900);
       return;
     }
-    const code = String(dictationEvent.payload?.code ?? "");
-    if (code === "not_signed_in") {
-      setHud(
-        "error",
-        String(dictationEvent.payload?.message ?? "Sign in to use dictation"),
-      );
-    } else {
-      setHud("error", "Error");
-    }
+    const message = String(
+      dictationEvent.payload?.message ?? "Dictation failed.",
+    ).trim();
+    setHud("error", message || "Dictation failed.");
     await showHud();
     // Hold long enough for the shake to finish and the message to read.
     hideSoon(1800);

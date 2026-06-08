@@ -221,6 +221,9 @@ body {
   font-size: var(--fs-sm);
   font-weight: 500;
   line-height: 1;
+  max-width: min(460px, calc(100vw - 96px));
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   transform: translateY(-0.5px);
 }
@@ -341,7 +344,8 @@ body {
 }
 
 /* State machine ------------------------------------------------------- */
-.hud[data-state="error"] .hud-handle {
+.hud[data-state="error"] .hud-handle,
+.hud[data-state="silent-error"] .hud-handle {
   display: none;
 }
 
@@ -374,6 +378,11 @@ body {
   animation: hud-shake 380ms var(--ease-out);
 }
 
+.hud[data-state="silent-error"] {
+  gap: var(--sp-2);
+  padding-inline: var(--sp-3) var(--sp-4);
+}
+
 .hud[data-state="transcribing"] .hud-viz,
 .hud[data-state="pasting"] .hud-viz {
   /* Braille replaces the bars + stop-button footprint while the handle stays
@@ -381,13 +390,15 @@ body {
   width: 88px;
 }
 
-.hud[data-state="error"] .hud-viz {
+.hud[data-state="error"] .hud-viz,
+.hud[data-state="silent-error"] .hud-viz {
   display: none;
 }
 
 .hud[data-state="transcribing"] .hud-bars,
 .hud[data-state="pasting"] .hud-bars,
-.hud[data-state="error"] .hud-bars {
+.hud[data-state="error"] .hud-bars,
+.hud[data-state="silent-error"] .hud-bars {
   display: none;
 }
 
@@ -396,14 +407,16 @@ body {
   display: flex;
 }
 
-.hud[data-state="error"] .hud-error-text {
+.hud[data-state="error"] .hud-error-text,
+.hud[data-state="silent-error"] .hud-error-text {
   display: block;
 }
 
 /* Stop button only matters while we're still capturing audio. */
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
-.hud[data-state="error"] .hud-stop {
+.hud[data-state="error"] .hud-stop,
+.hud[data-state="silent-error"] .hud-stop {
   display: none;
 }
 

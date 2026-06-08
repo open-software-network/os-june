@@ -140,6 +140,29 @@ describe("meeting detection HUD", () => {
     expect(hudElement().dataset.state).toBe("transcribing");
     expect(mocks.show).not.toHaveBeenCalled();
   });
+
+  it("surfaces silent dictation failures as nothing recorded", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "missing_recording",
+        message: "No recorded audio was available to transcribe.",
+        silent: true,
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("silent-error");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Nothing recorded",
+    );
+    expect(mocks.show).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(900);
+    expect(hudElement().dataset.state).toBe("exiting");
+  });
 });
 
 async function loadHud() {

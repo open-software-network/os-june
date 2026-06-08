@@ -1318,15 +1318,11 @@ final class DictationController {
         resetRecordingState()
 
         let nextRecordingURL = temporaryRecordingURL()
-        // Auto-detect now resolves to the system default input and records through
-        // the same low-latency capture path as a manually-selected mic, so it's
-        // just as snappy (instantaneous peak, accurate die-down). The
-        // AVAudioRecorder path below is only a fallback for when no capture device
-        // is available at all.
-        let captureDevice =
-            microphoneDevice(for: preferredMicrophoneID) ?? AVCaptureDevice.default(for: .audio)
-        if let captureDevice {
-            startSelectedDeviceRecording(device: captureDevice, url: nextRecordingURL)
+        // Preserve the legacy Auto-detect behavior: AVAudioRecorder delegates
+        // default-input selection and audio processing to macOS. The custom
+        // capture path is still used when the user explicitly pins a microphone.
+        if let selectedDevice = microphoneDevice(for: preferredMicrophoneID) {
+            startSelectedDeviceRecording(device: selectedDevice, url: nextRecordingURL)
             return
         }
 
