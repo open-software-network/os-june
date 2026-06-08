@@ -39,9 +39,14 @@ pub(crate) struct MeetingDetectionState {
 impl MeetingDetectionState {
     pub(crate) fn update(
         &mut self,
+        signed_in: bool,
         active_external_input: bool,
         os_scribe_capture_active: bool,
     ) -> Option<MeetingDetectionEvent> {
+        if !signed_in {
+            return self.clear();
+        }
+
         let should_be_active = active_external_input && !os_scribe_capture_active;
         if should_be_active {
             self.inactive_polls = 0;
@@ -72,6 +77,16 @@ impl MeetingDetectionState {
             return Some(MeetingDetectionEvent::Cleared);
         }
 
+        None
+    }
+
+    fn clear(&mut self) -> Option<MeetingDetectionEvent> {
+        self.inactive_polls = 0;
+        self.active_polls_since_emit = 0;
+        if self.active {
+            self.active = false;
+            return Some(MeetingDetectionEvent::Cleared);
+        }
         None
     }
 }
@@ -159,6 +174,13 @@ fn spawn_monitor(app: AppHandle) {
         loop {
             thread::sleep(POLL_INTERVAL);
 
+            if !crate::os_accounts::cached_signed_in() {
+                if let Some(event) = state.update(false, false, false) {
+                    emit_detection_event(&app, event, 0);
+                }
+                continue;
+            }
+
             let active_processes = match active_input_processes() {
                 Ok(active_processes) => {
                     warned_after_probe_error = false;
@@ -175,7 +197,7 @@ fn spawn_monitor(app: AppHandle) {
             let allowed_processes =
                 active_allowed_external_processes(&active_processes, &owned_pids(&app));
             let capture_active = crate::audio::capture::is_capture_active();
-            if let Some(event) = state.update(!allowed_processes.is_empty(), capture_active) {
+            if let Some(event) = state.update(true, !allowed_processes.is_empty(), capture_active) {
                 emit_detection_event(&app, event, allowed_processes.len());
             }
         }
@@ -666,12 +688,12 @@ mod tests {
         let active_unlisted = allowed_pids(&[input_process(61, "com.apple.FaceTime")]);
 
         assert_eq!(
-            state.update(!active_allowed.is_empty(), false),
+            state.update(true, !active_allowed.is_empty(), false),
             Some(MeetingDetectionEvent::Detected)
         );
-        assert_eq!(state.update(!active_unlisted.is_empty(), false), None);
+        assert_eq!(state.update(true, !active_unlisted.is_empty(), false), None);
         assert_eq!(
-            state.update(!active_unlisted.is_empty(), false),
+            state.update(true, !active_unlisted.is_empty(), false),
             Some(MeetingDetectionEvent::Cleared)
         );
     }
@@ -681,19 +703,46 @@ mod tests {
         let mut state = MeetingDetectionState::default();
 
         assert_eq!(
-            state.update(true, false),
+            state.update(true, true, false),
             Some(MeetingDetectionEvent::Detected)
         );
-        assert_eq!(state.update(true, false), None);
+        assert_eq!(state.update(true, true, false), None);
+    }
+
+    #[test]
+    fn detector_suppresses_until_user_is_signed_in() {
+        let mut state = MeetingDetectionState::default();
+
+        assert_eq!(state.update(false, true, false), None);
+        assert_eq!(state.update(false, true, false), None);
+        assert_eq!(
+            state.update(true, true, false),
+            Some(MeetingDetectionEvent::Detected)
+        );
+    }
+
+    #[test]
+    fn detector_clears_immediately_when_user_signs_out() {
+        let mut state = MeetingDetectionState::default();
+
+        assert_eq!(
+            state.update(true, true, false),
+            Some(MeetingDetectionEvent::Detected)
+        );
+        assert_eq!(
+            state.update(false, true, false),
+            Some(MeetingDetectionEvent::Cleared)
+        );
+        assert_eq!(state.update(false, true, false), None);
     }
 
     #[test]
     fn detector_suppresses_while_os_scribe_capture_is_active() {
         let mut state = MeetingDetectionState::default();
 
-        assert_eq!(state.update(true, true), None);
+        assert_eq!(state.update(true, true, true), None);
         assert_eq!(
-            state.update(true, false),
+            state.update(true, true, false),
             Some(MeetingDetectionEvent::Detected)
         );
     }
@@ -702,31 +751,31 @@ mod tests {
     fn detector_clears_after_inactive_debounce() {
         let mut state = MeetingDetectionState::default();
         assert_eq!(
-            state.update(true, false),
+            state.update(true, true, false),
             Some(MeetingDetectionEvent::Detected)
         );
 
-        assert_eq!(state.update(false, false), None);
+        assert_eq!(state.update(true, false, false), None);
         assert_eq!(
-            state.update(false, false),
+            state.update(true, false, false),
             Some(MeetingDetectionEvent::Cleared)
         );
-        assert_eq!(state.update(false, false), None);
+        assert_eq!(state.update(true, false, false), None);
     }
 
     #[test]
     fn detector_emits_heartbeat_while_active() {
         let mut state = MeetingDetectionState::default();
         assert_eq!(
-            state.update(true, false),
+            state.update(true, true, false),
             Some(MeetingDetectionEvent::Detected)
         );
 
         for _ in 0..(HEARTBEAT_EVERY_ACTIVE_POLLS - 1) {
-            assert_eq!(state.update(true, false), None);
+            assert_eq!(state.update(true, true, false), None);
         }
         assert_eq!(
-            state.update(true, false),
+            state.update(true, true, false),
             Some(MeetingDetectionEvent::Detected)
         );
     }
@@ -735,13 +784,13 @@ mod tests {
     fn detector_clears_when_os_scribe_capture_starts() {
         let mut state = MeetingDetectionState::default();
         assert_eq!(
-            state.update(true, false),
+            state.update(true, true, false),
             Some(MeetingDetectionEvent::Detected)
         );
 
-        assert_eq!(state.update(true, true), None);
+        assert_eq!(state.update(true, true, true), None);
         assert_eq!(
-            state.update(true, true),
+            state.update(true, true, true),
             Some(MeetingDetectionEvent::Cleared)
         );
     }

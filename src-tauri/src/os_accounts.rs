@@ -11,7 +11,14 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{error::Error as StdError, sync::OnceLock, time::Duration};
+use std::{
+    error::Error as StdError,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+    time::Duration,
+};
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(debug_assertions)]
 use tokio::{
@@ -42,6 +49,7 @@ const ERR_TOKEN_EXPIRED: i64 = 3001;
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static REFRESH_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 static ENV_LOADED: OnceLock<()> = OnceLock::new();
+static SIGNED_IN_CACHE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Deserialize)]
 struct Envelope<T> {
@@ -123,6 +131,14 @@ impl From<BalanceWire> for AccountBalance {
             usd_millis: w.usd_millis,
         }
     }
+}
+
+pub(crate) fn cached_signed_in() -> bool {
+    SIGNED_IN_CACHE.load(Ordering::Relaxed)
+}
+
+fn set_cached_signed_in(signed_in: bool) {
+    SIGNED_IN_CACHE.store(signed_in, Ordering::Relaxed);
 }
 
 struct Config {
@@ -226,22 +242,29 @@ pub struct LoginFlow {
 pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
     let cfg = Config::load();
     if load_tokens().await.is_none() {
+        set_cached_signed_in(false);
         return Ok(AccountStatus {
             configured: cfg.configured(),
             ..Default::default()
         });
     }
     match fetch_snapshot(&cfg).await {
-        Ok((user, balance)) => Ok(AccountStatus {
-            signed_in: true,
-            configured: cfg.configured(),
-            user: Some(user),
-            balance: Some(balance),
-        }),
-        Err(_) => Ok(AccountStatus {
-            configured: cfg.configured(),
-            ..Default::default()
-        }),
+        Ok((user, balance)) => {
+            set_cached_signed_in(true);
+            Ok(AccountStatus {
+                signed_in: true,
+                configured: cfg.configured(),
+                user: Some(user),
+                balance: Some(balance),
+            })
+        }
+        Err(_) => {
+            set_cached_signed_in(false);
+            Ok(AccountStatus {
+                configured: cfg.configured(),
+                ..Default::default()
+            })
+        }
     }
 }
 
@@ -289,6 +312,7 @@ pub async fn os_accounts_login(
     store_tokens(&pair).await?;
 
     let (user, balance) = fetch_snapshot(&cfg).await?;
+    set_cached_signed_in(true);
     Ok(AccountStatus {
         signed_in: true,
         configured: true,
@@ -324,6 +348,7 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
             .await;
     }
     clear_tokens().await;
+    set_cached_signed_in(false);
     Ok(())
 }
 
@@ -631,9 +656,13 @@ async fn exchange_code(
 /// already refreshed.
 async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
     let _guard = refresh_lock().lock().await;
-    let pair = load_tokens()
-        .await
-        .ok_or_else(|| AppError::new("signed_out", "Not signed in."))?;
+    let pair = match load_tokens().await {
+        Some(pair) => pair,
+        None => {
+            set_cached_signed_in(false);
+            return Err(AppError::new("signed_out", "Not signed in."));
+        }
+    };
     let resp: Envelope<TokenPair> = http_client()
         .post(format!(
             "{}/auth/refresh",
@@ -652,21 +681,33 @@ async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
         .ok_or_else(|| AppError::new("session_expired", "Your session expired. Sign in again."))?;
     let access = fresh.access_token.clone();
     store_tokens(&fresh).await?;
+    set_cached_signed_in(true);
     Ok(access)
 }
 
 /// Read the current access token without refreshing.
 pub async fn access_token() -> Result<String, AppError> {
-    let pair = load_tokens()
-        .await
-        .ok_or_else(|| AppError::new("signed_out", "Not signed in."))?;
+    let pair = match load_tokens().await {
+        Some(pair) => pair,
+        None => {
+            set_cached_signed_in(false);
+            return Err(AppError::new("signed_out", "Not signed in."));
+        }
+    };
     // Pre-emptively refresh if the cached token is expired or within 30s of
     // expiry. Otherwise multipart uploads (which can't replay their body on a
     // 401) would burn a request before discovering the token was stale.
     if access_token_is_stale(&pair.access_token) {
         let cfg = Config::load();
-        return refresh_locked(&cfg).await;
+        return match refresh_locked(&cfg).await {
+            Ok(access) => Ok(access),
+            Err(error) => {
+                set_cached_signed_in(false);
+                Err(error)
+            }
+        };
     }
+    set_cached_signed_in(true);
     Ok(pair.access_token.clone())
 }
 
@@ -696,7 +737,13 @@ fn access_token_is_stale(jwt: &str) -> bool {
 /// Force a token refresh and return the new access token.
 pub async fn refresh_access_token() -> Result<String, AppError> {
     let cfg = Config::load();
-    refresh_locked(&cfg).await
+    match refresh_locked(&cfg).await {
+        Ok(access) => Ok(access),
+        Err(error) => {
+            set_cached_signed_in(false);
+            Err(error)
+        }
+    }
 }
 
 async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> Result<T, AppError> {
