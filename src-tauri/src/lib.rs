@@ -5,6 +5,7 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod meeting_detection;
 pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
@@ -129,6 +130,7 @@ pub fn run() {
             setup_app_menu(app)?;
             providers::setup(app);
             dictation::setup(app);
+            meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
             os_accounts::setup_deep_link(app);

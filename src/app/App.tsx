@@ -55,6 +55,7 @@ import {
   playRecordingSound,
   preloadRecordingSounds,
 } from "../lib/recording-sounds";
+import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import type {
   BootstrapResponse,
   DictationHelperEvent,
@@ -157,6 +158,7 @@ export function App() {
   const signInRequired = shouldBlockOnSignIn(account);
   const appBlocked = accountLoading || signInRequired;
   const selectedNote = state.selectedNote;
+  const selectedNoteId = selectedNote?.id;
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
     : undefined;
@@ -678,8 +680,8 @@ export function App() {
     }
   }
 
-  async function handleStartRecording() {
-    if (!selectedNote) return;
+  const handleStartRecording = useCallback(async () => {
+    if (!selectedNoteId) return;
     dispatch({
       type: "recordingStatusChanged",
       status: startingRecordingStatus(sourceMode),
@@ -710,7 +712,7 @@ export function App() {
           ? "microphoneOnly"
           : sourceMode;
 
-      const recording = await startRecording(selectedNote.id, effectiveMode);
+      const recording = await startRecording(selectedNoteId, effectiveMode);
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
@@ -722,7 +724,21 @@ export function App() {
     } finally {
       setCheckingSourceReadiness(false);
     }
-  }
+  }, [selectedNoteId, sourceMode]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen(MEETING_START_TRANSCRIPTION_EVENT, () => {
+      if (appBlocked || !bootstrapped) return;
+      setActiveView("meetings");
+      void handleStartRecording();
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [appBlocked, bootstrapped, handleStartRecording]);
 
   async function handleFinishRecording(sessionId: string) {
     // Collapse the shell back to idle the instant stop is pressed so it

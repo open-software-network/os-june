@@ -225,6 +225,48 @@ body {
   transform: translateY(-0.5px);
 }
 
+.hud-meeting-label {
+  display: none;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateY(-0.5px);
+}
+
+.hud-meeting-start {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 126px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: 6px;
+  background: var(--foreground);
+  color: var(--background);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 -1px 0 oklch(0% 0 none / 18%),
+    0 1px 2px oklch(0% 0 none / 28%);
+}
+
+.hud-meeting-start:active {
+  transform: translateY(0.5px);
+}
+
+.hud-meeting-start:disabled {
+  cursor: default;
+  opacity: 0.72;
+  transform: none;
+}
+
 /* Stop button ---------------------------------------------------------- */
 .hud-stop {
   position: relative;
@@ -301,6 +343,25 @@ body {
 /* State machine ------------------------------------------------------- */
 .hud[data-state="error"] .hud-handle {
   display: none;
+}
+
+.hud[data-state="meeting"] {
+  gap: var(--sp-2);
+  padding: 3px 4px 3px 3px;
+}
+
+.hud[data-state="meeting"] > .hud-handle {
+  margin-right: 0;
+}
+
+.hud[data-state="meeting"] .hud-viz,
+.hud[data-state="meeting"] .hud-stop {
+  display: none;
+}
+
+.hud[data-state="meeting"] .hud-meeting-label,
+.hud[data-state="meeting"] .hud-meeting-start {
+  display: inline-flex;
 }
 
 /* Text-only shaking pill for hard errors. */

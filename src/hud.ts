@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { spinners } from "unicode-animations";
 import {
@@ -12,6 +12,7 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
+import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import "./styles/hud.css";
 
 type DictationHudEvent = {
@@ -32,11 +33,15 @@ const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
 const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
+const meetingStartButton =
+  document.querySelector<HTMLButtonElement>("#hud-meeting-start");
 const statusText = document.querySelector<HTMLElement>("#hud-status");
 
 let hideTimer: number | undefined;
+let meetingPromptTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
+let meetingPromptSuppressed = false;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -44,6 +49,7 @@ const brailleWave = spinners.waverows;
 
 // Matches the .hud[data-state="exiting"] transition in hud.css.
 const EXIT_TRANSITION_MS = 160;
+const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 
 // Bar synthesis + ballistics live in the shared meter so the recorder waveform
 // moves identically. The meter holds the level history and the displayed bars.
@@ -116,7 +122,12 @@ function setHud(state: string, status: string) {
   // click pass-through whenever the state changes.
   if (state !== previous && hud) {
     hud.offsetWidth;
-    pushPillBoundsToNative();
+    if (state === "meeting") {
+      clearStopHover();
+      pushPillBoundsToNative();
+    } else {
+      pushPillBoundsToNative();
+    }
   }
 }
 
@@ -258,8 +269,26 @@ function clearHideTimer() {
   }
 }
 
+function clearMeetingPromptTimer() {
+  if (meetingPromptTimer) {
+    window.clearTimeout(meetingPromptTimer);
+    meetingPromptTimer = undefined;
+  }
+}
+
+function startMeetingPromptTimer() {
+  if (meetingPromptTimer !== undefined) return;
+  meetingPromptTimer = window.setTimeout(() => {
+    meetingPromptTimer = undefined;
+    if (hud?.dataset.state !== "meeting") return;
+    meetingPromptSuppressed = true;
+    void hideHud();
+  }, MEETING_PROMPT_TIMEOUT_MS);
+}
+
 async function hideHud() {
   clearHideTimer();
+  clearMeetingPromptTimer();
   clearStopHover();
   clearPillBounds();
   if (hud) {
@@ -277,8 +306,13 @@ async function showHud() {
   await appWindow.show();
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
-  pushPillBoundsToNative();
-  pushStopBoundsToNative();
+  if (hud?.dataset.state === "meeting") {
+    clearStopHover();
+    pushPillBoundsToNative();
+  } else {
+    pushPillBoundsToNative();
+    pushStopBoundsToNative();
+  }
 }
 
 function hideSoon(delay = 900) {
@@ -370,6 +404,37 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 }
 
+async function handleMeetingDetectionEventPayload(payload: unknown) {
+  const meetingEvent = parseEvent(payload);
+  if (!meetingEvent) return;
+
+  if (meetingEvent.type === "meeting_detected") {
+    if (meetingPromptSuppressed) return;
+    if (!canShowMeetingPrompt(hud?.dataset.state)) return;
+    setHud("meeting", "Meeting detected");
+    await showHud();
+    startMeetingPromptTimer();
+    return;
+  }
+
+  if (meetingEvent.type === "meeting_cleared") {
+    meetingPromptSuppressed = false;
+    clearMeetingPromptTimer();
+    if (hud?.dataset.state === "meeting") {
+      void hideHud();
+    }
+  }
+}
+
+function canShowMeetingPrompt(state: string | undefined) {
+  return (
+    state === undefined ||
+    state === "idle" ||
+    state === "meeting" ||
+    state === "exiting"
+  );
+}
+
 function parseEvent(payload: unknown): DictationHudEvent | undefined {
   try {
     if (typeof payload === "string") {
@@ -406,8 +471,30 @@ stopButton?.addEventListener("click", async (event) => {
   }
 });
 
+meetingStartButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (hud?.dataset.state !== "meeting") return;
+
+  meetingPromptSuppressed = true;
+  clearMeetingPromptTimer();
+  meetingStartButton.disabled = true;
+  try {
+    await emit(MEETING_START_TRANSCRIPTION_EVENT);
+  } catch {
+    // The main window owns recording errors; the HUD should never block clicks.
+  }
+  void hideHud().finally(() => {
+    meetingStartButton.disabled = false;
+  });
+});
+
 void listen("dictation-event", async (event) => {
   await handleDictationEventPayload(event.payload);
+});
+
+void listen("meeting-detection-event", async (event) => {
+  await handleMeetingDetectionEventPayload(event.payload);
 });
 
 void listen<boolean>("hud-stop-hover", (event) => {
