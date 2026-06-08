@@ -22,10 +22,9 @@ const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // credits:spend so Scribe API can authorize-and-charge against the user's
 // wallet for transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
-// OS Accounts token store. Service name is identity-provider scoped, but the
-// downloadable Developer ID build uses the default app keychain access because
-// shared keychain groups require a provisioning profile.
-const KEYCHAIN_SERVICE: &str = "co.opensoftware.accounts";
+// Scribe's OS Accounts token store. Keep this app-scoped so Scribe does not
+// touch credentials written by other Open Software apps on startup.
+const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
 const KEYCHAIN_USER: &str = "tokens";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(debug_assertions)]
