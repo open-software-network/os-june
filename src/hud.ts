@@ -122,12 +122,8 @@ function setHud(state: string, status: string) {
   // click pass-through whenever the state changes.
   if (state !== previous && hud) {
     hud.offsetWidth;
-    if (state === "meeting") {
-      clearStopHover();
-      pushPillBoundsToNative();
-    } else {
-      pushPillBoundsToNative();
-    }
+    if (state === "meeting") clearStopHover();
+    pushPillBoundsToNative();
   }
 }
 
