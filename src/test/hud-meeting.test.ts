@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -178,6 +179,60 @@ describe("meeting detection HUD", () => {
     await vi.advanceTimersByTimeAsync(160);
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
+
+  it("shows Hey June acknowledgement and dismisses it", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "received",
+      summary: "Request received.",
+    });
+
+    expect(hudElement().dataset.state).toBe("agent-received");
+    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
+      "Request received.",
+    );
+    expect(mocks.show).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(950);
+    expect(hudElement().dataset.state).toBe("exiting");
+  });
+
+  it("keeps agent progress visible when late audio levels arrive", async () => {
+    await loadHud();
+
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "running",
+      summary: "Using Filesystem.",
+    });
+    await emit("dictation-event", {
+      type: "audio_level",
+      payload: { level: "0.8" },
+    });
+
+    expect(hudElement().dataset.state).toBe("agent-running");
+    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
+      "Using Filesystem.",
+    );
+  });
+
+  it("shows sticky user-input requests", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "waitingForUser",
+      summary: "June needs approval.",
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(hudElement().dataset.state).toBe("agent-needs-user");
+    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
+      "June needs approval.",
+    );
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
 });
 
 async function loadHud() {
@@ -217,6 +272,7 @@ function hudMarkup() {
         <span class="hud-error-mark" aria-hidden="true"></span>
       </div>
       <span id="hud-error-text" class="hud-error-text" aria-hidden="true"></span>
+      <span id="hud-agent-label" class="hud-agent-label" aria-hidden="true"></span>
       <span id="hud-meeting-label" class="hud-meeting-label">Meeting detected</span>
       <button id="hud-meeting-start" class="hud-meeting-start" type="button">Start Transcription</button>
       <button id="hud-stop" class="hud-stop" type="button" aria-label="Stop dictation">

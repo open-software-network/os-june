@@ -12,6 +12,10 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
+import {
+  AGENT_SESSION_STATUS_EVENT,
+  type AgentSessionStatusDetail,
+} from "./lib/agent-events";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import "./styles/hud.css";
 
@@ -32,6 +36,7 @@ const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
 const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
+const agentLabel = document.querySelector<HTMLElement>("#hud-agent-label");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
 const meetingStartButton =
   document.querySelector<HTMLButtonElement>("#hud-meeting-start");
@@ -50,6 +55,7 @@ const brailleWave = spinners.waverows;
 // Matches the .hud[data-state="exiting"] transition in hud.css.
 const EXIT_TRANSITION_MS = 160;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
+const AGENT_RUNNING_STATES = new Set(["agent-running", "agent-needs-user"]);
 
 // Bar synthesis + ballistics live in the shared meter so the recorder waveform
 // moves identically. The meter holds the level history and the displayed bars.
@@ -101,13 +107,24 @@ function setHud(state: string, status: string) {
   const previous = hud.dataset.state;
   hud.dataset.state = state;
   statusText.textContent = status;
+  if (agentLabel) {
+    agentLabel.textContent = state.startsWith("agent-") ? status : "";
+  }
   if (errorText) {
     errorText.textContent =
       state === "silent-error" || state === "error" ? status : "";
   }
-  if (state === "transcribing" || state === "pasting") {
+  if (
+    state === "transcribing" ||
+    state === "pasting" ||
+    AGENT_RUNNING_STATES.has(state)
+  ) {
     startBraille();
-  } else if (previous === "transcribing" || previous === "pasting") {
+  } else if (
+    previous === "transcribing" ||
+    previous === "pasting" ||
+    (previous && AGENT_RUNNING_STATES.has(previous))
+  ) {
     stopBraille();
   }
   if (state === "listening") {
@@ -218,6 +235,40 @@ function stopBraille() {
   if (brailleTimer !== undefined) {
     window.clearInterval(brailleTimer);
     brailleTimer = undefined;
+  }
+}
+
+function playAgentTone(kind: AgentSessionStatusDetail["status"]) {
+  const AudioContextCtor =
+    window.AudioContext ??
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioContextCtor) return;
+  try {
+    const context = new AudioContextCtor();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const now = context.currentTime;
+    const frequency =
+      kind === "waitingForUser"
+        ? 660
+        : kind === "completed"
+          ? 880
+          : kind === "failed" || kind === "cancelled"
+            ? 220
+            : 520;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.18);
+    oscillator.addEventListener("ended", () => void context.close());
+  } catch {
+    // Audio feedback is opportunistic; visual state remains authoritative.
   }
 }
 
@@ -341,6 +392,7 @@ async function handleDictationEventPayload(payload: unknown) {
       state === "pasting" ||
       state === "error" ||
       state === "silent-error" ||
+      state?.startsWith("agent-") ||
       state === "exiting"
     ) {
       return;
@@ -432,6 +484,58 @@ function canShowMeetingPrompt(state: string | undefined) {
   );
 }
 
+async function handleAgentStatusEventPayload(payload: unknown) {
+  const event = parseEvent(payload) as unknown as
+    | AgentSessionStatusDetail
+    | undefined;
+  if (!event?.status) return;
+
+  clearMeetingPromptTimer();
+  clearHideTimer();
+
+  if (event.status === "received") {
+    playAgentTone(event.status);
+    setHud("agent-received", event.summary || "Request received");
+    await showHud();
+    hideSoon(950);
+    return;
+  }
+
+  if (event.status === "starting") {
+    setHud("agent-running", event.summary || "Starting June");
+    await showHud();
+    return;
+  }
+
+  if (event.status === "running") {
+    setHud("agent-running", event.summary || "June is working");
+    await showHud();
+    return;
+  }
+
+  if (event.status === "waitingForUser") {
+    playAgentTone(event.status);
+    setHud("agent-needs-user", event.summary || "June needs you");
+    await showHud();
+    return;
+  }
+
+  if (event.status === "completed") {
+    playAgentTone(event.status);
+    setHud("agent-completed", event.summary || "June finished");
+    await showHud();
+    hideSoon(1400);
+    return;
+  }
+
+  if (event.status === "failed" || event.status === "cancelled") {
+    playAgentTone(event.status);
+    setHud("error", event.summary || "June hit a problem.");
+    await showHud();
+    hideSoon(1800);
+  }
+}
+
 function parseEvent(payload: unknown): DictationHudEvent | undefined {
   try {
     if (typeof payload === "string") {
@@ -492,6 +596,10 @@ void listen("dictation-event", async (event) => {
 
 void listen("meeting-detection-event", async (event) => {
   await handleMeetingDetectionEventPayload(event.payload);
+});
+
+void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
+  await handleAgentStatusEventPayload(event.payload);
 });
 
 void listen<boolean>("hud-stop-hover", (event) => {

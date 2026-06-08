@@ -136,6 +136,46 @@ describe("folders UI", () => {
     );
   });
 
+  it("marks agent sessions that need input", async () => {
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="agent"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [
+              {
+                id: "session-1",
+                title: "Update website",
+                preview: "",
+                last_active: "2026-06-04T19:00:00Z",
+              },
+            ],
+            selectedSessionId: "session-1",
+            workingSessionIds: ["session-1"],
+            waitingSessionIds: ["session-1"],
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Update website")).toBeInTheDocument();
+    expect(screen.getByLabelText("Needs you")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Working")).toBeNull();
+  });
+
   it("keeps the sidebar agent session list capped after workspace refreshes", async () => {
     render(
       <Sidebar

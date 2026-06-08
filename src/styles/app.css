@@ -1539,6 +1539,10 @@ input:focus-visible,
   font-weight: 700;
 }
 
+.agent-activity-indicator[data-status="waitingForUser"] {
+  color: var(--primary);
+}
+
 .agent-activity-indicator > span {
   width: 7px;
   height: 7px;
@@ -2289,6 +2293,11 @@ input:focus-visible,
   border-radius: var(--r-pill);
   background: var(--warm-strong);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 20%, transparent);
+}
+
+.agent-sidebar-working[data-status="waitingForUser"] {
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 18%, transparent);
 }
 
 .sidebar[data-collapsed="true"] .note-row-menu,

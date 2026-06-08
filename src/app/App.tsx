@@ -56,6 +56,8 @@ import {
   preloadRecordingSounds,
 } from "../lib/recording-sounds";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import { dispatchAgentSessionStatus } from "../lib/agent-events";
+import { titleFromPrompt } from "../lib/hermes-adapter";
 import type {
   BootstrapResponse,
   DictationHelperEvent,
@@ -262,7 +264,13 @@ export function App() {
       const helperEvent = parseDictationEvent(event.payload);
       if (!helperEvent) return;
       if (helperEvent.type === "agent_session_prompt") {
-        const prompt = stringPayloadValue(helperEvent.payload?.prompt);
+        const prompt = stringPayloadValue(helperEvent.payload?.prompt) ?? "";
+        dispatchAgentSessionStatus({
+          prompt,
+          title: titleFromPrompt(prompt),
+          status: "received",
+          summary: "Request received.",
+        });
         markAgentNewSessionPending(prompt);
         setActiveView("agent");
         window.setTimeout(() => {

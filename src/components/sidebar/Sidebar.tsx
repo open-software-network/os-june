@@ -11,12 +11,14 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { BotIcon } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGENT_DELETE_SESSION_EVENT,
-  AGENT_NEW_SESSION_EVENT,
-  AGENT_SESSIONS_CHANGED_EVENT,
   markAgentNewSessionPending,
   type AgentSessionsChangedDetail,
 } from "../agent/AgentWorkspace";
+import {
+  AGENT_DELETE_SESSION_EVENT,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+} from "../../lib/agent-events";
 import {
   deleteHermesSession,
   listHermesSessions,
@@ -84,6 +86,9 @@ export function Sidebar({
     Set<string>
   >(() => new Set());
   const [workingAgentSessionIds, setWorkingAgentSessionIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const [waitingAgentSessionIds, setWaitingAgentSessionIds] = useState<
     Set<string>
   >(() => new Set());
   const filteredNotes = useMemo(() => {
@@ -156,6 +161,7 @@ export function Sidebar({
       setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_LIMIT));
       setSelectedAgentSessionId(detail.selectedSessionId);
       setWorkingAgentSessionIds(new Set(detail.workingSessionIds));
+      setWaitingAgentSessionIds(new Set(detail.waitingSessionIds ?? []));
     }
 
     window.addEventListener(
@@ -323,6 +329,7 @@ export function Sidebar({
                     selectedAgentSessionId === session.id
                   }
                   working={workingAgentSessionIds.has(session.id)}
+                  waiting={waitingAgentSessionIds.has(session.id)}
                   deleting={deletingAgentSessionIds.has(session.id)}
                   onSelect={() => {
                     setSelectedAgentSessionId(session.id);
@@ -495,6 +502,7 @@ function AgentSessionRow({
   session,
   selected,
   working,
+  waiting,
   deleting,
   onSelect,
   onDelete,
@@ -502,11 +510,13 @@ function AgentSessionRow({
   session: HermesSessionInfo;
   selected: boolean;
   working: boolean;
+  waiting: boolean;
   deleting: boolean;
   onSelect: () => void;
   onDelete: () => void;
 }) {
   const title = session.title || session.preview || "Untitled session";
+  const status = waiting ? "waitingForUser" : working ? "running" : undefined;
   return (
     <article className="note-row agent-sidebar-row" data-selected={selected}>
       <div
@@ -526,11 +536,12 @@ function AgentSessionRow({
         </span>
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
-          {working ? (
+          {status ? (
             <span
               className="agent-sidebar-working"
-              aria-label="Working"
-              title="Working"
+              data-status={status}
+              aria-label={status === "waitingForUser" ? "Needs you" : "Working"}
+              title={status === "waitingForUser" ? "Needs you" : "Working"}
             />
           ) : null}
         </span>
