@@ -30,6 +30,8 @@ export type AgentChatToolPart = {
   status: "running" | "complete" | "failed";
 };
 
+export type AgentApprovalChoice = "once" | "session" | "always" | "deny";
+
 export type AgentChatApprovalPart = {
   type: "approval";
   id: string;
@@ -37,6 +39,7 @@ export type AgentChatApprovalPart = {
   command: string;
   description: string;
   allowPermanent: boolean;
+  choice?: AgentApprovalChoice;
   status: "pending" | "resolved";
 };
 
@@ -336,6 +339,26 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (event.type === "approval.response") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      upsertApprovalPart(
+        (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [],
+        {
+          id:
+            stringValue(payload?.request_id) ??
+            stringValue(payload?.id) ??
+            `approval:${event.receivedAt}`,
+          command: stringValue(payload?.command, true) ?? "",
+          description: stringValue(payload?.description, true) ?? "",
+          sessionId: event.session_id,
+          allowPermanent: payload?.allow_permanent !== false,
+          choice: approvalChoiceValue(payload?.choice),
+          status: "resolved",
+        },
+      );
+      continue;
+    }
+
     if (event.type === "error" && text) {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       upsertToolPart(currentAssistant.parts, {
@@ -465,7 +488,8 @@ function upsertApprovalPart(
   next: Pick<
     AgentChatApprovalPart,
     "id" | "command" | "description" | "allowPermanent" | "status"
-  > & { sessionId?: string },
+  > &
+    Partial<Pick<AgentChatApprovalPart, "choice" | "sessionId">>,
 ) {
   const existing = parts.find(
     (part): part is AgentChatApprovalPart =>
@@ -476,6 +500,7 @@ function upsertApprovalPart(
     existing.description = next.description || existing.description;
     existing.sessionId = next.sessionId || existing.sessionId;
     existing.allowPermanent = next.allowPermanent;
+    existing.choice = next.choice ?? existing.choice;
     existing.status = next.status;
     return;
   }
@@ -486,6 +511,7 @@ function upsertApprovalPart(
     command: next.command,
     description: next.description,
     allowPermanent: next.allowPermanent,
+    choice: next.choice,
     status: next.status,
   });
 }
@@ -707,6 +733,18 @@ function partText(part: AgentChatPart) {
   if (part.type === "clarify")
     return [part.question, part.answer ?? ""].join(" ");
   return part.text;
+}
+
+function approvalChoiceValue(value: unknown): AgentApprovalChoice | undefined {
+  if (
+    value === "once" ||
+    value === "session" ||
+    value === "always" ||
+    value === "deny"
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function appendMessageText(current: string, next: string) {

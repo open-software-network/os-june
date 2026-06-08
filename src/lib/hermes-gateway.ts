@@ -13,6 +13,7 @@ export type HermesGatewayEventName =
   | "clarify.request"
   | "clarify.response"
   | "approval.request"
+  | "approval.response"
   | "error"
   | (string & {});
 

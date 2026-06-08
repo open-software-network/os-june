@@ -74,6 +74,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText as completedHermesRuntimeMessageText,
+  type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
   type LiveHermesEvent,
@@ -182,7 +183,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     useState<HermesFilesystemSnapshot | null>(null);
   const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [approvalSubmitting, setApprovalSubmitting] = useState<
-    Record<string, string>
+    Partial<Record<string, AgentApprovalChoice>>
   >({});
   const [clarifySubmitting, setClarifySubmitting] = useState<
     Record<string, string>
@@ -761,9 +762,10 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   }
 
   async function respondToApproval(
+    liveEventKey: string,
     sessionId: string,
     requestId: string,
-    choice: "once" | "session" | "always" | "deny",
+    choice: AgentApprovalChoice,
   ) {
     setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
     try {
@@ -771,6 +773,11 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       await gateway.request("approval.respond", {
         session_id: sessionId,
         choice,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "approval.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, choice },
       });
       setError(null);
     } catch (err) {
@@ -1088,6 +1095,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   }
                   onApproval={(part, choice) =>
                     void respondToApproval(
+                      selectedHermesSessionId,
                       part.sessionId ?? selectedHermesSessionId,
                       part.id,
                       choice,
@@ -1168,7 +1176,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                       selectedTask.hermesSessionId ??
                       hermesSessions[selectedTask.id];
                     if (!sessionId) return;
-                    void respondToApproval(sessionId, part.id, choice);
+                    void respondToApproval(
+                      selectedTask.id,
+                      sessionId,
+                      part.id,
+                      choice,
+                    );
                   }}
                   onClarify={(part, answer) =>
                     void respondToClarify(selectedTask.id, part.id, answer)
@@ -2165,8 +2178,6 @@ function MessageBubble({ message }: { message: AgentMessageDto }) {
   );
 }
 
-type ApprovalChoice = "once" | "session" | "always" | "deny";
-
 function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
@@ -2176,12 +2187,12 @@ function AgentChatTurnRow({
   onDownloadArtifact,
   turn,
 }: {
-  approvalSubmitting: Record<string, string>;
+  approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
-    choice: ApprovalChoice,
+    choice: AgentApprovalChoice,
   ) => void;
   onClarify: (
     part: Extract<AgentChatPart, { type: "clarify" }>,
@@ -2379,12 +2390,14 @@ function ApprovalPart({
 }: {
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
-    choice: ApprovalChoice,
+    choice: AgentApprovalChoice,
   ) => void;
   part: Extract<AgentChatPart, { type: "approval" }>;
-  submitting?: string;
+  submitting?: AgentApprovalChoice;
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
+  const activeChoice = part.choice ?? submitting;
+  const resolved = part.status !== "pending" || activeChoice !== undefined;
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
@@ -2393,51 +2406,78 @@ function ApprovalPart({
       <div>
         <div className="agent-tool-title">
           <span>Approval required</span>
-          <span className="agent-tool-live-status" data-status="running">
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
             {part.status === "pending" ? "Waiting" : "Resolved"}
           </span>
         </div>
         <p>{part.description}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        <div className="agent-approval-actions">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onApproval(part, "once")}
-          >
-            <CheckIcon size={14} />
-            {submitting === "once" ? "Approving" : "Approve once"}
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onApproval(part, "session")}
-          >
-            <CheckIcon size={14} />
-            {submitting === "session" ? "Approving" : "This session"}
-          </button>
-          {part.allowPermanent ? (
+        {resolved ? (
+          <p className="agent-approval-result" data-choice={activeChoice}>
+            {activeChoice === "deny" ? (
+              <XIcon size={14} />
+            ) : (
+              <CheckIcon size={14} />
+            )}
+            {approvalChoiceLabel(
+              activeChoice,
+              part.status === "pending" && submitting !== undefined,
+            )}
+          </p>
+        ) : (
+          <div className="agent-approval-actions">
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onApproval(part, "always")}
+              onClick={() => onApproval(part, "once")}
             >
               <CheckIcon size={14} />
-              {submitting === "always" ? "Approving" : "Always"}
+              Approve once
             </button>
-          ) : null}
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onApproval(part, "deny")}
-          >
-            <XIcon size={14} />
-            {submitting === "deny" ? "Denying" : "Deny"}
-          </button>
-        </div>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onApproval(part, "session")}
+            >
+              <CheckIcon size={14} />
+              This session
+            </button>
+            {part.allowPermanent ? (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onApproval(part, "always")}
+              >
+                <CheckIcon size={14} />
+                Always
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onApproval(part, "deny")}
+            >
+              <XIcon size={14} />
+              Deny
+            </button>
+          </div>
+        )}
       </div>
     </article>
   );
+}
+
+function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
+  if (choice === "once") return pending ? "Approving once" : "Approved once";
+  if (choice === "session")
+    return pending ? "Approving for this session" : "Approved for this session";
+  if (choice === "always")
+    return pending ? "Approving permanently" : "Always approved";
+  if (choice === "deny") return pending ? "Denying" : "Denied";
+  return "Resolved";
 }
 
 function ReasoningPart({

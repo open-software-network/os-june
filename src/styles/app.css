@@ -1084,6 +1084,24 @@ input:focus-visible,
   opacity: 0.55;
 }
 
+.agent-approval-result {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: fit-content;
+  margin-top: var(--sp-3) !important;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  color: var(--foreground) !important;
+  font-size: var(--fs-sm) !important;
+}
+
+.agent-approval-result[data-choice="deny"] {
+  color: var(--destructive) !important;
+}
+
 .agent-safety-panel h3 {
   margin: 0;
   font-size: var(--fs-md);

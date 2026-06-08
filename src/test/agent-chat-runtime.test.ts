@@ -176,4 +176,43 @@ describe("Agent chat runtime", () => {
       },
     ]);
   });
+
+  it("marks approval requests resolved after responses", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "approval.request",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            request_id: "approval-1",
+            command: "python script.py",
+            description: "Run this command?",
+            allow_permanent: true,
+          },
+        },
+        {
+          type: "approval.response",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { request_id: "approval-1", choice: "session" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "approval",
+        id: "approval-1",
+        sessionId: "runtime-session",
+        command: "python script.py",
+        description: "Run this command?",
+        allowPermanent: true,
+        choice: "session",
+        status: "resolved",
+      },
+    ]);
+  });
 });
