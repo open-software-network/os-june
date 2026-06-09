@@ -343,6 +343,15 @@ pub fn finish_active_capture() -> Result<Option<FinishedRecording>, AppError> {
     finalize_recording(recording).map(Some)
 }
 
+/// Snapshot of whatever recording is currently active, regardless of session
+/// id. The meeting HUD supervisor mirrors the live recording without holding
+/// the session id the way the React layer does, so it can't go through
+/// [`capture_status`]. Returns `None` when nothing is recording.
+pub fn current_status() -> Option<RecordingStatusDto> {
+    let active = lock_active().ok()?;
+    active.as_ref().map(|recording| recording.status())
+}
+
 pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
     let mut active = lock_active()?;
     let Some(recording) = active.take() else {

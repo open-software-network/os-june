@@ -627,6 +627,51 @@ export function App() {
     };
   }, []);
 
+  // The detached meeting HUD (shown when the main window is closed/minimized
+  // mid-recording) emits back here: clicking the pill "reopen"s the app on the
+  // meeting being recorded; the stop button "stop"s it. Routed through a ref so
+  // the single listener always calls the latest finish closure. Both actions
+  // surface the window so the user lands back on the note.
+  const hudFinishRef = useRef(handleFinishRecording);
+  hudFinishRef.current = handleFinishRecording;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let aborted = false;
+    function surfaceRecordingNote() {
+      const main = getCurrentWindow();
+      void main.show();
+      void main.unminimize();
+      void main.setFocus();
+      const noteId = recordingNoteIdRef.current;
+      if (noteId) {
+        setActiveView("notes");
+        void handleSelectNote(noteId);
+      }
+    }
+    void listen<{ action: "reopen" | "stop"; sessionId?: string }>(
+      "meeting-hud-action",
+      (event) => {
+        const action = event.payload?.action;
+        const sessionId = event.payload?.sessionId;
+        if (action === "reopen") {
+          surfaceRecordingNote();
+        } else if (action === "stop" && sessionId) {
+          void hudFinishRef.current(sessionId);
+          surfaceRecordingNote();
+        }
+      },
+    ).then((cleanup) => {
+      // If the listener resolves after unmount, tear it down immediately.
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
+
   const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
@@ -1087,6 +1132,7 @@ export function App() {
           : sourceMode;
 
       const recording = await startRecording(selectedNoteId, effectiveMode);
+      recordingNoteIdRef.current = selectedNoteId;
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
@@ -1131,6 +1177,7 @@ export function App() {
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
     dispatch({ type: "recordingStatusCleared" });
+    recordingNoteIdRef.current = undefined;
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
     // The selected note isn't necessarily that note — the user may have

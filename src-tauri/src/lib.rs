@@ -7,6 +7,7 @@ pub mod domain;
 pub mod hermes_bridge;
 pub mod mascot;
 pub mod meeting_detection;
+pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
@@ -127,6 +128,8 @@ pub fn run() {
             mascot::mascot_hide,
             mascot::mascot_set_layout,
             mascot::mascot_open_agent,
+            meeting_hud::meeting_hud_set_pill_bounds,
+            meeting_hud::meeting_hud_latest_status,
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model,
@@ -147,6 +150,7 @@ pub fn run() {
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
+            meeting_hud::setup(app);
             os_accounts::setup_deep_link(app);
             #[cfg(target_os = "macos")]
             setup_main_window_lifecycle(app);

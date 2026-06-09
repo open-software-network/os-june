@@ -1,0 +1,183 @@
+@import "./tokens.css";
+
+/*
+ * Meeting recording HUD — styled to match the dictation HUD (hud.css) so the
+ * two read as one family. A floating dark, blurred pill that appears when the
+ * main window is closed/minimized mid-recording: a record dot + live waveform +
+ * a stop button. Click the pill to bring Scribe back to the meeting; drag to
+ * move. Forced dark so it reads over any app behind it.
+ */
+
+:root {
+  /* Force dark surface tokens, ignoring prefers-color-scheme. */
+  --background: oklch(0.165 0.0015 84.59);
+  --foreground: oklch(0.985 0.0015 84.59);
+  --popover: oklch(0.195 0.0015 84.59);
+  --muted-foreground: oklch(0.709 0.0015 84.59);
+  --border: oklch(1 0 0 / 12%);
+  /* A lighter, clearer "recording" orange than --record (which reads red at
+   * this size). Paused goes a touch softer and stops moving. */
+  --rec: oklch(0.72 0.175 52);
+  --rec-paused: oklch(0.78 0.1 65);
+
+  color: var(--foreground);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  /* Only the pill is interactive; the transparent gutter is click-through
+   * (native set_ignore_cursor_events, driven from Rust against pill bounds). */
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Pill — mirrors .hud (hud.css): same surface, border, radius, shadow + blur. */
+.mhud {
+  --mhud-stop-bg: color-mix(in oklch, var(--foreground) 5%, transparent);
+  --mhud-stop-bg-hover: color-mix(in oklch, var(--foreground) 16%, transparent);
+
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 3px 8px 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--popover) 82%, transparent);
+  color: var(--foreground);
+  /* The whole pill is the click/drag target. */
+  cursor: pointer;
+  box-shadow:
+    0 8px 22px oklch(0% 0 none / 38%),
+    0 2px 6px oklch(0% 0 none / 26%),
+    0 0 0 0.5px oklch(0% 0 none / 28%);
+  backdrop-filter: blur(14px) saturate(1.4);
+  pointer-events: auto;
+}
+
+.mhud:active {
+  cursor: grabbing;
+}
+
+.mhud:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
+  outline-offset: 2px;
+}
+
+/* Recording dot ------------------------------------------------------- */
+.mhud-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--rec);
+  /* A slow ring "breath" — no opacity flicker, so the colour stays constant. */
+  animation: mhud-pulse 2.4s var(--ease-out) infinite;
+}
+
+.mhud[data-state="paused"] .mhud-dot {
+  background: var(--rec-paused);
+  animation: none;
+}
+
+@keyframes mhud-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--rec) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 5px oklch(0% 0 none / 0%);
+  }
+}
+
+/* Waveform — mirrors the dictation HUD bars (.hud-bar). */
+.mhud-bars {
+  display: flex;
+  gap: 2.5px;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+}
+
+.mhud-bar {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2px;
+  height: 22px;
+}
+
+.mhud-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 50%;
+  width: 100%;
+  height: calc(3px + var(--level, 0) * 15px);
+  border-radius: 999px;
+  background: var(--foreground);
+  transform: translateY(50%);
+  transition: height 24ms linear;
+}
+
+/* Paused: bars settle and dim (the meter also stops the carrier shimmer). */
+.mhud[data-state="paused"] .mhud-bar {
+  opacity: 0.32;
+}
+
+/* Stop button — mirrors .hud-stop: subtle inset surface, white square glyph,
+ * hover highlight. */
+.mhud-stop {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--mhud-stop-bg);
+  color: var(--foreground);
+  cursor: pointer;
+  -webkit-user-drag: none;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.mhud-stop:hover {
+  background: var(--mhud-stop-bg-hover);
+}
+
+.mhud-stop-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--foreground);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mhud-stop,
+  .mhud-bar::before {
+    transition: none;
+  }
+  .mhud-dot {
+    animation: none;
+  }
+}
