@@ -1101,83 +1101,9 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     }
 
     private func emitLevel(from sampleBuffer: CMSampleBuffer) {
-        guard
-            let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer)
-        else {
+        guard let level = audioLevel(from: sampleBuffer) else {
             return
         }
-        var length = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &length,
-            dataPointerOut: &dataPointer
-        ) == noErr, let dataPointer, length > 1 else {
-            return
-        }
-
-        // Detect the actual sample format. AVCaptureAudioDataOutput on macOS
-        // commonly delivers 32-bit FLOAT, not Int16 — reading float bytes as Int16
-        // yields a constant garbage level (frozen bars). Branch on the stream's
-        // real format so the meter is correct for whatever the device delivers.
-        var isFloat = false
-        var bitsPerChannel = 16
-        if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee {
-            isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-            if asbd.mBitsPerChannel > 0 {
-                bitsPerChannel = Int(asbd.mBitsPerChannel)
-            }
-        }
-
-        var sumSquares: Float = 0
-        var peak: Float = 0
-        var sampleCount = 0
-        if isFloat && bitsPerChannel == 32 {
-            sampleCount = length / MemoryLayout<Float32>.size
-            dataPointer.withMemoryRebound(to: Float32.self, capacity: sampleCount) { pointer in
-                for index in 0..<sampleCount {
-                    let value = pointer[index]
-                    sumSquares += value * value
-                    peak = max(peak, abs(value))
-                }
-            }
-        } else if !isFloat && bitsPerChannel == 16 {
-            sampleCount = length / MemoryLayout<Int16>.size
-            dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
-                for index in 0..<sampleCount {
-                    let value = Float(pointer[index]) / Float(Int16.max)
-                    sumSquares += value * value
-                    peak = max(peak, abs(value))
-                }
-            }
-        } else if !isFloat && bitsPerChannel == 32 {
-            sampleCount = length / MemoryLayout<Int32>.size
-            dataPointer.withMemoryRebound(to: Int32.self, capacity: sampleCount) { pointer in
-                for index in 0..<sampleCount {
-                    let value = Float(pointer[index]) / Float(Int32.max)
-                    sumSquares += value * value
-                    peak = max(peak, abs(value))
-                }
-            }
-        } else {
-            // Unhandled format (e.g. packed 24-bit): the Int16 path would misread
-            // the stride and systematically underread, leaving the HUD quieter
-            // than reality. Skip this buffer rather than emit a wrong level.
-            return
-        }
-        guard sampleCount > 0 else {
-            return
-        }
-        let rms = sqrt(sumSquares / Float(sampleCount))
-        // Peak-biased blend (0.8·peak + 0.2·rms) on a correctly-read, no-peak-hold
-        // signal so the HUD rises AND dies down immediately. Coalesced by max into
-        // the pending level so transients between emit ticks aren't missed, then
-        // emitted at the interval / flushed on stop — emitting per buffer floods
-        // the IPC channel and grew the HUD event queue until the waveform froze.
-        let level = min(1, peak * 0.8 + rms * 0.2)
         pendingLevel = max(pendingLevel, level)
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastLevelEmit >= levelEmitInterval else {
@@ -1213,6 +1139,177 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     }
 }
 
+func audioLevel(from sampleBuffer: CMSampleBuffer) -> Float? {
+    guard
+        let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer)
+    else {
+        return nil
+    }
+    var length = 0
+    var dataPointer: UnsafeMutablePointer<Int8>?
+    guard CMBlockBufferGetDataPointer(
+        blockBuffer,
+        atOffset: 0,
+        lengthAtOffsetOut: nil,
+        totalLengthOut: &length,
+        dataPointerOut: &dataPointer
+    ) == noErr, let dataPointer, length > 1 else {
+        return nil
+    }
+
+    var isFloat = false
+    var bitsPerChannel = 16
+    if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee {
+        isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        if asbd.mBitsPerChannel > 0 {
+            bitsPerChannel = Int(asbd.mBitsPerChannel)
+        }
+    }
+
+    var sumSquares: Float = 0
+    var peak: Float = 0
+    var sampleCount = 0
+    if isFloat && bitsPerChannel == 32 {
+        sampleCount = length / MemoryLayout<Float32>.size
+        dataPointer.withMemoryRebound(to: Float32.self, capacity: sampleCount) { pointer in
+            for index in 0..<sampleCount {
+                let value = pointer[index]
+                sumSquares += value * value
+                peak = max(peak, abs(value))
+            }
+        }
+    } else if !isFloat && bitsPerChannel == 16 {
+        sampleCount = length / MemoryLayout<Int16>.size
+        dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
+            for index in 0..<sampleCount {
+                let value = Float(pointer[index]) / Float(Int16.max)
+                sumSquares += value * value
+                peak = max(peak, abs(value))
+            }
+        }
+    } else if !isFloat && bitsPerChannel == 32 {
+        sampleCount = length / MemoryLayout<Int32>.size
+        dataPointer.withMemoryRebound(to: Int32.self, capacity: sampleCount) { pointer in
+            for index in 0..<sampleCount {
+                let value = Float(pointer[index]) / Float(Int32.max)
+                sumSquares += value * value
+                peak = max(peak, abs(value))
+            }
+        }
+    } else {
+        return nil
+    }
+    guard sampleCount > 0 else {
+        return nil
+    }
+    let rms = sqrt(sumSquares / Float(sampleCount))
+    return min(1, peak * 0.8 + rms * 0.2)
+}
+
+enum AutoDetectInputMeterError: LocalizedError {
+    case cannotResolveDefaultInput
+    case cannotAddInput
+    case cannotAddOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotResolveDefaultInput:
+            return "Could not resolve the default microphone for metering."
+        case .cannotAddInput:
+            return "Could not use the default microphone as a metering input."
+        case .cannotAddOutput:
+            return "Could not create audio output for default microphone metering."
+        }
+    }
+}
+
+final class AutoDetectInputMeter: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    private let session = AVCaptureSession()
+    private let output = AVCaptureAudioDataOutput()
+    private let queue = DispatchQueue(label: "co.opensoftware.scribe.dictation-auto-meter")
+    private let levelHandler: (Float) -> Void
+    private var pendingLevel: Float = 0
+    private var lastLevelEmit: TimeInterval = 0
+    private var isStopped = true
+    private let levelEmitInterval: TimeInterval = 0.02
+
+    init(onLevel: @escaping (Float) -> Void) {
+        levelHandler = onLevel
+    }
+
+    func start() throws {
+        guard let device = AVCaptureDevice.default(for: .audio) ?? audioInputDevices().first else {
+            throw AutoDetectInputMeterError.cannotResolveDefaultInput
+        }
+        let input = try AVCaptureDeviceInput(device: device)
+        session.beginConfiguration()
+        defer {
+            session.commitConfiguration()
+        }
+        guard session.canAddInput(input) else {
+            throw AutoDetectInputMeterError.cannotAddInput
+        }
+        session.addInput(input)
+        guard session.canAddOutput(output) else {
+            session.removeInput(input)
+            throw AutoDetectInputMeterError.cannotAddOutput
+        }
+        output.setSampleBufferDelegate(self, queue: queue)
+        session.addOutput(output)
+        queue.sync {
+            pendingLevel = 0
+            lastLevelEmit = 0
+            isStopped = false
+        }
+        session.startRunning()
+    }
+
+    func stop() {
+        queue.sync {
+            pendingLevel = 0
+            lastLevelEmit = 0
+            isStopped = true
+        }
+        session.stopRunning()
+        output.setSampleBufferDelegate(nil, queue: nil)
+    }
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        guard !isStopped else {
+            return
+        }
+        guard let level = audioLevel(from: sampleBuffer) else {
+            return
+        }
+        pendingLevel = max(pendingLevel, level)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastLevelEmit >= levelEmitInterval else {
+            return
+        }
+        lastLevelEmit = now
+        let coalesced = pendingLevel
+        pendingLevel = 0
+        levelHandler(coalesced)
+    }
+}
+
+func autoDetectRawMeteringEnabled() -> Bool {
+    guard let rawValue = ProcessInfo.processInfo.environment["OS_SCRIBE_DICTATION_RAW_METER"] else {
+        return true
+    }
+    switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "0", "false", "no", "off", "disabled":
+        return false
+    default:
+        return true
+    }
+}
+
 enum DictationError: LocalizedError {
     case missingRecording
     case missingTranscript
@@ -1239,6 +1336,7 @@ enum DictationError: LocalizedError {
 final class DictationController {
     private var audioRecorder: AVAudioRecorder?
     private var selectedDeviceRecorder: SelectedDeviceRecorder?
+    private var autoDetectInputMeter: AutoDetectInputMeter?
     private var recordingURL: URL?
     private var meteringTimer: DispatchSourceTimer?
     private var preferredMicrophoneID: String?
@@ -1256,6 +1354,7 @@ final class DictationController {
             "bundleIdentifier": helperBundleIdentifier(),
             "microphone": microphoneStatus(),
             "accessibility": boolStatus(AXIsProcessTrusted()),
+            "autoDetectRawMeter": autoDetectRawMeteringEnabled() ? "enabled" : "disabled",
         ])
     }
 
@@ -1376,7 +1475,7 @@ final class DictationController {
             audioRecorder = recorder
             recordingURL = nextRecordingURL
             isListening = true
-            startMetering()
+            startAutoDetectMetering()
             RecordingCuePlayer.play(.start)
             emit("listening_started", [
                 "recognitionMode": "venice_recording",
@@ -1464,6 +1563,31 @@ final class DictationController {
         timer.resume()
     }
 
+    private func startAutoDetectMetering() {
+        startMetering()
+        guard autoDetectRawMeteringEnabled() else {
+            return
+        }
+
+        do {
+            let inputMeter = AutoDetectInputMeter { [weak self] level in
+                runOnMain {
+                    self?.observeAudioLevel(level)
+                }
+            }
+            try inputMeter.start()
+            autoDetectInputMeter = inputMeter
+            stopAudioRecorderMetering()
+            emit("metering_source", ["source": "default_capture"])
+        } catch {
+            autoDetectInputMeter = nil
+            emit("metering_source", [
+                "source": "av_audio_recorder",
+                "rawInputMeter": "failed",
+            ])
+        }
+    }
+
     private func emitAudioRecorderLevel() {
         guard let audioRecorder, audioRecorder.isRecording else {
             return
@@ -1488,6 +1612,12 @@ final class DictationController {
     }
 
     private func stopMetering() {
+        autoDetectInputMeter?.stop()
+        autoDetectInputMeter = nil
+        stopAudioRecorderMetering()
+    }
+
+    private func stopAudioRecorderMetering() {
         meteringTimer?.cancel()
         meteringTimer = nil
     }

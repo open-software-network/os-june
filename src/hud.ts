@@ -78,27 +78,10 @@ const IDLE_RAF_TIMEOUT_MS = 260;
 // CPU at 60fps compositing — the carrier (a 0.45Hz sine) reads smooth either
 // way. Full rAF resumes the moment audio or bar motion returns.
 const SHIMMER_FRAME_MS = 33;
-// The helper ships a peak-biased level (0.8·peak + 0.2·avg). These shaping
-// constants mirror the playground's TUNED set exactly (AUDIO source "blend") so
-// the HUD reads identically to the tuning tool.
 const AUDIO_NOISE_GATE = 0.02;
-// Gain 5 leaves dynamic range in the curve so the centre bounces between quiet
-// and loud instead of slamming the ceiling. Whisper visibility comes from the
-// (low) HUD_WHISPER_FLOOR below, not from the gain.
 const AUDIO_VISUAL_GAIN = 5;
-// Ambient floor damped hard (gain 4→3, ceiling 0.11→0.03) so a quiet room rests
-// the bars near zero — the carrier wave, not room tone, is the idle "we're
-// listening" signal. The old 0.11 ceiling pegged the baseline and buried the
-// shimmer in ambient jitter, since the real HUD always has a live mic (unlike
-// the silent playground idle where the carrier was tuned).
 const AMBIENT_VISUAL_GAIN = 3;
 const AMBIENT_MAX_LEVEL = 0.03;
-
-// Whisper floor: once voice clears the gate, lift it off the baseline so even
-// quiet speech reads. Voice-gated (see renderAudioLevel) — ambient/silence stays
-// below the gate and still collapses the bars to zero. Kept low (0.06, matching
-// the playground) so the centre drops back toward flat between syllables and
-// bounces, instead of pegging continuously tall.
 const HUD_WHISPER_FLOOR = 0.06;
 // The idle pulse + speech wave live in the shared meter (IDLE_PULSE_*,
 // SPEECH_WAVE_*, withWaveLayers) so the HUD and recorder move identically.
@@ -201,9 +184,6 @@ function renderAudioLevel(rawLevel: number) {
           0,
           1,
         );
-  // Voice-gated whisper floor — only lifts once real voice clears the gate, so
-  // ambient room hiss stays pinned to zero (bars collapse) while any actual
-  // speech, however quiet, reads tall.
   if (rawLevel > AUDIO_NOISE_GATE && shaped > 0.0001 && HUD_WHISPER_FLOOR > 0) {
     shaped = HUD_WHISPER_FLOOR + (1 - HUD_WHISPER_FLOOR) * shaped;
   }

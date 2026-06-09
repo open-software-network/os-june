@@ -127,8 +127,26 @@ export const SILENCE_RELEASE_ALPHA = 0.96;
 export const SILENCE_TARGET = 0.14;
 export const IDLE_SNAP_DELTA = 0.004;
 
+// Recorder waveform live microphone scaling. Kept in the shared meter module
+// so tests and other recorder helpers use the same raw 0..1 peak-ish curve.
+export const LIVE_INPUT_NOISE_FLOOR = 0.004;
+export const LIVE_INPUT_LOW_LIFT = 0.6;
+export const LIVE_INPUT_KNEE = 6;
+
 export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+export function scaleLiveInputPeak(peak: number) {
+  const normalized = clamp(peak, 0, 1);
+  const gated =
+    (normalized - LIVE_INPUT_NOISE_FLOOR) / (1 - LIVE_INPUT_NOISE_FLOOR);
+  if (gated <= 0) {
+    return 0;
+  }
+  const shaped =
+    1 - Math.exp(-LIVE_INPUT_KNEE * Math.pow(gated, LIVE_INPUT_LOW_LIFT));
+  return clamp(shaped, 0, 1);
 }
 
 // Stateful meter: push shaped 0..1 levels in, step the displayed bars toward

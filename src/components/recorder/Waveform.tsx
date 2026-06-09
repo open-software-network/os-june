@@ -12,6 +12,7 @@ import {
   RECORDER_BAR_COUNT,
   RECORDER_BAR_HISTORY_OFFSETS,
   RECORDER_BAR_WEIGHTS,
+  scaleLiveInputPeak,
   withWaveLayers,
 } from "../../lib/audio-meter";
 
@@ -22,16 +23,6 @@ type WaveformProps = {
   active?: boolean;
 };
 
-// Below this the input reads as silence — a soft downward expander that keeps
-// room/ambient hiss pinned to zero (bars collapse to the base dot). Whispers
-// sit just above it. Raise if ambient creeps in; lower if whispers don't show.
-const NOISE_FLOOR = 0.004;
-// Sub-1 power that lifts quiet input (whispers) toward visibility before the
-// knee. Lower = more low-end lift.
-const LOW_LIFT = 0.6;
-// Soft-knee steepness — loud speech approaches the ceiling asymptotically
-// instead of slamming flat. Higher reaches the ceiling sooner.
-const KNEE = 6;
 // How many of the freshest `recentPeaks` to coalesce per poll — sized to ~the
 // 50ms poll window at the default audio buffer (~11ms/callback ≈ 4–5 peaks, +1
 // headroom for smaller buffers). Deliberately a short window, not the full
@@ -178,15 +169,5 @@ export function scaleAudioLevel(
 }
 
 export function visualPeakScale(peak: number) {
-  const normalized = clamp(peak, 0, 1);
-  // Downward expander: anything at/below the noise floor reads as silence so
-  // the bars can collapse to zero (the base dot) instead of shimmering.
-  const gated = (normalized - NOISE_FLOOR) / (1 - NOISE_FLOOR);
-  if (gated <= 0) {
-    return 0;
-  }
-  // Lift whispers with a sub-1 power, then soft-knee the top so loud speech
-  // approaches the ceiling without ever slamming flat against it.
-  const shaped = 1 - Math.exp(-KNEE * Math.pow(gated, LOW_LIFT));
-  return clamp(shaped, 0, 1);
+  return scaleLiveInputPeak(peak);
 }
