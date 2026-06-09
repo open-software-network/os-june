@@ -1,4 +1,5 @@
 use crate::{
+    app_paths::AppPaths,
     audio::turns::{
         coalesce_turns_for_transcription, detect_turns, normalize_wav_for_transcription,
         split_wav_for_transcription, write_turn_wav, DetectionSource,
@@ -702,9 +703,20 @@ pub async fn process_saved_source_audio(
 
 pub async fn retry_from_saved_audio(
     repos: &Repositories,
+    paths: &AppPaths,
     note_id: &str,
 ) -> Result<NoteDto, AppError> {
-    let sources = repos.latest_valid_audio_artifact_paths(note_id).await?;
+    let sources = repos
+        .latest_valid_audio_artifact_paths(note_id)
+        .await?
+        .into_iter()
+        .filter_map(|(id, source, path, session_id)| {
+            paths
+                .contained_recording_file(path)
+                .ok()
+                .map(|path| (id, source, path, session_id))
+        })
+        .collect::<Vec<_>>();
     if sources.is_empty() {
         return Err(AppError::new(
             "audio_artifact_missing",
@@ -720,7 +732,7 @@ pub async fn retry_from_saved_audio(
             note_id,
             &session_id,
             &audio_artifact_id,
-            PathBuf::from(audio_path),
+            audio_path,
             note.title,
             note.generated_content,
             manual_notes,
@@ -738,7 +750,7 @@ pub async fn retry_from_saved_audio(
         RecordingSourceMode::MicrophonePlusSystem,
         sources
             .into_iter()
-            .map(|(id, source, path, _session_id)| (id, source, PathBuf::from(path)))
+            .map(|(id, source, path, _session_id)| (id, source, path))
             .collect(),
         note.title,
         note.generated_content,

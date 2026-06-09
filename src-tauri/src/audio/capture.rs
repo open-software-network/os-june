@@ -134,7 +134,9 @@ pub fn start_capture(
     let channels = config.channels();
 
     let session_id = Uuid::new_v4().to_string();
-    let note_dir = paths.recordings_dir.join(&note_id).join(&session_id);
+    let note_dir = paths
+        .recording_session_dir(&note_id, &session_id)
+        .map_err(|error| AppError::new("invalid_recording_path", error.to_string()))?;
     std::fs::create_dir_all(&note_dir)
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
     let partial_path = note_dir.join("microphone.partial.wav");
