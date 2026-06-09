@@ -1583,14 +1583,19 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.agent-tool-disclosure .agent-tool-icon > svg {
+.agent-tool-disclosure .agent-tool-icon > * {
   grid-area: 1 / 1;
   transition: opacity 120ms var(--ease-out);
 }
 
+/* Plain-text "+" / "−" affordances — text sits on the baseline grid, so the
+ * cross-fade can't hitch the way mismatched svg geometry did. */
 .agent-tool-icon-expand,
 .agent-tool-icon-minimize {
   opacity: 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 15px;
+  line-height: 1;
 }
 
 /* Closed rows hint expand; open rows hint collapse. */
