@@ -148,10 +148,16 @@ body:active {
 }
 
 /* The native contentView turn is visually clockwise; spin the bars back the
- * other way so the waveform still reads left-to-right in the upright pill
- * (the 29px bar run fits the pill's 32px cross axis). */
+ * other way so the waveform still reads left-to-right in the upright pill. */
 .mhud[data-orient="vertical"] .mhud-bars {
   transform: rotate(-90deg);
+}
+
+/* Upright, the full 7-bar run crowds the 32px cross axis — keep a shorter
+ * 4-bar run of the same waveform (the meter still drives all seven; the
+ * hidden ones just don't paint). */
+.mhud[data-orient="vertical"] .mhud-bar:nth-child(n + 5) {
+  display: none;
 }
 
 /* Orientation applied while the HUD is hidden snaps (the native side snaps
