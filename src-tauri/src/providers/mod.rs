@@ -3,7 +3,7 @@
 //! Scribe API, never here.
 
 use crate::domain::types::AppError;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     fs,
     path::PathBuf,
@@ -46,20 +46,20 @@ pub struct ProviderModelSettingsResponse {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SetVeniceModelRequest {
-    pub mode: String,
+    pub mode: ModelMode,
     pub model_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VeniceModelsRequest {
-    pub mode: String,
+    pub mode: ModelMode,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VeniceModelsResponse {
-    pub mode: String,
+    pub mode: ModelMode,
     pub model_type: String,
     pub selected_model: String,
     pub models: Vec<VeniceModelDto>,
@@ -184,12 +184,11 @@ pub fn set_venice_model(
     state: State<'_, ProviderSettingsState>,
     request: SetVeniceModelRequest,
 ) -> Result<ProviderModelSettings, AppError> {
-    let mode = model_mode(&request.mode)?;
     let model_id = request.model_id.trim();
     if model_id.is_empty() {
         return Err(AppError::new("provider_model_required", "Select a model."));
     }
-    update_settings(&state, |settings| match mode {
+    update_settings(&state, |settings| match request.mode {
         ModelMode::Transcription => {
             settings.transcription_provider =
                 transcription_provider_for_model(model_id).to_string();
@@ -204,9 +203,8 @@ pub async fn list_venice_models(
     state: State<'_, ProviderSettingsState>,
     request: VeniceModelsRequest,
 ) -> Result<VeniceModelsResponse, AppError> {
-    let mode = model_mode(&request.mode)?;
-    let model_type = mode.api_type();
-    let selected_model = selected_model_for_mode(&state, mode)?;
+    let model_type = request.mode.api_type();
+    let selected_model = selected_model_for_mode(&state, request.mode)?;
     let mut models = crate::scribe_api::list_models(model_type)
         .await?
         .into_iter()
@@ -219,7 +217,7 @@ pub async fn list_venice_models(
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(VeniceModelsResponse {
-        mode: mode.as_str().to_string(),
+        mode: request.mode,
         model_type: model_type.to_string(),
         selected_model,
         models,
@@ -353,35 +351,85 @@ fn selected_model_for_mode(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelMode {
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelMode {
     Transcription,
     Generation,
 }
 
-impl ModelMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Transcription => "transcription",
-            Self::Generation => "generation",
-        }
+impl<'de> Deserialize<'de> for ModelMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).ok_or_else(|| serde::de::Error::custom("unknown provider model mode"))
     }
+}
 
+impl ModelMode {
     fn api_type(self) -> &'static str {
         match self {
             Self::Transcription => "asr",
             Self::Generation => "text",
         }
     }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "transcription" | "dictation" | "asr" => Some(Self::Transcription),
+            "generation" | "notes" | "text" => Some(Self::Generation),
+            _ => None,
+        }
+    }
 }
 
-fn model_mode(value: &str) -> Result<ModelMode, AppError> {
-    match value.trim() {
-        "transcription" | "dictation" | "asr" => Ok(ModelMode::Transcription),
-        "generation" | "notes" | "text" => Ok(ModelMode::Generation),
-        _ => Err(AppError::new(
-            "provider_model_mode_invalid",
-            "Unknown model mode.",
-        )),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_mode_deserializes_canonical_values() {
+        assert_eq!(
+            serde_json::from_value::<ModelMode>(serde_json::json!("transcription")).unwrap(),
+            ModelMode::Transcription
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelMode>(serde_json::json!("generation")).unwrap(),
+            ModelMode::Generation
+        );
+    }
+
+    #[test]
+    fn model_mode_deserializes_legacy_aliases() {
+        assert_eq!(
+            serde_json::from_value::<ModelMode>(serde_json::json!("asr")).unwrap(),
+            ModelMode::Transcription
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelMode>(serde_json::json!("notes")).unwrap(),
+            ModelMode::Generation
+        );
+    }
+
+    #[test]
+    fn model_mode_rejects_unknown_values() {
+        assert!(serde_json::from_value::<ModelMode>(serde_json::json!("image")).is_err());
+    }
+
+    #[test]
+    fn venice_models_response_serializes_canonical_mode() {
+        let response = VeniceModelsResponse {
+            mode: ModelMode::Transcription,
+            model_type: "asr".to_string(),
+            selected_model: "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            models: Vec::new(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["mode"],
+            serde_json::json!("transcription")
+        );
     }
 }
