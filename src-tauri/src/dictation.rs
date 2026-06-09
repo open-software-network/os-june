@@ -955,14 +955,19 @@ fn hud_is_vertical(app: &AppHandle) -> bool {
 
 /// Webview choke point: every state-driven measure/resize awaits this first,
 /// so the pill is guaranteed flat (and the window back to pill-sized) before
-/// any horizontal layout math runs. No-op when already flat. Blocks until the
-/// turn lands, like `dictation_hud_set_size` blocks through its morph.
+/// any horizontal layout math runs. No-op when already flat. Resolves once
+/// the turn has landed and the window frame is restored — async (and pushed
+/// onto a blocking thread) because `hud_flatten` sleeps through the turn,
+/// which on a sync command would freeze the main run loop mid-animation.
 #[tauri::command]
-pub fn dictation_hud_flatten(app: AppHandle) {
-    let Some(hud) = app.get_webview_window("hud") else {
-        return;
-    };
-    hud_flatten(&app, &hud);
+pub async fn dictation_hud_flatten(app: AppHandle) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let Some(hud) = app.get_webview_window("hud") else {
+            return;
+        };
+        hud_flatten(&app, &hud);
+    })
+    .await;
 }
 
 /// Stand the listening pill upright: grow the window into a square around the
@@ -983,9 +988,7 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
     }
     let lock = app.try_state::<HudFrameLock>();
     let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
-    let (Ok(position), Ok(size), Ok(scale)) =
-        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
-    else {
+    let (Ok(size), Ok(scale)) = (hud.outer_size(), hud.scale_factor()) else {
         orient.vertical.store(false, Ordering::SeqCst);
         return;
     };
@@ -993,10 +996,6 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
         *guard = Some(size);
     }
     let side = size.width.max(size.height);
-    let target = PhysicalPosition::new(
-        position.x + (size.width as i32 - side as i32) / 2,
-        position.y + (size.height as i32 - side as i32) / 2,
-    );
     let animate = hud.is_visible().unwrap_or(false);
     let _ = app.emit_to(
         "hud",
@@ -1008,21 +1007,23 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
     let pill_h = size.height as f64 / scale;
     let side_logical = side as f64 / scale;
     let window = hud.clone();
-    let _ = hud.run_on_main_thread(move || {
-        let _ = window.set_size(PhysicalSize::new(side, side));
-        let _ = window.set_position(target);
-        unsafe {
-            hud_native::set_frost_frame(
-                &window,
-                NSRect::new(
-                    NSPoint::new((side_logical - pill_w) / 2.0, (side_logical - pill_h) / 2.0),
-                    NSSize::new(pill_w, pill_h),
-                ),
-                false,
-                false,
-            );
-            hud_native::rotate_content(&window, -std::f64::consts::FRAC_PI_2, animate);
-        }
+    let _ = hud.run_on_main_thread(move || unsafe {
+        // Square first — synchronously. Tauri's set_size/set_position apply
+        // async even on the main thread, so the frost pin and the rotation
+        // below would otherwise run against the stale pill-sized frame (the
+        // turn rotated a 32px sliver, then the late resize stomped the
+        // in-flight transform).
+        hud_native::set_window_size_about_center_sync(&window, side_logical, side_logical);
+        hud_native::set_frost_frame(
+            &window,
+            NSRect::new(
+                NSPoint::new((side_logical - pill_w) / 2.0, (side_logical - pill_h) / 2.0),
+                NSSize::new(pill_w, pill_h),
+            ),
+            false,
+            false,
+        );
+        hud_native::rotate_content(&window, -std::f64::consts::FRAC_PI_2, animate);
     });
     if animate {
         // The shadow shape is derived from the rendered content; refresh it
@@ -1041,7 +1042,9 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
 /// Lay the pill back flat: turn the contentView home, then shrink the square
 /// window back around the remembered pill frame and let the frost fill the
 /// window again (its horizontal, window-equals-pill mode). Blocks through the
-/// turn so callers can sequence resizes after it.
+/// turn AND the frame restore so callers can sequence resizes after it —
+/// which also means it must never run on the main thread (the hover thread
+/// and the spawn_blocking command path both qualify).
 #[cfg(target_os = "macos")]
 fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -1069,9 +1072,7 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
 
     let lock = app.try_state::<HudFrameLock>();
     let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
-    let (Ok(position), Ok(size), Ok(scale)) =
-        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
-    else {
+    let (Ok(size), Ok(scale)) = (hud.outer_size(), hud.scale_factor()) else {
         return;
     };
     let restore = orient
@@ -1080,17 +1081,18 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
         .ok()
         .and_then(|mut guard| guard.take())
         .unwrap_or(size);
-    let target = PhysicalPosition::new(
-        position.x + (size.width as i32 - restore.width as i32) / 2,
-        position.y + (size.height as i32 - restore.height as i32) / 2,
-    );
     let pill_w = restore.width as f64 / scale;
     let pill_h = restore.height as f64 / scale;
     let window = hud.clone();
+    // Wait for the restore to actually apply before returning: the webview
+    // measures and resizes the moment the flatten command resolves, and that
+    // math must see the pill-sized window, not the upright square.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
     let _ = hud.run_on_main_thread(move || {
-        let _ = window.set_size(restore);
-        let _ = window.set_position(target);
         unsafe {
+            // Synchronous for the same reason as the stand-up path: the frost
+            // re-fill below must see the restored frame, not the stale square.
+            hud_native::set_window_size_about_center_sync(&window, pill_w, pill_h);
             hud_native::set_frost_frame(
                 &window,
                 NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pill_w, pill_h)),
@@ -1099,7 +1101,9 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
             );
             hud_native::invalidate_shadow(&window);
         }
+        let _ = done_tx.send(());
     });
+    let _ = done_rx.recv_timeout(Duration::from_millis(500));
 }
 
 #[cfg(not(target_os = "macos"))]

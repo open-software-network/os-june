@@ -80,7 +80,7 @@ pub(crate) use macos::*;
 mod macos {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString};
+    use objc2_foundation::{NSNumber, NSPoint, NSRect, NSSize, NSString};
     use tauri::WebviewWindow;
 
     use super::TURN_SECS;
@@ -179,6 +179,36 @@ mod macos {
         }
         // Below the webview (NSWindowBelow = -1) so the CSS tint paints over it.
         let _: () = msg_send![content, addSubview: frost, positioned: -1isize, relativeTo: std::ptr::null_mut::<AnyObject>()];
+    }
+
+    /// Resize the window about its visible center, synchronously, in logical
+    /// points (the HUDs are borderless, so frame size == content size).
+    ///
+    /// Tauri's `set_size`/`set_position` queue the change on the main dispatch
+    /// queue even when called *from* the main thread (tao's
+    /// `set_content_size_async`), so code that pins the frost or rotates the
+    /// contentView on the next line still sees the stale frame — and the late
+    /// resize then stomps the in-flight layer transform. The upright turn
+    /// needs the frame to be real before the rotation math runs, hence this
+    /// direct `setFrame:display:`. Must run on the main thread.
+    pub(crate) unsafe fn set_window_size_about_center_sync(
+        hud: &WebviewWindow,
+        width: f64,
+        height: f64,
+    ) {
+        let (window, _) = content_view(hud);
+        if window.is_null() {
+            return;
+        }
+        let frame: NSRect = msg_send![window, frame];
+        let new_frame = NSRect::new(
+            NSPoint::new(
+                frame.origin.x + (frame.size.width - width) / 2.0,
+                frame.origin.y + (frame.size.height - height) / 2.0,
+            ),
+            NSSize::new(width, height),
+        );
+        let _: () = msg_send![window, setFrame: new_frame, display: true];
     }
 
     /// Re-frame the frost, optionally easing over the turn's duration and
