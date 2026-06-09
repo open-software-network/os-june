@@ -537,7 +537,7 @@ pub async fn start_recording(
             .unwrap_or_else(|| "The selected recording sources are not ready.".to_string());
         return Err(AppError::new("source_not_ready", message));
     }
-    finish_active_capture_before_start(&repos).await?;
+    finish_active_capture_before_start(&repos, &paths).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
     let started = tokio::task::spawn_blocking(move || {
@@ -600,22 +600,27 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
-    finish_recording_session(&repos, finished, finalization_started).await
+    finish_recording_session(&repos, &paths, finished, finalization_started).await
 }
 
-async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {
+async fn finish_active_capture_before_start(
+    repos: &Repositories,
+    paths: &AppPaths,
+) -> Result<(), AppError> {
     let finalization_started = Instant::now();
     if let Some(finished) = finish_active_capture()? {
-        finish_recording_session(repos, finished, finalization_started).await?;
+        finish_recording_session(repos, paths, finished, finalization_started).await?;
     }
     Ok(())
 }
 
 async fn finish_recording_session(
     repos: &Repositories,
+    paths: &AppPaths,
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
 ) -> Result<FinishRecordingResponse, AppError> {
@@ -875,6 +880,15 @@ async fn finish_recording_session(
         }
         ticket.finish();
     });
+    // Archival compression (when enabled) queues behind the processing job we
+    // just registered, so it runs only after transcription has finished with
+    // the WAV originals.
+    crate::audio_storage::schedule_session_compression(
+        (*repos).clone(),
+        paths.clone(),
+        finished.note_id.clone(),
+        finished.session_id.clone(),
+    );
     Ok(FinishRecordingResponse {
         note,
         recording: finished.recording,

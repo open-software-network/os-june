@@ -1,5 +1,6 @@
 pub mod app_paths;
 pub mod audio;
+pub mod audio_storage;
 pub mod commands;
 pub mod db;
 pub mod dictation;
@@ -111,6 +112,8 @@ pub fn run() {
             commands::finish_recording,
             commands::retry_processing,
             commands::recover_recording,
+            audio_storage::audio_storage_settings,
+            audio_storage::set_audio_storage_settings,
             dictation::dictation_settings,
             dictation::list_dictation_history,
             dictation::delete_dictation_history_item,
@@ -143,6 +146,7 @@ pub fn run() {
             menu_bar::setup(app)?;
             providers::setup(app);
             dictation::setup(app);
+            audio_storage::setup(app.handle());
             mascot::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);

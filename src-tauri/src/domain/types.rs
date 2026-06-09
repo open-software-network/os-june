@@ -353,6 +353,14 @@ pub struct AudioArtifactDto {
     pub size_bytes: i64,
     pub checksum: String,
     pub created_at: String,
+    /// Format of the archival compressed copy ("flac"), when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_size_bytes: Option<i64>,
+    /// Compressed size as a fraction of the original WAV size (0–1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

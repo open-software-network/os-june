@@ -16,10 +16,12 @@ import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
+  audioStorageSettings,
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
   providerModelSettings,
+  setAudioStorageSettings,
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
@@ -27,6 +29,7 @@ import {
 } from "../../lib/tauri";
 import type {
   AccountStatus,
+  AudioStorageSettingsDto,
   DictationHelperEvent,
   DictationMicrophoneDeviceDto,
   DictationShortcutKind,
@@ -251,6 +254,8 @@ export function AppSettings({
   const [languageOpen, setLanguageOpen] = useState(false);
   const [languagePopoverPlacement, setLanguagePopoverPlacement] =
     useState<SelectPopoverPlacement>("align-selected");
+  const [audioStorage, setAudioStorage] =
+    useState<AudioStorageSettingsDto | null>(null);
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
   const activeTab = controlled ? controlledTab : internalTab;
   const setActiveTab = (tab: SettingsTab) => {
@@ -281,6 +286,29 @@ export function AppSettings({
     setMicOpen(false);
     setLanguageOpen(false);
   }, [activeTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void audioStorageSettings()
+      .then((storage) => {
+        if (!cancelled) setAudioStorage(storage);
+      })
+      .catch(() => {
+        // Leave the storage rows disabled when settings can't be loaded.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const updateAudioStorage = (next: AudioStorageSettingsDto) => {
+    const previous = audioStorage;
+    setAudioStorage(next);
+    void setAudioStorageSettings(next).catch((error) => {
+      setAudioStorage(previous);
+      setStatus(messageFromError(error));
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -927,6 +955,58 @@ export function AppSettings({
                     </div>
                   </div>
                 )}
+
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">
+                      Compress saved recordings
+                    </h3>
+                    <p className="settings-row-description">
+                      Create a smaller lossless FLAC copy after a recording is
+                      saved and validated.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <Switch
+                      checked={
+                        audioStorage?.mode === "compressedAfterValidation"
+                      }
+                      disabled={!audioStorage}
+                      aria-label="Compress saved recordings"
+                      onCheckedChange={(next) =>
+                        updateAudioStorage({
+                          mode: next ? "compressedAfterValidation" : "wavOnly",
+                          keepWavAfterCompression:
+                            audioStorage?.keepWavAfterCompression ?? true,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+
+                {audioStorage?.mode === "compressedAfterValidation" ? (
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Keep WAV originals</h3>
+                      <p className="settings-row-description">
+                        Keep the original WAV next to the compressed copy. Turn
+                        off to free space once a copy is verified.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={audioStorage.keepWavAfterCompression}
+                        aria-label="Keep WAV originals after compression"
+                        onCheckedChange={(next) =>
+                          updateAudioStorage({
+                            mode: audioStorage.mode,
+                            keepWavAfterCompression: next,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </section>

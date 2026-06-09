@@ -7,6 +7,8 @@ import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { MASCOT_ENABLED_KEY } from "../lib/mascot-settings";
 
 const mocks = vi.hoisted(() => ({
+  audioStorageSettings: vi.fn(),
+  setAudioStorageSettings: vi.fn(),
   dictationSettings: vi.fn(),
   dictationHelperCommand: vi.fn(),
   providerModelSettings: vi.fn(),
@@ -38,6 +40,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  audioStorageSettings: mocks.audioStorageSettings,
+  setAudioStorageSettings: mocks.setAudioStorageSettings,
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   providerModelSettings: mocks.providerModelSettings,
@@ -119,6 +123,13 @@ describe("AppSettings", () => {
     localStorage.clear();
     mocks.eventHandler = undefined;
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
+    mocks.audioStorageSettings.mockResolvedValue({
+      mode: "wavOnly",
+      keepWavAfterCompression: true,
+    });
+    mocks.setAudioStorageSettings.mockImplementation((settings) =>
+      Promise.resolve(settings),
+    );
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
       ...baseSettings,
       language,
@@ -341,6 +352,50 @@ describe("AppSettings", () => {
       screen.getByRole("switch", { name: "Capture system audio for notes" }),
     );
     expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
+  });
+
+  it("saves audio storage compression settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+
+    const compressSwitch = await screen.findByRole("switch", {
+      name: "Compress saved recordings",
+    });
+    expect(compressSwitch).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.queryByRole("switch", {
+        name: "Keep WAV originals after compression",
+      }),
+    ).not.toBeInTheDocument();
+
+    await user.click(compressSwitch);
+    expect(mocks.setAudioStorageSettings).toHaveBeenCalledWith({
+      mode: "compressedAfterValidation",
+      keepWavAfterCompression: true,
+    });
+
+    const keepWavSwitch = await screen.findByRole("switch", {
+      name: "Keep WAV originals after compression",
+    });
+    expect(keepWavSwitch).toHaveAttribute("aria-checked", "true");
+    await user.click(keepWavSwitch);
+    expect(mocks.setAudioStorageSettings).toHaveBeenLastCalledWith({
+      mode: "compressedAfterValidation",
+      keepWavAfterCompression: false,
+    });
   });
 
   it("saves the default transcription language", async () => {
