@@ -3,6 +3,10 @@ export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
 export const AGENT_SESSION_STATUS_EVENT = "scribe:agent:session-status";
+// Dev-only: toggles the agent response gallery (window.__agentGallery).
+export const AGENT_GALLERY_EVENT = "scribe:agent:gallery";
+
+export type AgentGalleryDetail = { show: boolean };
 
 export type AgentSessionStatusKind =
   | "received"

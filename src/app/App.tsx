@@ -64,8 +64,10 @@ import {
 } from "../lib/recording-sounds";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
+  AGENT_GALLERY_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
+  type AgentGalleryDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
@@ -495,6 +497,18 @@ export function App() {
       for (const unlisten of unlisteners) unlisten();
     };
   }, [publishAgentMenuBarState]);
+
+  // Dev-tools response gallery (window.__agentGallery): showing it jumps to the
+  // Agent view so the command works no matter which view is active.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const onGallery = (event: Event) => {
+      const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
+      if (detail?.show) setActiveView("agent");
+    };
+    window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
+    return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
+  }, []);
 
   useEffect(() => {
     let aborted = false;

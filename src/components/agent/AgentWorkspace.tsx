@@ -87,10 +87,12 @@ import {
 } from "../../lib/hermes-adapter";
 import {
   AGENT_DELETE_SESSION_EVENT,
+  AGENT_GALLERY_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
   dispatchAgentSessionStatus,
+  type AgentGalleryDetail,
   type AgentSessionStatusKind,
 } from "../../lib/agent-events";
 import {
@@ -117,6 +119,35 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "waitingForUser",
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
+
+// Dev-tools response gallery handle. Registered at module scope so
+// __agentGallery() exists from app launch — registering it inside the component
+// meant it was undefined unless the Agent view happened to be mounted, which is
+// why the command appeared "not to work" from other views. The handle records
+// the desired state and broadcasts it; App switches to the Agent view on show,
+// and the workspace applies the state on mount or live via the event.
+// Dev builds only — the handle never exists in production bundles.
+let galleryDesired = false;
+
+function setGalleryDesired(show: boolean) {
+  galleryDesired = show;
+  window.dispatchEvent(
+    new CustomEvent<AgentGalleryDetail>(AGENT_GALLERY_EVENT, {
+      detail: { show },
+    }),
+  );
+}
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__agentGallery = (
+    show: boolean = true,
+  ) => {
+    setGalleryDesired(show);
+    return show
+      ? "Agent response gallery shown. Run __agentGallery(false) to hide."
+      : "Agent response gallery hidden.";
+  };
+}
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
@@ -1456,22 +1487,19 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
   }
 
-  // Expose a dev-tools handle so the response gallery can be toggled from the
-  // browser console:  __agentGallery()  shows it,  __agentGallery(false)  hides
-  // it. Lets us audit/tune the styling of every response part type in one place.
-  // Dev builds only — the handle never exists in production bundles.
+  // Apply the dev-tools gallery toggle (window.__agentGallery, registered at
+  // module scope above): pick up the desired state on mount — the command may
+  // have been issued from another view before this workspace existed — and
+  // follow live toggles via the window event.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    const handle = window as unknown as Record<string, unknown>;
-    handle.__agentGallery = (show: boolean = true) => {
-      setGallerySections(show ? buildAgentChatGallery() : null);
-      return show
-        ? "Agent response gallery shown. Run __agentGallery(false) to hide."
-        : "Agent response gallery hidden.";
+    setGallerySections(galleryDesired ? buildAgentChatGallery() : null);
+    const onGallery = (event: Event) => {
+      const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
+      setGallerySections(detail?.show ? buildAgentChatGallery() : null);
     };
-    return () => {
-      delete handle.__agentGallery;
-    };
+    window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
+    return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
   }, []);
 
   // Hoisted so the trailing "Thinking…" indicator only shows in the gap after a
@@ -1521,7 +1549,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         {gallerySections ? (
           <AgentResponseGallery
             sections={gallerySections}
-            onClose={() => setGallerySections(null)}
+            onClose={() => setGalleryDesired(false)}
           />
         ) : !newSessionMode && selectedHermesSessionId ? (
           <>
