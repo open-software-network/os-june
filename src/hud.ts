@@ -418,6 +418,12 @@ async function showHud() {
   // also have left the native alpha low — restore it first).
   setWindowAlpha(1);
   await syncWindowToPill();
+  // Parked in a side third, the listening pill should pop into view already
+  // upright (a snap while hidden) — not flash flat and turn once the settle
+  // tracker notices it.
+  if (hud?.dataset.state === "listening") {
+    await invoke("dictation_hud_apply_zone").catch(() => {});
+  }
   await appWindow.show();
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
@@ -695,6 +701,10 @@ void listen<{ vertical: boolean; animate: boolean }>(
         );
       });
     }
+    // The orientation flip moves the stop button's visual rect even when the
+    // window frame doesn't change (e.g. a pre-show snap) — re-aim the native
+    // hover/click math here too, not just on window resize.
+    pushStopBoundsToNative();
   },
 );
 

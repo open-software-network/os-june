@@ -211,6 +211,47 @@ mod macos {
         let _: () = msg_send![window, setFrame: new_frame, display: true];
     }
 
+    /// Nudge the window so the rect of `visible_w` × `visible_h` centered in
+    /// it sits inside its screen's visible frame (work area), with `margin`
+    /// breathing room. The HUD windows are squares whose transparent gutters
+    /// may hang off-screen freely — it's the centered *pill* that must stay
+    /// in view, in whichever orientation it's presented. Snaps (no animation):
+    /// it reads as the pill scooting into place as it turns. Must run on the
+    /// main thread.
+    pub(crate) unsafe fn clamp_window_for_visible_rect(
+        hud: &WebviewWindow,
+        visible_w: f64,
+        visible_h: f64,
+        margin: f64,
+    ) {
+        let (window, _) = content_view(hud);
+        if window.is_null() {
+            return;
+        }
+        let screen: *mut AnyObject = msg_send![window, screen];
+        if screen.is_null() {
+            return;
+        }
+        let work: NSRect = msg_send![screen, visibleFrame];
+        let frame: NSRect = msg_send![window, frame];
+        let cx = frame.origin.x + frame.size.width / 2.0;
+        let cy = frame.origin.y + frame.size.height / 2.0;
+        let min_cx = work.origin.x + margin + visible_w / 2.0;
+        let max_cx = (work.origin.x + work.size.width - margin - visible_w / 2.0).max(min_cx);
+        let min_cy = work.origin.y + margin + visible_h / 2.0;
+        let max_cy = (work.origin.y + work.size.height - margin - visible_h / 2.0).max(min_cy);
+        let new_cx = cx.clamp(min_cx, max_cx);
+        let new_cy = cy.clamp(min_cy, max_cy);
+        if (new_cx - cx).abs() < 0.5 && (new_cy - cy).abs() < 0.5 {
+            return;
+        }
+        let origin = NSPoint::new(
+            frame.origin.x + (new_cx - cx),
+            frame.origin.y + (new_cy - cy),
+        );
+        let _: () = msg_send![window, setFrameOrigin: origin];
+    }
+
     /// Re-frame the frost, optionally easing over the turn's duration and
     /// curve. `track_window` re-enables window-filling autoresizing (used
     /// when a HUD returns to its window-equals-pill mode).

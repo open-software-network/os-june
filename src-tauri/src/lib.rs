@@ -126,6 +126,7 @@ pub fn run() {
             dictation::dictation_hud_set_alpha,
             dictation::dictation_hud_shake,
             dictation::dictation_hud_flatten,
+            dictation::dictation_hud_apply_zone,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,
             mascot::mascot_show,

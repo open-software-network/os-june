@@ -947,6 +947,17 @@ pub fn dictation_hud_shake(app: AppHandle) {
     });
 }
 
+/// Upright (side-parked) pill length in logical points — the listening pill
+/// sheds the viz's flat-layout slack when it stands, so it runs shorter.
+/// Must agree with `.hud[data-orient="vertical"] .hud-viz` in hud.css.
+#[cfg(target_os = "macos")]
+const HUD_VERTICAL_PILL_LENGTH: f64 = 88.0;
+
+/// Breathing room kept between the visible pill and the screen's work-area
+/// edge when an orientation change would push it off-screen.
+#[cfg(target_os = "macos")]
+const HUD_EDGE_MARGIN: f64 = 8.0;
+
 fn hud_is_vertical(app: &AppHandle) -> bool {
     app.try_state::<HudOrient>()
         .map(|orient| orient.vertical.load(std::sync::atomic::Ordering::SeqCst))
@@ -968,6 +979,31 @@ pub async fn dictation_hud_flatten(app: AppHandle) {
         hud_flatten(&app, &hud);
     })
     .await;
+}
+
+/// Pre-show hook: apply the side-zone orientation for wherever the listening
+/// pill is about to appear, so it pops into view already upright instead of
+/// flashing flat and turning once the settle tracker notices ~200ms later
+/// (mirrors the meeting HUD's apply-zone-before-show). While hidden the turn
+/// snaps — `hud_stand_upright` gates its animation on window visibility.
+/// Flattening is not this hook's job: `syncWindowToPill` already ran the
+/// flatten choke point before calling it.
+#[tauri::command]
+pub fn dictation_hud_apply_zone(app: AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(hud) = app.get_webview_window("hud") else {
+            return;
+        };
+        let Some(zone) = hud_native::zone_for(&hud) else {
+            return;
+        };
+        if zone.is_vertical() && !hud_is_vertical(&app) {
+            hud_stand_upright(&app, &hud);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// Stand the listening pill upright: grow the window into a square around the
@@ -1006,14 +1042,19 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
     let pill_w = size.width as f64 / scale;
     let pill_h = size.height as f64 / scale;
     let side_logical = side as f64 / scale;
+    let upright_len = HUD_VERTICAL_PILL_LENGTH.min(side_logical);
     let window = hud.clone();
     let _ = hud.run_on_main_thread(move || unsafe {
         // Square first — synchronously. Tauri's set_size/set_position apply
         // async even on the main thread, so the frost pin and the rotation
         // below would otherwise run against the stale pill-sized frame (the
         // turn rotated a 32px sliver, then the late resize stomped the
-        // in-flight transform).
+        // in-flight transform). Everything here lands in one CA transaction,
+        // so the intermediate states never paint.
         hud_native::set_window_size_about_center_sync(&window, side_logical, side_logical);
+        // Pin the frost at the flat pill's rect (snap — this is where it
+        // already is visually), then ease it to the shorter upright length on
+        // the turn's clock, mirroring the viz width transition in hud.css.
         hud_native::set_frost_frame(
             &window,
             NSRect::new(
@@ -1023,7 +1064,27 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
             false,
             false,
         );
+        hud_native::set_frost_frame(
+            &window,
+            NSRect::new(
+                NSPoint::new(
+                    (side_logical - upright_len) / 2.0,
+                    (side_logical - pill_h) / 2.0,
+                ),
+                NSSize::new(upright_len, pill_h),
+            ),
+            false,
+            animate,
+        );
         hud_native::rotate_content(&window, -std::f64::consts::FRAC_PI_2, animate);
+        // Parked near a screen edge, the upright pill (pill_h wide,
+        // upright_len tall once turned) can poke off-screen — scoot it in.
+        hud_native::clamp_window_for_visible_rect(
+            &window,
+            pill_h,
+            upright_len,
+            HUD_EDGE_MARGIN,
+        );
     });
     if animate {
         // The shadow shape is derived from the rendered content; refresh it
@@ -1062,16 +1123,6 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
         "dictation-hud-orient",
         serde_json::json!({ "vertical": false, "animate": animate }),
     );
-    let window = hud.clone();
-    let _ = hud.run_on_main_thread(move || unsafe {
-        hud_native::rotate_content(&window, 0.0, animate);
-    });
-    if animate {
-        thread::sleep(Duration::from_secs_f64(hud_native::TURN_SECS + 0.03));
-    }
-
-    let lock = app.try_state::<HudFrameLock>();
-    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
     let (Ok(size), Ok(scale)) = (hud.outer_size(), hud.scale_factor()) else {
         return;
     };
@@ -1081,8 +1132,31 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
         .ok()
         .and_then(|mut guard| guard.take())
         .unwrap_or(size);
+    let side_logical = size.width as f64 / scale;
     let pill_w = restore.width as f64 / scale;
     let pill_h = restore.height as f64 / scale;
+    let window = hud.clone();
+    let _ = hud.run_on_main_thread(move || unsafe {
+        // Ease the frost back out to the flat pill's length on the turn's
+        // clock — the un-turning DOM pill is regrowing its viz in step
+        // (hud.css width transition).
+        hud_native::set_frost_frame(
+            &window,
+            NSRect::new(
+                NSPoint::new((side_logical - pill_w) / 2.0, (side_logical - pill_h) / 2.0),
+                NSSize::new(pill_w, pill_h),
+            ),
+            false,
+            animate,
+        );
+        hud_native::rotate_content(&window, 0.0, animate);
+    });
+    if animate {
+        thread::sleep(Duration::from_secs_f64(hud_native::TURN_SECS + 0.03));
+    }
+
+    let lock = app.try_state::<HudFrameLock>();
+    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
     let window = hud.clone();
     // Wait for the restore to actually apply before returning: the webview
     // measures and resizes the moment the flatten command resolves, and that
@@ -1098,6 +1172,14 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
                 NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pill_w, pill_h)),
                 true,
                 false,
+            );
+            // A pill that stood flush against the top/bottom work-area edge
+            // lies back down wider than it stood — keep it on-screen.
+            hud_native::clamp_window_for_visible_rect(
+                &window,
+                pill_w,
+                pill_h,
+                HUD_EDGE_MARGIN,
             );
             hud_native::invalidate_shadow(&window);
         }

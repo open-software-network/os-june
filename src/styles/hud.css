@@ -148,6 +148,18 @@ body {
   /* Limit repaint scope so 25Hz audio updates don't compete with hover
    * paints on neighbouring controls. */
   contain: layout paint;
+  /* Length changes ride the same clock as the native turn (TURN_SECS +
+   * --ease-out control points in hud_native.rs), which eases the frost to
+   * match. Mirrors the meeting pill's width transition. */
+  transition: width 320ms var(--ease-out);
+}
+
+/* Upright the pill carries less — the viz sheds its flat-layout slack and
+ * sits square like the handle and stop, so the pill runs shorter with even
+ * margins: 3+1 + 24 + 4 + 24 + 4 + 24 + 3+1 = 88px. Must agree with
+ * HUD_VERTICAL_PILL_LENGTH in dictation.rs. */
+.hud[data-orient="vertical"] .hud-viz {
+  width: 24px;
 }
 
 .hud-bars {
@@ -184,7 +196,8 @@ body {
 
 /* Orientation applied while the HUD is hidden snaps (the native side snaps
  * too); hud.ts removes the class once the snapped state painted. */
-.hud.hud-orient-snap .hud-bars {
+.hud.hud-orient-snap .hud-bars,
+.hud.hud-orient-snap .hud-viz {
   transition: none;
 }
 
