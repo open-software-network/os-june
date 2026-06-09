@@ -45,6 +45,7 @@ import {
   setStoredTheme,
   type ThemePreference,
 } from "../../lib/theme";
+import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -237,7 +238,7 @@ export function AppSettings({
     }
 
     void listen<string>("dictation-event", (event) => {
-      const helperEvent = parseDictationEvent(event.payload);
+      const helperEvent = parseDictationHelperEvent(event.payload);
       if (helperEvent) handleHelperEvent(helperEvent);
     }).then((cleanup) => {
       unlisten = cleanup;
@@ -1259,22 +1260,6 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
     },
     ...models,
   ];
-}
-
-function parseDictationEvent(
-  payload: unknown,
-): DictationHelperEvent | undefined {
-  try {
-    if (typeof payload === "string") {
-      return JSON.parse(payload) as DictationHelperEvent;
-    }
-    if (payload && typeof payload === "object") {
-      return payload as DictationHelperEvent;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 function shortcutFromCapturePayload(

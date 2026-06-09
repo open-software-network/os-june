@@ -31,6 +31,7 @@ import {
   type DictationSettingsDto,
   type DictationHistoryItemDto,
 } from "../../lib/tauri";
+import { parseDictationHelperEvent } from "../../lib/dictation-events";
 
 /** Which Settings section a "Set up" link drives to. */
 export type DictationSettingsTarget = "style" | "dictionary";
@@ -114,7 +115,7 @@ export function DictationHistoryView({
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
-      const payload = parseDictationEvent(event.payload);
+      const payload = parseDictationHelperEvent(event.payload);
       if (payload?.type === "final_transcript") {
         void loadHistory();
       }
@@ -599,18 +600,6 @@ function isSameDate(left: Date, right: Date) {
     left.getMonth() === right.getMonth() &&
     left.getDate() === right.getDate()
   );
-}
-
-function parseDictationEvent(payload: unknown): { type?: string } | undefined {
-  try {
-    if (typeof payload === "string")
-      return JSON.parse(payload) as { type?: string };
-    if (payload && typeof payload === "object")
-      return payload as { type?: string };
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 function messageFromError(err: unknown) {

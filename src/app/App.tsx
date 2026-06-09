@@ -62,10 +62,10 @@ import {
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
+import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { titleFromPrompt } from "../lib/hermes-adapter";
 import type {
   BootstrapResponse,
-  DictationHelperEvent,
   NoteDto,
   RecordingStatusDto,
   AccountStatus,
@@ -278,7 +278,7 @@ export function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
-      const helperEvent = parseDictationEvent(event.payload);
+      const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
       if (helperEvent.type === "agent_session_prompt") {
         const prompt = stringPayloadValue(helperEvent.payload?.prompt) ?? "";
@@ -1493,22 +1493,6 @@ function isCreateNoteShortcut(event: KeyboardEvent) {
     !event.altKey &&
     !event.shiftKey
   );
-}
-
-function parseDictationEvent(
-  payload: unknown,
-): DictationHelperEvent | undefined {
-  try {
-    if (typeof payload === "string") {
-      return JSON.parse(payload) as DictationHelperEvent;
-    }
-    if (payload && typeof payload === "object") {
-      return payload as DictationHelperEvent;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 function stringPayloadValue(value: unknown) {
