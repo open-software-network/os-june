@@ -12,6 +12,10 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
+import {
+  AGENT_SESSION_STATUS_EVENT,
+  type AgentSessionStatusDetail,
+} from "./lib/agent-events";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import "./styles/hud.css";
 
@@ -32,6 +36,7 @@ const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
 const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
+const agentLabel = document.querySelector<HTMLElement>("#hud-agent-label");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
 const meetingStartButton =
   document.querySelector<HTMLButtonElement>("#hud-meeting-start");
@@ -42,6 +47,7 @@ let meetingPromptTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
+let hideRequestId = 0;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -50,6 +56,7 @@ const brailleWave = spinners.waverows;
 // Matches the .hud[data-state="exiting"] transition in hud.css.
 const EXIT_TRANSITION_MS = 160;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
+const AGENT_HANDOFF_TIMEOUT_MS = 4_000;
 
 // Bar synthesis + ballistics live in the shared meter so the recorder waveform
 // moves identically. The meter holds the level history and the displayed bars.
@@ -101,6 +108,9 @@ function setHud(state: string, status: string) {
   const previous = hud.dataset.state;
   hud.dataset.state = state;
   statusText.textContent = status;
+  if (agentLabel) {
+    agentLabel.textContent = state === "agent-received" ? status : "";
+  }
   if (errorText) {
     errorText.textContent =
       state === "silent-error" || state === "error" ? status : "";
@@ -221,6 +231,32 @@ function stopBraille() {
   }
 }
 
+function playAgentStartTone() {
+  const AudioContextCtor =
+    window.AudioContext ??
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioContextCtor) return;
+  try {
+    const context = new AudioContextCtor();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const now = context.currentTime;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(520, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.18);
+    oscillator.addEventListener("ended", () => void context.close());
+  } catch {
+    // The visual handoff cue is the source of truth; sound is opportunistic.
+  }
+}
+
 function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
 }
@@ -283,6 +319,7 @@ function startMeetingPromptTimer() {
 }
 
 async function hideHud() {
+  const requestId = ++hideRequestId;
   clearHideTimer();
   clearMeetingPromptTimer();
   clearStopHover();
@@ -294,10 +331,12 @@ async function hideHud() {
       window.setTimeout(resolve, EXIT_TRANSITION_MS),
     );
   }
+  if (requestId !== hideRequestId) return;
   await appWindow.hide();
 }
 
 async function showHud() {
+  hideRequestId += 1;
   clearHideTimer();
   await appWindow.show();
   // Force a layout flush before reading rects.
@@ -377,6 +416,11 @@ async function handleDictationEventPayload(payload: unknown) {
     return;
   }
 
+  if (dictationEvent.type === "agent_session_prompt") {
+    void hideHud();
+    return;
+  }
+
   if (dictationEvent.type === "error") {
     // Rust pre-classifies via payload.silent so the HUD has one source of
     // truth for what counts as a "Nothing recorded" case.
@@ -425,6 +469,20 @@ function canShowMeetingPrompt(state: string | undefined) {
     state === "meeting" ||
     state === "exiting"
   );
+}
+
+async function handleAgentStatusEventPayload(payload: unknown) {
+  const event = parseEvent(payload) as unknown as
+    | AgentSessionStatusDetail
+    | undefined;
+  if (event?.status !== "received") return;
+
+  clearMeetingPromptTimer();
+  clearHideTimer();
+  playAgentStartTone();
+  setHud("agent-received", event.summary || "June is starting");
+  await showHud();
+  hideSoon(AGENT_HANDOFF_TIMEOUT_MS);
 }
 
 function parseEvent(payload: unknown): DictationHudEvent | undefined {
@@ -487,6 +545,10 @@ void listen("dictation-event", async (event) => {
 
 void listen("meeting-detection-event", async (event) => {
   await handleMeetingDetectionEventPayload(event.payload);
+});
+
+void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
+  await handleAgentStatusEventPayload(event.payload);
 });
 
 void listen<boolean>("hud-stop-hover", (event) => {

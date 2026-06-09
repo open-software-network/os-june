@@ -66,12 +66,13 @@ runs:
           echo "::error::compose-file is missing the \${SCRIBE_IMAGE} placeholder."
           exit 1
         fi
+        if [[ ! "$IMAGE_REF" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[A-Za-z0-9_.-]{1,128}|@sha256:[a-f0-9]{64})$ ]]; then
+          echo "::error::image-ref must be a valid lowercase image repository with a tag or sha256 digest."
+          exit 1
+        fi
         rendered="${RUNNER_TEMP}/$(basename "$COMPOSE_FILE")"
-        sed "s|\${SCRIBE_IMAGE}|${IMAGE_REF}|g" "$COMPOSE_FILE" > "$rendered"
-        echo "Rendered compose for $IMAGE_REF:"
-        echo "----"
-        cat "$rendered"
-        echo "----"
+        perl -0pe 's/\$\{SCRIBE_IMAGE\}/$ENV{IMAGE_REF}/g' "$COMPOSE_FILE" > "$rendered"
+        echo "Rendered compose for $IMAGE_REF at $rendered."
         echo "rendered=${rendered}" >> "$GITHUB_OUTPUT"
 
     - name: Deploy CVM

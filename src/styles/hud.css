@@ -228,6 +228,19 @@ body {
   transform: translateY(-0.5px);
 }
 
+.hud-agent-label {
+  display: none;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1;
+  max-width: min(240px, calc(100vw - 100px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-0.5px);
+}
+
 .hud-meeting-label {
   display: none;
   color: var(--foreground);
@@ -366,6 +379,20 @@ body {
 .hud[data-state="meeting"] .hud-meeting-label,
 .hud[data-state="meeting"] .hud-meeting-start {
   display: inline-flex;
+}
+
+.hud[data-state="agent-received"] {
+  gap: var(--sp-2);
+  padding-inline: 3px var(--sp-4);
+}
+
+.hud[data-state="agent-received"] .hud-agent-label {
+  display: block;
+}
+
+.hud[data-state="agent-received"] .hud-viz,
+.hud[data-state="agent-received"] .hud-stop {
+  display: none;
 }
 
 /* Text-only shaking pill for hard errors. */

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   openPrivacySettings: vi.fn(),
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
+  setDictationLanguage: vi.fn(),
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
@@ -25,6 +26,10 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
+  listDictionaryEntries: vi.fn(),
+  createDictionaryEntry: vi.fn(),
+  updateDictionaryEntry: vi.fn(),
+  deleteDictionaryEntry: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -38,6 +43,7 @@ vi.mock("../lib/tauri", () => ({
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationMicrophone: mocks.setDictationMicrophone,
+  setDictationLanguage: mocks.setDictationLanguage,
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
@@ -50,6 +56,10 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
     mocks.updateHermesBridgeMessagingPlatform,
+  listDictionaryEntries: mocks.listDictionaryEntries,
+  createDictionaryEntry: mocks.createDictionaryEntry,
+  updateDictionaryEntry: mocks.updateDictionaryEntry,
+  deleteDictionaryEntry: mocks.deleteDictionaryEntry,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -58,20 +68,20 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const baseSettings: DictationSettingsDto = {
   pushToTalkShortcut: {
-    code: "Space",
-    label: "Fn+Space",
+    code: "KeyD",
+    label: "Ctrl+Opt+D",
     pressCount: 1,
     modifiers: {
       command: false,
-      control: false,
-      option: false,
+      control: true,
+      option: true,
       shift: false,
-      function: true,
+      function: false,
     },
   },
   toggleShortcut: {
-    code: "Space",
-    label: "Ctrl+Opt+Space",
+    code: "KeyT",
+    label: "Ctrl+Opt+T",
     pressCount: 1,
     modifiers: {
       command: false,
@@ -83,6 +93,7 @@ const baseSettings: DictationSettingsDto = {
   },
   microphone: {},
   style: "standard",
+  language: undefined,
 };
 
 const signedInAccount = {
@@ -102,6 +113,11 @@ describe("AppSettings", () => {
     vi.clearAllMocks();
     mocks.eventHandler = undefined;
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
+    mocks.setDictationLanguage.mockImplementation(async (language) => ({
+      ...baseSettings,
+      language,
+    }));
+    mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
@@ -321,6 +337,125 @@ describe("AppSettings", () => {
     expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
   });
 
+  it("saves the default transcription language", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Dictation" }));
+    const language = await screen.findByRole("combobox", {
+      name: "Default transcription language",
+    });
+
+    await user.selectOptions(language, "id");
+
+    expect(mocks.setDictationLanguage).toHaveBeenCalledWith("id");
+    await waitFor(() => expect(language).toHaveValue("id"));
+  });
+
+  it("lists system permissions with status and manage actions", async () => {
+    const user = userEvent.setup();
+    const onEnableMicrophone = vi.fn();
+    const onEnableAccessibility = vi.fn();
+    const onEnableSystemAudio = vi.fn();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        sourceReadiness={{
+          sourceMode: "microphonePlusSystem",
+          ready: false,
+          checkedAt: "2026-06-08T12:00:00Z",
+          sources: [
+            {
+              source: "microphone",
+              required: true,
+              ready: false,
+              permissionState: "denied",
+              deviceAvailable: false,
+              captureAvailable: false,
+              recoveryAction: "openMicrophoneSettings",
+            },
+            {
+              source: "system",
+              required: true,
+              ready: false,
+              permissionState: "denied",
+              deviceAvailable: true,
+              captureAvailable: false,
+              recoveryAction: "openSystemAudioSettings",
+            },
+          ],
+        }}
+        checkingSourceReadiness={false}
+        microphonePermissionStatus="denied"
+        accessibilityPermissionStatus="missing"
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableMicrophone={onEnableMicrophone}
+        onEnableAccessibility={onEnableAccessibility}
+        onEnableSystemAudio={onEnableSystemAudio}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Permissions" }));
+
+    const microphoneRow = screen
+      .getByText("Microphone")
+      .closest(".settings-row");
+    const accessibilityRow = screen
+      .getByText("Accessibility")
+      .closest(".settings-row");
+    const systemAudioRow = screen
+      .getByText("System audio")
+      .closest(".settings-row");
+
+    expect(microphoneRow).not.toBeNull();
+    expect(accessibilityRow).not.toBeNull();
+    expect(systemAudioRow).not.toBeNull();
+    expect(
+      within(microphoneRow as HTMLElement).getByText("Blocked"),
+    ).toBeInTheDocument();
+    expect(
+      within(accessibilityRow as HTMLElement).getByText("Needs access"),
+    ).toBeInTheDocument();
+    expect(
+      within(systemAudioRow as HTMLElement).getByText("Blocked"),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(microphoneRow as HTMLElement).getByRole("button", {
+        name: "Manage Microphone permission",
+      }),
+    );
+    await user.click(
+      within(accessibilityRow as HTMLElement).getByRole("button", {
+        name: "Manage Accessibility permission",
+      }),
+    );
+    await user.click(
+      within(systemAudioRow as HTMLElement).getByRole("button", {
+        name: "Manage System audio permission",
+      }),
+    );
+
+    expect(onEnableMicrophone).toHaveBeenCalledTimes(1);
+    expect(onEnableAccessibility).toHaveBeenCalledTimes(1);
+    expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+  });
+
   it("records push-to-talk and toggle dictation shortcuts in settings", async () => {
     const user = userEvent.setup();
     render(
@@ -389,7 +524,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(
-      (await screen.findAllByRole("button", { name: "Change" }))[1],
+      (await screen.findAllByRole("button", { name: "Change" }))[0],
     );
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
@@ -402,8 +537,8 @@ describe("AppSettings", () => {
         type: "shortcut_captured",
         payload: {
           shortcut: {
-            code: "Space",
-            label: "Ctrl+Opt+Space",
+            code: "Modifiers",
+            label: "Ctrl+Opt",
             modifiers: {
               command: false,
               control: true,
@@ -418,13 +553,57 @@ describe("AppSettings", () => {
     });
 
     await waitFor(() =>
-      expect(mocks.setDictationShortcut).toHaveBeenCalledWith("toggle", {
-        code: "Space",
-        label: "Ctrl+Opt+Space",
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith("push_to_talk", {
+        code: "Modifiers",
+        label: "Ctrl+Opt",
         modifiers: {
           command: false,
           control: true,
           option: true,
+          shift: false,
+          function: false,
+        },
+        pressCount: 1,
+      }),
+    );
+
+    await user.click(
+      (await screen.findAllByRole("button", { name: "Change" }))[1],
+    );
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "start_shortcut_capture",
+        pressCount: 1,
+      }),
+    );
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "shortcut_captured",
+        payload: {
+          shortcut: {
+            code: "Digit1",
+            label: "Ctrl+1",
+            modifiers: {
+              command: false,
+              control: true,
+              option: false,
+              shift: false,
+              function: false,
+            },
+            pressCount: 1,
+          },
+        },
+      }),
+    });
+
+    await waitFor(() =>
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith("toggle", {
+        code: "Digit1",
+        label: "Ctrl+1",
+        modifiers: {
+          command: false,
+          control: true,
+          option: false,
           shift: false,
           function: false,
         },

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -163,6 +164,74 @@ describe("meeting detection HUD", () => {
     await vi.advanceTimersByTimeAsync(900);
     expect(hudElement().dataset.state).toBe("exiting");
   });
+
+  it("hides when a Hey June prompt starts an agent session", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "finalizing_transcript" });
+
+    await emit("dictation-event", {
+      type: "agent_session_prompt",
+      payload: { prompt: "summarize the open document." },
+    });
+
+    expect(hudElement().dataset.state).toBe("exiting");
+    await vi.advanceTimersByTimeAsync(160);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
+  it("briefly acknowledges a Hey June agent handoff", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "received",
+      summary: "June is starting.",
+    });
+
+    expect(hudElement().dataset.state).toBe("agent-received");
+    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
+      "June is starting.",
+    );
+    expect(mocks.show).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(hudElement().dataset.state).toBe("exiting");
+  });
+
+  it("keeps the agent handoff visible when it races the dictation handoff hide", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "finalizing_transcript" });
+
+    await emit("dictation-event", {
+      type: "agent_session_prompt",
+      payload: { prompt: "open the browser." },
+    });
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "received",
+      summary: "June is starting.",
+    });
+    await vi.advanceTimersByTimeAsync(160);
+
+    expect(mocks.hide).not.toHaveBeenCalled();
+    expect(hudElement().dataset.state).toBe("agent-received");
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(hudElement().dataset.state).toBe("exiting");
+  });
+
+  it("does not claim the HUD for ongoing agent progress", async () => {
+    await loadHud();
+
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "running",
+      summary: "Using Filesystem.",
+    });
+
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(mocks.show).not.toHaveBeenCalled();
+  });
 });
 
 async function loadHud() {
@@ -202,6 +271,7 @@ function hudMarkup() {
         <span class="hud-error-mark" aria-hidden="true"></span>
       </div>
       <span id="hud-error-text" class="hud-error-text" aria-hidden="true"></span>
+      <span id="hud-agent-label" class="hud-agent-label" aria-hidden="true"></span>
       <span id="hud-meeting-label" class="hud-meeting-label">Meeting detected</span>
       <button id="hud-meeting-start" class="hud-meeting-start" type="button">Start Transcription</button>
       <button id="hud-stop" class="hud-stop" type="button" aria-label="Stop dictation">

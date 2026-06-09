@@ -19,20 +19,20 @@ describe("StyleSettingsSection", () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
-          code: "Fn",
-          label: "Fn",
+          code: "KeyD",
+          label: "Ctrl+Opt+D",
           pressCount: 1,
           modifiers: {
             command: false,
-            control: false,
-            option: false,
+            control: true,
+            option: true,
             shift: false,
-            function: true,
+            function: false,
           },
         },
         toggleShortcut: {
-          code: "Space",
-          label: "Ctrl+Opt+Space",
+          code: "KeyT",
+          label: "Ctrl+Opt+T",
           pressCount: 1,
           modifiers: {
             command: false,

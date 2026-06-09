@@ -45,7 +45,7 @@ mod tests {
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path},
+        matchers::{body_string_contains, header, method, path},
     };
 
     #[tokio::test]
@@ -54,6 +54,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/audio/transcriptions"))
             .and(header("authorization", "Bearer openai_key"))
+            .and(body_string_contains(r#"name="language""#))
+            .and(body_string_contains("es"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "text": "Transcribed text"
             })))
@@ -80,6 +82,7 @@ mod tests {
                 filename: "recording.wav".to_string(),
                 title: "Title".to_string(),
                 context: Some("Prompt context".to_string()),
+                language: Some("es".to_string()),
                 model: ModelId("gpt-4o-mini-transcribe".to_string()),
             })
             .await;

@@ -16,6 +16,7 @@ import {
   dictationSettings,
   listVeniceModels,
   providerModelSettings,
+  setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
   setVeniceModel,
@@ -45,6 +46,7 @@ import {
   setStoredTheme,
   type ThemePreference,
 } from "../../lib/theme";
+import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -97,17 +99,18 @@ const EMPTY_MODIFIERS: DictationShortcutModifiers = {
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   pushToTalkShortcut: {
-    code: "Fn",
-    label: "Fn",
+    code: "KeyD",
+    label: "Ctrl+Opt+D",
     pressCount: 1,
     modifiers: {
       ...EMPTY_MODIFIERS,
-      function: true,
+      control: true,
+      option: true,
     },
   },
   toggleShortcut: {
-    code: "Space",
-    label: "Ctrl+Opt+Space",
+    code: "KeyT",
+    label: "Ctrl+Opt+T",
     pressCount: 1,
     modifiers: {
       ...EMPTY_MODIFIERS,
@@ -117,7 +120,23 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   },
   microphone: {},
   style: "standard",
+  language: undefined,
 };
+
+const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Auto-detect" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "id", label: "Indonesian" },
+  { value: "it", label: "Italian" },
+  { value: "pt", label: "Portuguese" },
+  { value: "nl", label: "Dutch" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "zh", label: "Chinese" },
+];
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionProvider: "venice",
@@ -125,18 +144,20 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   generationModel: "zai-org-glm-5",
 };
 
-type SettingsTab =
+export type SettingsTab =
   | "account"
   | "dictation"
   | "audio"
+  | "permissions"
   | "models"
   | "agent"
   | "about";
 
-const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "account", label: "Account" },
   { id: "dictation", label: "Dictation" },
   { id: "audio", label: "Audio" },
+  { id: "permissions", label: "Permissions" },
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
   { id: "about", label: "About" },
@@ -148,10 +169,20 @@ type AppSettingsProps = {
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
   checkingSourceReadiness: boolean;
+  microphonePermissionStatus?: string;
+  accessibilityPermissionStatus?: string;
   onAccountChanged: (next: AccountStatus) => void;
   onAccountRefresh: () => Promise<AccountStatus | undefined>;
   onSourceModeChange: (mode: RecordingSourceMode) => void;
+  onEnableMicrophone?: () => void;
+  onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
+  // When the host (the sidebar settings nav) drives the active section, it
+  // passes both of these so AppSettings becomes a controlled panel and hides
+  // its own header + in-page tab nav. Left undefined, AppSettings keeps its
+  // own nav — the standalone path exercised by app-settings tests.
+  activeTab?: SettingsTab;
+  onTabChange?: (tab: SettingsTab) => void;
 };
 
 export function AppSettings({
@@ -160,10 +191,16 @@ export function AppSettings({
   sourceMode,
   sourceReadiness,
   checkingSourceReadiness,
+  microphonePermissionStatus,
+  accessibilityPermissionStatus,
   onAccountChanged,
   onAccountRefresh,
   onSourceModeChange,
+  onEnableMicrophone,
+  onEnableAccessibility,
   onEnableSystemAudio,
+  activeTab: controlledTab,
+  onTabChange,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -187,11 +224,23 @@ export function AppSettings({
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
+  const [internalTab, setInternalTab] = useState<SettingsTab>("account");
+  const controlled = controlledTab !== undefined && onTabChange !== undefined;
+  const activeTab = controlled ? controlledTab : internalTab;
+  const setActiveTab = (tab: SettingsTab) => {
+    if (controlled) {
+      onTabChange?.(tab);
+    } else {
+      setInternalTab(tab);
+    }
+  };
   const micWrapRef = useRef<HTMLDivElement>(null);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "system",
+  );
+  const microphoneReadiness = sourceReadiness?.sources.find(
+    (source) => source.source === "microphone",
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
@@ -224,7 +273,7 @@ export function AppSettings({
     }
 
     void listen<string>("dictation-event", (event) => {
-      const helperEvent = parseDictationEvent(event.payload);
+      const helperEvent = parseDictationHelperEvent(event.payload);
       if (helperEvent) handleHelperEvent(helperEvent);
     }).then((cleanup) => {
       unlisten = cleanup;
@@ -294,7 +343,8 @@ export function AppSettings({
     }
     if (helperEvent.type === "fn_monitor_unavailable") {
       setStatus(
-        helperEvent.payload?.message ?? "Fn/Globe shortcut is unavailable.",
+        helperEvent.payload?.message ??
+          "Global shortcut monitoring is unavailable.",
       );
       return;
     }
@@ -406,6 +456,20 @@ export function AppSettings({
     }
   }
 
+  async function selectLanguage(language: string) {
+    try {
+      const next = await setDictationLanguage(language || undefined);
+      setSettings(next);
+      setStatus(
+        language
+          ? `Default transcription language set to ${languageLabel(language)}.`
+          : "Default transcription language set to auto-detect.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   const microphoneName = settings.microphone.name ?? "Auto-detect";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
@@ -445,33 +509,37 @@ export function AppSettings({
   }
 
   return (
-    <div className="settings-page">
-      <header className="settings-header">
-        <h1 className="settings-title">Settings</h1>
-        <p className="settings-description">
-          Manage audio, dictation, AI models, and agent capabilities.
-        </p>
-      </header>
+    <div className="settings-page" data-controlled={controlled || undefined}>
+      {controlled ? null : (
+        <>
+          <header className="settings-header">
+            <h1 className="settings-title">Settings</h1>
+            <p className="settings-description">
+              Manage audio, dictation, AI models, and agent capabilities.
+            </p>
+          </header>
 
-      <nav
-        className="settings-nav"
-        role="tablist"
-        aria-label="Settings sections"
-      >
-        {SETTINGS_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls={`settings-panel-${tab.id}`}
-            id={`settings-tab-${tab.id}`}
-            onClick={() => setActiveTab(tab.id)}
+          <nav
+            className="settings-nav"
+            role="tablist"
+            aria-label="Settings sections"
           >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
+            {SETTINGS_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                aria-controls={`settings-panel-${tab.id}`}
+                id={`settings-tab-${tab.id}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
 
       <div
         className="settings-tab-panel"
@@ -565,6 +633,35 @@ export function AppSettings({
                     onChange={() => void startShortcutCapture("toggle")}
                     onCancel={() => void cancelShortcutCapture()}
                   />
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Language</h3>
+                      <p className="settings-row-description">
+                        Default language hint for note transcription and
+                        dictation.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <select
+                        className="select-trigger settings-language-select"
+                        aria-label="Default transcription language"
+                        value={settings.language ?? ""}
+                        onChange={(event) =>
+                          void selectLanguage(event.currentTarget.value)
+                        }
+                      >
+                        {LANGUAGE_OPTIONS.map((option) => (
+                          <option
+                            key={option.value || "auto"}
+                            value={option.value}
+                          >
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -681,6 +778,48 @@ export function AppSettings({
           </section>
         ) : null}
 
+        {activeTab === "permissions" ? (
+          <section
+            className="settings-group"
+            aria-labelledby="permissions-heading"
+          >
+            <h2 id="permissions-heading" className="settings-group-heading">
+              System permissions
+            </h2>
+            <p className="settings-group-description">
+              macOS access used for recording audio, pasting dictation, and
+              capturing system sound.
+            </p>
+            <div className="settings-card">
+              <div className="settings-rows">
+                <PermissionRow
+                  title="Microphone"
+                  description="Record dictation and note audio."
+                  status={permissionStatus(
+                    microphonePermissionStatus ??
+                      microphoneReadiness?.permissionState,
+                  )}
+                  onManage={onEnableMicrophone}
+                />
+
+                <PermissionRow
+                  title="Accessibility"
+                  description="Paste dictated text into the active app."
+                  status={permissionStatus(accessibilityPermissionStatus)}
+                  onManage={onEnableAccessibility}
+                />
+
+                <PermissionRow
+                  title="System audio"
+                  description="Record audio from other apps when system audio is enabled."
+                  status={sourcePermissionStatus(systemReadiness)}
+                  onManage={onEnableSystemAudio}
+                />
+              </div>
+            </div>
+          </section>
+        ) : null}
+
         {activeTab === "models" ? (
           <>
             <ModelPickerDialog
@@ -766,6 +905,83 @@ export function AppSettings({
       </div>
     </div>
   );
+}
+
+type PermissionStatusTone =
+  | "allowed"
+  | "attention"
+  | "blocked"
+  | "unsupported"
+  | "unknown";
+
+type PermissionStatusView = {
+  label: string;
+  tone: PermissionStatusTone;
+};
+
+function PermissionRow({
+  title,
+  description,
+  status,
+  onManage,
+}: {
+  title: string;
+  description: string;
+  status: PermissionStatusView;
+  onManage?: () => void;
+}) {
+  const actionDisabled = status.tone === "unsupported" || !onManage;
+  return (
+    <div className="settings-row">
+      <div className="settings-row-info">
+        <h3 className="settings-row-title">{title}</h3>
+        <p className="settings-row-description">{description}</p>
+      </div>
+      <div className="settings-row-control settings-permission-control">
+        <span className="settings-permission-status" data-status={status.tone}>
+          {status.label}
+        </span>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={actionDisabled}
+          aria-label={`Manage ${title} permission`}
+          onClick={onManage}
+        >
+          Manage
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function permissionStatus(state?: string): PermissionStatusView {
+  switch (state) {
+    case "granted":
+      return { label: "Allowed", tone: "allowed" };
+    case "denied":
+      return { label: "Blocked", tone: "blocked" };
+    case "restricted":
+      return { label: "Restricted", tone: "blocked" };
+    case "missing":
+      return { label: "Needs access", tone: "attention" };
+    case "not_determined":
+      return { label: "Not requested", tone: "attention" };
+    case "unsupported":
+      return { label: "Unsupported", tone: "unsupported" };
+    case "unknown":
+      return { label: "Unknown", tone: "unknown" };
+    default:
+      return { label: "Checking", tone: "unknown" };
+  }
+}
+
+function sourcePermissionStatus(
+  source?: RecordingSourceReadinessDto["sources"][number],
+): PermissionStatusView {
+  if (!source) return { label: "Checking", tone: "unknown" };
+  if (source.ready) return { label: "Allowed", tone: "allowed" };
+  return permissionStatus(source.permissionState);
 }
 
 function ModelRow({
@@ -1129,22 +1345,6 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
   ];
 }
 
-function parseDictationEvent(
-  payload: unknown,
-): DictationHelperEvent | undefined {
-  try {
-    if (typeof payload === "string") {
-      return JSON.parse(payload) as DictationHelperEvent;
-    }
-    if (payload && typeof payload === "object") {
-      return payload as DictationHelperEvent;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
 function shortcutFromCapturePayload(
   shortcut: unknown,
   fallbackPressCount: 1 | 2,
@@ -1194,6 +1394,12 @@ function shortcutForKind(
   return kind === "toggle"
     ? settings.toggleShortcut
     : settings.pushToTalkShortcut;
+}
+
+function languageLabel(value: string) {
+  return (
+    LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? value
+  );
 }
 
 function stringPayloadValue(value: unknown) {

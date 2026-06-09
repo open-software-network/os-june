@@ -46,6 +46,8 @@ pub fn run() {
         // single-instance -> deep-link handoff (documented above) adjacent and
         // obvious; process/updater are order-independent so they follow.
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(|app, event| {
@@ -86,7 +88,10 @@ pub fn run() {
             hermes_bridge::hermes_bridge_messaging_platforms,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
             hermes_bridge::download_hermes_bridge_file,
+            hermes_bridge::hermes_bridge_file_preview,
+            hermes_bridge::import_hermes_bridge_file,
             hermes_bridge::hermes_bridge_sessions,
+            hermes_bridge::ensure_hermes_bridge_session,
             hermes_bridge::hermes_bridge_session_messages,
             hermes_bridge::delete_hermes_bridge_session,
             hermes_bridge::start_hermes_bridge,
@@ -110,6 +115,7 @@ pub fn run() {
             dictation::set_dictation_shortcut,
             dictation::set_dictation_microphone,
             dictation::set_dictation_style,
+            dictation::set_dictation_language,
             dictation::dictation_helper_command,
             dictation::dictation_hud_set_stop_bounds,
             dictation::dictation_hud_set_pill_bounds,

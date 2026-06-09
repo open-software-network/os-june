@@ -71,6 +71,34 @@ describe("Agent chat runtime", () => {
     expect(textParts).toEqual(["Say hello", "Hello there", "Nested reply"]);
   });
 
+  it("classifies Hermes context compaction summaries as system context", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "compact-1",
+        role: "assistant",
+        content:
+          "[CONTEXT COMPACTION - REFERENCE ONLY] Earlier turns were compacted.\n\n" +
+          "## Active Task\nRecovered from a deterministic fallback.\n\n" +
+          "--- END OF CONTEXT SUMMARY - respond to the message below, not the summary above ---",
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.role).toBe("system");
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "context",
+        text:
+          "[CONTEXT COMPACTION - REFERENCE ONLY] Earlier turns were compacted.\n\n" +
+          "## Active Task\nRecovered from a deterministic fallback.",
+        preview:
+          "Earlier turns were compacted; fallback summary generated without the LLM summarizer.",
+        status: "complete",
+      },
+    ]);
+  });
+
   it("appends live reasoning deltas without inserting log line breaks", () => {
     const turns = buildAgentChatTurns(
       [],

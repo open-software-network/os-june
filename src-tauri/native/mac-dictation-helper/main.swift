@@ -200,6 +200,14 @@ struct ShortcutModifiers: Equatable, Hashable {
         function && !command && !control && !option && !shift
     }
 
+    var modifierCount: Int {
+        [command, control, option, shift, function].filter { $0 }.count
+    }
+
+    var isSupportedModifierOnlyShortcut: Bool {
+        isBareFunction || modifierCount >= 2
+    }
+
     var payload: [String: Bool] {
         [
             "command": command,
@@ -228,11 +236,11 @@ struct MonitoredShortcut {
     let modifiers: ShortcutModifiers
     let pressCount: Int
 
-    static let bareFn = MonitoredShortcut(
-        keyCode: 0,
-        code: "Fn",
-        label: "Fn",
-        modifiers: ShortcutModifiers(function: true),
+    static let defaultPushToTalk = MonitoredShortcut(
+        keyCode: 0x02,
+        code: "KeyD",
+        label: "Ctrl+Opt+D",
+        modifiers: ShortcutModifiers(control: true, option: true),
         pressCount: 1
     )
 
@@ -281,6 +289,10 @@ struct MonitoredShortcut {
             && !modifiers.control
             && !modifiers.option
             && !modifiers.shift
+    }
+
+    var isModifierOnly: Bool {
+        isBareFn || (keyCode == 0 && code.caseInsensitiveCompare("Modifiers") == .orderedSame)
     }
 
     var payload: [String: Any] {
@@ -335,11 +347,11 @@ final class ShortcutKeyMonitor {
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
     private var shortcuts: [ShortcutKind: MonitoredShortcut] = [
-        .pushToTalk: .bareFn,
+        .pushToTalk: .defaultPushToTalk,
         .toggle: MonitoredShortcut(
-            keyCode: 0x31,
-            code: "Space",
-            label: "Ctrl+Opt+Space",
+            keyCode: 0x11,
+            code: "KeyT",
+            label: "Ctrl+Opt+T",
             modifiers: ShortcutModifiers(control: true, option: true),
             pressCount: 1
         ),
@@ -353,7 +365,8 @@ final class ShortcutKeyMonitor {
     private var lastTapAt: Date?
     private var isCapturingShortcut = false
     private var capturePressCount = 1
-    private var pendingBareFnCapture: DispatchWorkItem?
+    private var pendingModifierOnlyCapture: DispatchWorkItem?
+    private var pendingModifierOnlyModifiers: ShortcutModifiers?
 
     private init() {}
 
@@ -367,7 +380,7 @@ final class ShortcutKeyMonitor {
 
         if globalMonitor == nil, eventTap == nil {
             emit("fn_monitor_unavailable", [
-                "message": "Could not monitor Fn/Globe key events.",
+                "message": "Could not monitor global shortcut key events.",
             ])
         }
     }
@@ -386,17 +399,15 @@ final class ShortcutKeyMonitor {
             return
         }
 
-        guard hasBareFnShortcut else {
+        if let identity = activeIdentity, identity.keyCode == 0, !modifiersMatch(flags, identity.modifiers) {
+            handlePhysicalUp(identity: identity)
+        }
+
+        guard let identity = matchingModifierOnlyIdentity(flags: flags) else {
             return
         }
 
-        let isDown = flags.contains(.maskSecondaryFn)
-        let identity = ShortcutIdentity(MonitoredShortcut.bareFn)
-        if isDown {
-            handlePhysicalDown(identity: identity)
-        } else {
-            handlePhysicalUp(identity: identity)
-        }
+        handlePhysicalDown(identity: identity)
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) {
@@ -440,13 +451,13 @@ final class ShortcutKeyMonitor {
         capturePressCount = 1
         cancelPendingPush()
         activeIdentity = nil
-        cancelPendingBareFnCapture()
+        cancelPendingModifierOnlyCapture()
         emit("shortcut_capture_started")
     }
 
     func cancelShortcutCapture() {
         isCapturingShortcut = false
-        cancelPendingBareFnCapture()
+        cancelPendingModifierOnlyCapture()
         emit("shortcut_capture_cancelled")
     }
 
@@ -500,13 +511,11 @@ final class ShortcutKeyMonitor {
             }
             handlePhysicalUp(identity: identity)
         case .flagsChanged:
-            if hasBareFnShortcut {
-                let identity = ShortcutIdentity(MonitoredShortcut.bareFn)
-                if event.modifierFlags.contains(.function) {
-                    handlePhysicalDown(identity: identity)
-                } else {
-                    handlePhysicalUp(identity: identity)
-                }
+            if let identity = activeIdentity, identity.keyCode == 0, !modifiersMatch(event.modifierFlags, identity.modifiers) {
+                handlePhysicalUp(identity: identity)
+            }
+            if let identity = matchingModifierOnlyIdentity(flags: event.modifierFlags) {
+                handlePhysicalDown(identity: identity)
             }
             if let identity = activeIdentity, !modifiersMatch(event.modifierFlags, identity.modifiers) {
                 handlePhysicalUp(identity: identity)
@@ -547,15 +556,15 @@ final class ShortcutKeyMonitor {
     }
 
     private func handleCapture(modifiers: ShortcutModifiers) {
-        if modifiers.isBareFunction {
-            scheduleBareFnCapture()
+        if modifiers.isSupportedModifierOnlyShortcut {
+            scheduleModifierOnlyCapture(modifiers: modifiers)
         } else {
-            cancelPendingBareFnCapture()
+            cancelPendingModifierOnlyCapture()
         }
     }
 
     private func captureShortcut(keyCode: UInt16, modifiers: ShortcutModifiers) {
-        cancelPendingBareFnCapture()
+        cancelPendingModifierOnlyCapture()
         guard let (code, label) = keyCodeMetadata[keyCode] else {
             emit("shortcut_capture_error", [
                 "message": "That key is not supported for global shortcuts.",
@@ -580,26 +589,31 @@ final class ShortcutKeyMonitor {
         )
     }
 
-    private func scheduleBareFnCapture() {
-        guard pendingBareFnCapture == nil else {
+    private func scheduleModifierOnlyCapture(modifiers: ShortcutModifiers) {
+        guard pendingModifierOnlyModifiers != modifiers else {
             return
         }
+        cancelPendingModifierOnlyCapture()
 
         let work = DispatchWorkItem { [weak self] in
             guard let self else {
                 return
             }
+            let code = modifiers.isBareFunction ? "Fn" : "Modifiers"
+            let label = modifiers.labelParts.joined(separator: "+")
+            self.pendingModifierOnlyModifiers = nil
             self.finishCapture(
                 MonitoredShortcut(
                     keyCode: 0,
-                    code: "Fn",
-                    label: "Fn",
-                    modifiers: ShortcutModifiers(function: true),
+                    code: code,
+                    label: label,
+                    modifiers: modifiers,
                     pressCount: self.capturePressCount
                 )
             )
         }
-        pendingBareFnCapture = work
+        pendingModifierOnlyModifiers = modifiers
+        pendingModifierOnlyCapture = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
     }
 
@@ -609,27 +623,20 @@ final class ShortcutKeyMonitor {
         }
 
         isCapturingShortcut = false
-        cancelPendingBareFnCapture()
+        cancelPendingModifierOnlyCapture()
         emitJSON("shortcut_captured", [
             "shortcut": nextShortcut.payload,
         ])
     }
 
-    private func cancelPendingBareFnCapture() {
-        pendingBareFnCapture?.cancel()
-        pendingBareFnCapture = nil
-    }
-
-    private var hasBareFnShortcut: Bool {
-        shortcuts.values.contains { $0.isBareFn }
-    }
-
-    private var hasNonBareFnShortcut: Bool {
-        shortcuts.values.contains { !$0.isBareFn }
+    private func cancelPendingModifierOnlyCapture() {
+        pendingModifierOnlyCapture?.cancel()
+        pendingModifierOnlyCapture = nil
+        pendingModifierOnlyModifiers = nil
     }
 
     private func matchingIdentity(keyCode: UInt16, flags: CGEventFlags) -> ShortcutIdentity? {
-        for shortcut in shortcuts.values where !shortcut.isBareFn {
+        for shortcut in shortcuts.values where !shortcut.isModifierOnly {
             guard keyCode == shortcut.keyCode, modifiersMatch(flags, shortcut.modifiers) else {
                 continue
             }
@@ -639,8 +646,28 @@ final class ShortcutKeyMonitor {
     }
 
     private func matchingIdentity(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> ShortcutIdentity? {
-        for shortcut in shortcuts.values where !shortcut.isBareFn {
+        for shortcut in shortcuts.values where !shortcut.isModifierOnly {
             guard keyCode == shortcut.keyCode, modifiersMatch(flags, shortcut.modifiers) else {
+                continue
+            }
+            return ShortcutIdentity(shortcut)
+        }
+        return nil
+    }
+
+    private func matchingModifierOnlyIdentity(flags: CGEventFlags) -> ShortcutIdentity? {
+        for shortcut in shortcuts.values where shortcut.isModifierOnly {
+            guard modifiersMatch(flags, shortcut.modifiers) else {
+                continue
+            }
+            return ShortcutIdentity(shortcut)
+        }
+        return nil
+    }
+
+    private func matchingModifierOnlyIdentity(flags: NSEvent.ModifierFlags) -> ShortcutIdentity? {
+        for shortcut in shortcuts.values where shortcut.isModifierOnly {
+            guard modifiersMatch(flags, shortcut.modifiers) else {
                 continue
             }
             return ShortcutIdentity(shortcut)

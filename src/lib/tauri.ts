@@ -102,6 +102,7 @@ export type DictationSettingsDto = {
   toggleShortcut: DictationShortcutSetting;
   microphone: DictationMicrophoneSetting;
   style: DictationStyle;
+  language?: string;
 };
 
 export type DictationSettingsResponse = {
@@ -377,6 +378,14 @@ export type HermesFilesystemRoot = {
 
 export type HermesFilesystemSnapshot = {
   roots: HermesFilesystemRoot[];
+};
+
+export type ImportedHermesFile = {
+  name: string;
+  path: string;
+  rootLabel: string;
+  size: number;
+  previewDataUrl?: string | null;
 };
 
 export type HermesSkillInfo = {
@@ -751,6 +760,18 @@ export async function downloadHermesBridgeFile(path: string) {
   return invoke<string>("download_hermes_bridge_file", { request: { path } });
 }
 
+export async function hermesBridgeFilePreview(path: string) {
+  return invoke<string | null>("hermes_bridge_file_preview", {
+    request: { path },
+  });
+}
+
+export async function importHermesBridgeFile(path: string) {
+  return invoke<ImportedHermesFile>("import_hermes_bridge_file", {
+    request: { path },
+  });
+}
+
 export async function hermesBridgeSessions(
   input: {
     limit?: number;
@@ -776,6 +797,16 @@ export async function hermesBridgeSessionMessages(sessionId: string) {
 export async function deleteHermesBridgeSession(sessionId: string) {
   return invoke<unknown>("delete_hermes_bridge_session", {
     request: { sessionId },
+  });
+}
+
+export async function ensureHermesBridgeSession(input: {
+  sessionId: string;
+  title?: string;
+  model?: string;
+}) {
+  return invoke<unknown>("ensure_hermes_bridge_session", {
+    request: input,
   });
 }
 
@@ -975,6 +1006,12 @@ export async function setDictationMicrophone(id?: string, name?: string) {
 
 export async function setDictationStyle(style: DictationStyle) {
   return invoke<DictationSettingsDto>("set_dictation_style", { style });
+}
+
+export async function setDictationLanguage(language?: string) {
+  return invoke<DictationSettingsDto>("set_dictation_language", {
+    language: language || undefined,
+  });
 }
 
 export async function dictationHelperCommand(command: Record<string, unknown>) {

@@ -26,6 +26,7 @@ dotenvy = "0.15"
 figment = { version = "0.10", features = ["env", "toml"] }
 hound = "3.5"
 jsonwebtoken = "9"
+sha2 = "0.10"
 # Pure-Rust MP4/M4A parser used for duration probing on the /v1/dictate
 # path, where the desktop helper records AAC-in-MPEG-4. Hound is WAV-only.
 mp4 = "0.14"

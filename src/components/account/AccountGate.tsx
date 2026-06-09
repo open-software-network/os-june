@@ -51,7 +51,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
         <span className="welcome-mark" aria-hidden>
           <ScribeMark />
         </span>
-        <h1 className="welcome-title">Welcome to Scribe</h1>
+        <h1 className="welcome-title">Welcome to OS June</h1>
         <p className="welcome-subtitle">
           Record conversations, turn them into notes, and dictate with your
           OpenSoftware account.

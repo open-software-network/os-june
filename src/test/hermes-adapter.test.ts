@@ -57,6 +57,13 @@ describe("Hermes adapter", () => {
     expect(messages.map((message) => message.id)).toEqual(["1", "m2"]);
   });
 
+  it("treats malformed gateway responses as empty lists", () => {
+    expect(normalizeHermesSessionsResponse(null)).toEqual([]);
+    expect(normalizeHermesSessionsResponse("not-json")).toEqual([]);
+    expect(normalizeHermesSessionMessagesResponse(undefined)).toEqual([]);
+    expect(normalizeHermesSessionMessagesResponse(42)).toEqual([]);
+  });
+
   it("keeps session display helpers stable", () => {
     expect(
       sessionTimestamp({

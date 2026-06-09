@@ -1,5 +1,4 @@
 import {
-  BotIcon,
   CheckIcon,
   CircleStopIcon,
   DownloadIcon,
@@ -8,15 +7,26 @@ import {
   FolderTreeIcon,
   MessageSquareIcon,
   RotateCwIcon,
-  SendIcon,
   ShieldCheckIcon,
-  TerminalIcon,
   WrenchIcon,
   XIcon,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { IconArrowUp } from "central-icons/IconArrowUp";
+import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
+import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
+import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconPencil } from "central-icons/IconPencil";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconShieldAi } from "central-icons/IconShieldAi";
+import { IconTrashCan } from "central-icons/IconTrashCan";
+import { IconPangolin } from "../icons/IconPangolin";
 import {
   type CSSProperties,
   type FormEvent,
+  type DragEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -29,12 +39,16 @@ import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
   createAgentTask,
+  dictationHelperCommand,
   getAgentTask,
+  ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
+  hermesBridgeFilePreview,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
+  importHermesBridgeFile,
   listAgentTasks,
   downloadHermesBridgeFile,
   retryAgentTask,
@@ -53,6 +67,7 @@ import {
   type HermesBridgeStatus,
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
+  type ImportedHermesFile,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
   type HermesSessionInfo,
@@ -61,11 +76,20 @@ import {
   type HermesToolsetInfo,
 } from "../../lib/tauri";
 import {
+  deleteHermesSession,
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
+import {
+  AGENT_DELETE_SESSION_EVENT,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SESSIONS_CHANGED_EVENT,
+  dispatchAgentSessionStatus,
+  type AgentSessionStatusKind,
+} from "../../lib/agent-events";
 import {
   HermesGatewayClient,
   type HermesGatewayEvent,
@@ -89,15 +113,18 @@ const AGENT_TITLE_TIMEOUT_MS = 2500;
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
-export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
-export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
-export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
-export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
+export {
+  AGENT_DELETE_SESSION_EVENT,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SESSIONS_CHANGED_EVENT,
+};
 
 export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
   selectedSessionId?: string;
   workingSessionIds: string[];
+  waitingSessionIds?: string[];
 };
 
 export type AgentNewSessionDetail = {
@@ -113,6 +140,15 @@ type AgentArtifact = {
   path: string;
   rootLabel: string;
   size?: number | null;
+  previewDataUrl?: string | null;
+};
+
+type AgentAttachment = ImportedHermesFile & {
+  id: string;
+};
+
+type TauriFileDropPayload = {
+  paths?: string[];
 };
 
 type HermesRuntimeSessionResponse = {
@@ -130,6 +166,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const [dropActive, setDropActive] = useState(false);
+  const [importingFiles, setImportingFiles] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,11 +185,17 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
     string | undefined
   >(initialSessionId);
+  const selectedHermesSessionIdRef = useRef<string | undefined>(
+    initialSessionId,
+  );
   const [newSessionMode, setNewSessionMode] = useState(false);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
+    Record<string, HermesSessionMessage[]>
+  >({});
+  const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
   >({});
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
@@ -163,6 +208,11 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const workingSessionIdsRef = useRef<Set<string>>(new Set());
+  const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const waitingSessionIdsRef = useRef<Set<string>>(new Set());
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
   >({});
@@ -195,6 +245,20 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const sessionTitleOverridesRef = useRef<Record<string, string>>({});
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const [composerMultiline, setComposerMultiline] = useState(false);
+
+  useEffect(() => {
+    selectedHermesSessionIdRef.current = selectedHermesSessionId;
+    workingSessionIdsRef.current = workingSessionIds;
+    waitingSessionIdsRef.current = waitingSessionIds;
+    pendingHermesMessagesRef.current = pendingHermesMessages;
+  }, [
+    pendingHermesMessages,
+    selectedHermesSessionId,
+    waitingSessionIds,
+    workingSessionIds,
+  ]);
 
   const setTaskWorking = useCallback((taskId: string, working: boolean) => {
     setWorkingTaskIds((current) => {
@@ -217,6 +281,23 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         } else {
           next.delete(sessionId);
         }
+        workingSessionIdsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const setSessionWaiting = useCallback(
+    (sessionId: string, waiting: boolean) => {
+      setWaitingSessionIds((current) => {
+        const next = new Set(current);
+        if (waiting) {
+          next.add(sessionId);
+        } else {
+          next.delete(sessionId);
+        }
+        waitingSessionIdsRef.current = next;
         return next;
       });
     },
@@ -278,10 +359,34 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     setHermesSessionsLoading(true);
     try {
       const sessions = applySessionTitleOverrides(await listHermesSessions());
-      setHermesSessionItems(sessions);
+      const pendingMessages = pendingHermesMessagesRef.current;
+      const selectedSessionId = selectedHermesSessionIdRef.current;
+      const workingSessions = workingSessionIdsRef.current;
+      const waitingSessions = waitingSessionIdsRef.current;
+      setHermesSessionItems((current) =>
+        mergeActiveHermesSessions(sessions, current, {
+          selectedSessionId,
+          workingSessionIds: workingSessions,
+          waitingSessionIds: waitingSessions,
+          pendingMessages,
+        }),
+      );
       setSelectedHermesSessionId((current) => {
-        if (newSessionModeRef.current) return undefined;
-        if (current && sessions.some((session) => session.id === current)) {
+        if (newSessionModeRef.current) {
+          selectedHermesSessionIdRef.current = undefined;
+          return undefined;
+        }
+        if (
+          current &&
+          (sessions.some((session) => session.id === current) ||
+            shouldRetainHermesSessionId(current, {
+              selectedSessionId: current,
+              workingSessionIds: workingSessions,
+              waitingSessionIds: waitingSessions,
+              pendingMessages,
+            }))
+        ) {
+          selectedHermesSessionIdRef.current = current;
           return current;
         }
         const taskSession = selectedTask?.hermesSessionId;
@@ -289,9 +394,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
           taskSession &&
           sessions.some((session) => session.id === taskSession)
         ) {
+          selectedHermesSessionIdRef.current = taskSession;
           return taskSession;
         }
-        return sessions[0]?.id;
+        const nextSessionId = sessions[0]?.id;
+        selectedHermesSessionIdRef.current = nextSessionId;
+        return nextSessionId;
       });
       setError(null);
     } catch (err) {
@@ -315,6 +423,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     newSessionModeRef.current = false;
     setNewSessionMode(false);
     setActivePanel("chat");
+    selectedHermesSessionIdRef.current = initialSessionId;
     setSelectedHermesSessionId(initialSessionId);
     setSelectedTaskId(undefined);
     if (initialSession) {
@@ -335,11 +444,17 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
             sessions: hermesSessionItems,
             selectedSessionId: selectedHermesSessionId,
             workingSessionIds: Array.from(workingSessionIds),
+            waitingSessionIds: Array.from(waitingSessionIds),
           },
         },
       ),
     );
-  }, [hermesSessionItems, selectedHermesSessionId, workingSessionIds]);
+  }, [
+    hermesSessionItems,
+    selectedHermesSessionId,
+    waitingSessionIds,
+    workingSessionIds,
+  ]);
 
   useEffect(() => {
     function handleNewSession(event: Event) {
@@ -353,16 +468,29 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       const { sessionId } = detail;
       setHermesSessionItems((current) => {
         const next = current.filter((session) => session.id !== sessionId);
-        setSelectedHermesSessionId((selected) =>
-          selected === sessionId ? next[0]?.id : selected,
-        );
+        setSelectedHermesSessionId((selected) => {
+          const nextSelected = selected === sessionId ? next[0]?.id : selected;
+          selectedHermesSessionIdRef.current = nextSelected;
+          return nextSelected;
+        });
         return next;
       });
       setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
-      setPendingHermesMessages((current) => omitRecordKey(current, sessionId));
+      setPendingHermesMessages((current) => {
+        const next = omitRecordKey(current, sessionId);
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
       setWorkingSessionIds((current) => {
         const next = new Set(current);
         next.delete(sessionId);
+        workingSessionIdsRef.current = next;
+        return next;
+      });
+      setWaitingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        waitingSessionIdsRef.current = next;
         return next;
       });
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
@@ -391,20 +519,28 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     listHermesSessionMessages(selectedHermesSessionId)
       .then((messages) => {
         if (cancelled) return;
+        const retainedPending = retainUnpersistedPendingMessages(
+          pendingHermesMessagesRef.current[selectedHermesSessionId] ?? [],
+          messages,
+        );
         setHermesSessionMessages((current) => ({
           ...current,
           [selectedHermesSessionId]: messages,
         }));
-        setPendingHermesMessages((current) => ({
-          ...current,
-          [selectedHermesSessionId]: retainUnpersistedPendingMessages(
-            current[selectedHermesSessionId] ?? [],
-            messages,
-          ),
-        }));
+        setPendingHermesMessages((current) => {
+          const next = {
+            ...current,
+            [selectedHermesSessionId]: retainedPending,
+          };
+          pendingHermesMessagesRef.current = next;
+          return next;
+        });
         void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
-        if (sessionHasAssistantAfterLatestUser(messages)) {
+        if (
+          sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
+        ) {
           setSessionWorking(selectedHermesSessionId, false);
+          setSessionWaiting(selectedHermesSessionId, false);
           liveEventsRef.current = {
             ...liveEventsRef.current,
             [selectedHermesSessionId]: [],
@@ -491,17 +627,61 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   }, [bridge.running, selectedHermesSessionId, workingSessionIds]);
 
   useEffect(() => {
-    if (typeof listRef.current?.scrollTo !== "function") return;
-    listRef.current.scrollTo({
-      top: listRef.current.scrollHeight,
-      behavior: "smooth",
-    });
+    // The conversation scrolls in the main card (.main-panel-body), not an
+    // inner pane — so drive that scroller to the bottom as turns arrive.
+    const scroller = listRef.current?.closest(".main-panel-body");
+    if (!(scroller instanceof HTMLElement)) return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
   }, [
     selectedTask?.messages.length,
     selectedTask?.toolEvents.length,
     selectedHermesMessages.length,
     selectedHermesSessionId,
   ]);
+
+  // Auto-grow the composer with its content (capped), since WKWebView has no
+  // CSS field-sizing. Recomputing on `draft` also collapses it back after a
+  // submit clears the value.
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    // Once the input wraps to a second line, the toolbar drops below it.
+    const styles = getComputedStyle(el);
+    const lineHeight = parseFloat(styles.lineHeight) || 20;
+    const padding =
+      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const lines = Math.round((el.scrollHeight - padding) / lineHeight);
+    setComposerMultiline(lines >= 2);
+  }, [draft]);
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const installListener = async (eventName: string) => {
+      const unlisten = await listen<TauriFileDropPayload>(
+        eventName,
+        (event) => {
+          const paths = event.payload?.paths ?? [];
+          if (paths.length) {
+            void importDroppedFilePaths(paths);
+          }
+        },
+      );
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(unlisten);
+    };
+    void installListener("tauri://drag-drop");
+    void installListener("tauri://file-drop");
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, []);
 
   useEffect(() => {
     if (activePanel === "skills" && (!skills || !toolsets)) {
@@ -512,46 +692,147 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
   }, [activePanel]);
 
+  // Starting a new session should land on the composer the way a new note
+  // lands on the empty page — just start typing, no detour to the sidebar.
+  useEffect(() => {
+    if (newSessionMode && activePanel === "chat") {
+      composerRef.current?.focus();
+    }
+  }, [newSessionMode, activePanel]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || submitting) return;
+    const message = draft.trim();
+    if ((!message && !attachments.length) || submitting || importingFiles)
+      return;
+    const content = promptWithAttachments(message, attachments);
     setSubmitting(true);
     setDraft("");
+    setAttachments([]);
     try {
       await submitHermesSession(content);
+      setAttachments([]);
       setError(null);
     } catch (err) {
-      setDraft(content);
+      setDraft(message);
       setError(messageFromError(err));
     } finally {
       setSubmitting(false);
     }
   }
 
+  function handleComposerDragOver(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  }
+
+  function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setDropActive(false);
+    const paths = Array.from(event.dataTransfer.files)
+      .map((file) => (file as File & { path?: string }).path)
+      .filter((path): path is string => Boolean(path));
+    if (!paths.length) {
+      setError("Drop files from Finder to attach them to the agent.");
+      return;
+    }
+    void importDroppedFilePaths(paths);
+  }
+
+  async function importDroppedFilePaths(paths: string[]) {
+    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
+      .filter(Boolean)
+      .slice(0, 8);
+    if (!uniquePaths.length) return;
+    setImportingFiles(true);
+    try {
+      const imported = await Promise.all(
+        uniquePaths.map((path) => importHermesBridgeFile(path)),
+      );
+      setAttachments((current) => [
+        ...current,
+        ...imported.map((file) => ({
+          ...file,
+          id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
+        })),
+      ]);
+      setError(null);
+      void loadFilesystemSnapshot();
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setImportingFiles(false);
+    }
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
+  // Focus the composer, then toggle the dictation helper's listening state —
+  // the same command the hotkey path sends. The helper records, shows the HUD,
+  // and pastes the transcription into the focused field (the composer).
+  async function startDictation() {
+    composerRef.current?.focus();
+    try {
+      await dictationHelperCommand({
+        type: "toggle_listening",
+        shortcut: "Dictation",
+      });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  // The "+" picker routes through the same bridge import as drag-drop so the
+  // agent always gets a real, readable path.
+  async function pickAttachments() {
+    try {
+      const selected = await openFileDialog({
+        multiple: true,
+        title: "Attach files",
+      });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      await importDroppedFilePaths(paths);
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   async function submitHermesSession(content: string) {
-    const titlePromise = selectedHermesSessionId
+    const targetSessionId = newSessionModeRef.current
+      ? undefined
+      : selectedHermesSessionId;
+    const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
     const gateway = await ensureHermesGateway();
     const sessionTitle = titlePromise ? await titlePromise : undefined;
-    const created = selectedHermesSessionId
+    const created = targetSessionId
       ? undefined
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
           title: sessionTitle ?? titleFromPrompt(content),
           cols: 96,
         });
     const storedSessionId =
-      selectedHermesSessionId ??
-      created?.stored_session_id ??
-      created?.session_id;
+      targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    const sessionDisplayTitle = sessionTitle ?? titleFromPrompt(content);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
         [storedSessionId]: sessionTitle,
       };
     }
+    await withTimeout(
+      ensureHermesBridgeSession({
+        sessionId: storedSessionId,
+        title: sessionDisplayTitle,
+      }),
+      2500,
+    ).catch(() => undefined);
     const runtimeSessionId =
       created?.session_id ??
       runtimeSessionIds[storedSessionId] ??
@@ -570,6 +851,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       ...current,
       [storedSessionId]: runtimeSessionId,
     }));
+    selectedHermesSessionIdRef.current = storedSessionId;
     setSelectedHermesSessionId(storedSessionId);
     setSelectedTaskId(undefined);
     setHermesSessionItems((current) => {
@@ -578,7 +860,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       return [
         {
           id: storedSessionId,
-          title: sessionTitle ?? titleFromPrompt(content),
+          title: sessionDisplayTitle,
           preview: content,
           started_at: createdAt,
           last_active: createdAt,
@@ -587,19 +869,32 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         ...current,
       ];
     });
-    setPendingHermesMessages((current) => ({
-      ...current,
-      [storedSessionId]: [
-        ...(current[storedSessionId] ?? []),
-        {
-          id: `pending:user:${Date.now()}`,
-          role: "user",
-          content,
-          timestamp: createdAt,
-        },
-      ],
-    }));
+    const pendingUserMessage: HermesSessionMessage = {
+      id: `pending:user:${Date.now()}`,
+      role: "user",
+      content,
+      timestamp: createdAt,
+    };
+    setPendingHermesMessages((current) => {
+      const next = {
+        ...current,
+        [storedSessionId]: [
+          ...(current[storedSessionId] ?? []),
+          pendingUserMessage,
+        ],
+      };
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
     setSessionWorking(storedSessionId, true);
+    setSessionWaiting(storedSessionId, false);
+    dispatchAgentSessionStatus({
+      sessionId: storedSessionId,
+      title: sessionDisplayTitle,
+      prompt: content,
+      status: "running",
+      summary: "June is working.",
+    });
     const unlisten = gateway.onEvent((event) => {
       if (
         event.session_id !== runtimeSessionId &&
@@ -616,9 +911,26 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
+      const status = agentStatusFromHermesEvent(event);
+      if (status === "waitingForUser") {
+        setSessionWorking(storedSessionId, false);
+        setSessionWaiting(storedSessionId, true);
+      } else if (status === "running") {
+        setSessionWaiting(storedSessionId, false);
+        setSessionWorking(storedSessionId, true);
+      }
+      if (status) {
+        dispatchAgentSessionStatus({
+          sessionId: storedSessionId,
+          title: sessionDisplayTitle,
+          status,
+          summary: agentStatusSummaryFromHermesEvent(event, status),
+        });
+      }
       if (isTerminalHermesEvent(event.type)) {
         unlisten();
         setSessionWorking(storedSessionId, false);
+        setSessionWaiting(storedSessionId, false);
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
         }, 300);
@@ -633,6 +945,13 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     } catch (err) {
       unlisten();
       setSessionWorking(storedSessionId, false);
+      setSessionWaiting(storedSessionId, false);
+      dispatchAgentSessionStatus({
+        sessionId: storedSessionId,
+        title: sessionDisplayTitle,
+        status: "failed",
+        summary: messageFromError(err),
+      });
       throw err;
     }
   }
@@ -738,20 +1057,28 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   async function refreshHermesSession(sessionId: string) {
     try {
       const messages = await listHermesSessionMessages(sessionId);
+      const retainedPending = retainUnpersistedPendingMessages(
+        pendingHermesMessagesRef.current[sessionId] ?? [],
+        messages,
+      );
       setHermesSessionMessages((current) => ({
         ...current,
         [sessionId]: messages,
       }));
-      setPendingHermesMessages((current) => ({
-        ...current,
-        [sessionId]: retainUnpersistedPendingMessages(
-          current[sessionId] ?? [],
-          messages,
-        ),
-      }));
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [sessionId]: retainedPending,
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
       void suggestTitleForUntitledSession(sessionId, messages);
-      if (sessionHasAssistantAfterLatestUser(messages)) {
+      if (
+        sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
+      ) {
         setSessionWorking(sessionId, false);
+        setSessionWaiting(sessionId, false);
         liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
         setLiveEvents(liveEventsRef.current);
       }
@@ -784,7 +1111,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       const message = messageFromError(err);
       if (message.toLowerCase().includes("session not found")) {
         setWorkingTaskIds(new Set());
-        setWorkingSessionIds(new Set());
+        const emptyWorkingSessions = new Set<string>();
+        workingSessionIdsRef.current = emptyWorkingSessions;
+        setWorkingSessionIds(emptyWorkingSessions);
         liveEventsRef.current = {};
         setLiveEvents({});
         void loadHermesSessions();
@@ -845,10 +1174,17 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
+    selectedHermesSessionIdRef.current = undefined;
     setSelectedHermesSessionId(undefined);
     const initialPrompt = prompt?.trim() ?? "";
     setDraft(initialPrompt);
     if (!initialPrompt) return;
+    dispatchAgentSessionStatus({
+      prompt: initialPrompt,
+      title: titleFromPrompt(initialPrompt),
+      status: "starting",
+      summary: "Starting June.",
+    });
     setSubmitting(true);
     try {
       await submitHermesSession(initialPrompt);
@@ -857,6 +1193,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     } catch (err) {
       setDraft(initialPrompt);
       setError(messageFromError(err));
+      dispatchAgentSessionStatus({
+        prompt: initialPrompt,
+        title: titleFromPrompt(initialPrompt),
+        status: "failed",
+        summary: messageFromError(err),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -926,6 +1268,38 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       setError(messageFromError(err));
     } finally {
       setFilesystemLoading(false);
+    }
+  }
+
+  // Manual rename. Records an override (same channel the auto-suggested titles
+  // use) and marks the session so the suggester won't clobber the user's name.
+  // The sessions-changed effect propagates it to the sidebar.
+  function renameHermesSession(sessionId: string, title: string) {
+    titleSuggestionSessionIdsRef.current.add(sessionId);
+    sessionTitleOverridesRef.current = {
+      ...sessionTitleOverridesRef.current,
+      [sessionId]: title,
+    };
+    setHermesSessionItems((current) =>
+      current.map((item) =>
+        item.id === sessionId ? { ...item, title } : item,
+      ),
+    );
+  }
+
+  async function deleteSelectedHermesSession(sessionId: string) {
+    try {
+      await deleteHermesSession(sessionId);
+      // Dropping it from items fires the sessions-changed effect, which syncs
+      // the sidebar; clearing the selection falls the workspace back to empty.
+      setHermesSessionItems((current) =>
+        current.filter((item) => item.id !== sessionId),
+      );
+      setSelectedHermesSessionId((current) =>
+        current === sessionId ? undefined : current,
+      );
+    } catch (err) {
+      setError(messageFromError(err));
     }
   }
 
@@ -1055,33 +1429,55 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
   }
 
+  // Hoisted so the trailing "Thinking…" indicator only shows in the gap after a
+  // send (last turn is the user's) — once an assistant turn exists it carries
+  // its own thinking/streaming state, so we don't double up.
+  const hermesTurns = selectedHermesSessionId
+    ? mergeThinkingTurns(
+        buildHermesSessionChatTurns(
+          selectedHermesMessages,
+          liveEvents[selectedHermesSessionId] ?? [],
+        ),
+      )
+    : [];
+  const taskTurns = selectedTask
+    ? mergeThinkingTurns(
+        buildAgentChatTurns(
+          selectedTask.messages,
+          selectedTask.toolEvents,
+          liveEvents[selectedTask.id] ?? [],
+        ),
+      )
+    : [];
+
   return (
     <section className="agent-workspace" aria-label="Agent">
+      {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
+        <AgentSessionBar
+          title={
+            !newSessionMode && selectedHermesSessionId
+              ? (selectedHermesSession?.title ?? "")
+              : undefined
+          }
+          onRename={
+            !newSessionMode && selectedHermesSessionId
+              ? (title) =>
+                  renameHermesSession(selectedHermesSessionId, title)
+              : undefined
+          }
+          onDelete={
+            !newSessionMode && selectedHermesSessionId
+              ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
+              : undefined
+          }
+        />
+      )}
       <section className="agent-main" aria-label="Agent task details">
         {error ? <p className="error-banner">{error}</p> : null}
         {!newSessionMode && selectedHermesSessionId ? (
           <>
-            <header className="agent-detail-header">
-              <div className="agent-detail-title">
-                <ActivityIndicator
-                  active={workingSessionIds.has(selectedHermesSessionId)}
-                  large
-                />
-                <div>
-                  <h2>
-                    {selectedHermesSession?.title ||
-                      selectedHermesSession?.preview ||
-                      "Untitled session"}
-                  </h2>
-                </div>
-              </div>
-            </header>
             <div ref={listRef} className="agent-timeline">
-              <SafetyPanel />
-              {buildHermesSessionChatTurns(
-                selectedHermesMessages,
-                liveEvents[selectedHermesSessionId] ?? [],
-              ).map((turn) => (
+              {hermesTurns.map((turn) => (
                 <AgentChatTurnRow
                   key={turn.id}
                   turn={turn}
@@ -1110,6 +1506,10 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   }
                 />
               ))}
+              {workingSessionIds.has(selectedHermesSessionId) &&
+              hermesTurns.at(-1)?.role === "user" ? (
+                <AgentThinking />
+              ) : null}
             </div>
           </>
         ) : !newSessionMode && selectedTask ? (
@@ -1120,11 +1520,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   active={workingTaskIds.has(selectedTask.id)}
                   large
                 />
-                <div>
+                <div className="agent-detail-heading">
                   <h2>{selectedTask.title}</h2>
-                  {workingTaskIds.has(selectedTask.id) ? (
-                    <p>Working now.</p>
-                  ) : null}
+                  <SafetyBadge />
                 </div>
               </div>
               <div className="agent-actions">
@@ -1153,12 +1551,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
               </div>
             </header>
             <div ref={listRef} className="agent-timeline">
-              <SafetyPanel />
-              {buildAgentChatTurns(
-                selectedTask.messages,
-                selectedTask.toolEvents,
-                liveEvents[selectedTask.id] ?? [],
-              ).map((turn) => (
+              {taskTurns.map((turn) => (
                 <AgentChatTurnRow
                   key={turn.id}
                   turn={turn}
@@ -1188,62 +1581,137 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   }
                 />
               ))}
+              {workingTaskIds.has(selectedTask.id) &&
+              taskTurns.at(-1)?.role === "user" ? (
+                <AgentThinking />
+              ) : null}
             </div>
           </>
         ) : (
-          <>
-            <header className="agent-detail-header">
-              <div className="agent-detail-title">
-                <BotIcon size={18} />
-                <div>
-                  <h2>Agent</h2>
-                  <p>
-                    {bridgeStarting
-                      ? "Setting up the local agent runtime..."
-                      : bridge.running
-                        ? `Hermes bridge running on ${bridge.connection?.port ?? "local"}`
-                        : "Desktop tasks with private local-tool policy."}
-                  </p>
-                </div>
-              </div>
-            </header>
-            <div className="agent-compose-empty">
-              <EmptyState
-                icon={<BotIcon size={24} />}
-                title="Start an agent session"
-                description="Use New Session in the sidebar, then ask the agent to complete a desktop task."
-                label="Start an agent session"
-              />
-            </div>
-          </>
+          <div className="agent-empty-view">
+            <EmptyState
+              icon={<IconPangolin size={24} />}
+              title="Start an agent session"
+              description={
+                bridgeStarting
+                  ? "Getting the agent ready…"
+                  : "Ask the agent to complete a desktop task in the box below. It runs privately on your machine."
+              }
+              label="Start an agent session"
+            />
+          </div>
         )}
 
         {activePanel === "chat" ? (
           <form
             className="agent-composer"
+            data-drop-active={dropActive ? "true" : undefined}
             onSubmit={(event) => void submit(event)}
+            onDragOver={handleComposerDragOver}
+            onDragEnter={() => setDropActive(true)}
+            onDragLeave={() => setDropActive(false)}
+            onDrop={handleComposerDrop}
           >
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.currentTarget.value)}
-              placeholder={
-                selectedHermesSessionId || selectedTask
-                  ? "Send a follow-up"
-                  : "Ask the agent to complete a desktop task"
+            <div
+              className="agent-composer-box"
+              data-dirty={
+                draft.trim() || attachments.length ? "true" : "false"
               }
-              rows={2}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
-            <button type="submit" disabled={submitting || !draft.trim()}>
-              {submitting ? <Spinner size={15} /> : <SendIcon size={15} />}
-              <span>
-                {selectedHermesSessionId || selectedTask ? "Send" : "Create"}
-              </span>
-            </button>
+              data-multiline={composerMultiline ? "true" : "false"}
+            >
+              {attachments.length ? (
+                <div className="agent-composer-attachments">
+                  {attachments.map((attachment) => (
+                    <span
+                      key={attachment.id}
+                      className="agent-attachment-chip"
+                      title={attachment.name}
+                    >
+                      {attachment.previewDataUrl ? (
+                        <img
+                          src={attachment.previewDataUrl}
+                          alt=""
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <FileIcon size={14} />
+                      )}
+                      <span className="agent-attachment-name">
+                        {attachment.name}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${attachment.name}`}
+                        onClick={() => removeAttachment(attachment.id)}
+                      >
+                        <XIcon size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="agent-composer-row">
+                <button
+                  type="button"
+                  className="agent-composer-attach"
+                  aria-label="Attach files"
+                  title="Attach files"
+                  onClick={() => void pickAttachments()}
+                >
+                  <IconPlusMedium size={18} />
+                </button>
+                <textarea
+                  ref={composerRef}
+                  value={draft}
+                  onChange={(event) => setDraft(event.currentTarget.value)}
+                  placeholder={
+                    importingFiles ? "Attaching file…" : "Send a message"
+                  }
+                  rows={1}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                />
+                <div className="agent-composer-actions">
+                  <button
+                    type="button"
+                    className="agent-composer-mic"
+                    aria-label="Dictate"
+                    title="Start dictation"
+                    onClick={() => void startDictation()}
+                  >
+                    <IconMicrophone size={18} />
+                  </button>
+                  <button
+                    type="submit"
+                    className="agent-composer-send"
+                    disabled={
+                      submitting ||
+                      importingFiles ||
+                      (!draft.trim() && !attachments.length)
+                    }
+                    tabIndex={draft.trim() || attachments.length ? 0 : -1}
+                    aria-hidden={
+                      draft.trim() || attachments.length ? undefined : true
+                    }
+                    aria-label={
+                      selectedHermesSessionId || selectedTask
+                        ? "Send message"
+                        : "Start session"
+                    }
+                  >
+                    {submitting ? (
+                      <Spinner size={15} />
+                    ) : (
+                      <IconArrowUp size={16} />
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
           </form>
         ) : null}
       </section>
@@ -1497,18 +1965,153 @@ function completedHermesMessageText(events: LiveHermesEvent[]) {
   return message.item.text.trim();
 }
 
-function SafetyPanel() {
+function SafetyBadge() {
   return (
-    <section className="agent-safety-panel" aria-label="Agent safety policy">
-      <ShieldCheckIcon size={16} />
-      <div>
-        <h3>Autonomous private mode</h3>
-        <p>
-          Local actions are audited. Sensitive desktop, credential, payment, and
-          destructive actions are blocked or escalated before execution.
-        </p>
+    <span
+      className="agent-safety-badge"
+      title="Sensitive desktop, credential, payment, and destructive actions are blocked or escalated."
+      aria-label="Private mode — sensitive desktop, credential, payment, and destructive actions are blocked or escalated."
+    >
+      <IconShieldAi size={13} aria-hidden />
+      Private mode
+    </span>
+  );
+}
+
+// Persistent, full-width session bar — same chrome as the Notes/Folders
+// breadcrumb. Stays pinned while the conversation scrolls beneath it, carries
+// the private-mode badge, and folds rename/delete into an overflow menu so the
+// conversation keeps the focus (no separate title heading).
+function AgentSessionBar({
+  title,
+  onRename,
+  onDelete,
+}: {
+  title?: string;
+  onRename?: (title: string) => void;
+  onDelete?: () => void;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(title ?? "");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointer(event: MouseEvent) {
+      if (!menuWrapRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  function commitRename() {
+    setRenaming(false);
+    const next = draft.trim();
+    if (onRename && next && next !== title) onRename(next);
+  }
+
+  const hasMenu = Boolean(onRename || onDelete);
+
+  return (
+    <div className="detail-bar agent-session-bar" data-tauri-drag-region>
+      <nav className="detail-breadcrumb" aria-label="Breadcrumb">
+        <ol>
+          <li>
+            <span className="detail-breadcrumb-label">Agent</span>
+          </li>
+          {title !== undefined ? (
+            <li>
+              <span className="detail-breadcrumb-separator" aria-hidden>
+                /
+              </span>
+              {renaming ? (
+                <input
+                  className="agent-session-rename"
+                  aria-label="Session name"
+                  autoFocus
+                  value={draft}
+                  onChange={(event) => setDraft(event.currentTarget.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitRename();
+                    }
+                    if (event.key === "Escape") {
+                      setRenaming(false);
+                      setDraft(title ?? "");
+                    }
+                  }}
+                />
+              ) : (
+                <span className="detail-breadcrumb-current">
+                  {title || "Untitled session"}
+                </span>
+              )}
+            </li>
+          ) : null}
+        </ol>
+      </nav>
+      <div className="detail-bar-actions">
+        <SafetyBadge />
+        {hasMenu ? (
+          <div className="agent-session-menu-wrap" ref={menuWrapRef}>
+            <button
+              type="button"
+              className="icon-button agent-session-menu-trigger"
+              aria-label="Session actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <IconDotGrid1x3Horizontal size={16} />
+            </button>
+            {menuOpen ? (
+              <div className="sidebar-identity-menu agent-session-menu" role="menu">
+                {onRename ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setDraft(title ?? "");
+                      setRenaming(true);
+                    }}
+                  >
+                    <IconPencil size={14} />
+                    Rename
+                  </button>
+                ) : null}
+                {onDelete ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="destructive"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onDelete();
+                    }}
+                  >
+                    <IconTrashCan size={14} />
+                    Delete session
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -1561,7 +2164,7 @@ function PanelTabs({
         aria-selected={activePanel === "chat"}
         onClick={() => onChange("chat")}
       >
-        <BotIcon size={14} />
+        <IconPangolin size={14} />
         Chat
       </button>
       <button
@@ -1822,7 +2425,7 @@ export function FilesystemPanel({
               <header>
                 <div>
                   <h3 className="agent-files-root-title">
-                    <BotIcon size={14} />
+                    <IconPangolin size={14} />
                     {root.label}
                   </h3>
                   <p>{root.description}</p>
@@ -2166,16 +2769,50 @@ function CapabilityRow({
   );
 }
 
-function MessageBubble({ message }: { message: AgentMessageDto }) {
-  return (
-    <article className="agent-message" data-role={message.role}>
-      <div className="agent-message-meta">
-        {message.role === "assistant" ? "Agent" : "You"}
-        <span>{relativeDate(message.createdAt)}</span>
-      </div>
-      <MarkdownContent markdown={message.content} />
-    </article>
-  );
+// Collapse runs of "thinking-only" assistant turns (reasoning/tool, no answer
+// text) into the next answer turn, so a back-to-back chain of thoughts shows as
+// a single "Thought" disclosure rather than several stacked in a row.
+function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
+  const isThinkingOnly = (turn: AgentChatTurn): boolean =>
+    turn.role === "assistant" &&
+    turn.parts.length > 0 &&
+    turn.parts.every(
+      (part) => part.type === "reasoning" || part.type === "tool",
+    );
+  const rebuild = (
+    turn: AgentChatTurn,
+    parts: AgentChatPart[],
+  ): AgentChatTurn => ({
+    id: turn.id,
+    role: turn.role,
+    createdAt: turn.createdAt,
+    status: turn.status,
+    parts,
+  });
+
+  const out: AgentChatTurn[] = [];
+  let pending: AgentChatTurn | undefined;
+  for (const turn of turns) {
+    if (isThinkingOnly(turn)) {
+      pending =
+        pending === undefined
+          ? turn
+          : rebuild(turn, [...pending.parts, ...turn.parts]);
+      continue;
+    }
+    if (turn.role === "assistant" && pending !== undefined) {
+      out.push(rebuild(turn, [...pending.parts, ...turn.parts]));
+      pending = undefined;
+      continue;
+    }
+    if (pending !== undefined) {
+      out.push(pending);
+      pending = undefined;
+    }
+    out.push(turn);
+  }
+  if (pending !== undefined) out.push(pending);
+  return out;
 }
 
 function AgentChatTurnRow({
@@ -2205,43 +2842,87 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "text" }> =>
       part.type === "text",
   );
+  const contextParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "context" }> =>
+      part.type === "context",
+  );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const mentionedArtifacts = artifactsMentionedInText(
     artifacts ?? [],
-    turn.parts.map((part) => ("text" in part ? part.text : "")).join("\n"),
+    turn.parts
+      .map((part) =>
+        part.type !== "context" && "text" in part ? part.text : "",
+      )
+      .join("\n"),
   );
+
+  if (
+    contextParts.length &&
+    turn.parts.every((part) => part.type === "context")
+  ) {
+    return (
+      <>
+        {contextParts.map((part, index) => (
+          <ContextCompactionPart
+            key={`${turn.id}:context:${index}`}
+            createdAt={turn.createdAt}
+            part={part}
+          />
+        ))}
+      </>
+    );
+  }
 
   if (turn.role === "user") {
     return (
-      <article className="agent-message" data-role="user">
-        <div className="agent-message-meta">
-          You
-          <span>{relativeDate(turn.createdAt)}</span>
+      <article className="agent-user-turn">
+        <div className="agent-user-turn-body">
+          {textParts.map((part, index) => (
+            <MarkdownContent
+              key={`${turn.id}:text:${index}`}
+              markdown={part.text}
+            />
+          ))}
         </div>
-        {textParts.map((part, index) => (
-          <MarkdownContent
-            key={`${turn.id}:text:${index}`}
-            markdown={part.text}
-          />
-        ))}
       </article>
     );
   }
 
+  const reasoningParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
+      part.type === "reasoning",
+  );
+  const toolParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
+      part.type === "tool",
+  );
+  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
+  // "Thought" disclosure so the conversation isn't littered with terminal rows.
+  const thinkingRunning =
+    reasoningParts.some((part) => part.status === "running") ||
+    toolParts.some((part) => part.status === "running");
+
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
-      <div className="agent-assistant-turn-meta">
-        Agent
-        <span>{relativeDate(turn.createdAt)}</span>
-      </div>
       <div className="agent-assistant-turn-body">
+        {reasoningParts.length > 0 || toolParts.length > 0 ? (
+          <AgentThinkingGroup
+            reasoning={reasoningParts}
+            tools={toolParts}
+            running={thinkingRunning}
+          />
+        ) : null}
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
             <div key={`${turn.id}:text:${index}`}>
               <MarkdownContent markdown={part.text} />
             </div>
-          ) : part.type === "reasoning" ? (
-            <ReasoningPart key={`${turn.id}:reasoning:${index}`} part={part} />
+          ) : part.type === "context" ? (
+            <ContextCompactionPart
+              key={`${turn.id}:context:${index}`}
+              createdAt={turn.createdAt}
+              part={part}
+            />
           ) : part.type === "approval" ? (
             <ApprovalPart
               key={`${turn.id}:approval:${part.id}`}
@@ -2256,19 +2937,39 @@ function AgentChatTurnRow({
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
-          ) : (
-            <AgentToolPartRow key={`${turn.id}:tool:${part.id}`} part={part} />
-          ),
+          ) : null,
         )}
         <AgentArtifactList
           artifacts={mentionedArtifacts}
           onDownload={onDownloadArtifact}
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
-          <p className="agent-assistant-empty">Waiting for Hermes...</p>
+          <p className="agent-assistant-empty">
+            <span className="text-shimmer">Thinking…</span>
+          </p>
         ) : null}
       </div>
     </article>
+  );
+}
+
+function ContextCompactionPart({
+  createdAt,
+  part,
+}: {
+  createdAt: string;
+  part: Extract<AgentChatPart, { type: "context" }>;
+}) {
+  return (
+    <details className="agent-context-summary">
+      <summary>
+        <IconPangolin size={14} />
+        <span>Context compacted</span>
+        <p>{part.preview}</p>
+        <time>{relativeDate(createdAt)}</time>
+      </summary>
+      <MarkdownContent markdown={part.text} />
+    </details>
   );
 }
 
@@ -2480,27 +3181,90 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
   return "Resolved";
 }
 
-function ReasoningPart({
-  part,
+function AgentThinkingGroup({
+  reasoning,
+  tools,
+  running,
 }: {
-  part: Extract<AgentChatPart, { type: "reasoning" }>;
+  reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
+  tools: Extract<AgentChatPart, { type: "tool" }>[];
+  running: boolean;
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? part.status === "running";
-  const preview = part.text.replace(/\s+/g, " ").trim();
+  // Collapsed by default to a short label — "Thinking" while it works, "Thought"
+  // once done (terracotta while live). Expanding reveals the reasoning prose and
+  // any terminal calls it ran, nested together.
+  const open = userOpen ?? false;
+  const reasoningText = reasoning
+    .map((part) => part.text)
+    .join("\n\n")
+    .trim();
   return (
     <details
       className="agent-reasoning"
-      data-status={part.status}
+      data-status={running ? "running" : "completed"}
       open={open}
       onToggle={(event) => setUserOpen(event.currentTarget.open)}
     >
       <summary>
-        <BotIcon size={14} />
-        <span>Thinking</span>
-        <p>{preview}</p>
+        <span className={running ? "text-shimmer" : undefined}>
+          {running ? "Thinking" : "Thought"}
+        </span>
+        <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
       </summary>
-      <div className="agent-reasoning-body">{part.text}</div>
+      <div className="agent-reasoning-body">
+        {reasoningText ? (
+          <div className="agent-reasoning-text">{reasoningText}</div>
+        ) : null}
+        {tools.map((tool) => (
+          <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// Tool activity is collapsed to a single quiet row by default — name + status —
+// so the conversation isn't buried under raw tool output (skill dumps, command
+// logs). The full output is one click away when the row has a body.
+function AgentToolDisclosure({
+  name,
+  status,
+  statusNode,
+  text,
+  redacted,
+}: {
+  name: string;
+  status: string;
+  statusNode: ReactNode;
+  text?: string | null;
+  redacted?: boolean;
+}) {
+  const body = text && text.trim() ? text : null;
+  const summary = (
+    <>
+      <span className="agent-tool-icon">
+        <IconConsoleSimple size={15} />
+      </span>
+      <span className="agent-tool-name">{name}</span>
+      {statusNode}
+      {redacted ? <span className="agent-redacted">Redacted</span> : null}
+    </>
+  );
+  if (!body) {
+    return (
+      <div
+        className="agent-tool-disclosure agent-tool-disclosure-static"
+        data-status={status}
+      >
+        {summary}
+      </div>
+    );
+  }
+  return (
+    <details className="agent-tool-disclosure" data-status={status}>
+      <summary>{summary}</summary>
+      <div className="agent-tool-output">{body}</div>
     </details>
   );
 }
@@ -2511,24 +3275,22 @@ function AgentToolPartRow({
   part: Extract<AgentChatPart, { type: "tool" }>;
 }) {
   return (
-    <article className="agent-hermes-event" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <TerminalIcon size={14} />
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>{part.name}</span>
-          <span className="agent-tool-live-status" data-status={part.status}>
-            {part.status === "running"
-              ? "Running"
-              : part.status === "failed"
-                ? "Failed"
-                : "Done"}
+    <AgentToolDisclosure
+      name={part.name}
+      status={part.status}
+      text={part.text}
+      statusNode={
+        part.status === "running" ? (
+          <span className="agent-tool-live-status" data-status="running">
+            Running
           </span>
-        </div>
-        {part.text ? <p>{part.text}</p> : null}
-      </div>
-    </article>
+        ) : part.status === "failed" ? (
+          <span className="agent-tool-live-status" data-status="failed">
+            Failed
+          </span>
+        ) : null
+      }
+    />
   );
 }
 
@@ -2543,33 +3305,82 @@ function AgentArtifactList({
   return (
     <div className="agent-artifact-list" aria-label="Generated files">
       {artifacts.map((artifact) => (
-        <article key={artifact.path} className="agent-artifact-card">
-          <span className="agent-tool-icon">
-            <FileIcon size={14} />
-          </span>
-          <div>
-            <div className="agent-artifact-title">
-              <span>{artifact.name}</span>
-              <em>{artifact.rootLabel}</em>
-            </div>
-            <p>
-              {formatBytes(artifact.size)}
-              <span>{compactPath(artifact.path)}</span>
-            </p>
-          </div>
-          {onDownload ? (
-            <button
-              type="button"
-              aria-label={`Download ${artifact.name}`}
-              title="Download"
-              onClick={() => onDownload(artifact)}
-            >
-              <DownloadIcon size={16} />
-            </button>
-          ) : null}
-        </article>
+        <AgentArtifactCard
+          key={artifact.path}
+          artifact={artifact}
+          onDownload={onDownload}
+        />
       ))}
     </div>
+  );
+}
+
+function AgentArtifactCard({
+  artifact,
+  onDownload,
+}: {
+  artifact: AgentArtifact;
+  onDownload?: (artifact: AgentArtifact) => void;
+}) {
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(
+    artifact.previewDataUrl ?? null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (artifact.previewDataUrl || !isPreviewableImagePath(artifact.path)) {
+      setPreviewDataUrl(artifact.previewDataUrl ?? null);
+      return;
+    }
+    hermesBridgeFilePreview(artifact.path)
+      .then((preview) => {
+        if (!cancelled) setPreviewDataUrl(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.path, artifact.previewDataUrl]);
+
+  return (
+    <article
+      className="agent-artifact-card"
+      data-has-preview={previewDataUrl ? "true" : undefined}
+    >
+      {previewDataUrl ? (
+        <img
+          className="agent-artifact-preview"
+          src={previewDataUrl}
+          alt={artifact.name}
+        />
+      ) : (
+        <span className="agent-tool-icon">
+          <FileIcon size={14} />
+        </span>
+      )}
+      <div>
+        <div className="agent-artifact-title">
+          <span>{artifact.name}</span>
+          <em>{artifact.rootLabel}</em>
+        </div>
+        <p>
+          {formatBytes(artifact.size)}
+          <span>{compactPath(artifact.path)}</span>
+        </p>
+      </div>
+      {onDownload ? (
+        <button
+          type="button"
+          aria-label={`Download ${artifact.name}`}
+          title="Download"
+          onClick={() => onDownload(artifact)}
+        >
+          <DownloadIcon size={16} />
+        </button>
+      ) : null}
+    </article>
   );
 }
 
@@ -2579,21 +3390,17 @@ function MarkdownContent({ markdown }: { markdown: string }) {
 
 function ToolEventRow({ event }: { event: AgentToolEventDto }) {
   return (
-    <article className="agent-tool-event" data-status={event.status}>
-      <span className="agent-tool-icon">
-        <TerminalIcon size={14} />
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>{event.toolName.replaceAll("_", " ")}</span>
+    <AgentToolDisclosure
+      name={event.toolName.replaceAll("_", " ")}
+      status={event.status}
+      text={event.summary}
+      redacted={event.redacted}
+      statusNode={
+        event.status === "completed" ? null : (
           <StatusPill status={toolStatusToTaskStatus(event.status)} compact />
-        </div>
-        <p>{event.summary}</p>
-        {event.redacted ? (
-          <span className="agent-redacted">Redacted</span>
-        ) : null}
-      </div>
-    </article>
+        )
+      }
+    />
   );
 }
 
@@ -2607,37 +3414,31 @@ function HermesMessageRow({ item }: { item: HermesMessageItem }) {
 
 function HermesToolRow({ item }: { item: HermesToolItem }) {
   return (
-    <article className="agent-hermes-event" data-status={item.status}>
-      <span className="agent-tool-icon">
-        <TerminalIcon size={14} />
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>{item.name}</span>
+    <AgentToolDisclosure
+      name={item.name}
+      status={item.status}
+      text={item.text}
+      statusNode={
+        item.status === "completed" ? null : (
           <StatusPill
-            status={
-              item.status === "completed"
-                ? "completed"
-                : item.status === "failed"
-                  ? "failed"
-                  : "running"
-            }
+            status={item.status === "failed" ? "failed" : "running"}
             compact
           />
-        </div>
-        <p>{item.text}</p>
-      </div>
-    </article>
+        )
+      }
+    />
   );
 }
 
 function HermesNoteRow({ item }: { item: HermesNoteItem }) {
+  const running = item.status === "running";
+  const preview = item.text.replace(/\s+/g, " ").trim();
+  const label = running ? item.label : preview || item.label;
   return (
     <details className="agent-hermes-note" data-status={item.status}>
       <summary>
-        <BotIcon size={14} />
-        <span>{item.label}</span>
-        <p>{item.text}</p>
+        <span className={running ? "text-shimmer" : undefined}>{label}</span>
+        <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
       </summary>
       <MarkdownContent markdown={item.text} />
     </details>
@@ -2678,6 +3479,13 @@ function renderMarkdownBlocks(markdown: string) {
           <code>{code.join("\n")}</code>
         </pre>,
       );
+      continue;
+    }
+
+    // Thematic break (---, ***, ___) → a quiet rule instead of literal dashes.
+    if (/^([-*_])\1{2,}$/.test(trimmed)) {
+      flushParagraph();
+      blocks.push(<hr key={`hr-${key++}`} className="agent-md-rule" />);
       continue;
     }
 
@@ -2944,6 +3752,24 @@ function artifactsFromFilesystemSnapshot(
   );
 }
 
+function promptWithAttachments(
+  message: string,
+  attachments: AgentAttachment[],
+): string {
+  if (!attachments.length) return message;
+  return [
+    message || "Use the attached file(s).",
+    "",
+    "Attached files copied into the Scribe Hermes workspace:",
+    ...attachments.map(
+      (attachment) =>
+        `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,
+    ),
+    "",
+    "Use these workspace paths when inspecting or operating on the files.",
+  ].join("\n");
+}
+
 function filesystemEntriesToArtifacts(
   entries: HermesFilesystemEntry[],
   rootLabel: string,
@@ -2988,8 +3814,54 @@ function artifactsMentionedInText(
   });
 }
 
+function isPreviewableImagePath(path: string) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(path);
+}
+
 function includesQuery(value: unknown, query: string) {
   return safeText(value).toLowerCase().includes(query);
+}
+
+function mergeActiveHermesSessions(
+  fresh: HermesSessionInfo[],
+  current: HermesSessionInfo[],
+  options: {
+    selectedSessionId?: string;
+    workingSessionIds: Set<string>;
+    waitingSessionIds: Set<string>;
+    pendingMessages: Record<string, HermesSessionMessage[]>;
+  },
+) {
+  const seen = new Set(fresh.map((session) => session.id));
+  const retained = current.filter(
+    (session) =>
+      !seen.has(session.id) && shouldRetainHermesSessionId(session.id, options),
+  );
+  return [...fresh, ...retained].sort((a, b) =>
+    sessionTimestamp(b).localeCompare(sessionTimestamp(a)),
+  );
+}
+
+function shouldRetainHermesSessionId(
+  sessionId: string,
+  {
+    pendingMessages,
+    selectedSessionId,
+    waitingSessionIds,
+    workingSessionIds,
+  }: {
+    selectedSessionId?: string;
+    workingSessionIds: Set<string>;
+    waitingSessionIds: Set<string>;
+    pendingMessages: Record<string, HermesSessionMessage[]>;
+  },
+) {
+  return (
+    sessionId === selectedSessionId ||
+    workingSessionIds.has(sessionId) ||
+    waitingSessionIds.has(sessionId) ||
+    (pendingMessages[sessionId]?.length ?? 0) > 0
+  );
 }
 
 function retainUnpersistedPendingMessages(
@@ -3037,6 +3909,57 @@ function isTerminalHermesEvent(type: string) {
     normalized === "background.complete" ||
     normalized === "background.completed"
   );
+}
+
+function agentStatusFromHermesEvent(
+  event: HermesGatewayEvent,
+): AgentSessionStatusKind | undefined {
+  if (event.type === "error") return "failed";
+  if (event.type === "clarify.request" || event.type === "approval.request") {
+    return "waitingForUser";
+  }
+  if (event.type === "clarify.response" || event.type === "approval.response") {
+    return "running";
+  }
+  if (isTerminalHermesEvent(event.type)) return "completed";
+  if (
+    event.type === "message.start" ||
+    event.type === "thinking.delta" ||
+    event.type === "reasoning.delta" ||
+    event.type === "status.update" ||
+    event.type.startsWith("tool.")
+  ) {
+    return "running";
+  }
+  return undefined;
+}
+
+function agentStatusSummaryFromHermesEvent(
+  event: HermesGatewayEvent,
+  status: AgentSessionStatusKind,
+) {
+  if (status === "waitingForUser") {
+    return event.type === "approval.request"
+      ? "June needs approval."
+      : "June has a question.";
+  }
+  if (status === "completed") return "June finished.";
+  if (status === "failed") return eventText(event) || "June hit a problem.";
+  if (event.type === "status.update") {
+    return eventText(event) || "June is working.";
+  }
+  if (event.type.startsWith("tool.")) {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const name =
+      stringValue(payload?.name) ??
+      stringValue(payload?.tool_name) ??
+      stringValue(payload?.tool);
+    return name ? `Using ${humanizeToolName(name)}.` : "Using a tool.";
+  }
+  if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
+    return "Thinking.";
+  }
+  return "June is working.";
 }
 
 function visibleHermesMessageText(message: HermesSessionMessage) {
@@ -3146,16 +4069,34 @@ function StatusPill({
 function ActivityIndicator({
   active,
   large = false,
+  status = "running",
 }: {
   active: boolean;
   large?: boolean;
+  status?: "running" | "waitingForUser";
 }) {
   if (!active) return null;
   return (
-    <span className="agent-activity-indicator" data-large={large}>
+    <span
+      className="agent-activity-indicator"
+      data-large={large}
+      data-status={status}
+    >
       <span aria-hidden="true" />
-      Working
+      {status === "waitingForUser" ? "Needs you" : "Working"}
     </span>
+  );
+}
+
+// Bottom-of-timeline "responding" affordance: the pangolin alongside a
+// shimmering label, reusing the same text-shimmer the recorder uses while
+// transcribing. Lives in the timeline (not the header) so it reads like the
+// agent is actively composing the next turn.
+function AgentThinking() {
+  return (
+    <div className="agent-thinking" role="status" aria-live="polite">
+      <span className="text-shimmer agent-thinking-label">Thinking…</span>
+    </div>
   );
 }
 

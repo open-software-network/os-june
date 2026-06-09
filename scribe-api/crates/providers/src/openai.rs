@@ -46,6 +46,14 @@ impl Transcriber for OpenAiTranscriber {
         {
             form = form.text("prompt", prompt.to_string());
         }
+        if let Some(language) = request
+            .language
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            form = form.text("language", language.to_string());
+        }
         let response = self
             .http
             .post(&url)

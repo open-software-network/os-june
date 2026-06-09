@@ -77,6 +77,7 @@ impl DictateService {
                 filename: params.filename,
                 title: "Dictation".to_string(),
                 context: params.context,
+                language: params.language,
                 model: params.model_id.clone(),
             })
             .await?;
@@ -158,6 +159,7 @@ pub struct DictateTranscribeParams {
     pub audio: Vec<u8>,
     pub filename: String,
     pub context: Option<String>,
+    pub language: Option<String>,
     pub model_id: ModelId,
 }
 

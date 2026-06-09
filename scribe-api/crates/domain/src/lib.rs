@@ -116,6 +116,7 @@ pub struct TranscriptionRequest {
     pub filename: String,
     pub title: String,
     pub context: Option<String>,
+    pub language: Option<String>,
     pub model: ModelId,
 }
 

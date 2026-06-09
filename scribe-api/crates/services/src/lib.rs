@@ -179,6 +179,7 @@ mod tests {
                 audio: vec![1, 2, 3],
                 filename: "dictation.wav".to_string(),
                 context: Some("Writing style: formal.".to_string()),
+                language: Some("es".to_string()),
                 model_id: ModelId("audio-model".to_string()),
             })
             .await
@@ -193,6 +194,7 @@ mod tests {
             transcriber.last_context(),
             Some("Writing style: formal.".to_string())
         );
+        assert_eq!(transcriber.last_language(), Some("es".to_string()));
         assert_eq!(
             wait_for_charge_idempotency_key(&os_accounts).await,
             Some("dictate_transcribe:usr_123:session_1:utt_2".to_string())
@@ -497,11 +499,19 @@ mod tests {
     #[derive(Default)]
     struct RecordingTranscriber {
         last_context: Mutex<Option<String>>,
+        last_language: Mutex<Option<String>>,
     }
 
     impl RecordingTranscriber {
         fn last_context(&self) -> Option<String> {
             self.last_context
+                .lock()
+                .ok()
+                .and_then(|value| value.clone())
+        }
+
+        fn last_language(&self) -> Option<String> {
+            self.last_language
                 .lock()
                 .ok()
                 .and_then(|value| value.clone())
@@ -516,6 +526,9 @@ mod tests {
         ) -> Result<Transcript, DomainError> {
             if let Ok(mut last_context) = self.last_context.lock() {
                 *last_context = request.context;
+            }
+            if let Ok(mut last_language) = self.last_language.lock() {
+                *last_language = request.language;
             }
             Ok(Transcript {
                 text: "Transcript".to_string(),

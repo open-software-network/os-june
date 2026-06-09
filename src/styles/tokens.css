@@ -127,6 +127,10 @@
   );
   --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
+  /* OS June brand mark — warm terracotta, the fill behind the logo glyph.
+   * Fixed across light/dark (the logo art is identical in both themes). */
+  --brand: #c25a33;
+
   --record: oklch(60% 0.22 27);
   /* Warm-accent set for the record button hover state — a soft peach
    * surface and a deeper terracotta foreground. Reusable for any

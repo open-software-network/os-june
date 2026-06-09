@@ -22,6 +22,13 @@ export type AgentChatReasoningPart = {
   status: "running" | "complete";
 };
 
+export type AgentChatContextPart = {
+  type: "context";
+  text: string;
+  preview: string;
+  status: "complete";
+};
+
 export type AgentChatToolPart = {
   type: "tool";
   id: string;
@@ -56,6 +63,7 @@ export type AgentChatClarifyPart = {
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
+  | AgentChatContextPart
   | AgentChatToolPart
   | AgentChatApprovalPart
   | AgentChatClarifyPart;
@@ -107,10 +115,16 @@ export function buildHermesSessionChatTurns(
       continue;
     }
 
+    const content = displayContentForHermesMessage(message);
+    const contextPart = content
+      ? contextCompactionPartForHermesContent(content)
+      : undefined;
+
     const turn: AgentChatTurn = {
       id: message.id,
-      role:
-        message.role === "assistant"
+      role: contextPart
+        ? "system"
+        : message.role === "assistant"
           ? "assistant"
           : message.role === "system"
             ? "system"
@@ -120,39 +134,42 @@ export function buildHermesSessionChatTurns(
       parts: [],
     };
 
-    const reasoning =
-      stringValue(message.reasoning, true) ??
-      stringValue(message.reasoning_content, true) ??
-      textFromHermesContent(message.reasoning_details);
-    if (reasoning) {
-      turn.parts.push({
-        type: "reasoning",
-        text: reasoning,
-        status: "complete",
-      });
-    }
+    if (contextPart) {
+      turn.parts.push(contextPart);
+    } else {
+      const reasoning =
+        stringValue(message.reasoning, true) ??
+        stringValue(message.reasoning_content, true) ??
+        textFromHermesContent(message.reasoning_details);
+      if (reasoning) {
+        turn.parts.push({
+          type: "reasoning",
+          text: reasoning,
+          status: "complete",
+        });
+      }
 
-    for (const call of parseToolCalls(message.tool_calls)) {
-      const result = toolResults.get(call.id);
-      turn.parts.push({
-        type: "tool",
-        id: call.id,
-        name: humanizeToolName(call.name),
-        text:
-          textFromHermesContent(result?.content) ??
-          stringifyObject(call.arguments) ??
-          "",
-        status: "complete",
-      });
-    }
+      for (const call of parseToolCalls(message.tool_calls)) {
+        const result = toolResults.get(call.id);
+        turn.parts.push({
+          type: "tool",
+          id: call.id,
+          name: humanizeToolName(call.name),
+          text:
+            textFromHermesContent(result?.content) ??
+            stringifyObject(call.arguments) ??
+            "",
+          status: "complete",
+        });
+      }
 
-    const content = displayContentForHermesMessage(message);
-    if (content) {
-      turn.parts.push({
-        type: "text",
-        text: collapseRepeatedMessageText(content),
-        status: "complete",
-      });
+      if (content) {
+        turn.parts.push({
+          type: "text",
+          text: collapseRepeatedMessageText(content),
+          status: "complete",
+        });
+      }
     }
 
     if (turn.parts.length) {
@@ -618,6 +635,38 @@ function displayContentForHermesMessage(message: HermesSessionMessage) {
   return stripHermesContextMarkers(content);
 }
 
+function contextCompactionPartForHermesContent(
+  content: string,
+): AgentChatContextPart | undefined {
+  const text = content.trim();
+  if (!isHermesContextCompactionSummary(text)) return undefined;
+  const detail = stripContextSummaryEndMarker(text);
+  return {
+    type: "context",
+    text: detail,
+    preview: contextCompactionPreview(detail),
+    status: "complete",
+  };
+}
+
+function isHermesContextCompactionSummary(value: string) {
+  const text = value.trimStart();
+  return (
+    text.startsWith("[CONTEXT COMPACTION") ||
+    text.startsWith("[CONTEXT SUMMARY]:")
+  );
+}
+
+function stripContextSummaryEndMarker(value: string) {
+  return value.replace(/\n*--- END OF CONTEXT SUMMARY[\s\S]*$/m, "").trim();
+}
+
+function contextCompactionPreview(value: string) {
+  return value.toLowerCase().includes("deterministic fallback")
+    ? "Earlier turns were compacted; fallback summary generated without the LLM summarizer."
+    : "Earlier turns were compacted into a reference summary.";
+}
+
 function textFromHermesContent(value: unknown, depth = 0): string | undefined {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
@@ -732,6 +781,7 @@ function partText(part: AgentChatPart) {
   if (part.type === "approval") return part.command || part.description;
   if (part.type === "clarify")
     return [part.question, part.answer ?? ""].join(" ");
+  if (part.type === "context") return part.preview || part.text;
   return part.text;
 }
 

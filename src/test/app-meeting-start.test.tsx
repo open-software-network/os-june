@@ -194,4 +194,35 @@ describe("meeting start transcription event", () => {
     );
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
   });
+
+  it("cleans up Tauri listeners that resolve after unmount", async () => {
+    const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+    const pendingListeners: Array<
+      (cleanup: (typeof cleanups)[number]) => void
+    > = [];
+    mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
+      mocks.listeners.set(event, listener);
+      return new Promise((resolve) => {
+        pendingListeners.push(resolve);
+      });
+    });
+
+    const { unmount } = render(<App />);
+
+    await waitFor(() => expect(mocks.listen).toHaveBeenCalled());
+    unmount();
+
+    await act(async () => {
+      for (const resolve of pendingListeners) {
+        const cleanup = vi.fn();
+        cleanups.push(cleanup);
+        resolve(cleanup);
+      }
+    });
+
+    expect(cleanups.length).toBeGreaterThan(0);
+    for (const cleanup of cleanups) {
+      expect(cleanup).toHaveBeenCalledOnce();
+    }
+  });
 });

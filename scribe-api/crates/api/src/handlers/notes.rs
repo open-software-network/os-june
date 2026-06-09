@@ -34,6 +34,12 @@ pub(crate) async fn transcribe(
         context.as_deref(),
         validation::MAX_TRANSCRIPTION_CONTEXT_CHARS,
     )?;
+    let language = form.optional_text("language");
+    validation::validate_optional_text_len(
+        "language",
+        language.as_deref(),
+        validation::MAX_LANGUAGE_CHARS,
+    )?;
     let note_id = form.required_text("noteId")?;
     validation::validate_text_len("note_id", &note_id, validation::MAX_ID_CHARS)?;
     let filename = form
@@ -48,6 +54,7 @@ pub(crate) async fn transcribe(
             filename,
             title,
             context,
+            language,
             model_id: ModelId(model_id),
         })
         .await?;

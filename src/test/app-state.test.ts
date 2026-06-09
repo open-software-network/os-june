@@ -66,6 +66,94 @@ describe("notesReducer", () => {
     expect(state.selectedNote?.editedContent).toBe("Clean notes");
   });
 
+  it("keeps optimistic transcribing status when a stale validating note arrives", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "transcribing",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteUpdated",
+      note: note({
+        id: "note-1",
+        title: "Server title",
+        processingStatus: "validating",
+      }),
+    });
+
+    expect(state.selectedNote?.title).toBe("Server title");
+    expect(state.selectedNote?.processingStatus).toBe("transcribing");
+    expect(state.notes[0].processingStatus).toBe("transcribing");
+  });
+
+  it("does not move generating backward when polling responses finish out of order", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "generating",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteUpdated",
+      note: note({
+        id: "note-1",
+        processingStatus: "transcribing",
+      }),
+    });
+
+    expect(state.selectedNote?.processingStatus).toBe("generating");
+    expect(state.notes[0].processingStatus).toBe("generating");
+  });
+
+  it("accepts terminal processing statuses after optimistic transcribing", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "transcribing",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteUpdated",
+      note: note({
+        id: "note-1",
+        processingStatus: "failed",
+        lastError: "Transcription failed",
+      }),
+    });
+
+    expect(state.selectedNote?.processingStatus).toBe("failed");
+    expect(state.selectedNote?.lastError).toBe("Transcription failed");
+  });
+
+  it("does not move a terminal note backward after stale active polling", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "ready",
+        generatedContent: "Finished notes",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteUpdated",
+      note: note({
+        id: "note-1",
+        processingStatus: "transcribing",
+      }),
+    });
+
+    expect(state.selectedNote?.processingStatus).toBe("ready");
+    expect(state.notes[0].processingStatus).toBe("ready");
+  });
+
   it("tracks recording status transitions without changing selected note", () => {
     const initial = notesReducer(createInitialState(), {
       type: "noteLoaded",

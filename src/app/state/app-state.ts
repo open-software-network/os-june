@@ -3,6 +3,7 @@ import type {
   FolderDto,
   NoteDto,
   NoteListItemDto,
+  ProcessingStatus,
   RecoverableRecordingDto,
   RecordingStatusDto,
 } from "../../lib/tauri";
@@ -65,14 +66,14 @@ export function notesReducer(
         selectedNoteId: action.note.id,
         selectedNote: action.note,
       };
-    case "noteUpdated":
+    case "noteUpdated": {
+      const note = mergeNoteUpdate(state, action.note);
       return {
-        ...upsertNote(state, action.note),
+        ...upsertNote(state, note),
         selectedNote:
-          state.selectedNoteId === action.note.id
-            ? action.note
-            : state.selectedNote,
+          state.selectedNoteId === note.id ? note : state.selectedNote,
       };
+    }
     case "recordingStatusChanged":
       return {
         ...state,
@@ -151,6 +152,68 @@ export function notesReducer(
       };
     default:
       return state;
+  }
+}
+
+function mergeNoteUpdate(state: NotesState, note: NoteDto): NoteDto {
+  const current =
+    state.selectedNote?.id === note.id
+      ? state.selectedNote
+      : state.notes.find((item) => item.id === note.id);
+  if (!current) return note;
+
+  const processingStatus = mergeProcessingStatus(
+    current.processingStatus,
+    note.processingStatus,
+  );
+  if (processingStatus === note.processingStatus) return note;
+
+  return {
+    ...note,
+    processingStatus,
+  };
+}
+
+function mergeProcessingStatus(
+  current: ProcessingStatus,
+  incoming: ProcessingStatus,
+): ProcessingStatus {
+  if (isTerminalProcessingStatus(incoming)) {
+    return incoming;
+  }
+  if (isTerminalProcessingStatus(current)) return current;
+
+  const currentRank = activeProcessingRank(current);
+  const incomingRank = activeProcessingRank(incoming);
+  if (
+    currentRank >= activeProcessingRank("transcribing") &&
+    incomingRank >= 0 &&
+    incomingRank < currentRank
+  ) {
+    return current;
+  }
+
+  return incoming;
+}
+
+function isTerminalProcessingStatus(status: ProcessingStatus): boolean {
+  return status === "ready" || status === "failed" || status === "recoverable";
+}
+
+function activeProcessingRank(status: ProcessingStatus): number {
+  switch (status) {
+    case "draft":
+      return 0;
+    case "recording":
+      return 1;
+    case "validating":
+      return 2;
+    case "transcribing":
+      return 3;
+    case "generating":
+      return 4;
+    default:
+      return -1;
   }
 }
 
