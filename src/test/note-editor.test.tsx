@@ -404,6 +404,12 @@ describe("NoteEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
+    // It fades out via AnimatePresence, so it lingers for the exit animation
+    // before unmounting — advance past it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
     expect(
       screen.queryByRole("status", { name: "Recording consent reminder" }),
     ).not.toBeInTheDocument();

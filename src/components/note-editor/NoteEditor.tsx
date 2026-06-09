@@ -385,13 +385,15 @@ export function NoteEditor({
           />
         ) : (
           <div className="record-dock">
-            {recordingForNote && consentReminderVisible ? (
-              <div className="record-consent-note">
+            <AnimatePresence>
+              {recordingForNote && consentReminderVisible ? (
                 <motion.div
-                  className="record-consent-note-anim"
-                  initial={{ opacity: 0, y: 3 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                  key="consent"
+                  className="record-consent-note"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
                 >
                   <InlineNotice
                     className="record-consent-note-surface"
@@ -408,8 +410,8 @@ export function NoteEditor({
                     }
                   />
                 </motion.div>
-              </div>
-            ) : null}
+              ) : null}
+            </AnimatePresence>
             <div
               className="record-shell"
               data-state={shellState}
