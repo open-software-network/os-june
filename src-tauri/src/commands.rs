@@ -458,7 +458,12 @@ pub async fn get_microphone_permission_state() -> Result<MicrophonePermissionRes
 pub async fn check_recording_source_readiness(
     request: CheckRecordingSourceReadinessRequest,
 ) -> Result<RecordingSourceReadinessDto, AppError> {
-    Ok(recording_source_readiness(request.source_mode))
+    // The system-audio permission probe can block for over a minute while the
+    // helper waits on a CoreAudio permission grant; keep that work off the
+    // async runtime so other commands stay responsive.
+    tokio::task::spawn_blocking(move || recording_source_readiness(request.source_mode))
+        .await
+        .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))
 }
 
 #[tauri::command]
@@ -509,7 +514,11 @@ pub async fn start_recording(
     let repos = repositories(&app).await?;
     let note = repos.get_note(&request.note_id).await?;
     let source_mode = request.source_mode.unwrap_or_default();
-    let readiness = recording_source_readiness(source_mode);
+    // Readiness probing and capture startup both wait on the system-audio
+    // helper (up to tens of seconds); run them off the async runtime.
+    let readiness = tokio::task::spawn_blocking(move || recording_source_readiness(source_mode))
+        .await
+        .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))?;
     if !readiness.ready {
         let message = readiness
             .sources
@@ -520,7 +529,13 @@ pub async fn start_recording(
         return Err(AppError::new("source_not_ready", message));
     }
     finish_active_capture_before_start(&repos).await?;
-    let started = start_capture(&paths, note.id.clone(), source_mode)?;
+    let capture_paths = paths.clone();
+    let capture_note_id = note.id.clone();
+    let started = tokio::task::spawn_blocking(move || {
+        start_capture(&capture_paths, capture_note_id, source_mode)
+    })
+    .await
+    .map_err(|error| AppError::new("recording_start_failed", error.to_string()))??;
     repos
         .create_recording_session(
             &note.id,

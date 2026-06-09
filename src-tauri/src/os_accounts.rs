@@ -916,9 +916,14 @@ fn random_b64url(bytes: usize) -> String {
 }
 
 fn open_in_browser(url: &str) -> Result<(), AppError> {
-    std::process::Command::new("open")
+    let mut child = std::process::Command::new("open")
         .arg(url)
         .spawn()
-        .map(|_| ())
-        .map_err(|e| AppError::new("browser_open_failed", e.to_string()))
+        .map_err(|e| AppError::new("browser_open_failed", e.to_string()))?;
+    // Reap the short-lived `open` process off-thread so it doesn't linger as
+    // a zombie until the app exits.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }

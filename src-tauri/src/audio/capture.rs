@@ -394,24 +394,31 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
     } = recording;
     paused_flag.store(true, Ordering::Release);
     drop(_stream);
-    if let Some(writer) = writer
-        .lock()
-        .map_err(|_| AppError::new("audio_finalization_failed", "Audio writer lock failed."))?
-        .take()
-    {
-        writer
-            .finalize()
-            .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))?;
-    }
-    std::fs::rename(&partial_path, &final_path)
-        .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))?;
+    let microphone_finalized = (|| -> Result<(), AppError> {
+        if let Some(writer) = writer
+            .lock()
+            .map_err(|_| AppError::new("audio_finalization_failed", "Audio writer lock failed."))?
+            .take()
+        {
+            writer
+                .finalize()
+                .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))?;
+        }
+        std::fs::rename(&partial_path, &final_path)
+            .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))
+    })();
+    // Stop the system-audio helper even when microphone finalization failed:
+    // dropping `SystemAudioCapture` without `stop()` would leave the helper
+    // process recording in the background.
+    let system_stopped = system_capture.map(SystemAudioCapture::stop);
+    microphone_finalized?;
     let mut sources = vec![FinishedSource {
         source: RecordingSource::Microphone,
         final_path: final_path.clone(),
         elapsed_ms: recording_dto.elapsed_ms,
     }];
-    if let Some(system_capture) = system_capture {
-        let system_path = system_capture.stop()?;
+    if let Some(system_path) = system_stopped {
+        let system_path = system_path?;
         sources.push(FinishedSource {
             source: RecordingSource::System,
             final_path: system_final_path.unwrap_or(system_path.clone()),

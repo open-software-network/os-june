@@ -341,7 +341,7 @@ async fn start_hermes_bridge_inner(
     apply_isolated_hermes_env(&mut cmd, &hermes_home, &token);
     cmd.current_dir(cwd);
 
-    let child = cmd.spawn().map_err(|error| {
+    let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
             format!("Could not start the Scribe-managed Hermes runtime. {error}"),
@@ -364,6 +364,23 @@ async fn start_hermes_bridge_inner(
         let mut guard = bridge.process.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
+        // A concurrent start may have won the race while we were spawning
+        // (the early `existing_running_status` check runs before any await).
+        // Keep the established process and tear down the redundant one we
+        // just launched instead of leaking it.
+        if let Some(existing) = guard.as_mut() {
+            if matches!(existing.child.try_wait(), Ok(None)) {
+                let existing_connection = existing.connection.clone();
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = provider_proxy.shutdown.send(());
+                return Ok(HermesBridgeStatus {
+                    running: true,
+                    connection: Some(existing_connection),
+                    message: None,
+                });
+            }
+        }
         *guard = Some(HermesProcess {
             child,
             connection: connection.clone(),
@@ -1136,28 +1153,39 @@ async fn install_managed_hermes_runtime(
         .try_clone()
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
 
-    let status = Command::new("/bin/bash")
-        .arg("-c")
-        .arg(MANAGED_HERMES_INSTALL_SCRIPT)
-        .env("SCRIBE_HERMES_RUNTIME_DIR", &runtime_dir)
-        .env("SCRIBE_HERMES_INSTALL_DIR", &install_dir)
-        .env("SCRIBE_HERMES_HOME", hermes_home)
-        .env("SCRIBE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
-        .env(
-            "SCRIBE_HERMES_SOURCE_TARBALL_URL",
-            HERMES_SOURCE_TARBALL_URL,
-        )
-        .env(
-            "SCRIBE_HERMES_SOURCE_TARBALL_SHA256",
-            HERMES_SOURCE_TARBALL_SHA256,
-        )
-        .env("HERMES_HOME", hermes_home)
-        .env("HERMES_INSTALL_DIR", &install_dir)
-        .env("UV_NO_CONFIG", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_for_stderr))
-        .status()
+    // The installer downloads the Hermes source and builds a venv — it can run
+    // for minutes. Run it on a blocking thread so it doesn't pin an async
+    // runtime worker for the whole install.
+    let status = {
+        let runtime_dir = runtime_dir.clone();
+        let install_dir = install_dir.clone();
+        let hermes_home = hermes_home.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Command::new("/bin/bash")
+                .arg("-c")
+                .arg(MANAGED_HERMES_INSTALL_SCRIPT)
+                .env("SCRIBE_HERMES_RUNTIME_DIR", &runtime_dir)
+                .env("SCRIBE_HERMES_INSTALL_DIR", &install_dir)
+                .env("SCRIBE_HERMES_HOME", &hermes_home)
+                .env("SCRIBE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env(
+                    "SCRIBE_HERMES_SOURCE_TARBALL_URL",
+                    HERMES_SOURCE_TARBALL_URL,
+                )
+                .env(
+                    "SCRIBE_HERMES_SOURCE_TARBALL_SHA256",
+                    HERMES_SOURCE_TARBALL_SHA256,
+                )
+                .env("HERMES_HOME", &hermes_home)
+                .env("HERMES_INSTALL_DIR", &install_dir)
+                .env("UV_NO_CONFIG", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log_file))
+                .stderr(Stdio::from(log_file_for_stderr))
+                .status()
+        })
+        .await
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
         .map_err(|error| {
             AppError::new(
                 "hermes_runtime_install_failed",
@@ -1166,7 +1194,8 @@ async fn install_managed_hermes_runtime(
                     install_log.display()
                 ),
             )
-        })?;
+        })?
+    };
 
     if !status.success() {
         return Err(AppError::new(
