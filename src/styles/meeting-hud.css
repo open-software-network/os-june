@@ -7,15 +7,17 @@
  * Click it to bring Scribe back to the meeting; drag to move. No controls — all
  * recording controls live in-app, one click away.
  *
- * The window is sized exactly to the pill: the frosted surface is a native
- * NSVisualEffectView behind the webview (CSS backdrop-filter can't sample
- * other apps' pixels) and depth comes from the native NSWindow shadow, so
- * there's no CSS shadow or blur here — just a translucent tint over vibrancy.
+ * The window is a fixed square that fits the pill in both orientations: the
+ * frosted surface is a native NSVisualEffectView framed to the pill behind the
+ * webview (CSS backdrop-filter can't sample other apps' pixels) and depth
+ * comes from the native NSWindow shadow, so there's no CSS shadow or blur
+ * here — just a translucent tint over vibrancy.
  *
- * Orientation triad: Rust resizes the window per screen third and emits
- * `meeting-hud-zone`; data-orient flips the layout. Horizontal (center third):
- * dot + 7 bars in a row. Vertical (left/right thirds): dot above a shorter
- * 4-bar run of the same waveform — bars always stay upright.
+ * Orientation triad: parked in the left/right screen thirds the pill stands
+ * upright; the middle third lies flat. The quarter turn happens in Rust
+ * (meeting_hud.rs) as ONE Core Animation transform on the native contentView,
+ * carrying frost, tint, dot, and waveform together — so this stylesheet lays
+ * the pill out horizontally, always, and never rotates anything.
  */
 
 :root {
@@ -48,20 +50,31 @@ body {
   width: 100vw;
   height: 100vh;
   margin: 0;
+  display: grid;
+  place-items: center;
   overflow: hidden;
   background: transparent;
   user-select: none;
+  /* The whole window is the click/drag target — the native turn rotates
+   * pixels but not DOM hit-testing, so the pill element can't be trusted to
+   * sit under the pointer when upright. */
+  cursor: pointer;
 }
 
-/* Pill — fills the window; the 10px radius must match the vibrancy view's
- * corner radius set in meeting_hud.rs so tint and frost trace the same curve. */
+body:active {
+  cursor: grabbing;
+}
+
+/* Pill — laid out horizontally, always, centered in the square window. The
+ * native quarter turn (meeting_hud.rs) presents it upright in side zones. The
+ * 10px radius must match the vibrancy view's corner radius set in
+ * meeting_hud.rs so tint and frost trace the same curve. */
 .mhud {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  width: 100%;
-  height: 100%;
+  width: 76px;
+  height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   /* A dark tint over the native vibrancy layer — heavy enough to read as
@@ -69,16 +82,15 @@ body {
    * still shows. Matches the dictation HUD's surface (--hud-bg). */
   background: color-mix(in oklch, var(--popover) 72%, transparent);
   color: var(--foreground);
-  /* The whole pill is the click/drag target. */
-  cursor: pointer;
+  overflow: hidden;
 }
 
-.mhud[data-orient="vertical"] {
-  flex-direction: column;
-}
-
-.mhud:active {
-  cursor: grabbing;
+/* Wrapper keeps the dot + waveform together as one considered group. */
+.mhud-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
 .mhud:focus-visible {
@@ -120,18 +132,6 @@ body {
   }
 }
 
-/* Orientation morph: while the glass eases between frames the contents sit
- * at opacity 0, then fade back in laid out for the new orientation. The
- * breathe animation must yield — an animated property ignores transitions. */
-.mhud.is-morphing .mhud-dot {
-  animation: none;
-  opacity: 0;
-}
-
-.mhud.is-morphing .mhud-bars {
-  opacity: 0;
-}
-
 /* Waveform — mirrors the dictation HUD bars (.hud-bar). */
 .mhud-bars {
   display: flex;
@@ -139,7 +139,6 @@ body {
   align-items: center;
   justify-content: center;
   height: 22px;
-  transition: opacity 120ms var(--ease-out);
 }
 
 .mhud-bar {
@@ -165,12 +164,6 @@ body {
   transition: height 22ms linear;
 }
 
-/* Vertical: the dot stacks above a shorter run of the same waveform — the
- * bars themselves always stay upright, just fewer of them. */
-.mhud[data-orient="vertical"] .mhud-bar:nth-child(n + 5) {
-  display: none;
-}
-
 /* Paused: bars settle and dim (the meter also stops the carrier shimmer). */
 .mhud[data-state="paused"] .mhud-bar {
   opacity: 0.32;
@@ -179,7 +172,6 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .mhud-bar,
   .mhud-bar::before,
-  .mhud-bars,
   .mhud-dot {
     transition: none;
   }

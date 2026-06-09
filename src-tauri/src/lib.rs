@@ -130,7 +130,6 @@ pub fn run() {
             mascot::mascot_hide,
             mascot::mascot_set_layout,
             mascot::mascot_open_agent,
-            meeting_hud::meeting_hud_current_zone,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,

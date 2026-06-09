@@ -58,16 +58,10 @@ function applyStatus(status: RecordingStatusDto) {
 }
 
 // Orientation triad: parked in the left or right third of the screen the pill
-// stands vertical (dot above a short waveform); the middle third lies flat.
-// Rust owns the zone math + window resize; we just mirror the layout. A flip
-// is choreographed as a crossfade: `meeting-hud-zone-prepare` fades the
-// contents out, the glass eases to its new frame, then the zone event re-lays
-// the pill out and fades it back in.
-function applyZone(zone: string) {
-  if (!pill) return;
-  pill.dataset.orient = zone === "center" ? "horizontal" : "vertical";
-  window.requestAnimationFrame(() => pill.classList.remove("is-morphing"));
-}
+// stands vertical (dot above the waveform); the middle third lies flat. Rust
+// owns all of it — zone math plus the turn itself, a Core Animation transform
+// on the native contentView that carries frost, tint, and this whole DOM in
+// one move. Nothing to do here; the layout below stays horizontal forever.
 
 function startBarLoop() {
   const tick = (now: number) => {
@@ -102,18 +96,22 @@ function reopenScribe() {
 }
 
 // One surface, two gestures: a press that moves past a small threshold drags
-// the window; a press that stays put is a click → reopen Scribe.
+// the window; a press that stays put is a click → reopen Scribe. Handlers live
+// on the document, not the pill: the native quarter-turn rotates pixels but
+// not DOM hit-testing, so when the pill stands vertical a click on it lands in
+// the DOM's gutter. The window is barely bigger than the pill, so document-
+// wide is the honest target.
 const DRAG_THRESHOLD_PX = 4;
 let pressStart: { x: number; y: number } | undefined;
 let dragging = false;
 
-pill?.addEventListener("pointerdown", (event) => {
+document.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   pressStart = { x: event.screenX, y: event.screenY };
   dragging = false;
 });
 
-pill?.addEventListener("pointermove", (event) => {
+document.addEventListener("pointermove", (event) => {
   if (!pressStart || dragging) return;
   const dx = event.screenX - pressStart.x;
   const dy = event.screenY - pressStart.y;
@@ -125,14 +123,14 @@ pill?.addEventListener("pointermove", (event) => {
   }
 });
 
-pill?.addEventListener("pointerup", (event) => {
+document.addEventListener("pointerup", (event) => {
   if (event.button !== 0) return;
   const wasClick = !!pressStart && !dragging;
   pressStart = undefined;
   if (wasClick) reopenScribe();
 });
 
-pill?.addEventListener("keydown", (event) => {
+document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     reopenScribe();
@@ -143,24 +141,12 @@ void listen<RecordingStatusDto>("meeting-hud-status", (event) => {
   if (event.payload) applyStatus(event.payload);
 });
 
-void listen("meeting-hud-zone-prepare", () => {
-  pill?.classList.add("is-morphing");
-});
-
-void listen<string>("meeting-hud-zone", (event) => {
-  applyZone(event.payload);
-});
-
 resetBars();
 startBarLoop();
 
-// Paint immediately if a recording is already live when this view appears, and
-// start in the right orientation if it boots while parked in a side zone.
+// Paint immediately if a recording is already live when this view appears.
 void invoke<RecordingStatusDto | null>("meeting_hud_latest_status")
   .then((status) => {
     if (status) applyStatus(status);
   })
-  .catch(() => {});
-void invoke<string>("meeting_hud_current_zone")
-  .then(applyZone)
   .catch(() => {});

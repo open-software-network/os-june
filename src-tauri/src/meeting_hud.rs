@@ -12,28 +12,28 @@
 //! audio capture layer, drives the HUD's visibility against the main window's
 //! state, and pumps status to the webview.
 //!
-//! The window is sized exactly to the pill — no transparent gutter — so the
-//! whole window is the click/drag target, depth comes from the native NSWindow
-//! shadow, and the frosted surface is a real NSVisualEffectView behind the
-//! webview (CSS `backdrop-filter` can't sample other apps' pixels).
+//! The window is a fixed square that covers the pill in both orientations, so
+//! it never resizes. The frosted surface is a real NSVisualEffectView sized to
+//! the pill behind the webview (CSS `backdrop-filter` can't sample other apps'
+//! pixels), and depth comes from the native NSWindow shadow.
 //!
 //! The pill is orientation-aware: parked in the left or right third of the
-//! screen it flips to a vertical layout (dot above a short waveform); in the
-//! middle third it lies horizontal. The supervisor watches the drag position
-//! and applies the flip once the window settles, resizing around the pill's
-//! center.
+//! screen it stands upright (dot above the waveform); in the middle third it
+//! lies horizontal. The supervisor watches the drag position and, once the
+//! window settles, turns the *native contentView layer* a quarter turn — frost,
+//! tint, dot, and waveform rotate as one unit under a single Core Animation
+//! ease, so nothing can clip or drift out of sync mid-turn.
 
 use crate::audio::capture;
 use crate::domain::types::{RecordingState, RecordingStatusDto};
-use std::{
-    sync::Mutex,
-    thread,
-    time::Duration,
-};
+use std::{sync::Mutex, thread, time::Duration};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State,
-    WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
+    WindowEvent,
 };
+
+#[cfg(target_os = "macos")]
+use objc2::runtime::{AnyClass, AnyObject};
 
 const WINDOW_LABEL: &str = "meeting-hud";
 
@@ -42,10 +42,17 @@ const WINDOW_LABEL: &str = "meeting-hud";
 const ACTIVE_TICK: Duration = Duration::from_millis(40);
 const IDLE_TICK: Duration = Duration::from_millis(220);
 
-/// Logical pill sizes per orientation. Must agree with the layout math in
-/// meeting-hud.css (dot 9 + gap 10 + bars, centered with 14px margins).
-const HORIZONTAL_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 32.0);
-const VERTICAL_SIZE: LogicalSize<f64> = LogicalSize::new(32.0, 64.0);
+/// Logical pill size — must agree with `.mhud` in meeting-hud.css.
+const PILL_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 32.0);
+/// The window is a fixed square the length of the pill (tauri.conf.json), so a
+/// quarter turn always fits without resizing the native frame — the transparent
+/// gutters above/below (or beside) the pill are part of the window.
+const WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 76.0);
+
+/// How long the quarter turn takes. The easing matches the app's `--ease-out`
+/// token (cubic-bezier(0.22, 1, 0.36, 1)) so the HUD moves like the rest of
+/// the UI even though this animation runs in Core Animation, not CSS.
+const TURN_SECS: f64 = 0.32;
 
 /// How many supervisor ticks the window must hold still before an orientation
 /// flip is applied — resizing mid-native-drag is what we're avoiding.
@@ -59,19 +66,8 @@ pub enum Zone {
 }
 
 impl Zone {
-    fn as_str(self) -> &'static str {
-        match self {
-            Zone::Left => "left",
-            Zone::Center => "center",
-            Zone::Right => "right",
-        }
-    }
-
-    fn size(self) -> LogicalSize<f64> {
-        match self {
-            Zone::Center => HORIZONTAL_SIZE,
-            Zone::Left | Zone::Right => VERTICAL_SIZE,
-        }
+    fn is_vertical(self) -> bool {
+        matches!(self, Zone::Left | Zone::Right)
     }
 }
 
@@ -109,17 +105,6 @@ pub fn setup(app: &mut tauri::App) {
 #[tauri::command]
 pub fn meeting_hud_latest_status(state: State<'_, MeetingHudState>) -> Option<RecordingStatusDto> {
     state.latest_status.lock().ok().and_then(|g| g.clone())
-}
-
-/// The webview fetches this once on load so a HUD that boots while parked in a
-/// side zone starts vertical instead of waiting for the next flip.
-#[tauri::command]
-pub fn meeting_hud_current_zone(state: State<'_, MeetingHudState>) -> String {
-    state
-        .zone
-        .lock()
-        .map(|zone| zone.as_str().to_string())
-        .unwrap_or_else(|_| "center".to_string())
 }
 
 /// Clicking the HUD reopens the app on the meeting being recorded. Activation is
@@ -295,11 +280,10 @@ fn left_mouse_button_down() -> bool {
     false
 }
 
-/// Recompute the zone and, if it changed, morph to the new orientation: the
-/// webview fades the pill contents out (`meeting-hud-zone-prepare`), the glass
-/// eases to its new frame around the pill's center, then the webview re-lays
-/// itself out for the new orientation and fades back in (`meeting-hud-zone`).
-/// Runs on the supervisor thread, so the brief sleeps cost nothing.
+/// Recompute the zone and, if it changed, turn the pill to the new orientation.
+/// The whole turn is one Core Animation transform on the native contentView —
+/// frost, tint, dot, and waveform rotate together, so nothing clips against the
+/// frame or drifts out of sync (the window itself never resizes).
 fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
     let Some(zone) = zone_for(hud) else {
         return;
@@ -309,62 +293,38 @@ fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
         .lock()
         .map(|mut guard| std::mem::replace(&mut *guard, zone))
         .unwrap_or(Zone::Center);
-    if previous == zone {
+    if previous == zone || previous.is_vertical() == zone.is_vertical() {
         return;
     }
-
-    if previous.size() != zone.size() {
-        let visible = hud.is_visible().unwrap_or(false);
-        if visible {
-            let _ = hud.emit_to(WINDOW_LABEL, "meeting-hud-zone-prepare", ());
-            // Give the content fade-out (120ms CSS) most of its run before
-            // the glass starts moving.
-            thread::sleep(Duration::from_millis(100));
-        }
-        animate_frame_to(hud, zone.size(), visible);
-    }
-    let _ = hud.emit_to(WINDOW_LABEL, "meeting-hud-zone", zone.as_str());
+    let animate = hud.is_visible().unwrap_or(false);
+    set_orientation(hud, zone.is_vertical(), animate);
 }
 
-/// Ease the window to `size`, keeping its center anchored. Snaps when the
-/// window is hidden. Mirrors `dictation.rs::animate_frame_to`.
-fn animate_frame_to(hud: &WebviewWindow, size: LogicalSize<f64>, animate: bool) {
-    let (Ok(position), Ok(old_size), Ok(scale)) =
-        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
-    else {
-        return;
-    };
-    let new_size = PhysicalSize::new(
-        (size.width * scale).round() as u32,
-        (size.height * scale).round() as u32,
-    );
-    if new_size == old_size {
-        return;
-    }
-    let target_x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
-    let target_y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
-
+/// Rotate the window's contentView (webview + frost) a quarter turn via Core
+/// Animation. Runs the AppKit calls on the main thread; the native window
+/// shadow is recomputed once the turn lands.
+#[cfg(target_os = "macos")]
+fn set_orientation(hud: &WebviewWindow, vertical: bool, animate: bool) {
+    let window = hud.clone();
+    let _ = hud.run_on_main_thread(move || unsafe {
+        rotate_content(&window, vertical, animate);
+    });
     if animate {
-        const STEPS: u32 = 12;
-        const STEP_MS: u64 = 12;
-        for step in 1..STEPS {
-            let t = f64::from(step) / f64::from(STEPS);
-            // ease-out cubic — fast start, soft landing.
-            let e = 1.0 - (1.0 - t).powi(3);
-            let w = f64::from(old_size.width)
-                + f64::from(new_size.width as i32 - old_size.width as i32) * e;
-            let h = f64::from(old_size.height)
-                + f64::from(new_size.height as i32 - old_size.height as i32) * e;
-            let x = f64::from(position.x) + f64::from(target_x - position.x) * e;
-            let y = f64::from(position.y) + f64::from(target_y - position.y) * e;
-            let _ = hud.set_size(PhysicalSize::new(w.round() as u32, h.round() as u32));
-            let _ = hud.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-            thread::sleep(Duration::from_millis(STEP_MS));
-        }
+        // The shadow shape is derived from the rendered content; refresh it
+        // after the turn settles, off-thread so the status pump never stalls.
+        let window = hud.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs_f64(TURN_SECS + 0.06));
+            let handle = window.clone();
+            let _ = window.run_on_main_thread(move || unsafe {
+                invalidate_shadow(&handle);
+            });
+        });
     }
-    let _ = hud.set_size(new_size);
-    let _ = hud.set_position(PhysicalPosition::new(target_x, target_y));
 }
+
+#[cfg(not(target_os = "macos"))]
+fn set_orientation(_hud: &WebviewWindow, _vertical: bool, _animate: bool) {}
 
 fn configure_window(app: &AppHandle) -> Result<(), String> {
     if let Some(hud) = app.get_webview_window(WINDOW_LABEL) {
@@ -383,18 +343,10 @@ fn configure_window(app: &AppHandle) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
             make_nonactivating(&hud);
-            // Real behind-window blur. The radius must match the pill's CSS
-            // border-radius (--r-lg, 10px) so the frosted layer and the
-            // painted border trace the same curve.
-            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-            if let Err(error) = apply_vibrancy(
-                &hud,
-                NSVisualEffectMaterial::HudWindow,
-                Some(NSVisualEffectState::Active),
-                Some(10.0),
-            ) {
-                tracing::warn!(%error, "failed to apply meeting HUD vibrancy");
-            }
+            // Real behind-window blur, sized to the pill (not the window — the
+            // square window's gutters stay fully transparent). Done by hand
+            // rather than via window_vibrancy, which always fills the window.
+            unsafe { install_frost(&hud) };
         }
 
         let app_for_events = app.clone();
@@ -445,8 +397,13 @@ fn default_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Opti
     let work_bottom = work_area.position.y + work_area.size.height as i32;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
+    // The visible pill sits centered in the square window; discount the
+    // transparent gutter below it so the margin is measured from the pill.
+    let scale = hud.scale_factor().unwrap_or(1.0);
+    let gutter = ((WINDOW_SIZE.height - PILL_SIZE.height) / 2.0 * scale).round() as i32;
+
     let x = work_center_x - window_size.width as i32 / 2;
-    let y = work_bottom - BOTTOM_MARGIN - window_size.height as i32;
+    let y = work_bottom - BOTTOM_MARGIN - window_size.height as i32 + gutter;
     Some((x, y))
 }
 
@@ -474,13 +431,179 @@ fn position_is_visible(
     })
 }
 
+/// The NSWindow's contentView as a raw object, or null.
+#[cfg(target_os = "macos")]
+unsafe fn content_view(hud: &WebviewWindow) -> (*mut AnyObject, *mut AnyObject) {
+    use objc2::msg_send;
+
+    let Ok(handle) = hud.ns_window() else {
+        return (std::ptr::null_mut(), std::ptr::null_mut());
+    };
+    if handle.is_null() {
+        return (std::ptr::null_mut(), std::ptr::null_mut());
+    }
+    let window = handle as *mut AnyObject;
+    let content: *mut AnyObject = msg_send![window, contentView];
+    (window, content)
+}
+
+/// macOS: add an NSVisualEffectView behind the webview, framed to the pill
+/// rather than the window, so the square window's gutters stay fully
+/// transparent. Hand-rolled instead of `window_vibrancy::apply_vibrancy`
+/// because that always fills the window.
+#[cfg(target_os = "macos")]
+unsafe fn install_frost(hud: &WebviewWindow) {
+    use objc2::msg_send;
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    /// Must match the pill's CSS border-radius (--r-lg, 10px) so tint and
+    /// frost trace the same curve.
+    const FROST_RADIUS: f64 = 10.0;
+
+    let (_, content) = content_view(hud);
+    if content.is_null() {
+        return;
+    }
+    // The contentView hosts the orientation turn (`rotate_content`); give it a
+    // layer up front so the first turn doesn't switch rendering paths mid-use.
+    let _: () = msg_send![content, setWantsLayer: true];
+
+    let Some(effect_class) = AnyClass::get(c"NSVisualEffectView") else {
+        return;
+    };
+    let frame = NSRect::new(
+        NSPoint::new(
+            (WINDOW_SIZE.width - PILL_SIZE.width) / 2.0,
+            (WINDOW_SIZE.height - PILL_SIZE.height) / 2.0,
+        ),
+        NSSize::new(PILL_SIZE.width, PILL_SIZE.height),
+    );
+    let frost: *mut AnyObject = msg_send![effect_class, alloc];
+    let frost: *mut AnyObject = msg_send![frost, initWithFrame: frame];
+    if frost.is_null() {
+        return;
+    }
+    // HUDWindow material, behind-window blending, always active — the same
+    // look the dictation HUD gets from window_vibrancy.
+    let _: () = msg_send![frost, setMaterial: 13isize];
+    let _: () = msg_send![frost, setBlendingMode: 0isize];
+    let _: () = msg_send![frost, setState: 1isize];
+    let _: () = msg_send![frost, setWantsLayer: true];
+    let layer: *mut AnyObject = msg_send![frost, layer];
+    if !layer.is_null() {
+        let _: () = msg_send![layer, setCornerRadius: FROST_RADIUS];
+        let _: () = msg_send![layer, setMasksToBounds: true];
+    }
+    // Below the webview (NSWindowBelow = -1) so the CSS tint paints over it.
+    let _: () = msg_send![content, addSubview: frost, positioned: -1isize, relativeTo: std::ptr::null_mut::<AnyObject>()];
+}
+
+/// Turn the contentView's layer between flat (0°) and upright (90°). Because
+/// the frost view and the webview are both subviews, one transform carries the
+/// blur, tint, dot, and waveform together — they can't desync or clip.
+#[cfg(target_os = "macos")]
+unsafe fn rotate_content(hud: &WebviewWindow, vertical: bool, animate: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::MessageReceiver;
+    use objc2::sel;
+    use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString};
+
+    let (window, content) = content_view(hud);
+    if content.is_null() {
+        return;
+    }
+    let layer: *mut AnyObject = msg_send![content, layer];
+    if layer.is_null() {
+        return;
+    }
+
+    // Rotate about the window's center. AppKit anchors view layers at their
+    // corner, so re-center the anchor (re-asserted every turn — layout passes
+    // can reset layer geometry).
+    let frame: NSRect = msg_send![content, frame];
+    let _: () = msg_send![layer, setAnchorPoint: NSPoint::new(0.5, 0.5)];
+    let _: () = msg_send![layer, setPosition: NSPoint::new(
+        frame.origin.x + frame.size.width / 2.0,
+        frame.origin.y + frame.size.height / 2.0,
+    )];
+
+    // CA's +z spins counterclockwise (y-up), so -90° swings the pill's left
+    // end — the record dot — to the top, matching the old CSS rotate(90deg).
+    let angle = if vertical {
+        -std::f64::consts::FRAC_PI_2
+    } else {
+        0.0
+    };
+    let key = NSString::from_str("transform.rotation.z");
+    let target = NSNumber::new_f64(angle);
+
+    if animate {
+        if let (Some(animation_class), Some(timing_class)) = (
+            AnyClass::get(c"CABasicAnimation"),
+            AnyClass::get(c"CAMediaTimingFunction"),
+        ) {
+            let animation: *mut AnyObject = msg_send![animation_class, animationWithKeyPath: &*key];
+            if !animation.is_null() {
+                // Start from wherever the layer visibly is right now, so a
+                // turn reversed mid-flight doubles back smoothly.
+                let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
+                let source = if presentation.is_null() {
+                    layer
+                } else {
+                    presentation
+                };
+                let from: *mut AnyObject = msg_send![source, valueForKeyPath: &*key];
+                let _: () = msg_send![animation, setFromValue: from];
+                let _: () = msg_send![animation, setToValue: &*target];
+                let _: () = msg_send![animation, setDuration: TURN_SECS];
+                // --ease-out from tokens.css; `functionWithControlPoints::::`
+                // has bare colons msg_send! can't spell, hence send_message.
+                let timing: *mut AnyObject = (timing_class as *const AnyClass as *mut AnyObject)
+                    .send_message(
+                        sel!(functionWithControlPoints::::),
+                        (0.22f32, 1.0f32, 0.36f32, 1.0f32),
+                    );
+                if !timing.is_null() {
+                    let _: () = msg_send![animation, setTimingFunction: timing];
+                }
+                let _: () = msg_send![layer, addAnimation: animation, forKey: &*key];
+            }
+        }
+    }
+
+    // Commit the model value with implicit actions off — the explicit
+    // animation above (when any) owns the visible motion.
+    if let Some(transaction) = AnyClass::get(c"CATransaction") {
+        let _: () = msg_send![transaction, begin];
+        let _: () = msg_send![transaction, setDisableActions: true];
+        let _: () = msg_send![layer, setValue: &*target, forKeyPath: &*key];
+        let _: () = msg_send![transaction, commit];
+    } else {
+        let _: () = msg_send![layer, setValue: &*target, forKeyPath: &*key];
+    }
+    if !animate && !window.is_null() {
+        let _: () = msg_send![window, invalidateShadow];
+    }
+}
+
+/// Ask AppKit to recompute the window shadow from the rendered content — the
+/// shape changed when the pill turned.
+#[cfg(target_os = "macos")]
+unsafe fn invalidate_shadow(hud: &WebviewWindow) {
+    use objc2::msg_send;
+
+    let (window, _) = content_view(hud);
+    if !window.is_null() {
+        let _: () = msg_send![window, invalidateShadow];
+    }
+}
+
 /// macOS: reclass the HUD's NSWindow to a non-activating NSPanel so clicking the
 /// pill or its buttons never steals focus from the meeting app underneath.
 /// Mirrors `dictation.rs::make_hud_nonactivating`.
 #[cfg(target_os = "macos")]
 fn make_nonactivating(hud: &WebviewWindow) {
     use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
 
     let Ok(handle) = hud.ns_window() else {
         return;
