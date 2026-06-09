@@ -252,13 +252,16 @@ export function App() {
   }, [appBlocked, runUpdateCheck]);
 
   useEffect(() => {
+    let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen(CHECK_FOR_UPDATES_EVENT, () => runUpdateCheck("manual")).then(
       (cleanup) => {
-        unlisten = cleanup;
+        if (aborted) cleanup();
+        else unlisten = cleanup;
       },
     );
     return () => {
+      aborted = true;
       unlisten?.();
     };
   }, [runUpdateCheck]);
@@ -276,6 +279,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationEvent(event.payload);
@@ -312,9 +316,11 @@ export function App() {
       if (microphone) setMicrophoneStatus(microphone);
       if (accessibility) setAccessibilityStatus(accessibility);
     }).then((cleanup) => {
-      unlisten = cleanup;
+      if (aborted) cleanup();
+      else unlisten = cleanup;
     });
     return () => {
+      aborted = true;
       unlisten?.();
     };
   }, []);

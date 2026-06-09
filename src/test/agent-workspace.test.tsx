@@ -223,6 +223,33 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    window.dispatchEvent(
+      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+        detail: { prompt: "write a project update" },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+        title: "Summarize Current Page",
+        cols: 96,
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-2",
+      text: "write a project update",
+    });
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "write a project update",
+    });
+  });
+
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
     const samplePath =

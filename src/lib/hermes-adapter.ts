@@ -4,8 +4,6 @@ import {
   hermesBridgeSessions,
   type HermesSessionInfo,
   type HermesSessionMessage,
-  type HermesSessionMessagesResponse,
-  type HermesSessionsResponse,
 } from "./tauri";
 
 export type HermesSessionListOptions = {
@@ -40,17 +38,13 @@ export async function deleteHermesSession(sessionId: string) {
   await deleteHermesBridgeSession(sessionId);
 }
 
-export function normalizeHermesSessionsResponse(
-  response: HermesSessionsResponse,
-) {
+export function normalizeHermesSessionsResponse(response: unknown) {
   return extractList(response, "sessions")
     .filter(isHermesSessionInfo)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
 }
 
-export function normalizeHermesSessionMessagesResponse(
-  response: HermesSessionMessagesResponse,
-) {
+export function normalizeHermesSessionMessagesResponse(response: unknown) {
   return extractList(response, "messages").flatMap(
     normalizeHermesSessionMessage,
   );
@@ -73,10 +67,11 @@ export function titleFromPrompt(prompt: string) {
   return `${title.slice(0, 69).trim()}...`;
 }
 
-function extractList<T extends object>(
-  response: T,
+function extractList(
+  response: unknown,
   preferredKey: "sessions" | "messages",
 ) {
+  if (!response || typeof response !== "object") return [];
   const record = response as Record<string, unknown>;
   const candidates = [
     record[preferredKey],

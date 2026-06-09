@@ -667,19 +667,22 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   }
 
   async function submitHermesSession(content: string) {
-    const titlePromise = selectedHermesSessionId
+    const targetSessionId = newSessionModeRef.current
+      ? undefined
+      : selectedHermesSessionId;
+    const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
     const gateway = await ensureHermesGateway();
     const sessionTitle = titlePromise ? await titlePromise : undefined;
-    const created = selectedHermesSessionId
+    const created = targetSessionId
       ? undefined
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
           title: sessionTitle ?? titleFromPrompt(content),
           cols: 96,
         });
     const storedSessionId =
-      selectedHermesSessionId ??
+      targetSessionId ??
       created?.stored_session_id ??
       created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
