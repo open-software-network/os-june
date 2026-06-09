@@ -273,7 +273,7 @@ describe("AppSettings", () => {
     });
   });
 
-  it("opens OS Accounts from Manage and Add funds in account settings", async () => {
+  it("opens OS Accounts from Add funds in billing settings", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -288,11 +288,9 @@ describe("AppSettings", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Manage" }));
-    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(1);
-
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
     await user.click(screen.getByRole("button", { name: "Add funds" }));
-    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(2);
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(1);
   });
 
   it("updates dictation microphone and note recording source", async () => {
@@ -353,14 +351,15 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Dictation" }));
-    const language = await screen.findByRole("combobox", {
+    const language = await screen.findByRole("button", {
       name: "Default transcription language",
     });
 
-    await user.selectOptions(language, "id");
+    await user.click(language);
+    await user.click(await screen.findByRole("option", { name: "Indonesian" }));
 
     expect(mocks.setDictationLanguage).toHaveBeenCalledWith("id");
-    await waitFor(() => expect(language).toHaveValue("id"));
+    await waitFor(() => expect(language).toHaveTextContent("Indonesian"));
   });
 
   it("lists system permissions with status and manage actions", async () => {
@@ -410,8 +409,6 @@ describe("AppSettings", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Permissions" }));
-
     const microphoneRow = screen
       .getByText("Microphone")
       .closest(".settings-row");
@@ -426,13 +423,13 @@ describe("AppSettings", () => {
     expect(accessibilityRow).not.toBeNull();
     expect(systemAudioRow).not.toBeNull();
     expect(
-      within(microphoneRow as HTMLElement).getByText("Blocked"),
+      within(microphoneRow as HTMLElement).getByLabelText("Blocked"),
     ).toBeInTheDocument();
     expect(
-      within(accessibilityRow as HTMLElement).getByText("Needs access"),
+      within(accessibilityRow as HTMLElement).getByLabelText("Needs access"),
     ).toBeInTheDocument();
     expect(
-      within(systemAudioRow as HTMLElement).getByText("Blocked"),
+      within(systemAudioRow as HTMLElement).getByLabelText("Blocked"),
     ).toBeInTheDocument();
 
     await user.click(
@@ -471,7 +468,7 @@ describe("AppSettings", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Dictation" }));
+    await user.click(screen.getByRole("tab", { name: "Shortcuts" }));
     expect(await screen.findByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
     expect(

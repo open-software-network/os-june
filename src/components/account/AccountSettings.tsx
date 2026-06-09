@@ -37,6 +37,12 @@ export function AccountSettings({
         onAccountChanged={onAccountChanged}
         onRefresh={onRefresh}
       />
+      <BillingSettingsSection
+        account={account}
+        loading={loading}
+        onAccountChanged={onAccountChanged}
+        onRefresh={onRefresh}
+      />
     </div>
   );
 }
@@ -45,13 +51,9 @@ export function AccountSettingsSection({
   account,
   loading,
   onAccountChanged,
-  onRefresh,
 }: Props) {
-  const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [accountStatus, setAccountStatus] = useState<string>();
-  const [billingStatus, setBillingStatus] = useState<string>();
-  const [spins, setSpins] = useState(0);
 
   async function handleSignIn() {
     setBusy(true);
@@ -85,13 +87,81 @@ export function AccountSettingsSection({
       await osAccountsLogout();
       onAccountChanged({ signedIn: false, configured: account.configured });
       setAccountStatus("Signed out.");
-      setBillingStatus(undefined);
     } catch (error) {
       setAccountStatus(messageFromError(error));
     } finally {
       setBusy(false);
     }
   }
+
+  return (
+    <section className="settings-group" aria-labelledby="account-heading">
+      <h2 id="account-heading" className="settings-group-heading">
+        Account
+      </h2>
+      {accountStatus ? (
+        <p className="settings-status">{accountStatus}</p>
+      ) : null}
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">
+                {loading
+                  ? "Checking sign-in..."
+                  : account.signedIn
+                    ? displayName(account)
+                    : "Not signed in"}
+              </h3>
+              <p className="settings-row-description">
+                {account.signedIn
+                  ? (account.user?.email ??
+                    `@${account.user?.handle ?? "account"}`)
+                  : account.configured
+                    ? "Your login is managed by OpenSoftware."
+                    : "OpenSoftware sign-in is not configured for this build."}
+              </p>
+            </div>
+            <div className="settings-row-control">
+              {account.signedIn ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={busy}
+                  onClick={() => void handleSignOut()}
+                >
+                  Sign out
+                </button>
+              ) : busy ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleCancel()}
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={loading || !account.configured}
+                  onClick={() => void handleSignIn()}
+                >
+                  Sign in with OpenSoftware
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function BillingSettingsSection({ account, onRefresh }: Props) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [billingStatus, setBillingStatus] = useState<string>();
+  const [spins, setSpins] = useState(0);
 
   async function handleTopUp() {
     try {
@@ -118,127 +188,53 @@ export function AccountSettingsSection({
   }
 
   return (
-    <>
-      <section className="settings-group" aria-labelledby="account-heading">
-        <h2 id="account-heading" className="settings-group-heading">
-          Account
-        </h2>
-        {accountStatus ? (
-          <p className="settings-status">{accountStatus}</p>
-        ) : null}
-        <div className="settings-card">
-          <div className="settings-rows">
-            <div className="settings-row">
-              <div className="settings-row-info">
-                <h3 className="settings-row-title">
-                  {loading
-                    ? "Checking sign-in…"
-                    : account.signedIn
-                      ? displayName(account)
-                      : "Not signed in"}
-                </h3>
-                <p className="settings-row-description">
-                  {account.signedIn
-                    ? (account.user?.email ??
-                      `@${account.user?.handle ?? "account"}`)
-                    : account.configured
-                      ? "Your login and balance are managed by OpenSoftware."
-                      : "OpenSoftware sign-in is not configured for this build."}
-                </p>
-              </div>
-              <div className="settings-row-control">
-                {account.signedIn ? (
-                  <>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      disabled={busy}
-                      onClick={() => void handleTopUp()}
-                    >
-                      Manage
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      disabled={busy}
-                      onClick={() => void handleSignOut()}
-                    >
-                      Sign out
-                    </button>
-                  </>
-                ) : busy ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => void handleCancel()}
-                  >
-                    Cancel
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={loading || !account.configured}
-                    onClick={() => void handleSignIn()}
-                  >
-                    Sign in with OpenSoftware
-                  </button>
-                )}
-              </div>
+    <section className="settings-group" aria-labelledby="billing-heading">
+      <h2 id="billing-heading" className="settings-group-heading">
+        Billing
+      </h2>
+      <p className="settings-group-description">
+        Managed by OpenSoftware. Your balance updates after checkout.
+      </p>
+      {billingStatus ? (
+        <p className="settings-status">{billingStatus}</p>
+      ) : null}
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <p className="balance-amount">
+                {formatUsd(account.balance?.usdMillis)}
+              </p>
+              <p className="settings-row-description">Available balance</p>
+            </div>
+            <div className="settings-row-control">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Refresh balance"
+                title="Refresh balance"
+                disabled={refreshing || !account.signedIn}
+                onClick={() => void handleRefresh()}
+              >
+                <IconArrowRotateClockwise
+                  size={14}
+                  className="balance-refresh-icon"
+                  style={{ transform: `rotate(${spins * 360}deg)` }}
+                />
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={!account.signedIn}
+                onClick={() => void handleTopUp()}
+              >
+                Add funds
+              </button>
             </div>
           </div>
         </div>
-      </section>
-
-      {account.signedIn ? (
-        <section className="settings-group" aria-labelledby="billing-heading">
-          <h2 id="billing-heading" className="settings-group-heading">
-            Billing
-          </h2>
-          <p className="settings-group-description">
-            Managed by OpenSoftware. Your balance updates after checkout.
-          </p>
-          {billingStatus ? (
-            <p className="settings-status">{billingStatus}</p>
-          ) : null}
-          <div className="settings-card">
-            <div className="settings-rows">
-              <div className="settings-row">
-                <div className="settings-row-info">
-                  <p className="balance-amount">
-                    {formatUsd(account.balance?.usdMillis)}
-                  </p>
-                  <p className="settings-row-description">Available balance</p>
-                </div>
-                <div className="settings-row-control">
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Refresh balance"
-                    title="Refresh balance"
-                    disabled={refreshing}
-                    onClick={() => void handleRefresh()}
-                  >
-                    <IconArrowRotateClockwise
-                      size={14}
-                      className="balance-refresh-icon"
-                      style={{ transform: `rotate(${spins * 360}deg)` }}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => void handleTopUp()}
-                  >
-                    Add funds
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
-    </>
+      </div>
+    </section>
   );
 }
 

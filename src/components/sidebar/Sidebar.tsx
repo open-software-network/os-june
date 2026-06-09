@@ -1,17 +1,30 @@
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
+import { IconAudio } from "central-icons/IconAudio";
+import { IconBrain2 } from "central-icons/IconBrain2";
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   markAgentNewSessionPending,
   type AgentSessionsChangedDetail,
@@ -32,7 +45,7 @@ import type {
   HermesSessionInfo,
   NoteListItemDto,
 } from "../../lib/tauri";
-import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
+import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PangolinSpinner } from "../PangolinSpinner";
 import { IconPangolin } from "../icons/IconPangolin";
@@ -77,11 +90,61 @@ type MenuState = {
 
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
 
+const SETTINGS_SIDEBAR_GROUPS: {
+  title: string;
+  items: { id: SettingsTab; label: string; icon: ReactNode }[];
+}[] = [
+  {
+    title: "Personal",
+    items: [
+      {
+        id: "general",
+        label: "General",
+        icon: <IconSettingsGear4 size={16} />,
+      },
+      {
+        id: "billing",
+        label: "Billing",
+        icon: <IconCreditCard1 size={16} />,
+      },
+      {
+        id: "shortcuts",
+        label: "Shortcuts",
+        icon: <IconShortcut size={16} />,
+      },
+    ],
+  },
+  {
+    title: "Audio",
+    items: [
+      {
+        id: "dictation",
+        label: "Dictation",
+        icon: <IconMicrophoneSparkle size={16} />,
+      },
+      { id: "audio", label: "Audio", icon: <IconAudio size={16} /> },
+    ],
+  },
+  {
+    title: "AI",
+    items: [
+      { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
+      { id: "agent", label: "Agent", icon: <IconPangolin size={16} /> },
+    ],
+  },
+  {
+    title: "App",
+    items: [
+      { id: "about", label: "About", icon: <IconCircleInfo size={16} /> },
+    ],
+  },
+];
+
 export function Sidebar({
   notes,
   activeView,
   account = { signedIn: false, configured: false },
-  settingsTab = "account",
+  settingsTab = "general",
   onSettingsTabChange,
   onChangeView,
   onExitSettings,
@@ -263,23 +326,25 @@ export function Sidebar({
       data-collapsed={collapsed}
       data-mode={inSettings ? "settings" : "default"}
     >
-      <header className="sidebar-header">
-        <a className="sidebar-brand" href="#" aria-label="OS June">
-          <img
-            className="sidebar-brand-img light"
-            src="/os-june-light.svg"
-            alt=""
-            height={16}
-          />
-          <img
-            className="sidebar-brand-img dark"
-            src="/os-june-dark.svg"
-            alt=""
-            height={16}
-          />
-          <span style={{ position: "absolute", left: -9999 }}>OS June</span>
-        </a>
-      </header>
+      {inSettings ? null : (
+        <header className="sidebar-header">
+          <a className="sidebar-brand" href="#" aria-label="OS June">
+            <img
+              className="sidebar-brand-img light"
+              src="/os-june-light.svg"
+              alt=""
+              height={16}
+            />
+            <img
+              className="sidebar-brand-img dark"
+              src="/os-june-dark.svg"
+              alt=""
+              height={16}
+            />
+            <span style={{ position: "absolute", left: -9999 }}>OS June</span>
+          </a>
+        </header>
+      )}
 
       {inSettings ? (
         <SettingsSidebarNav
@@ -291,108 +356,110 @@ export function Sidebar({
         />
       ) : (
         <>
-      <label className="sidebar-search">
-        <IconMagnifyingGlass size={15} />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-          placeholder="Search"
-        />
-      </label>
+          <label className="sidebar-search">
+            <IconMagnifyingGlass size={15} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Search"
+            />
+          </label>
 
-      <nav className="sidebar-nav" aria-label="Primary">
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          onClick={() => {
-            markAgentNewSessionPending();
-            onNewAgentSession();
-            dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
-          }}
-        >
-          <span className="sidebar-nav-icon">
-            <IconPlusMedium size={15} />
-          </span>
-          <span className="sidebar-nav-label">New Session</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "meetings" || activeView === "notes"}
-          aria-current={
-            activeView === "meetings" || activeView === "notes"
-              ? "page"
-              : undefined
-          }
-          onClick={() => {
-            onChangeView("notes");
-          }}
-        >
-          <span className="sidebar-nav-icon">
-            <IconNoteText size={15} />
-          </span>
-          <span className="sidebar-nav-label">Notes</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "dictation"}
-          aria-current={activeView === "dictation" ? "page" : undefined}
-          onClick={() => onChangeView("dictation")}
-        >
-          <span className="sidebar-nav-icon">
-            <IconMicrophone size={16} />
-          </span>
-          <span className="sidebar-nav-label">Dictation</span>
-        </button>
-      </nav>
+          <nav className="sidebar-nav" aria-label="Primary">
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              onClick={() => {
+                markAgentNewSessionPending();
+                onNewAgentSession();
+                dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
+              }}
+            >
+              <span className="sidebar-nav-icon">
+                <IconPlusMedium size={15} />
+              </span>
+              <span className="sidebar-nav-label">New Session</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "meetings" || activeView === "notes"}
+              aria-current={
+                activeView === "meetings" || activeView === "notes"
+                  ? "page"
+                  : undefined
+              }
+              onClick={() => {
+                onChangeView("notes");
+              }}
+            >
+              <span className="sidebar-nav-icon">
+                <IconNoteText size={15} />
+              </span>
+              <span className="sidebar-nav-label">Notes</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "dictation"}
+              aria-current={activeView === "dictation" ? "page" : undefined}
+              onClick={() => onChangeView("dictation")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconMicrophone size={16} />
+              </span>
+              <span className="sidebar-nav-label">Dictation</span>
+            </button>
+          </nav>
 
-      <section
-        className="sidebar-section sidebar-agent-section"
-        aria-label="Agent sessions"
-        data-active={activeView === "agent"}
-      >
-        <div className="section-title section-title-with-action">
-          <button
-            type="button"
-            className="section-title-label section-title-open"
-            onClick={() => onChangeView("agent")}
+          <section
+            className="sidebar-section sidebar-agent-section"
+            aria-label="Agent sessions"
+            data-active={activeView === "agent"}
           >
-            Agent
-          </button>
-        </div>
-        <div className="notes-nav-wrap">
-          <div className="notes-nav">
-            {filteredAgentSessions.length > 0 ? (
-              filteredAgentSessions.map((session) => (
-                <AgentSessionRow
-                  key={session.id}
-                  session={session}
-                  selected={
-                    activeView === "agent" &&
-                    selectedAgentSessionId === session.id
-                  }
-                  working={workingAgentSessionIds.has(session.id)}
-                  waiting={waitingAgentSessionIds.has(session.id)}
-                  deleting={deletingAgentSessionIds.has(session.id)}
-                  onSelect={() => {
-                    setSelectedAgentSessionId(session.id);
-                    onSelectAgentSession(session);
-                  }}
-                  onDelete={() => {
-                    setAgentSessionDeleteError(null);
-                    setAgentSessionToDelete(session);
-                  }}
-                />
-              ))
-            ) : (
-              <div className="sidebar-empty">
-                {agentSessions.length === 0 ? "No sessions yet" : "No matches"}
+            <div className="section-title section-title-with-action">
+              <button
+                type="button"
+                className="section-title-label section-title-open"
+                onClick={() => onChangeView("agent")}
+              >
+                Agent
+              </button>
+            </div>
+            <div className="notes-nav-wrap">
+              <div className="notes-nav">
+                {filteredAgentSessions.length > 0 ? (
+                  filteredAgentSessions.map((session) => (
+                    <AgentSessionRow
+                      key={session.id}
+                      session={session}
+                      selected={
+                        activeView === "agent" &&
+                        selectedAgentSessionId === session.id
+                      }
+                      working={workingAgentSessionIds.has(session.id)}
+                      waiting={waitingAgentSessionIds.has(session.id)}
+                      deleting={deletingAgentSessionIds.has(session.id)}
+                      onSelect={() => {
+                        setSelectedAgentSessionId(session.id);
+                        onSelectAgentSession(session);
+                      }}
+                      onDelete={() => {
+                        setAgentSessionDeleteError(null);
+                        setAgentSessionToDelete(session);
+                      }}
+                    />
+                  ))
+                ) : (
+                  <div className="sidebar-empty">
+                    {agentSessions.length === 0
+                      ? "No sessions yet"
+                      : "No matches"}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </div>
-      </section>
+            </div>
+          </section>
         </>
       )}
 
@@ -400,7 +467,6 @@ export function Sidebar({
         <SidebarIdentity
           account={account}
           menuOpen={identityMenuOpen}
-          inSettings={inSettings}
           onToggleMenu={() => setIdentityMenuOpen((open) => !open)}
           onCloseMenu={() => setIdentityMenuOpen(false)}
           onOpenSettings={() => {
@@ -564,29 +630,40 @@ function SettingsSidebarNav({
       className="sidebar-section sidebar-settings-section"
       aria-label="Settings"
     >
-      <button type="button" className="sidebar-settings-back" onClick={onBack}>
+      <button
+        type="button"
+        className="sidebar-nav-item sidebar-settings-back"
+        onClick={onBack}
+      >
         <span className="sidebar-nav-icon">
           <IconChevronLeftSmall size={15} />
         </span>
-        <span className="sidebar-nav-label">Back</span>
+        <span className="sidebar-nav-label">Back to app</span>
       </button>
-      <div className="section-title">
-        <span className="section-title-label">Settings</span>
-      </div>
-      <nav className="sidebar-nav" aria-label="Settings sections">
-        {SETTINGS_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className="sidebar-nav-item"
-            data-active={activeTab === tab.id}
-            aria-current={activeTab === tab.id ? "page" : undefined}
-            onClick={() => onSelectTab(tab.id)}
-          >
-            <span className="sidebar-nav-label">{tab.label}</span>
-          </button>
-        ))}
-      </nav>
+      {SETTINGS_SIDEBAR_GROUPS.map((group) => (
+        <div key={group.title} className="sidebar-settings-group">
+          <div className="section-title">
+            <span className="section-title-label">{group.title}</span>
+          </div>
+          <nav className="sidebar-nav" aria-label={`${group.title} settings`}>
+            {group.items.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className="sidebar-nav-item"
+                data-active={activeTab === tab.id}
+                aria-current={activeTab === tab.id ? "page" : undefined}
+                onClick={() => onSelectTab(tab.id)}
+              >
+                <span className="sidebar-nav-icon" aria-hidden>
+                  {tab.icon}
+                </span>
+                <span className="sidebar-nav-label">{tab.label}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
+      ))}
     </section>
   );
 }
@@ -596,7 +673,6 @@ function SettingsSidebarNav({
 function SidebarIdentity({
   account,
   menuOpen,
-  inSettings,
   onToggleMenu,
   onCloseMenu,
   onOpenSettings,
@@ -604,7 +680,6 @@ function SidebarIdentity({
 }: {
   account: AccountStatus;
   menuOpen: boolean;
-  inSettings: boolean;
   onToggleMenu: () => void;
   onCloseMenu: () => void;
   onOpenSettings: () => void;
@@ -634,7 +709,6 @@ function SidebarIdentity({
       <button
         type="button"
         className="sidebar-nav-item sidebar-identity"
-        data-active={inSettings}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-label={`${name} — account menu`}
@@ -717,7 +791,7 @@ function AgentSessionRow({
               <PangolinSpinner className="agent-sidebar-spinner" />
             </span>
           ) : (
-            <IconPangolin size={15} />
+            <IconPangolin size={16} />
           )}
         </span>
         <span className="note-row-title">
