@@ -65,10 +65,13 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let initial_menu = build_menu(app, &initial_state)?;
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&initial_menu)
-        .title(tray_title(&initial_state))
         .tooltip(tray_tooltip(&initial_state))
         .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event);
+
+    if let Some(title) = tray_title(&initial_state) {
+        tray_builder = tray_builder.title(title);
+    }
 
     if let Some(icon) = app.handle().default_window_icon().cloned() {
         tray_builder = tray_builder.icon(icon).icon_as_template(true);
@@ -196,7 +199,7 @@ where
 }
 
 fn update_tray<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, state: &AgentMenuBarState) {
-    let _ = tray.set_title(Some(tray_title(state)));
+    let _ = tray.set_title(tray_title(state));
     let _ = tray.set_tooltip(Some(tray_tooltip(state)));
 }
 
@@ -208,17 +211,20 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn tray_title(state: &AgentMenuBarState) -> String {
+fn tray_title(state: &AgentMenuBarState) -> Option<String> {
     if state.needs_user_count > 0 {
-        return counted_status_title("Needs Approval", state.needs_user_count);
+        return Some(counted_status_title(
+            "Needs Approval",
+            state.needs_user_count,
+        ));
     }
     if state.active_count > 0 {
-        return counted_status_title("Working...", state.active_count);
+        return Some(counted_status_title("Working...", state.active_count));
     }
     if let Some(last_status) = state.last_status.as_ref() {
-        return status_title(&last_status.status).to_string();
+        return status_title(&last_status.status).map(str::to_string);
     }
-    "Ready".to_string()
+    None
 }
 
 fn tray_tooltip(state: &AgentMenuBarState) -> String {
@@ -310,15 +316,14 @@ fn readable_status(status: &str) -> &'static str {
     }
 }
 
-fn status_title(status: &str) -> &'static str {
+fn status_title(status: &str) -> Option<&'static str> {
     match status {
-        "received" | "starting" => "Starting...",
-        "running" => "Working...",
-        "waitingForUser" => "Needs Approval",
-        "completed" => "Done",
-        "failed" => "Failed",
-        "cancelled" => "Cancelled",
-        _ => "Ready",
+        "received" | "starting" => Some("Starting..."),
+        "running" => Some("Working..."),
+        "waitingForUser" => Some("Needs Approval"),
+        "failed" => Some("Failed"),
+        "cancelled" => Some("Cancelled"),
+        _ => None,
     }
 }
 
@@ -351,23 +356,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tray_title_uses_agent_status_instead_of_brand_name() {
-        assert_eq!(tray_title(&AgentMenuBarState::default()), "Ready");
-        assert_eq!(tray_title(&state(1, 0, None)), "Working...");
-        assert_eq!(tray_title(&state(3, 0, None)), "Working... (3)");
-        assert_eq!(tray_title(&state(1, 1, None)), "Needs Approval");
-        assert_eq!(tray_title(&state(4, 2, None)), "Needs Approval (2)");
+    fn tray_title_uses_active_agent_status() {
+        assert_eq!(tray_title(&AgentMenuBarState::default()), None);
+        assert_eq!(tray_title(&state(1, 0, None)), Some("Working...".into()));
+        assert_eq!(
+            tray_title(&state(3, 0, None)),
+            Some("Working... (3)".into())
+        );
+        assert_eq!(
+            tray_title(&state(1, 1, None)),
+            Some("Needs Approval".into())
+        );
+        assert_eq!(
+            tray_title(&state(4, 2, None)),
+            Some("Needs Approval (2)".into())
+        );
     }
 
     #[test]
-    fn tray_title_falls_back_to_last_live_status() {
-        assert_eq!(tray_title(&state(0, 0, Some("starting"))), "Starting...");
-        assert_eq!(tray_title(&state(0, 0, Some("running"))), "Working...");
+    fn tray_title_uses_last_actionable_status() {
+        assert_eq!(
+            tray_title(&state(0, 0, Some("starting"))),
+            Some("Starting...".into())
+        );
+        assert_eq!(
+            tray_title(&state(0, 0, Some("running"))),
+            Some("Working...".into())
+        );
         assert_eq!(
             tray_title(&state(0, 0, Some("waitingForUser"))),
-            "Needs Approval"
+            Some("Needs Approval".into())
         );
-        assert_eq!(tray_title(&state(0, 0, Some("completed"))), "Done");
+        assert_eq!(
+            tray_title(&state(0, 0, Some("failed"))),
+            Some("Failed".into())
+        );
+        assert_eq!(
+            tray_title(&state(0, 0, Some("cancelled"))),
+            Some("Cancelled".into())
+        );
+    }
+
+    #[test]
+    fn tray_title_omits_passive_statuses() {
+        assert_eq!(tray_title(&state(0, 0, Some("completed"))), None);
+        assert_eq!(tray_title(&state(0, 0, Some("unknown"))), None);
     }
 
     fn state(
