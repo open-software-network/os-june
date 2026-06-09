@@ -46,6 +46,7 @@ pub fn run() {
         // single-instance -> deep-link handoff (documented above) adjacent and
         // obvious; process/updater are order-independent so they follow.
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(|app, event| {

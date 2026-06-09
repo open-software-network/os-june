@@ -47,6 +47,7 @@ let meetingPromptTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
+let hideRequestId = 0;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -55,7 +56,7 @@ const brailleWave = spinners.waverows;
 // Matches the .hud[data-state="exiting"] transition in hud.css.
 const EXIT_TRANSITION_MS = 160;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
-const AGENT_RUNNING_STATES = new Set(["agent-running", "agent-needs-user"]);
+const AGENT_HANDOFF_TIMEOUT_MS = 4_000;
 
 // Bar synthesis + ballistics live in the shared meter so the recorder waveform
 // moves identically. The meter holds the level history and the displayed bars.
@@ -108,23 +109,15 @@ function setHud(state: string, status: string) {
   hud.dataset.state = state;
   statusText.textContent = status;
   if (agentLabel) {
-    agentLabel.textContent = state.startsWith("agent-") ? status : "";
+    agentLabel.textContent = state === "agent-received" ? status : "";
   }
   if (errorText) {
     errorText.textContent =
       state === "silent-error" || state === "error" ? status : "";
   }
-  if (
-    state === "transcribing" ||
-    state === "pasting" ||
-    AGENT_RUNNING_STATES.has(state)
-  ) {
+  if (state === "transcribing" || state === "pasting") {
     startBraille();
-  } else if (
-    previous === "transcribing" ||
-    previous === "pasting" ||
-    (previous && AGENT_RUNNING_STATES.has(previous))
-  ) {
+  } else if (previous === "transcribing" || previous === "pasting") {
     stopBraille();
   }
   if (state === "listening") {
@@ -238,7 +231,7 @@ function stopBraille() {
   }
 }
 
-function playAgentTone(kind: AgentSessionStatusDetail["status"]) {
+function playAgentStartTone() {
   const AudioContextCtor =
     window.AudioContext ??
     (window as typeof window & { webkitAudioContext?: typeof AudioContext })
@@ -249,16 +242,8 @@ function playAgentTone(kind: AgentSessionStatusDetail["status"]) {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     const now = context.currentTime;
-    const frequency =
-      kind === "waitingForUser"
-        ? 660
-        : kind === "completed"
-          ? 880
-          : kind === "failed" || kind === "cancelled"
-            ? 220
-            : 520;
     oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(frequency, now);
+    oscillator.frequency.setValueAtTime(520, now);
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.exponentialRampToValueAtTime(0.045, now + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
@@ -268,7 +253,7 @@ function playAgentTone(kind: AgentSessionStatusDetail["status"]) {
     oscillator.stop(now + 0.18);
     oscillator.addEventListener("ended", () => void context.close());
   } catch {
-    // Audio feedback is opportunistic; visual state remains authoritative.
+    // The visual handoff cue is the source of truth; sound is opportunistic.
   }
 }
 
@@ -334,6 +319,7 @@ function startMeetingPromptTimer() {
 }
 
 async function hideHud() {
+  const requestId = ++hideRequestId;
   clearHideTimer();
   clearMeetingPromptTimer();
   clearStopHover();
@@ -345,10 +331,12 @@ async function hideHud() {
       window.setTimeout(resolve, EXIT_TRANSITION_MS),
     );
   }
+  if (requestId !== hideRequestId) return;
   await appWindow.hide();
 }
 
 async function showHud() {
+  hideRequestId += 1;
   clearHideTimer();
   await appWindow.show();
   // Force a layout flush before reading rects.
@@ -392,7 +380,6 @@ async function handleDictationEventPayload(payload: unknown) {
       state === "pasting" ||
       state === "error" ||
       state === "silent-error" ||
-      state?.startsWith("agent-") ||
       state === "exiting"
     ) {
       return;
@@ -488,52 +475,14 @@ async function handleAgentStatusEventPayload(payload: unknown) {
   const event = parseEvent(payload) as unknown as
     | AgentSessionStatusDetail
     | undefined;
-  if (!event?.status) return;
+  if (event?.status !== "received") return;
 
   clearMeetingPromptTimer();
   clearHideTimer();
-
-  if (event.status === "received") {
-    playAgentTone(event.status);
-    setHud("agent-received", event.summary || "Request received");
-    await showHud();
-    hideSoon(950);
-    return;
-  }
-
-  if (event.status === "starting") {
-    setHud("agent-running", event.summary || "Starting June");
-    await showHud();
-    return;
-  }
-
-  if (event.status === "running") {
-    setHud("agent-running", event.summary || "June is working");
-    await showHud();
-    return;
-  }
-
-  if (event.status === "waitingForUser") {
-    playAgentTone(event.status);
-    setHud("agent-needs-user", event.summary || "June needs you");
-    await showHud();
-    return;
-  }
-
-  if (event.status === "completed") {
-    playAgentTone(event.status);
-    setHud("agent-completed", event.summary || "June finished");
-    await showHud();
-    hideSoon(1400);
-    return;
-  }
-
-  if (event.status === "failed" || event.status === "cancelled") {
-    playAgentTone(event.status);
-    setHud("error", event.summary || "June hit a problem.");
-    await showHud();
-    hideSoon(1800);
-  }
+  playAgentStartTone();
+  setHud("agent-received", event.summary || "June is starting");
+  await showHud();
+  hideSoon(AGENT_HANDOFF_TIMEOUT_MS);
 }
 
 function parseEvent(payload: unknown): DictationHudEvent | undefined {

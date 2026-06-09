@@ -56,7 +56,12 @@ import {
   preloadRecordingSounds,
 } from "../lib/recording-sounds";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
-import { dispatchAgentSessionStatus } from "../lib/agent-events";
+import {
+  AGENT_SESSION_STATUS_EVENT,
+  dispatchAgentSessionStatus,
+  type AgentSessionStatusDetail,
+} from "../lib/agent-events";
+import { notifyAgentSessionStatus } from "../lib/agent-notifications";
 import { titleFromPrompt } from "../lib/hermes-adapter";
 import type {
   BootstrapResponse,
@@ -259,6 +264,18 @@ export function App() {
   }, [runUpdateCheck]);
 
   useEffect(() => {
+    const handleAgentStatus = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionStatusDetail>).detail;
+      if (!detail) return;
+      void notifyAgentSessionStatus(detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
+    return () => {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
+    };
+  }, []);
+
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationEvent(event.payload);
@@ -269,7 +286,7 @@ export function App() {
           prompt,
           title: titleFromPrompt(prompt),
           status: "received",
-          summary: "Request received.",
+          summary: "June is starting.",
         });
         markAgentNewSessionPending(prompt);
         setActiveView("agent");

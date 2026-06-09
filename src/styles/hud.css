@@ -234,7 +234,7 @@ body {
   font-size: var(--fs-sm);
   font-weight: 600;
   line-height: 1;
-  max-width: min(220px, calc(100vw - 100px));
+  max-width: min(240px, calc(100vw - 100px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -381,48 +381,18 @@ body {
   display: inline-flex;
 }
 
-.hud[data-state="agent-received"],
-.hud[data-state="agent-running"],
-.hud[data-state="agent-needs-user"],
-.hud[data-state="agent-completed"] {
+.hud[data-state="agent-received"] {
   gap: var(--sp-2);
   padding-inline: 3px var(--sp-4);
 }
 
-.hud[data-state="agent-received"] .hud-agent-label,
-.hud[data-state="agent-running"] .hud-agent-label,
-.hud[data-state="agent-needs-user"] .hud-agent-label,
-.hud[data-state="agent-completed"] .hud-agent-label {
+.hud[data-state="agent-received"] .hud-agent-label {
   display: block;
 }
 
 .hud[data-state="agent-received"] .hud-viz,
-.hud[data-state="agent-completed"] .hud-viz {
+.hud[data-state="agent-received"] .hud-stop {
   display: none;
-}
-
-.hud[data-state="agent-running"] .hud-viz,
-.hud[data-state="agent-needs-user"] .hud-viz {
-  width: 54px;
-}
-
-.hud[data-state="agent-running"] .hud-bars,
-.hud[data-state="agent-needs-user"] .hud-bars {
-  display: none;
-}
-
-.hud[data-state="agent-running"] .hud-braille,
-.hud[data-state="agent-needs-user"] .hud-braille {
-  display: flex;
-}
-
-.hud[data-state="agent-needs-user"] {
-  border-color: color-mix(in oklch, var(--foreground) 28%, var(--border));
-  background: color-mix(in oklch, var(--popover) 82%, var(--foreground) 10%);
-}
-
-.hud[data-state="agent-completed"] {
-  border-color: color-mix(in oklch, var(--success) 36%, var(--border));
 }
 
 /* Text-only shaking pill for hard errors. */
@@ -473,11 +443,7 @@ body {
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
 .hud[data-state="error"] .hud-stop,
-.hud[data-state="silent-error"] .hud-stop,
-.hud[data-state="agent-received"] .hud-stop,
-.hud[data-state="agent-running"] .hud-stop,
-.hud[data-state="agent-needs-user"] .hud-stop,
-.hud[data-state="agent-completed"] .hud-stop {
+.hud[data-state="silent-error"] .hud-stop {
   display: none;
 }
 

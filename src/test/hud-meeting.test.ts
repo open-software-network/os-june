@@ -180,58 +180,57 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
-  it("shows Hey June acknowledgement and dismisses it", async () => {
+  it("briefly acknowledges a Hey June agent handoff", async () => {
     vi.useFakeTimers();
     await loadHud();
 
     await emit(AGENT_SESSION_STATUS_EVENT, {
       status: "received",
-      summary: "Request received.",
+      summary: "June is starting.",
     });
 
     expect(hudElement().dataset.state).toBe("agent-received");
     expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
-      "Request received.",
+      "June is starting.",
     );
     expect(mocks.show).toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(950);
+    await vi.advanceTimersByTimeAsync(4000);
     expect(hudElement().dataset.state).toBe("exiting");
   });
 
-  it("keeps agent progress visible when late audio levels arrive", async () => {
+  it("keeps the agent handoff visible when it races the dictation handoff hide", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "finalizing_transcript" });
+
+    await emit("dictation-event", {
+      type: "agent_session_prompt",
+      payload: { prompt: "open the browser." },
+    });
+    await emit(AGENT_SESSION_STATUS_EVENT, {
+      status: "received",
+      summary: "June is starting.",
+    });
+    await vi.advanceTimersByTimeAsync(160);
+
+    expect(mocks.hide).not.toHaveBeenCalled();
+    expect(hudElement().dataset.state).toBe("agent-received");
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(hudElement().dataset.state).toBe("exiting");
+  });
+
+  it("does not claim the HUD for ongoing agent progress", async () => {
     await loadHud();
 
     await emit(AGENT_SESSION_STATUS_EVENT, {
       status: "running",
       summary: "Using Filesystem.",
     });
-    await emit("dictation-event", {
-      type: "audio_level",
-      payload: { level: "0.8" },
-    });
 
-    expect(hudElement().dataset.state).toBe("agent-running");
-    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
-      "Using Filesystem.",
-    );
-  });
-
-  it("shows sticky user-input requests", async () => {
-    vi.useFakeTimers();
-    await loadHud();
-
-    await emit(AGENT_SESSION_STATUS_EVENT, {
-      status: "waitingForUser",
-      summary: "June needs approval.",
-    });
-    await vi.advanceTimersByTimeAsync(5000);
-
-    expect(hudElement().dataset.state).toBe("agent-needs-user");
-    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
-      "June needs approval.",
-    );
-    expect(mocks.hide).not.toHaveBeenCalled();
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(mocks.show).not.toHaveBeenCalled();
   });
 });
 
