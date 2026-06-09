@@ -113,6 +113,7 @@ export function DictationHistoryView({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listen<string>("dictation-event", (event) => {
       const payload = parseDictationHelperEvent(event.payload);
@@ -120,9 +121,15 @@ export function DictationHistoryView({
         void loadHistory();
       }
     }).then((cleanup) => {
-      unlisten = cleanup;
+      // Unmount can race the listen() promise — unsubscribe immediately
+      // instead of leaking the listener.
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
     });
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [loadHistory]);
 
   const filtered = useMemo(() => {

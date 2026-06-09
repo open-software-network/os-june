@@ -58,7 +58,7 @@ describe("meeting detection HUD", () => {
       "Meeting detected",
     );
     expect(document.querySelector("#hud-meeting-start")).toHaveTextContent(
-      "Start Transcription",
+      "Start transcription",
     );
     expect(mocks.show).toHaveBeenCalledOnce();
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
@@ -273,7 +273,7 @@ function hudMarkup() {
       <span id="hud-error-text" class="hud-error-text" aria-hidden="true"></span>
       <span id="hud-agent-label" class="hud-agent-label" aria-hidden="true"></span>
       <span id="hud-meeting-label" class="hud-meeting-label">Meeting detected</span>
-      <button id="hud-meeting-start" class="hud-meeting-start" type="button">Start Transcription</button>
+      <button id="hud-meeting-start" class="hud-meeting-start" type="button">Start transcription</button>
       <button id="hud-stop" class="hud-stop" type="button" aria-label="Stop dictation">
         <span class="hud-stop-glyph" aria-hidden="true"></span>
       </button>

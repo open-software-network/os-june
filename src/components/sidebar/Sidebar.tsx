@@ -398,7 +398,7 @@ export function Sidebar({
               <span className="sidebar-nav-icon">
                 <IconPlusMedium size={15} />
               </span>
-              <span className="sidebar-nav-label">New Session</span>
+              <span className="sidebar-nav-label">New session</span>
             </button>
             <button
               type="button"

@@ -308,7 +308,10 @@ export function AppSettings({
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (helperEvent) handleHelperEvent(helperEvent);
     }).then((cleanup) => {
-      unlisten = cleanup;
+      // Unmount can race the listen() promise — unsubscribe immediately
+      // instead of leaking the listener.
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
     });
     void boot();
 

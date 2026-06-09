@@ -601,7 +601,6 @@ input:focus-visible,
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .agent-capability-group h3 span {
@@ -924,7 +923,6 @@ input:focus-visible,
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .agent-advanced-toggle {

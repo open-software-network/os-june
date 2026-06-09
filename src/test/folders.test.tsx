@@ -77,7 +77,7 @@ describe("folders UI", () => {
     expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Notes" }));
-    await user.click(screen.getByRole("button", { name: "New Session" }));
+    await user.click(screen.getByRole("button", { name: "New session" }));
 
     expect(onChangeView).toHaveBeenCalledWith("notes");
     expect(onChangeView).toHaveBeenCalledWith("agent");
