@@ -89,7 +89,33 @@ const HUD_WHISPER_FLOOR = 0.06;
 // The idle pulse + speech wave live in the shared meter (IDLE_PULSE_*,
 // SPEECH_WAVE_*, withWaveLayers) so the HUD and recorder move identically.
 
-function setHud(state: string, status: string) {
+// State changes funnel through a FIFO chain: leaving the upright listening
+// pill lays it flat FIRST — while the DOM still shows the listening bars —
+// because every other state carries braille/text that can't read sideways
+// (swapping it in mid-turn is what made completing-while-upright glitch:
+// sideways braille growing past the frost, then rotating back). The chain
+// also keeps racing events (stop click, then finalizing_transcript, then
+// final_transcript) applying in order even when one waited ~350ms for the
+// turn; `skipIf` re-checks staleness at apply time for queued level events.
+let hudStateChain: Promise<void> = Promise.resolve();
+
+function setHud(
+  state: string,
+  status: string,
+  options?: { skipIf?: () => boolean },
+): Promise<void> {
+  const apply = async () => {
+    if (options?.skipIf?.()) return;
+    if (hudVertical && hud?.dataset.state !== state && state !== "listening") {
+      await invoke("dictation_hud_flatten").catch(() => {});
+    }
+    applyHudState(state, status);
+  };
+  hudStateChain = hudStateChain.then(apply, apply);
+  return hudStateChain;
+}
+
+function applyHudState(state: string, status: string) {
   if (!hud || !statusText) return;
   const previous = hud.dataset.state;
   const widthBefore = hud.getBoundingClientRect().width;
@@ -412,11 +438,21 @@ async function hideHud() {
 }
 
 async function showHud() {
-  hideRequestId += 1;
+  const requestId = ++hideRequestId;
   clearHideTimer();
-  // Size the window to the pill before it appears (an interrupted exit may
-  // also have left the native alpha low — restore it first).
-  setWindowAlpha(1);
+  let wasVisible = false;
+  try {
+    wasVisible = await appWindow.isVisible();
+  } catch {
+    // Absent in the jsdom test mock — treat as a fresh show.
+  }
+  // Reveal gate: while the window is ordered out WebKit suspends compositing,
+  // so show() first presents whatever frame was committed before the last
+  // hide — a flash of stale content, worst when the pill re-appears upright
+  // in a side zone. Hold the native alpha near zero across show(), give the
+  // webview a beat to commit the state applied below, then reveal. Already
+  // visible, just make sure an interrupted exit didn't leave the alpha low.
+  setWindowAlpha(wasVisible ? 1 : 0.01);
   await syncWindowToPill();
   // Parked in a side third, the listening pill should pop into view already
   // upright (a snap while hidden) — not flash flat and turn once the settle
@@ -425,6 +461,19 @@ async function showHud() {
     await invoke("dictation_hud_apply_zone").catch(() => {});
   }
   await appWindow.show();
+  if (!wasVisible) {
+    // Fire-and-forget: nothing downstream depends on the reveal, rAF can be
+    // throttled on the non-key panel (hence the timeout race), and the tests
+    // advance fake timers only after handlers resolve.
+    let revealed = false;
+    const reveal = () => {
+      if (revealed) return;
+      revealed = true;
+      if (requestId === hideRequestId) setWindowAlpha(1);
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(reveal));
+    window.setTimeout(reveal, 80);
+  }
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
@@ -447,7 +496,7 @@ async function handleDictationEventPayload(payload: unknown) {
 
   if (dictationEvent.type === "listening_started") {
     resetBars();
-    setHud("listening", "Listening");
+    await setHud("listening", "Listening");
     await showHud();
     return;
   }
@@ -457,37 +506,42 @@ async function handleDictationEventPayload(payload: unknown) {
     // arrives AFTER finalizing_transcript. Once we've moved past listening, that
     // stray level must NOT pull the HUD back to "listening" — otherwise it kills
     // the transcribing braille and the pill looks stuck until the paste lands.
-    const state = hud?.dataset.state;
-    if (
-      state === "idle" ||
-      state === "transcribing" ||
-      state === "pasting" ||
-      state === "error" ||
-      state === "silent-error" ||
-      state === "exiting"
-    ) {
+    // Checked again at apply time (skipIf): a level event queued behind a
+    // leaving-listening turn is stale by the time the chain reaches it.
+    const pastListening = () => {
+      const state = hud?.dataset.state;
+      return (
+        state === "idle" ||
+        state === "transcribing" ||
+        state === "pasting" ||
+        state === "error" ||
+        state === "silent-error" ||
+        state === "exiting"
+      );
+    };
+    if (pastListening()) {
       return;
     }
     const level = Number(dictationEvent.payload?.level || 0);
     renderAudioLevel(level);
-    setHud("listening", "Listening");
+    await setHud("listening", "Listening", { skipIf: pastListening });
     return;
   }
 
   if (dictationEvent.type === "finalizing_transcript") {
-    setHud("transcribing", "Transcribing");
+    await setHud("transcribing", "Transcribing");
     await showHud();
     return;
   }
 
   if (dictationEvent.type === "final_transcript") {
-    setHud("pasting", "Pasting");
+    await setHud("pasting", "Pasting");
     await showHud();
     return;
   }
 
   if (dictationEvent.type === "paste_target") {
-    setHud(
+    await setHud(
       "pasting",
       `Pasting into ${dictationEvent.payload?.app || "previous app"}`,
     );
@@ -509,7 +563,7 @@ async function handleDictationEventPayload(payload: unknown) {
     // Rust pre-classifies via payload.silent so the HUD has one source of
     // truth for what counts as a "Nothing recorded" case.
     if (dictationEvent.payload?.silent === true) {
-      setHud("silent-error", "Nothing recorded");
+      await setHud("silent-error", "Nothing recorded");
       await showHud();
       hideSoon(900);
       return;
@@ -517,7 +571,7 @@ async function handleDictationEventPayload(payload: unknown) {
     const message = String(
       dictationEvent.payload?.message ?? "Dictation failed.",
     ).trim();
-    setHud("error", message || "Dictation failed.");
+    await setHud("error", message || "Dictation failed.");
     await showHud();
     triggerShake();
     // Hold long enough for the shake to finish and the message to read.
@@ -532,7 +586,7 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   if (meetingEvent.type === "meeting_detected") {
     if (meetingPromptSuppressed) return;
     if (!canShowMeetingPrompt(hud?.dataset.state)) return;
-    setHud("meeting", "Meeting detected");
+    await setHud("meeting", "Meeting detected");
     await showHud();
     startMeetingPromptTimer();
     return;
@@ -565,7 +619,7 @@ async function handleAgentStatusEventPayload(payload: unknown) {
   clearMeetingPromptTimer();
   clearHideTimer();
   playAgentStartTone();
-  setHud("agent-received", event.summary || "June is starting");
+  await setHud("agent-received", event.summary || "June is starting");
   await showHud();
   hideSoon(AGENT_HANDOFF_TIMEOUT_MS);
 }
@@ -637,7 +691,9 @@ stopButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   setStopHover(false);
   if (hud?.dataset.state === "listening") {
-    setHud("transcribing", "Transcribing");
+    // Not awaited: upright, the state lands only after the lay-flat turn —
+    // the recorder must stop now, not 350ms from now.
+    void setHud("transcribing", "Transcribing");
   }
   try {
     await invoke("dictation_helper_command", {

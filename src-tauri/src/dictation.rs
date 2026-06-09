@@ -89,6 +89,13 @@ pub struct HudOrient {
     /// Window frame to restore when flattening (the listening pill's size —
     /// while upright the window is a square grown around it).
     horizontal_size: Mutex<Option<PhysicalSize<u32>>>,
+    /// Serializes turns. Callers use `dictation_hud_flatten` as a sequencing
+    /// barrier before geometry math — a second flatten arriving while one is
+    /// mid-turn must block until it lands, not return early on the already-
+    /// swapped flag. Only ever taken on background threads (the hover thread
+    /// and spawn_blocking command bodies); holding it on the main thread
+    /// would deadlock against the turn's run_on_main_thread closures.
+    turn: Mutex<()>,
 }
 
 pub fn configured_transcription_language() -> Option<String> {
@@ -568,6 +575,7 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(HudOrient {
         vertical: std::sync::atomic::AtomicBool::new(false),
         horizontal_size: Mutex::new(None),
+        turn: Mutex::new(()),
     });
     app.manage(HudFrameLock::default());
     spawn_hud_hover_thread(app.handle().clone());
@@ -987,23 +995,91 @@ pub async fn dictation_hud_flatten(app: AppHandle) {
 /// (mirrors the meeting HUD's apply-zone-before-show). While hidden the turn
 /// snaps — `hud_stand_upright` gates its animation on window visibility.
 /// Flattening is not this hook's job: `syncWindowToPill` already ran the
-/// flatten choke point before calling it.
+/// flatten choke point before calling it. spawn_blocking because the turn
+/// lock must never be taken on the main thread.
 #[tauri::command]
-pub fn dictation_hud_apply_zone(app: AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        let Some(hud) = app.get_webview_window("hud") else {
-            return;
-        };
-        let Some(zone) = hud_native::zone_for(&hud) else {
-            return;
-        };
-        if zone.is_vertical() && !hud_is_vertical(&app) {
-            hud_stand_upright(&app, &hud);
+pub async fn dictation_hud_apply_zone(app: AppHandle) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(hud) = app.get_webview_window("hud") else {
+                return;
+            };
+            let Some(zone) = hud_native::zone_for(&hud) else {
+                return;
+            };
+            if zone.is_vertical() && !hud_is_vertical(&app) {
+                hud_stand_upright(&app, &hud);
+            }
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = app;
+    })
+    .await;
+}
+
+/// Where the window should sit so a `visible` rect centered in it stays
+/// inside the work area of the monitor under the window's center, with
+/// `margin` (physical px) of breathing room. The HUD windows are squares
+/// whose transparent gutters may hang off-screen freely — it's the centered
+/// pill that must stay in view, in whichever orientation it's presented.
+#[cfg(target_os = "macos")]
+fn clamped_window_position(
+    hud: &WebviewWindow,
+    position: PhysicalPosition<i32>,
+    window_size: PhysicalSize<u32>,
+    visible: PhysicalSize<u32>,
+    margin: i32,
+) -> PhysicalPosition<i32> {
+    let center_x = position.x + window_size.width as i32 / 2;
+    let center_y = position.y + window_size.height as i32 / 2;
+    let Some(monitor) = hud
+        .monitor_from_point(f64::from(center_x), f64::from(center_y))
+        .ok()
+        .flatten()
+        .or_else(|| hud.current_monitor().ok().flatten())
+    else {
+        return position;
+    };
+    let work = monitor.work_area();
+    let half_w = visible.width as i32 / 2;
+    let half_h = visible.height as i32 / 2;
+    let min_cx = work.position.x + margin + half_w;
+    let max_cx = (work.position.x + work.size.width as i32 - margin - half_w).max(min_cx);
+    let min_cy = work.position.y + margin + half_h;
+    let max_cy = (work.position.y + work.size.height as i32 - margin - half_h).max(min_cy);
+    PhysicalPosition::new(
+        position.x + (center_x.clamp(min_cx, max_cx) - center_x),
+        position.y + (center_y.clamp(min_cy, max_cy) - center_y),
+    )
+}
+
+/// Ease the window's position from `from` to `to` over `secs` — the stepped
+/// ease-out cubic of `animate_frame_to`, position-only. Runs on the calling
+/// (background) thread and doubles as the wait for a native turn on the same
+/// clock: with nowhere to go it simply sleeps the duration, so callers can
+/// always sequence post-turn work after it.
+#[cfg(target_os = "macos")]
+fn glide_window_position(
+    hud: &WebviewWindow,
+    from: PhysicalPosition<i32>,
+    to: PhysicalPosition<i32>,
+    secs: f64,
+) {
+    if from == to {
+        thread::sleep(Duration::from_secs_f64(secs));
+        return;
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = app;
+    const STEP_MS: u64 = 16;
+    let steps = ((secs * 1000.0) / STEP_MS as f64).round().max(1.0) as u32;
+    for step in 1..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        let e = 1.0 - (1.0 - t).powi(3);
+        let x = f64::from(from.x) + f64::from(to.x - from.x) * e;
+        let y = f64::from(from.y) + f64::from(to.y - from.y) * e;
+        let _ = hud.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+        thread::sleep(Duration::from_millis(STEP_MS));
+    }
 }
 
 /// Stand the listening pill upright: grow the window into a square around the
@@ -1019,12 +1095,17 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
     let Some(orient) = app.try_state::<HudOrient>() else {
         return;
     };
+    // Wait out any in-flight flatten before standing (and vice versa) —
+    // overlapping turns would interleave their geometry passes.
+    let _turn = orient.turn.lock().ok();
     if orient.vertical.swap(true, Ordering::SeqCst) {
         return;
     }
     let lock = app.try_state::<HudFrameLock>();
     let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
-    let (Ok(size), Ok(scale)) = (hud.outer_size(), hud.scale_factor()) else {
+    let (Ok(position), Ok(size), Ok(scale)) =
+        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
+    else {
         orient.vertical.store(false, Ordering::SeqCst);
         return;
     };
@@ -1078,20 +1159,42 @@ fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
         );
         hud_native::rotate_content(&window, -std::f64::consts::FRAC_PI_2, animate);
         // Parked near a screen edge, the upright pill (pill_h wide,
-        // upright_len tall once turned) can poke off-screen — scoot it in.
-        hud_native::clamp_window_for_visible_rect(
-            &window,
-            pill_h,
-            upright_len,
-            HUD_EDGE_MARGIN,
-        );
+        // upright_len tall once turned) can poke off-screen. Hidden, snap it
+        // in here; visible, the glide below rides the turn instead.
+        if !animate {
+            hud_native::clamp_window_for_visible_rect(
+                &window,
+                pill_h,
+                upright_len,
+                HUD_EDGE_MARGIN,
+            );
+        }
     });
     if animate {
-        // The shadow shape is derived from the rendered content; refresh it
-        // once the turn settles, off this thread so callers never stall.
+        // Glide the window to its clamped spot on the turn's clock (a no-op
+        // glide just waits it out), then refresh the native shadow — its
+        // shape is derived from the rendered content, which has turned. Off
+        // this thread so the hover tick never stalls.
+        let square_position = PhysicalPosition::new(
+            position.x + (size.width as i32 - side as i32) / 2,
+            position.y + (size.height as i32 - side as i32) / 2,
+        );
+        let visible = PhysicalSize::new(
+            size.height,
+            (upright_len * scale).round() as u32,
+        );
+        let margin = (HUD_EDGE_MARGIN * scale).round() as i32;
+        let target = clamped_window_position(
+            hud,
+            square_position,
+            PhysicalSize::new(side, side),
+            visible,
+            margin,
+        );
         let window = hud.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_secs_f64(hud_native::TURN_SECS + 0.06));
+            glide_window_position(&window, square_position, target, hud_native::TURN_SECS);
+            thread::sleep(Duration::from_millis(60));
             let handle = window.clone();
             let _ = window.run_on_main_thread(move || unsafe {
                 hud_native::invalidate_shadow(&handle);
@@ -1114,6 +1217,10 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
     let Some(orient) = app.try_state::<HudOrient>() else {
         return;
     };
+    // Serialize with any in-flight turn: callers treat flatten as a barrier,
+    // so a second flatten must block until the first lands, not return early
+    // on the already-swapped flag below.
+    let _turn = orient.turn.lock().ok();
     if !orient.vertical.swap(false, Ordering::SeqCst) {
         return;
     }
@@ -1123,7 +1230,9 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
         "dictation-hud-orient",
         serde_json::json!({ "vertical": false, "animate": animate }),
     );
-    let (Ok(size), Ok(scale)) = (hud.outer_size(), hud.scale_factor()) else {
+    let (Ok(position), Ok(size), Ok(scale)) =
+        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
+    else {
         return;
     };
     let restore = orient
@@ -1152,7 +1261,14 @@ fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
         hud_native::rotate_content(&window, 0.0, animate);
     });
     if animate {
-        thread::sleep(Duration::from_secs_f64(hud_native::TURN_SECS + 0.03));
+        // Ride the turn: if lying flat would leave the pill off-screen (it
+        // stood clamped near an edge, where the flat pill needs more room),
+        // glide the window inboard on the turn's clock instead of snapping
+        // there at the restore. A no-op glide just waits the turn out.
+        let margin = (HUD_EDGE_MARGIN * scale).round() as i32;
+        let target = clamped_window_position(hud, position, size, restore, margin);
+        glide_window_position(hud, position, target, hud_native::TURN_SECS);
+        thread::sleep(Duration::from_millis(30));
     }
 
     let lock = app.try_state::<HudFrameLock>();
