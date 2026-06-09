@@ -113,6 +113,7 @@ pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<N
 
 #[tauri::command]
 pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
+    let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
     let audio_paths = repos
         .audio_artifact_paths_for_note(&request.note_id)
@@ -122,7 +123,7 @@ pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(
         if path.trim().is_empty() {
             continue;
         }
-        if let Err(error) = std::fs::remove_file(&path) {
+        if let Err(error) = paths.remove_recording_file(&path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 eprintln!("failed to remove deleted note audio {path}: {error}");
             }
@@ -506,6 +507,7 @@ pub async fn start_recording(
 ) -> Result<RecordingSessionDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    let note = repos.get_note(&request.note_id).await?;
     let source_mode = request.source_mode.unwrap_or_default();
     let readiness = recording_source_readiness(source_mode);
     if !readiness.ready {
@@ -518,10 +520,10 @@ pub async fn start_recording(
         return Err(AppError::new("source_not_ready", message));
     }
     finish_active_capture_before_start(&repos).await?;
-    let started = start_capture(&paths, request.note_id.clone(), source_mode)?;
+    let started = start_capture(&paths, note.id.clone(), source_mode)?;
     repos
         .create_recording_session(
-            &request.note_id,
+            &note.id,
             &started.session_id,
             source_mode,
             &started.partial_path.to_string_lossy(),
@@ -532,7 +534,7 @@ pub async fn start_recording(
     for source in &started.sources {
         repos
             .create_pending_source_artifact(
-                &request.note_id,
+                &note.id,
                 &started.session_id,
                 source.source.as_db(),
                 &source.partial_path.to_string_lossy(),
@@ -542,7 +544,7 @@ pub async fn start_recording(
     }
     Ok(RecordingSessionDto {
         id: started.session_id,
-        note_id: request.note_id,
+        note_id: note.id,
         source_mode,
         state: started.status.state,
         started_at: crate::db::repositories::timestamp(),
@@ -906,8 +908,9 @@ pub async fn retry_processing(
     app: AppHandle,
     request: RetryProcessingRequest,
 ) -> Result<NoteDto, AppError> {
+    let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
-    retry_from_saved_audio(&repos, &request.note_id).await
+    retry_from_saved_audio(&repos, &paths, &request.note_id).await
 }
 
 #[tauri::command]
@@ -915,6 +918,7 @@ pub async fn recover_recording(
     app: AppHandle,
     request: crate::domain::types::RecoverRecordingRequest,
 ) -> Result<NoteDto, AppError> {
+    let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
     let Some(info) = repos.recording_recovery_info(&request.session_id).await? else {
         return Err(AppError::new(
@@ -934,11 +938,15 @@ pub async fn recover_recording(
                 .into_iter()
                 .flatten()
             {
-                let _ = std::fs::remove_file(path);
+                let _ = paths
+                    .remove_recording_file(path)
+                    .map_err(|error| AppError::new("audio_delete_failed", error.to_string()));
             }
         }
         for path in [&info.partial_path, &info.final_path].into_iter().flatten() {
-            let _ = std::fs::remove_file(path);
+            let _ = paths
+                .remove_recording_file(path)
+                .map_err(|error| AppError::new("audio_delete_failed", error.to_string()));
         }
         return Ok(repos
             .mark_recording_discarded(&info.session_id, &info.note_id)
@@ -950,7 +958,7 @@ pub async fn recover_recording(
     if !source_paths.is_empty() {
         let mut valid_sources = Vec::new();
         for artifact in source_paths {
-            let Some(path) = recovery_source_path(&artifact) else {
+            let Some(path) = recovery_source_path(&paths, &artifact) else {
                 continue;
             };
             let validation = validate_audio_artifact(
@@ -1010,7 +1018,7 @@ pub async fn recover_recording(
         )
         .await;
     }
-    let path = recovery_audio_path(&info).ok_or_else(|| {
+    let path = recovery_audio_path(&paths, &info).ok_or_else(|| {
         AppError::new(
             "audio_artifact_missing",
             "No recoverable audio bytes are available.",
@@ -1087,25 +1095,37 @@ pub async fn recover_recording(
     .await
 }
 
-fn recovery_audio_path(info: &crate::db::repositories::RecordingRecoveryInfo) -> Option<PathBuf> {
+fn recovery_audio_path(
+    paths: &AppPaths,
+    info: &crate::db::repositories::RecordingRecoveryInfo,
+) -> Option<PathBuf> {
     for path in [&info.final_path, &info.partial_path].into_iter().flatten() {
-        if std::fs::metadata(path)
+        let Ok(path) = paths.contained_recording_file(path) else {
+            continue;
+        };
+        if std::fs::metadata(&path)
             .map(|metadata| metadata.len() > 0)
             .unwrap_or(false)
         {
-            return Some(PathBuf::from(path));
+            return Some(path);
         }
     }
     None
 }
 
-fn recovery_source_path(info: &crate::db::repositories::SourceArtifactPath) -> Option<PathBuf> {
+fn recovery_source_path(
+    paths: &AppPaths,
+    info: &crate::db::repositories::SourceArtifactPath,
+) -> Option<PathBuf> {
     for path in [&info.final_path, &info.partial_path].into_iter().flatten() {
-        if std::fs::metadata(path)
+        let Ok(path) = paths.contained_recording_file(path) else {
+            continue;
+        };
+        if std::fs::metadata(&path)
             .map(|metadata| metadata.len() > 0)
             .unwrap_or(false)
         {
-            return Some(PathBuf::from(path));
+            return Some(path);
         }
     }
     None

@@ -9,11 +9,8 @@ use scribe_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
     OsAccountsClient, Receipt, UserId,
 };
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 pub struct AgentChatServiceDeps {
     pub pricing: Arc<PricingTable>,
@@ -52,7 +49,7 @@ impl AgentChatService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let body_hash = body_hash(&params.body);
+        let body_digest = body_digest(&params.body);
         let completion = self
             .chat_completer
             .complete(AgentChatRequest {
@@ -70,7 +67,7 @@ impl AgentChatService {
             credits: charge_credits,
             idempotency_key: format!(
                 "agent_chat:{}:{}:{}",
-                params.user_id.0, params.model_id.0, body_hash
+                params.user_id.0, params.model_id.0, body_digest
             ),
         })
         .await?;
@@ -100,8 +97,41 @@ pub struct AgentChatOutput {
     pub receipt: Receipt,
 }
 
-fn body_hash(body: &serde_json::Value) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    body.to_string().hash(&mut hasher);
-    hasher.finish()
+fn body_digest(body: &serde_json::Value) -> String {
+    let digest = Sha256::digest(body.to_string().as_bytes());
+    hex_lower(&digest)
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::body_digest;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn body_digest_is_stable_full_sha256_hex() {
+        let body = json!({
+            "model": "text-model",
+            "messages": [{ "role": "user", "content": "hello" }],
+        });
+
+        let digest = body_digest(&body);
+
+        assert_eq!(
+            digest,
+            "8791c5ca4cef8d9ea68549494f84e20e5f8224958d7b7aebc484dedb7b48e4ce"
+        );
+        assert_eq!(digest.len(), 64);
+        assert!(digest.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
 }
