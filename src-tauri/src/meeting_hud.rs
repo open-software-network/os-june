@@ -46,6 +46,10 @@ const IDLE_TICK: Duration = Duration::from_millis(220);
 
 /// Logical pill size — must agree with `.mhud` in meeting-hud.css.
 const PILL_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 32.0);
+/// Upright the pill carries less (4 bars instead of 7), so it runs shorter.
+/// Must agree with `.mhud[data-orient="vertical"]` in meeting-hud.css.
+#[cfg(target_os = "macos")]
+const VERTICAL_PILL_LENGTH: f64 = 62.0;
 /// The window is a fixed square the length of the pill (tauri.conf.json), so a
 /// quarter turn always fits without resizing the native frame — the transparent
 /// gutters above/below (or beside) the pill are part of the window.
@@ -507,15 +511,55 @@ unsafe fn install_frost(hud: &WebviewWindow) {
     let _: () = msg_send![content, addSubview: frost, positioned: -1isize, relativeTo: std::ptr::null_mut::<AnyObject>()];
 }
 
+/// The `--ease-out` token from tokens.css as a CAMediaTimingFunction.
+/// `functionWithControlPoints::::` has bare colons `msg_send!` can't spell,
+/// hence `send_message`.
+#[cfg(target_os = "macos")]
+unsafe fn ease_out_timing() -> *mut AnyObject {
+    use objc2::runtime::MessageReceiver;
+    use objc2::sel;
+
+    let Some(timing_class) = AnyClass::get(c"CAMediaTimingFunction") else {
+        return std::ptr::null_mut();
+    };
+    (timing_class as *const AnyClass as *mut AnyObject).send_message(
+        sel!(functionWithControlPoints::::),
+        (0.22f32, 1.0f32, 0.36f32, 1.0f32),
+    )
+}
+
+/// The frost NSVisualEffectView installed by `install_frost`, or null.
+#[cfg(target_os = "macos")]
+unsafe fn frost_view(content: *mut AnyObject) -> *mut AnyObject {
+    use objc2::msg_send;
+
+    let Some(effect_class) = AnyClass::get(c"NSVisualEffectView") else {
+        return std::ptr::null_mut();
+    };
+    let subviews: *mut AnyObject = msg_send![content, subviews];
+    if subviews.is_null() {
+        return std::ptr::null_mut();
+    }
+    let count: usize = msg_send![subviews, count];
+    for index in 0..count {
+        let view: *mut AnyObject = msg_send![subviews, objectAtIndex: index];
+        let is_frost: bool = msg_send![view, isKindOfClass: effect_class];
+        if is_frost {
+            return view;
+        }
+    }
+    std::ptr::null_mut()
+}
+
 /// Turn the contentView's layer between flat (0°) and upright (90°). Because
 /// the frost view and the webview are both subviews, one transform carries the
-/// blur, tint, dot, and waveform together — they can't desync or clip.
+/// blur, tint, dot, and waveform together — they can't desync or clip. The
+/// frost's length follows the pill's (CSS shrinks the upright pill; the two
+/// animations share the duration and curve).
 #[cfg(target_os = "macos")]
 unsafe fn rotate_content(hud: &WebviewWindow, vertical: bool, animate: bool) {
     use objc2::msg_send;
-    use objc2::runtime::MessageReceiver;
-    use objc2::sel;
-    use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString};
+    use objc2_foundation::{NSNumber, NSPoint, NSRect, NSSize, NSString};
 
     let (window, content) = content_view(hud);
     if content.is_null() {
@@ -547,10 +591,7 @@ unsafe fn rotate_content(hud: &WebviewWindow, vertical: bool, animate: bool) {
     let target = NSNumber::new_f64(angle);
 
     if animate {
-        if let (Some(animation_class), Some(timing_class)) = (
-            AnyClass::get(c"CABasicAnimation"),
-            AnyClass::get(c"CAMediaTimingFunction"),
-        ) {
+        if let Some(animation_class) = AnyClass::get(c"CABasicAnimation") {
             let animation: *mut AnyObject = msg_send![animation_class, animationWithKeyPath: &*key];
             if !animation.is_null() {
                 // Start from wherever the layer visibly is right now, so a
@@ -565,18 +606,50 @@ unsafe fn rotate_content(hud: &WebviewWindow, vertical: bool, animate: bool) {
                 let _: () = msg_send![animation, setFromValue: from];
                 let _: () = msg_send![animation, setToValue: &*target];
                 let _: () = msg_send![animation, setDuration: TURN_SECS];
-                // --ease-out from tokens.css; `functionWithControlPoints::::`
-                // has bare colons msg_send! can't spell, hence send_message.
-                let timing: *mut AnyObject = (timing_class as *const AnyClass as *mut AnyObject)
-                    .send_message(
-                        sel!(functionWithControlPoints::::),
-                        (0.22f32, 1.0f32, 0.36f32, 1.0f32),
-                    );
+                let timing = ease_out_timing();
                 if !timing.is_null() {
                     let _: () = msg_send![animation, setTimingFunction: timing];
                 }
                 let _: () = msg_send![layer, addAnimation: animation, forKey: &*key];
             }
+        }
+    }
+
+    // The upright pill runs shorter (fewer bars); keep the frost hugging it.
+    // Same duration and curve as the turn, on the same Core Animation clock.
+    let frost = frost_view(content);
+    if !frost.is_null() {
+        let length = if vertical {
+            VERTICAL_PILL_LENGTH
+        } else {
+            PILL_SIZE.width
+        };
+        let frost_frame = NSRect::new(
+            NSPoint::new(
+                (WINDOW_SIZE.width - length) / 2.0,
+                (WINDOW_SIZE.height - PILL_SIZE.height) / 2.0,
+            ),
+            NSSize::new(length, PILL_SIZE.height),
+        );
+        if animate {
+            if let Some(context_class) = AnyClass::get(c"NSAnimationContext") {
+                let _: () = msg_send![context_class, beginGrouping];
+                let context: *mut AnyObject = msg_send![context_class, currentContext];
+                if !context.is_null() {
+                    let _: () = msg_send![context, setDuration: TURN_SECS];
+                    let timing = ease_out_timing();
+                    if !timing.is_null() {
+                        let _: () = msg_send![context, setTimingFunction: timing];
+                    }
+                }
+                let animator: *mut AnyObject = msg_send![frost, animator];
+                if !animator.is_null() {
+                    let _: () = msg_send![animator, setFrame: frost_frame];
+                }
+                let _: () = msg_send![context_class, endGrouping];
+            }
+        } else {
+            let _: () = msg_send![frost, setFrame: frost_frame];
         }
     }
 

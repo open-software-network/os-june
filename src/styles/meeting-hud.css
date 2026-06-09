@@ -84,6 +84,17 @@ body:active {
   background: color-mix(in oklch, var(--popover) 72%, transparent);
   color: var(--foreground);
   overflow: hidden;
+  /* Length changes ride the same clock as the native turn (TURN_SECS +
+   * --ease-out control points in meeting_hud.rs), which resizes the frost
+   * view to match. */
+  transition: width 320ms var(--ease-out);
+}
+
+/* Upright the pill carries a shorter 4-bar run, so it runs shorter too —
+ * width here is the pill's length, which reads as height once the native
+ * turn stands it up. Must match VERTICAL_PILL_LENGTH in meeting_hud.rs. */
+.mhud[data-orient="vertical"] {
+  width: 62px;
 }
 
 /* Wrapper keeps the dot + waveform together as one considered group. */
@@ -162,6 +173,7 @@ body:active {
 
 /* Orientation applied while the HUD is hidden snaps (the native side snaps
  * too); meeting-hud.ts removes the class once the snapped state painted. */
+.mhud.mhud-snap,
 .mhud.mhud-snap .mhud-bars {
   transition: none;
 }
@@ -195,6 +207,7 @@ body:active {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .mhud,
   .mhud-bar,
   .mhud-bar::before,
   .mhud-bars,
