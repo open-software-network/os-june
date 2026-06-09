@@ -267,13 +267,25 @@ pub fn start_on_app_start(app: &tauri::App) {
             return;
         }
         let bridge = app.state::<HermesBridge>();
-        if let Err(error) =
-            start_hermes_bridge_inner(&app, &bridge, StartHermesBridgeRequest { cwd: None }).await
-        {
-            eprintln!(
-                "failed to start Hermes bridge during app startup: {}",
-                error.message
-            );
+        let status =
+            start_hermes_bridge_inner(&app, &bridge, StartHermesBridgeRequest { cwd: None })
+                .await
+                .inspect_err(|error| {
+                    eprintln!(
+                        "failed to start Hermes bridge during app startup: {}",
+                        error.message
+                    );
+                });
+        let Ok(status) = status else {
+            return;
+        };
+        if let Some(connection) = status.connection.as_ref() {
+            if let Err(error) = start_hermes_gateway_if_needed(connection).await {
+                eprintln!(
+                    "failed to start Hermes messaging gateway during app startup: {}",
+                    error.message
+                );
+            }
         }
     });
 }
@@ -876,6 +888,38 @@ async fn hermes_api_json(
             }
         }
     };
+    hermes_connection_json(&connection, method, path, body).await
+}
+
+async fn start_hermes_gateway_if_needed(
+    connection: &HermesBridgeConnection,
+) -> Result<(), AppError> {
+    let status = hermes_connection_json(connection, reqwest::Method::GET, "/api/status", None)
+        .await
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if status
+        .get("gateway_running")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    hermes_connection_json(
+        connection,
+        reqwest::Method::POST,
+        "/api/gateway/start",
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn hermes_connection_json(
+    connection: &HermesBridgeConnection,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, AppError> {
     let url = format!("{}{}", connection.base_url, path);
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -884,7 +928,7 @@ async fn hermes_api_json(
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
     let mut request = client
         .request(method, &url)
-        .header("X-Hermes-Session-Token", connection.token)
+        .header("X-Hermes-Session-Token", connection.token.as_str())
         .header("Content-Type", "application/json");
     if let Some(body) = body {
         request = request.json(&body);

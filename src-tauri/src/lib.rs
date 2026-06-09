@@ -7,6 +7,7 @@ pub mod domain;
 pub mod hermes_bridge;
 pub mod mascot;
 pub mod meeting_detection;
+pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
@@ -139,6 +140,7 @@ pub fn run() {
         .manage(os_accounts::LoginFlow::default())
         .setup(|app| {
             setup_app_menu(app)?;
+            menu_bar::setup(app)?;
             providers::setup(app);
             dictation::setup(app);
             mascot::setup(app);

@@ -2480,37 +2480,46 @@ input:focus-visible,
 /* Settings nav — replaces the main sidebar list while the settings page is
  * open, with a quiet back affordance to notes at the top. */
 .sidebar-settings-section {
-  gap: var(--sp-1);
+  flex: 1;
+  gap: var(--sp-4);
+  overflow-y: auto;
+  padding-bottom: var(--sp-3);
 }
 
 .sidebar-settings-back {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  gap: var(--sp-3);
-  width: 100%;
-  min-height: 30px;
-  padding: var(--sp-2) var(--sp-3);
-  border: 0;
-  border-radius: var(--r-md);
-  background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  text-align: left;
 }
 
 .sidebar-settings-back:hover {
-  background: var(--sidebar-accent);
   color: var(--foreground);
 }
 
 .sidebar-settings-section .section-title {
-  margin-top: var(--sp-2);
+  min-height: 22px;
+  padding: 0 var(--sp-3);
+  color: color-mix(in oklch, var(--muted-foreground) 82%, transparent);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.sidebar-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
 }
 
 .sidebar-settings-section .sidebar-nav-item {
-  grid-template-columns: minmax(0, 1fr);
-  padding-left: calc(18px + var(--sp-3) + var(--sp-3));
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.sidebar-settings-section .sidebar-nav-icon {
+  color: var(--muted-foreground);
+}
+
+.sidebar-settings-section
+  .sidebar-nav-item[data-active="true"]
+  .sidebar-nav-icon {
+  color: var(--muted-foreground);
 }
 
 /* Sidebar section --------------------------------------------------- */
@@ -4935,56 +4944,41 @@ input:focus-visible,
 }
 
 .settings-permission-control {
-  min-width: 225px;
+  min-width: 166px;
   justify-content: flex-end;
 }
 
 .settings-permission-status {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
   align-items: center;
-  min-height: 24px;
-  padding: 0 var(--sp-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  white-space: nowrap;
 }
 
 .settings-permission-status[data-status="allowed"] {
-  border-color: color-mix(in oklch, var(--success) 24%, var(--border-subtle));
-  background: color-mix(in oklch, var(--success) 10%, var(--surface-subtle));
-  color: color-mix(in oklch, var(--success) 76%, var(--foreground));
+  color: color-mix(in oklch, var(--success) 72%, var(--foreground));
 }
 
 .settings-permission-status[data-status="attention"] {
-  border-color: color-mix(
-    in oklch,
-    var(--warm-strong) 28%,
-    var(--border-subtle)
-  );
-  background: color-mix(
-    in oklch,
-    var(--warm-strong) 12%,
-    var(--surface-subtle)
-  );
-  color: color-mix(in oklch, var(--warm-strong) 76%, var(--foreground));
+  color: color-mix(in oklch, var(--warm-strong) 82%, var(--foreground));
 }
 
 .settings-permission-status[data-status="blocked"] {
-  border-color: color-mix(
-    in oklch,
-    var(--destructive) 26%,
-    var(--border-subtle)
-  );
-  background: color-mix(
-    in oklch,
-    var(--destructive) 10%,
-    var(--surface-subtle)
-  );
-  color: color-mix(in oklch, var(--destructive) 76%, var(--foreground));
+  color: var(--destructive);
+}
+
+.settings-permission-status[data-status="unsupported"] {
+  color: var(--muted-foreground);
+}
+
+.settings-permission-status svg {
+  display: block;
 }
 
 .settings-model-control {
@@ -5262,6 +5256,12 @@ input:focus-visible,
   box-shadow:
     0 12px 32px oklch(0% 0 none / 12%),
     0 2px 6px oklch(0% 0 none / 6%);
+}
+
+.select-popover[data-placement="below"],
+.select-popover[data-placement="above"] {
+  max-height: min(280px, calc(100vh - 24px));
+  overflow-y: auto;
 }
 
 .select-popover li {

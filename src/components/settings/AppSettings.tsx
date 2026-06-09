@@ -3,6 +3,10 @@ import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconCircleCheck } from "central-icons/IconCircleCheck";
+import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconCircleX } from "central-icons/IconCircleX";
+import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconFire1 } from "central-icons/IconFire1";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -10,7 +14,7 @@ import { IconMoonStar } from "central-icons/IconMoonStar";
 import { IconSun } from "central-icons/IconSun";
 import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   dictationHelperCommand,
   dictationSettings,
@@ -35,7 +39,10 @@ import type {
   RecordingSourceReadinessDto,
   VeniceModelDto,
 } from "../../lib/tauri";
-import { AccountSettingsSection } from "../account/AccountSettings";
+import {
+  AccountSettingsSection,
+  BillingSettingsSection,
+} from "../account/AccountSettings";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import { Dialog } from "../ui/Dialog";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -155,19 +162,23 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
 };
 
 export type SettingsTab =
-  | "account"
+  | "general"
+  | "billing"
+  | "shortcuts"
   | "dictation"
   | "audio"
-  | "permissions"
   | "models"
   | "agent"
   | "about";
 
+type SelectPopoverPlacement = "align-selected" | "below" | "above";
+
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: "account", label: "Account" },
+  { id: "general", label: "General" },
+  { id: "billing", label: "Billing" },
+  { id: "shortcuts", label: "Shortcuts" },
   { id: "dictation", label: "Dictation" },
   { id: "audio", label: "Audio" },
-  { id: "permissions", label: "Permissions" },
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
   { id: "about", label: "About" },
@@ -234,7 +245,12 @@ export function AppSettings({
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
-  const [internalTab, setInternalTab] = useState<SettingsTab>("account");
+  const [internalTab, setInternalTab] = useState<SettingsTab>("general");
+  const [micPopoverPlacement, setMicPopoverPlacement] =
+    useState<SelectPopoverPlacement>("align-selected");
+  const [languageOpen, setLanguageOpen] = useState(false);
+  const [languagePopoverPlacement, setLanguagePopoverPlacement] =
+    useState<SelectPopoverPlacement>("align-selected");
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
   const activeTab = controlled ? controlledTab : internalTab;
   const setActiveTab = (tab: SettingsTab) => {
@@ -245,6 +261,7 @@ export function AppSettings({
     }
   };
   const micWrapRef = useRef<HTMLDivElement>(null);
+  const languageWrapRef = useRef<HTMLDivElement>(null);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "system",
@@ -259,6 +276,11 @@ export function AppSettings({
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
   }, [capturingShortcut]);
+
+  useEffect(() => {
+    setMicOpen(false);
+    setLanguageOpen(false);
+  }, [activeTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -313,6 +335,24 @@ export function AppSettings({
       window.removeEventListener("keydown", onKey);
     };
   }, [micOpen]);
+
+  useEffect(() => {
+    if (!languageOpen) return;
+    function onPointer(event: MouseEvent) {
+      if (!languageWrapRef.current?.contains(event.target as Node)) {
+        setLanguageOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setLanguageOpen(false);
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [languageOpen]);
 
   useEffect(() => {
     if (!capturingShortcut) return;
@@ -470,6 +510,7 @@ export function AppSettings({
     try {
       const next = await setDictationLanguage(language || undefined);
       setSettings(next);
+      setLanguageOpen(false);
       setStatus(
         language
           ? `Default transcription language set to ${languageLabel(language)}.`
@@ -491,6 +532,12 @@ export function AppSettings({
       (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
     ),
   );
+  const selectedLanguageIndex = Math.max(
+    0,
+    LANGUAGE_OPTIONS.findIndex(
+      (option) => option.value === (settings.language ?? ""),
+    ),
+  );
   const transcriptionOptions = modelOptions(
     veniceModels.transcription,
     providerSettings.transcriptionModel,
@@ -501,6 +548,34 @@ export function AppSettings({
   );
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
+
+  useEffect(() => {
+    if (micOpen) updateMicrophonePopoverPlacement();
+  }, [micOpen, microphoneOptions.length, selectedMicrophoneIndex]);
+
+  useEffect(() => {
+    if (languageOpen) updateLanguagePopoverPlacement();
+  }, [languageOpen, selectedLanguageIndex]);
+
+  function updateMicrophonePopoverPlacement() {
+    setMicPopoverPlacement(
+      selectPopoverPlacement(
+        micWrapRef.current,
+        microphoneOptions.length,
+        selectedMicrophoneIndex,
+      ),
+    );
+  }
+
+  function updateLanguagePopoverPlacement() {
+    setLanguagePopoverPlacement(
+      selectPopoverPlacement(
+        languageWrapRef.current,
+        LANGUAGE_OPTIONS.length,
+        selectedLanguageIndex,
+      ),
+    );
+  }
 
   function modelOptionsForMode(mode: ProviderModelMode) {
     return mode === "transcription" ? transcriptionOptions : generationOptions;
@@ -516,6 +591,14 @@ export function AppSettings({
     setPickerMode(mode);
     setModelSearch("");
     void requestVeniceModels(mode);
+  }
+
+  function microphonePopoverStyle(): CSSProperties {
+    return selectPopoverStyle(micPopoverPlacement, selectedMicrophoneIndex);
+  }
+
+  function languagePopoverStyle(): CSSProperties {
+    return selectPopoverStyle(languagePopoverPlacement, selectedLanguageIndex);
   }
 
   return (
@@ -557,7 +640,7 @@ export function AppSettings({
         id={`settings-panel-${activeTab}`}
         aria-labelledby={`settings-tab-${activeTab}`}
       >
-        {activeTab === "account" ? (
+        {activeTab === "general" ? (
           <>
             <AccountSettingsSection
               account={account}
@@ -597,7 +680,70 @@ export function AppSettings({
                 </div>
               </div>
             </section>
+
+            <PermissionsSettingsSection
+              microphonePermissionStatus={microphonePermissionStatus}
+              microphoneReadiness={microphoneReadiness}
+              accessibilityPermissionStatus={accessibilityPermissionStatus}
+              systemReadiness={systemReadiness}
+              onEnableMicrophone={onEnableMicrophone}
+              onEnableAccessibility={onEnableAccessibility}
+              onEnableSystemAudio={onEnableSystemAudio}
+            />
           </>
+        ) : null}
+
+        {activeTab === "billing" ? (
+          <BillingSettingsSection
+            account={account}
+            onRefresh={onAccountRefresh}
+          />
+        ) : null}
+
+        {activeTab === "shortcuts" ? (
+          <section
+            className="settings-group"
+            aria-labelledby="shortcuts-heading"
+          >
+            <h2 id="shortcuts-heading" className="settings-group-heading">
+              Shortcuts
+            </h2>
+            <div className="settings-card">
+              <div className="settings-rows">
+                <ShortcutRow
+                  title="Push to talk"
+                  description="Hold this shortcut to dictate, then release to paste."
+                  shortcut={settings.pushToTalkShortcut}
+                  capturing={capturingShortcut === "push_to_talk"}
+                  disabled={
+                    !!capturingShortcut && capturingShortcut !== "push_to_talk"
+                  }
+                  error={
+                    capturingShortcut === "push_to_talk"
+                      ? shortcutError
+                      : undefined
+                  }
+                  onChange={() => void startShortcutCapture("push_to_talk")}
+                  onCancel={() => void cancelShortcutCapture()}
+                />
+
+                <ShortcutRow
+                  title="Toggle dictation"
+                  description="Press this shortcut to start or stop dictation."
+                  shortcut={settings.toggleShortcut}
+                  capturing={capturingShortcut === "toggle"}
+                  disabled={
+                    !!capturingShortcut && capturingShortcut !== "toggle"
+                  }
+                  error={
+                    capturingShortcut === "toggle" ? shortcutError : undefined
+                  }
+                  onChange={() => void startShortcutCapture("toggle")}
+                  onCancel={() => void cancelShortcutCapture()}
+                />
+              </div>
+            </div>
+          </section>
         ) : null}
 
         {activeTab === "dictation" ? (
@@ -611,39 +757,6 @@ export function AppSettings({
               </h2>
               <div className="settings-card">
                 <div className="settings-rows">
-                  <ShortcutRow
-                    title="Push to talk"
-                    description="Hold this shortcut to dictate, then release to paste."
-                    shortcut={settings.pushToTalkShortcut}
-                    capturing={capturingShortcut === "push_to_talk"}
-                    disabled={
-                      !!capturingShortcut &&
-                      capturingShortcut !== "push_to_talk"
-                    }
-                    error={
-                      capturingShortcut === "push_to_talk"
-                        ? shortcutError
-                        : undefined
-                    }
-                    onChange={() => void startShortcutCapture("push_to_talk")}
-                    onCancel={() => void cancelShortcutCapture()}
-                  />
-
-                  <ShortcutRow
-                    title="Toggle dictation"
-                    description="Press this shortcut to start or stop dictation."
-                    shortcut={settings.toggleShortcut}
-                    capturing={capturingShortcut === "toggle"}
-                    disabled={
-                      !!capturingShortcut && capturingShortcut !== "toggle"
-                    }
-                    error={
-                      capturingShortcut === "toggle" ? shortcutError : undefined
-                    }
-                    onChange={() => void startShortcutCapture("toggle")}
-                    onCancel={() => void cancelShortcutCapture()}
-                  />
-
                   <div className="settings-row">
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Language</h3>
@@ -652,24 +765,51 @@ export function AppSettings({
                         dictation.
                       </p>
                     </div>
-                    <div className="settings-row-control">
-                      <select
+                    <div className="settings-row-control" ref={languageWrapRef}>
+                      <button
+                        type="button"
                         className="select-trigger settings-language-select"
                         aria-label="Default transcription language"
-                        value={settings.language ?? ""}
-                        onChange={(event) =>
-                          void selectLanguage(event.currentTarget.value)
-                        }
+                        aria-haspopup="listbox"
+                        aria-expanded={languageOpen}
+                        onClick={() => setLanguageOpen((value) => !value)}
                       >
-                        {LANGUAGE_OPTIONS.map((option) => (
-                          <option
-                            key={option.value || "auto"}
-                            value={option.value}
-                          >
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        <span>{languageLabel(settings.language ?? "")}</span>
+                        <IconChevronDownSmall size={14} />
+                      </button>
+                      {languageOpen ? (
+                        <ul
+                          className="select-popover"
+                          role="listbox"
+                          data-placement={languagePopoverPlacement}
+                          style={languagePopoverStyle()}
+                        >
+                          {LANGUAGE_OPTIONS.map((option) => {
+                            const selected =
+                              option.value === (settings.language ?? "");
+                            return (
+                              <li key={option.value || "auto"}>
+                                <button
+                                  type="button"
+                                  role="option"
+                                  aria-selected={selected}
+                                  data-selected={selected}
+                                  onClick={() =>
+                                    void selectLanguage(option.value)
+                                  }
+                                >
+                                  <span>{option.label}</span>
+                                  <span className="select-check" aria-hidden>
+                                    {selected ? (
+                                      <IconCheckmark1Small size={14} />
+                                    ) : null}
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -716,7 +856,8 @@ export function AppSettings({
                       <ul
                         className="select-popover"
                         role="listbox"
-                        style={{ top: -(2 + selectedMicrophoneIndex * 28) }}
+                        data-placement={micPopoverPlacement}
+                        style={microphonePopoverStyle()}
                       >
                         {microphoneOptions.map((option) => {
                           const selected =
@@ -783,48 +924,6 @@ export function AppSettings({
                     </div>
                   </div>
                 )}
-              </div>
-            </div>
-          </section>
-        ) : null}
-
-        {activeTab === "permissions" ? (
-          <section
-            className="settings-group"
-            aria-labelledby="permissions-heading"
-          >
-            <h2 id="permissions-heading" className="settings-group-heading">
-              System permissions
-            </h2>
-            <p className="settings-group-description">
-              macOS access used for recording audio, pasting dictation, and
-              capturing system sound.
-            </p>
-            <div className="settings-card">
-              <div className="settings-rows">
-                <PermissionRow
-                  title="Microphone"
-                  description="Record dictation and note audio."
-                  status={permissionStatus(
-                    microphonePermissionStatus ??
-                      microphoneReadiness?.permissionState,
-                  )}
-                  onManage={onEnableMicrophone}
-                />
-
-                <PermissionRow
-                  title="Accessibility"
-                  description="Paste dictated text into the active app."
-                  status={permissionStatus(accessibilityPermissionStatus)}
-                  onManage={onEnableAccessibility}
-                />
-
-                <PermissionRow
-                  title="System audio"
-                  description="Record audio from other apps when system audio is enabled."
-                  status={sourcePermissionStatus(systemReadiness)}
-                  onManage={onEnableSystemAudio}
-                />
               </div>
             </div>
           </section>
@@ -929,6 +1028,63 @@ type PermissionStatusView = {
   tone: PermissionStatusTone;
 };
 
+function PermissionsSettingsSection({
+  microphonePermissionStatus,
+  microphoneReadiness,
+  accessibilityPermissionStatus,
+  systemReadiness,
+  onEnableMicrophone,
+  onEnableAccessibility,
+  onEnableSystemAudio,
+}: {
+  microphonePermissionStatus?: string;
+  microphoneReadiness?: RecordingSourceReadinessDto["sources"][number];
+  accessibilityPermissionStatus?: string;
+  systemReadiness?: RecordingSourceReadinessDto["sources"][number];
+  onEnableMicrophone?: () => void;
+  onEnableAccessibility?: () => void;
+  onEnableSystemAudio: () => void;
+}) {
+  return (
+    <section className="settings-group" aria-labelledby="permissions-heading">
+      <h2 id="permissions-heading" className="settings-group-heading">
+        System permissions
+      </h2>
+      <p className="settings-group-description">
+        macOS access used for recording audio, pasting dictation, and capturing
+        system sound.
+      </p>
+      <div className="settings-card">
+        <div className="settings-rows">
+          <PermissionRow
+            title="Microphone"
+            description="Record dictation and note audio."
+            status={permissionStatus(
+              microphonePermissionStatus ??
+                microphoneReadiness?.permissionState,
+            )}
+            onManage={onEnableMicrophone}
+          />
+
+          <PermissionRow
+            title="Accessibility"
+            description="Paste dictated text into the active app."
+            status={permissionStatus(accessibilityPermissionStatus)}
+            onManage={onEnableAccessibility}
+          />
+
+          <PermissionRow
+            title="System audio"
+            description="Record audio from other apps when system audio is enabled."
+            status={sourcePermissionStatus(systemReadiness)}
+            onManage={onEnableSystemAudio}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PermissionRow({
   title,
   description,
@@ -948,8 +1104,14 @@ function PermissionRow({
         <p className="settings-row-description">{description}</p>
       </div>
       <div className="settings-row-control settings-permission-control">
-        <span className="settings-permission-status" data-status={status.tone}>
-          {status.label}
+        <span
+          className="settings-permission-status"
+          data-status={status.tone}
+          role="img"
+          aria-label={status.label}
+          title={status.label}
+        >
+          <PermissionStatusIcon tone={status.tone} />
         </span>
         <button
           type="button"
@@ -963,6 +1125,13 @@ function PermissionRow({
       </div>
     </div>
   );
+}
+
+function PermissionStatusIcon({ tone }: { tone: PermissionStatusTone }) {
+  if (tone === "allowed") return <IconCircleCheck size={16} />;
+  if (tone === "unknown") return <IconCircleQuestionmark size={16} />;
+  if (tone === "unsupported") return <IconCircleX size={16} />;
+  return <IconExclamationCircle size={16} />;
 }
 
 function permissionStatus(state?: string): PermissionStatusView {
@@ -1389,7 +1558,7 @@ function shortcutFromCapturePayload(
     code: value.code,
     label: value.label,
     modifiers,
-    pressCount: 1,
+    pressCount,
   };
 }
 
@@ -1410,6 +1579,55 @@ function languageLabel(value: string) {
   return (
     LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? value
   );
+}
+
+function selectPopoverPlacement(
+  anchor: HTMLElement | null,
+  optionCount: number,
+  selectedIndex: number,
+): SelectPopoverPlacement {
+  if (!anchor) return "align-selected";
+  const rect = anchor.getBoundingClientRect();
+
+  const viewportPadding = 12;
+  const rowHeight = 28;
+  const popoverPadding = 8;
+  const popoverHeight = optionCount * rowHeight + popoverPadding;
+  const selectedOffset = 2 + selectedIndex * rowHeight;
+  const panel = anchor.closest(".main-panel");
+  const panelRect = panel?.getBoundingClientRect();
+  const topBound = Math.max(viewportPadding, (panelRect?.top ?? 0) + 12);
+  const bottomBound = Math.min(
+    window.innerHeight - viewportPadding,
+    (panelRect?.bottom ?? window.innerHeight) - 12,
+  );
+  const alignedTop = rect.top - selectedOffset;
+  const alignedBottom = alignedTop + popoverHeight;
+  const belowBottom = rect.bottom + 4 + popoverHeight;
+  const aboveTop = rect.top - 4 - popoverHeight;
+  const spaceBelow = bottomBound - rect.bottom;
+  const spaceAbove = rect.top - topBound;
+
+  if (alignedTop >= topBound && alignedBottom <= bottomBound) {
+    return "align-selected";
+  }
+  if (belowBottom <= bottomBound || spaceBelow >= spaceAbove) {
+    return "below";
+  }
+  return aboveTop >= topBound ? "above" : "below";
+}
+
+function selectPopoverStyle(
+  placement: SelectPopoverPlacement,
+  selectedIndex: number,
+): CSSProperties {
+  if (placement === "below") {
+    return { top: "calc(100% + 4px)" };
+  }
+  if (placement === "above") {
+    return { bottom: "calc(100% + 4px)" };
+  }
+  return { top: -(2 + selectedIndex * 28) };
 }
 
 function stringPayloadValue(value: unknown) {
