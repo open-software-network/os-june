@@ -468,7 +468,7 @@ describe("AgentWorkspace", () => {
       document.querySelector(".agent-attachment-chip img"),
     ).toHaveAttribute("src", "data:image/png;base64,preview");
     await user.type(
-      screen.getByPlaceholderText("Send a follow-up"),
+      screen.getByPlaceholderText("Send a message"),
       "what is in this image?",
     );
     await user.click(screen.getByRole("button", { name: /send/i }));

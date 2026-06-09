@@ -104,10 +104,15 @@ describe("Sidebar primary navigation", () => {
       />,
     );
 
-    const settingsButton = screen.getByRole("button", { name: "Settings" });
-    expect(settingsButton.closest(".sidebar-footer")).not.toBeNull();
+    // The settings entry point is the user's name in the footer: click it to
+    // open the account popover, then choose Settings.
+    const identityButton = screen.getByRole("button", {
+      name: /account menu/i,
+    });
+    expect(identityButton.closest(".sidebar-footer")).not.toBeNull();
 
-    await user.click(settingsButton);
+    await user.click(identityButton);
+    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
     expect(onChangeView).toHaveBeenCalledWith("settings");
   });
 
@@ -117,7 +122,7 @@ describe("Sidebar primary navigation", () => {
     render(
       <Sidebar
         notes={notes}
-        activeView="settings"
+        activeView="notes"
         onChangeView={onChangeView}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}

@@ -71,7 +71,7 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByText("Scribe")).toBeInTheDocument();
+    expect(screen.getByText("OS June")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Notes" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
     expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();

@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "OS Scribe",
+        "title": "OS June",
         "width": 1180,
         "height": 780,
         "minWidth": 900,
@@ -27,7 +27,7 @@
       {
         "label": "hud",
         "url": "/hud.html",
-        "title": "OS Scribe Dictation",
+        "title": "OS June Dictation",
         "width": 340,
         "height": 32,
         "resizable": false,

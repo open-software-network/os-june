@@ -55,10 +55,18 @@
   box-sizing: border-box;
 }
 
+html {
+  height: 100%;
+}
+
 body {
   margin: 0;
   min-width: 720px;
-  min-height: 100vh;
+  /* Pin the document so scrolling over the chrome/background (anywhere outside a
+   * real scroll pane) can't drag the whole interface. Panes own their scroll. */
+  height: 100vh;
+  overflow: hidden;
+  overscroll-behavior: none;
   background: var(--sidebar);
   color: var(--foreground);
 }
@@ -217,29 +225,32 @@ input:focus-visible,
 
 /* Agent ------------------------------------------------------------- */
 
+/* The conversation flows in the main card scroller (like a note's body), so the
+ * agent surface grows with its content rather than owning an inner scrollbar.
+ * min-height keeps a short/empty session filling the card so the pinned
+ * composer still lands at the bottom. */
 .agent-workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  width: min(100%, 1120px);
-  min-height: 0;
-  max-height: 100%;
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  /* align-self:start stops the fixed-height .workspace grid from stretching us
+   * to exactly one viewport — that capped the sticky breadcrumb's range so it
+   * scrolled away after a screenful. Growing with content keeps it pinned. */
+  align-self: start;
+  min-height: 100%;
   margin: 0 auto;
-  padding: var(--sp-8) var(--sp-6);
-  overflow: hidden;
 }
 
-.agent-task-rail,
-.agent-main {
+/* The agent already lives inside the floating .main-panel card, so it draws
+ * no card of its own — that card-in-a-card read busier than any Notes view.
+ * The rail surface (kept for any rail-mode reuse) is the only bordered box. */
+.agent-task-rail {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   background: var(--card);
-}
-
-.agent-task-rail {
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 
@@ -248,8 +259,13 @@ input:focus-visible,
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--sp-5);
-  padding: var(--sp-6);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-8) 0 var(--sp-4);
+}
+
+/* The breadcrumb already supplies the top chrome, so the heading tucks up
+ * beneath it instead of carrying its full standalone top padding. */
+.detail-bar + .agent-detail-header {
+  padding-top: var(--sp-4);
 }
 
 .agent-rail-header {
@@ -270,7 +286,6 @@ input:focus-visible,
 
 .agent-rail-header p,
 .agent-detail-header p,
-.agent-safety-panel p,
 .agent-tool-event p {
   margin: var(--sp-1) 0 0;
   color: var(--muted-foreground);
@@ -279,7 +294,6 @@ input:focus-visible,
 }
 
 .agent-new-task,
-.agent-composer button,
 .agent-icon-button {
   display: inline-flex;
   align-items: center;
@@ -372,9 +386,16 @@ input:focus-visible,
 }
 
 .agent-main {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* flex:1 with the default (auto) min-height fills the space under the sticky
+   * breadcrumb when the conversation is short, AND grows with the content when
+   * it's long — so the whole .agent-workspace (and thus the breadcrumb's sticky
+   * range) spans the full scroll height and the bar persists the entire way. */
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
 }
 
 .agent-detail-title {
@@ -395,6 +416,62 @@ input:focus-visible,
   max-width: 48vw;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-detail-heading {
+  display: grid;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+}
+
+/* Editable session name — reads as the heading, becomes obviously editable on
+ * hover/focus so renaming for identification is one click. */
+.agent-session-title {
+  width: 100%;
+  min-width: 0;
+  margin-left: calc(var(--sp-2) * -1);
+  padding: 2px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: 0;
+  outline: none;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-session-title:hover,
+.agent-session-title:focus {
+  background: var(--surface-subtle);
+}
+
+.agent-session-title::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Compact private-mode badge sitting under the title; full policy text lives in
+ * the native tooltip. */
+.agent-safety-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: fit-content;
+  padding: 2px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  cursor: default;
+}
+
+.agent-safety-badge svg {
+  flex: 0 0 auto;
+  margin-top: 0;
+  color: var(--warm-strong);
 }
 
 .agent-actions {
@@ -452,11 +529,12 @@ input:focus-visible,
 
 .agent-timeline {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: var(--sp-4);
-  min-height: 0;
-  padding: var(--sp-6);
-  overflow: auto;
+  gap: var(--sp-6);
+  /* Bottom padding clears the fixed composer so the last turn can scroll fully
+   * clear of it instead of hiding underneath. */
+  padding: var(--sp-2) 0 148px;
 }
 
 .agent-management-panel {
@@ -923,6 +1001,8 @@ input:focus-visible,
   margin-right: auto;
 }
 
+/* Action cards (approval, clarify) — a clean system card: card surface, subtle
+ * border, soft shadow. */
 .agent-safety-panel,
 .agent-tool-event,
 .agent-hermes-event,
@@ -930,20 +1010,28 @@ input:focus-visible,
 .agent-clarify-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--sp-4);
-  padding: var(--sp-4);
+  gap: var(--sp-3);
+  padding: var(--sp-5);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
 }
 
-.agent-approval-card {
-  border-color: color-mix(
-    in oklch,
-    var(--warm-strong) 32%,
-    var(--border-subtle)
-  );
-  background: color-mix(in oklch, var(--warm-soft) 10%, var(--surface-subtle));
+.agent-approval-card > .agent-tool-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--warm-strong);
+}
+
+.agent-approval-card .agent-tool-title > span:first-child {
+  color: var(--foreground);
+  font-weight: 600;
 }
 
 .agent-approval-card p,
@@ -1049,10 +1137,9 @@ input:focus-visible,
   overflow: auto;
   max-height: 220px;
   margin: var(--sp-3) 0 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-3);
-  background: var(--background);
+  border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-4);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
   color: var(--foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -1064,20 +1151,28 @@ input:focus-visible,
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  margin-top: var(--sp-3);
+  margin-top: var(--sp-4);
 }
 
 .agent-approval-actions button {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 32px;
+  min-height: var(--control-md);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   padding: 0 var(--sp-3);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: var(--card);
+  color: var(--foreground);
   font-size: var(--fs-sm);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.agent-approval-actions button:hover:not(:disabled) {
+  background: var(--surface-subtle);
+  border-color: var(--ring);
 }
 
 .agent-approval-actions button:disabled {
@@ -1109,44 +1204,41 @@ input:focus-visible,
   letter-spacing: 0;
 }
 
-.agent-message {
-  max-width: min(680px, 86%);
-  padding: var(--sp-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-}
-
-.agent-message[data-role="user"] {
-  align-self: flex-end;
-  background: var(--primary);
-  color: var(--primary-foreground);
-}
-
-.agent-message[data-role="assistant"] {
-  align-self: flex-start;
-}
-
-.agent-assistant-turn {
-  width: min(760px, 100%);
-  align-self: flex-start;
+.agent-assistant-turn,
+.agent-user-turn {
+  width: 100%;
+  align-self: stretch;
   color: var(--foreground);
 }
 
-.agent-assistant-turn-meta {
+/* User turns read as the highlighted submission — a right-aligned bubble — while
+ * the agent answers in plain text below, the way ChatGPT/Claude/Dot frame it.
+ * Extra vertical room sets the submission apart as a separator between replies. */
+.agent-user-turn {
   display: flex;
-  gap: var(--sp-3);
-  margin: 0 0 var(--sp-2);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  justify-content: flex-end;
+  margin: var(--sp-3) 0;
 }
 
 .agent-assistant-turn-body {
   display: flex;
+  /* The agent's side reads at ~85% of the column so it stays easy to scan and
+   * visually distinct from the user's bubbles. */
+  max-width: 85%;
   min-width: 0;
   flex-direction: column;
   gap: var(--sp-4);
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+}
+
+.agent-user-turn-body {
+  max-width: 82%;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: var(--fs-lg);
   line-height: 1.55;
 }
 
@@ -1155,36 +1247,16 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.agent-message-meta {
-  display: flex;
-  gap: var(--sp-3);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-.agent-message[data-role="user"] .agent-message-meta {
-  color: color-mix(in oklch, var(--primary-foreground) 72%, transparent);
-}
-
 .agent-hermes-message {
-  width: min(760px, 100%);
+  width: 100%;
   padding: var(--sp-1) var(--sp-2);
   color: var(--foreground);
 }
 
 .agent-markdown {
   color: var(--foreground);
-  font-size: var(--fs-md);
-  line-height: 1.55;
-}
-
-.agent-message .agent-markdown {
-  margin-top: var(--sp-2);
-}
-
-.agent-message[data-role="user"] .agent-markdown,
-.agent-message[data-role="user"] .agent-markdown strong {
-  color: var(--primary-foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.6;
 }
 
 .agent-markdown > :first-child {
@@ -1200,23 +1272,30 @@ input:focus-visible,
   white-space: pre-wrap;
 }
 
+/* Headings stay at body size (just heavier) so the conversation reads evenly —
+ * no jump to oversized type mid-answer. */
 .agent-markdown h2,
 .agent-markdown h3 {
   margin: var(--sp-5) 0 var(--sp-2);
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.35;
 }
 
-.agent-markdown h3 {
-  font-size: var(--fs-sm);
+.agent-markdown hr {
+  height: 1px;
+  margin: var(--sp-5) 0;
+  border: 0;
+  background: var(--border-subtle);
 }
 
+/* Indent lists as a block so the markers sit inside the message column rather
+ * than hanging out in the left margin. */
 .agent-markdown ul,
 .agent-markdown ol {
   margin: 0 0 var(--sp-4);
-  padding-left: var(--sp-5);
+  padding-left: var(--sp-7);
 }
 
 .agent-markdown li {
@@ -1228,11 +1307,11 @@ input:focus-visible,
   font-weight: 700;
 }
 
+/* Quiet code surfaces (ai-elements vibe): a soft fill, no boxy border. */
 .agent-markdown code {
-  border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
   padding: 1px var(--sp-1);
-  background: var(--surface-subtle);
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
   color: var(--foreground);
   font-family: var(--font-mono);
   font-size: 0.92em;
@@ -1241,10 +1320,9 @@ input:focus-visible,
 .agent-markdown pre {
   overflow: auto;
   margin: 0 0 var(--sp-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-3);
-  background: var(--surface-subtle);
+  border-radius: var(--r-md);
+  padding: var(--sp-4);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
 }
 
 .agent-markdown pre code {
@@ -1325,45 +1403,33 @@ input:focus-visible,
 }
 
 .agent-hermes-note summary {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
-  align-items: baseline;
-  gap: var(--sp-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   cursor: pointer;
   list-style: none;
+  color: var(--muted-foreground);
+}
+
+.agent-hermes-note summary:hover {
+  color: var(--foreground);
 }
 
 .agent-hermes-note summary::-webkit-details-marker {
   display: none;
 }
 
-.agent-hermes-note svg {
-  align-self: center;
-  color: var(--muted-foreground);
-}
-
 .agent-hermes-note span {
-  font-weight: 600;
-}
-
-.agent-hermes-note p {
-  overflow: hidden;
-  margin: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 500;
 }
 
 .agent-hermes-note > .agent-markdown {
-  margin: var(--sp-2) 0 0 calc(var(--control-sm) + var(--sp-2));
+  margin: var(--sp-2) 0 0;
   color: var(--muted-foreground);
 }
 
 .agent-hermes-note:not([open]) > .agent-markdown {
   display: none;
-}
-
-.agent-hermes-note[open] summary p {
-  color: transparent;
 }
 
 .agent-hermes-event {
@@ -1377,6 +1443,77 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+/* Collapsed-by-default tool row: a single quiet line (icon · name · status),
+ * with the raw output tucked behind a disclosure so it never floods the
+ * conversation. */
+.agent-tool-disclosure {
+  width: min(760px, 100%);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-tool-disclosure > summary,
+.agent-tool-disclosure-static {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--muted-foreground);
+  list-style: none;
+}
+
+.agent-tool-disclosure > summary {
+  cursor: pointer;
+}
+
+/* No fill box on hover — just firm up the row's color so it doesn't flash a
+ * light/white rectangle. */
+.agent-tool-disclosure > summary:hover {
+  color: var(--foreground);
+}
+
+.agent-tool-disclosure > summary:hover .agent-tool-icon {
+  color: var(--foreground);
+}
+
+.agent-tool-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-tool-disclosure .agent-tool-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-tool-name {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tool-disclosure .agent-tool-live-status,
+.agent-tool-disclosure .agent-status-pill {
+  margin-left: auto;
+}
+
+.agent-tool-output {
+  overflow: auto;
+  max-height: 220px;
+  margin: var(--sp-1) 0 0 var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
+  color: var(--body-copy);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 
@@ -1470,12 +1607,16 @@ input:focus-visible,
 }
 
 .agent-reasoning summary {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
-  align-items: baseline;
-  gap: var(--sp-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   cursor: pointer;
   list-style: none;
+  color: var(--muted-foreground);
+}
+
+.agent-reasoning summary:hover {
+  color: var(--foreground);
 }
 
 .agent-reasoning summary::-webkit-details-marker {
@@ -1488,19 +1629,7 @@ input:focus-visible,
 }
 
 .agent-reasoning summary span {
-  font-weight: 650;
-}
-
-.agent-reasoning summary p {
-  overflow: hidden;
-  margin: 0;
-  color: var(--muted-foreground);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-reasoning[data-status="running"] summary span {
-  color: var(--warm-strong);
+  font-weight: 500;
 }
 
 .agent-reasoning[open] summary p {
@@ -1508,13 +1637,38 @@ input:focus-visible,
 }
 
 .agent-reasoning-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: var(--sp-3) 0 0;
+}
+
+/* The reasoning prose: readable but capped + scrollable so a long chain of
+ * thought never balloons the conversation. */
+.agent-reasoning-text {
   overflow: auto;
-  max-height: 180px;
-  margin: var(--sp-2) 0 0 calc(var(--control-sm) + var(--sp-2));
+  max-height: 260px;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
+  font-size: var(--fs-md);
+  line-height: 1.55;
   white-space: pre-wrap;
+}
+
+/* Reasoning + note bodies fade/slide in when expanded for a smooth reveal. */
+.agent-reasoning[open] .agent-reasoning-body,
+.agent-hermes-note[open] > .agent-markdown {
+  animation: agent-reveal 160ms var(--ease-out);
+}
+
+@keyframes agent-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .agent-tool-live-status {
@@ -1646,12 +1800,27 @@ input:focus-visible,
   }
 }
 
+/* Pinned chatbox. Like the note recorder, it's fixed to the card's bottom edge
+ * (riding the sidebar/card gutters) so the conversation scrolls behind it in
+ * the main card scroller and the card's bottom fade dissolves content into it.
+ * Centred to the same reading column as the turns. */
 .agent-composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--sp-3);
-  padding: var(--sp-5);
-  border-top: 1px solid var(--border-subtle);
+  position: fixed;
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
+  right: calc(var(--sp-3) + var(--sp-8));
+  bottom: calc(var(--sp-3) + var(--sp-5));
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.app-shell[data-sidebar="collapsed"] .agent-composer {
+  left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-transition="smooth"] .agent-composer {
+  transition: left var(--t-med) var(--ease-out);
 }
 
 .agent-composer[data-drop-active="true"] {
@@ -1662,102 +1831,262 @@ input:focus-visible,
   display: none;
 }
 
-.agent-composer-input {
-  display: grid;
-  gap: var(--sp-2);
+/* Single-line at rest. The textarea grows upward to its max while the controls
+ * stay pinned to the bottom edge. Quiet by default; the border firms up and the
+ * surface lifts on focus. */
+.agent-composer-box {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: 100%;
+  max-width: var(--content-max);
+  padding: var(--sp-1);
+  border: 1px solid var(--border-subtle);
+  /* Squircle, not a pill — a calmer rounded-rect. */
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  /* Clips the send button to the field as it slides in from the edge. */
+  overflow: hidden;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+
+.agent-composer-attach {
+  order: 1;
+}
+
+.agent-composer-row > textarea {
+  order: 2;
   min-width: 0;
 }
 
-.agent-attachment-list {
+.agent-composer-actions {
+  order: 3;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+
+/* Two lines or more: the textarea claims the top row and the +/mic/send toolbar
+ * slides down beneath it. */
+.agent-composer-box[data-multiline="true"] .agent-composer-row > textarea {
+  order: 0;
+  flex: 1 1 100%;
+}
+
+/* Attach (+) and dictation (mic) are both quiet ghost buttons that round to a
+ * squircle on hover, matching the send button. */
+.agent-composer-attach {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-attach:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.agent-composer-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-2);
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-1) 0;
 }
 
 .agent-attachment-chip {
-  display: inline-grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  max-width: min(100%, 360px);
-  border: 1px solid var(--border-subtle);
+  gap: var(--sp-1);
+  max-width: 220px;
+  padding: 2px 2px 2px var(--sp-2);
   border-radius: var(--r-sm);
-  padding: var(--sp-2);
   background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-sm);
 }
 
-.agent-attachment-chip img {
-  width: var(--control-lg);
-  height: var(--control-lg);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+.agent-attachment-chip > img {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-xs);
   object-fit: cover;
-  background: var(--background);
 }
 
-.agent-attachment-chip span {
+.agent-attachment-chip > svg {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-attachment-name {
   overflow: hidden;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-attachment-chip em {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-style: normal;
 }
 
 .agent-attachment-chip button {
   display: inline-grid;
   place-items: center;
-  min-width: var(--control-xs);
-  min-height: var(--control-xs);
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
   border: 0;
-  padding: 0;
+  border-radius: var(--r-xs);
   background: transparent;
   color: var(--muted-foreground);
 }
 
 .agent-attachment-chip button:hover {
+  background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--foreground);
+}
+
+.agent-composer-box:focus-within {
+  border-color: var(--ring-focus);
+  box-shadow: var(--shadow-md);
 }
 
 .agent-composer textarea {
-  min-height: 42px;
-  max-height: 140px;
-  resize: vertical;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: var(--sp-4);
-  background: var(--background);
+  flex: 1;
+  min-height: var(--control-lg);
+  max-height: 200px;
+  resize: none;
+  overflow-y: auto;
+  border: 0;
+  /* Symmetric vertical padding centers the single line; a little left padding
+   * keeps the placeholder/text off the field edge. */
+  padding: 6px var(--sp-2);
+  background: transparent;
   color: var(--foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.5;
   outline: none;
+  /* Smooths the upward growth as lines wrap (height is set in JS). */
+  transition: height var(--t-fast) var(--ease-out);
 }
 
-.agent-composer textarea:focus {
-  border-color: var(--ring-focus);
+.agent-composer textarea::placeholder {
+  color: var(--muted-foreground);
 }
 
-.agent-composer button {
-  min-width: 88px;
-  min-height: 42px;
-  padding: 0 var(--sp-5);
+/* Mic is the resting affordance — a light ghost button (matches our other ghost
+ * icon buttons) that rounds to a circle on hover. */
+.agent-composer-mic {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  padding: 0;
+  border: 0;
+  /* Concentric with the field (r-xl) minus its sp-1 padding → a matching
+   * squircle that fits perfectly inside. */
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
-.agent-composer button:disabled {
+.agent-composer-mic:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+/* Send slides in from the right (pushing the mic over) only once there's
+ * something to send — an up arrow in a solid circle. */
+/* Send is the primary action in the brand terracotta (the logo mark color);
+ * dictation stays a ghost. It slides in fast-but-smooth (pushing the mic over)
+ * only once there's text, clipped by the field. */
+.agent-composer-send {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: var(--brand);
+  color: oklch(100% 0 none);
+  transition:
+    width var(--t-fast) var(--ease-spring),
+    margin var(--t-fast) var(--ease-spring),
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-spring),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-send:hover {
+  background: color-mix(in oklch, var(--brand) 88%, black);
+}
+
+.agent-composer-box[data-dirty="false"] .agent-composer-send {
+  width: 0;
+  margin-left: calc(var(--sp-1) * -1);
+  opacity: 0;
+  transform: translateX(8px) scale(0.7);
+  pointer-events: none;
+}
+
+.agent-composer-send:disabled {
   cursor: default;
-  opacity: 0.5;
 }
 
-.agent-compose-empty,
+/* "Responding" affordance pinned to the bottom of the timeline while the agent
+ * is working — the pangolin next to a shimmering label. */
+.agent-thinking {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-md);
+}
+
+.agent-thinking-icon {
+  display: inline-flex;
+  color: var(--warm-strong);
+}
+
 .agent-loading {
   display: grid;
   place-items: center;
   min-height: 0;
   padding: var(--sp-6);
+}
+
+/* New-session empty state: span the header + body rows so the prompt centres
+ * in the open space with the composer pinned below — a blank page with the
+ * input ready, the way a new note opens. */
+.agent-empty-view {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 0;
+  padding: var(--sp-6) var(--sp-6) 148px;
 }
 
 @media (max-width: 980px) {
@@ -2097,6 +2426,93 @@ input:focus-visible,
   border-top: 0;
 }
 
+/* Sidebar identity — the user's name doubles as the settings entry point.
+ * Clicking it opens a small popover above the footer. */
+.sidebar-identity-wrap {
+  position: relative;
+}
+
+.sidebar-identity .sidebar-nav-icon {
+  color: var(--muted-foreground);
+}
+
+.sidebar-identity .sidebar-nav-label {
+  font-weight: 500;
+}
+
+.sidebar-identity-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--sp-1));
+  z-index: 50;
+  padding: var(--sp-1);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+}
+
+.sidebar-identity-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  text-align: left;
+}
+
+.sidebar-identity-menu button:hover {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.sidebar-identity-menu button > svg {
+  color: var(--muted-foreground);
+}
+
+/* Settings nav — replaces the main sidebar list while the settings page is
+ * open, with a quiet back affordance to notes at the top. */
+.sidebar-settings-section {
+  gap: var(--sp-1);
+}
+
+.sidebar-settings-back {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 30px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  text-align: left;
+}
+
+.sidebar-settings-back:hover {
+  background: var(--sidebar-accent);
+  color: var(--foreground);
+}
+
+.sidebar-settings-section .section-title {
+  margin-top: var(--sp-2);
+}
+
+.sidebar-settings-section .sidebar-nav-item {
+  grid-template-columns: minmax(0, 1fr);
+  padding-left: calc(18px + var(--sp-3) + var(--sp-3));
+}
+
 /* Sidebar section --------------------------------------------------- */
 
 .sidebar-section {
@@ -2424,18 +2840,37 @@ input:focus-visible,
   grid-row: 1;
 }
 
-.agent-sidebar-working {
+/* Running agent sessions show a braille spinner; idle rows show nothing. The
+ * glyph is decorative (aria-hidden inside BrailleSpinner) — the wrapping
+ * status span carries "Working" for assistive tech. */
+.agent-sidebar-spinner {
+  display: inline-flex;
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--r-pill);
-  background: var(--warm-strong);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 20%, transparent);
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
+}
+
+/* Braille cells are 2×4 (tall); widen the glyph so the loader reads as a
+ * circle/square rather than an oval. */
+.agent-sidebar-spinner > span {
+  display: inline-block;
+  transform: scaleX(1.35);
+  transform-origin: center;
 }
 
 .agent-sidebar-working[data-status="waitingForUser"] {
   background: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 18%, transparent);
+}
+
+/* A session awaiting your input reads a touch heavier so it stands out in the
+ * list. */
+.agent-sidebar-row[data-status="waitingForUser"] .note-row-title-text {
+  font-weight: 500;
 }
 
 .sidebar[data-collapsed="true"] .note-row-menu,
@@ -2561,11 +2996,9 @@ input:focus-visible,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Keep this pane's scroll from chaining out to the shell/background. */
+  overscroll-behavior: contain;
   padding: 0 var(--sp-8) var(--sp-5);
-}
-
-.main-panel-body[data-active-view="agent"] {
-  overflow: hidden;
 }
 
 /* Top + bottom fades for the main card. Top is short (28px) since no
@@ -3227,7 +3660,8 @@ input:focus-visible,
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
-.note-generating-label {
+.note-generating-label,
+.text-shimmer {
   background: linear-gradient(
     90deg,
     var(--muted-foreground) 0%,
@@ -3242,6 +3676,12 @@ input:focus-visible,
   color: transparent;
   -webkit-text-fill-color: transparent;
   animation: note-text-shimmer 2s linear infinite;
+}
+
+/* The agent shimmer runs quicker than the note-generating one — it read
+ * sluggish in the chat. */
+.text-shimmer {
+  animation-duration: 1.2s;
 }
 
 @keyframes note-text-shimmer {
@@ -4245,7 +4685,10 @@ input:focus-visible,
 
 .settings-tab-panel {
   display: grid;
-  gap: var(--sp-10);
+  /* Section spacing is owned by .settings-group's margin-bottom so it stays
+   * consistent with the standalone settings page. A panel gap here on top of
+   * that margin double-spaced the sections. */
+  gap: 0;
 }
 
 .settings-title {
@@ -4312,7 +4755,7 @@ input:focus-visible,
 .settings-group {
   display: grid;
   gap: var(--sp-2);
-  margin-bottom: var(--sp-10);
+  margin-bottom: var(--sp-8);
 }
 
 .settings-group:last-of-type {
@@ -5184,9 +5627,11 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  height: 40px;
+  min-height: 46px;
   margin: 0 calc(-1 * var(--sp-8));
-  padding: 0 var(--sp-4);
+  /* Full-bleed bar, but the crumb lines up with the content gutter (sp-8)
+   * rather than hugging the sidebar edge. */
+  padding: var(--sp-2) var(--sp-8);
   border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in oklch, var(--card) 78%, transparent);
   backdrop-filter: saturate(140%) blur(14px);
@@ -5260,7 +5705,64 @@ input:focus-visible,
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
+}
+
+/* Agent session bar — inline rename + overflow menu layered on the shared
+ * detail-bar chrome. */
+.agent-session-rename {
+  min-width: 0;
+  max-width: 280px;
+  padding: 2px var(--sp-1);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  outline: none;
+}
+
+.agent-session-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.agent-session-menu-trigger {
+  width: var(--control-md);
+  height: var(--control-md);
+}
+
+.agent-session-menu {
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  bottom: auto;
+  left: auto;
+  min-width: 168px;
+}
+
+.agent-session-menu .destructive {
+  color: var(--destructive);
+}
+
+.agent-session-menu .destructive:hover {
+  background: color-mix(in oklch, var(--destructive-soft) 55%, transparent);
+}
+
+.agent-session-menu .destructive > svg {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--muted-foreground));
+}
+
+/* Shared disclosure chevron (Thinking / notes) — quiet, rotates open. */
+.agent-disclosure-chevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+[open] > summary .agent-disclosure-chevron {
+  transform: rotate(180deg);
 }
 
 .back-button {

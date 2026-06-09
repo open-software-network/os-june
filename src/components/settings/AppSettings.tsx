@@ -144,7 +144,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   generationModel: "zai-org-glm-5",
 };
 
-type SettingsTab =
+export type SettingsTab =
   | "account"
   | "dictation"
   | "audio"
@@ -153,7 +153,7 @@ type SettingsTab =
   | "agent"
   | "about";
 
-const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "account", label: "Account" },
   { id: "dictation", label: "Dictation" },
   { id: "audio", label: "Audio" },
@@ -177,6 +177,12 @@ type AppSettingsProps = {
   onEnableMicrophone?: () => void;
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
+  // When the host (the sidebar settings nav) drives the active section, it
+  // passes both of these so AppSettings becomes a controlled panel and hides
+  // its own header + in-page tab nav. Left undefined, AppSettings keeps its
+  // own nav — the standalone path exercised by app-settings tests.
+  activeTab?: SettingsTab;
+  onTabChange?: (tab: SettingsTab) => void;
 };
 
 export function AppSettings({
@@ -193,6 +199,8 @@ export function AppSettings({
   onEnableMicrophone,
   onEnableAccessibility,
   onEnableSystemAudio,
+  activeTab: controlledTab,
+  onTabChange,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -216,7 +224,16 @@ export function AppSettings({
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
   const [modelSearch, setModelSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
+  const [internalTab, setInternalTab] = useState<SettingsTab>("account");
+  const controlled = controlledTab !== undefined && onTabChange !== undefined;
+  const activeTab = controlled ? controlledTab : internalTab;
+  const setActiveTab = (tab: SettingsTab) => {
+    if (controlled) {
+      onTabChange?.(tab);
+    } else {
+      setInternalTab(tab);
+    }
+  };
   const micWrapRef = useRef<HTMLDivElement>(null);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemReadiness = sourceReadiness?.sources.find(
@@ -492,33 +509,37 @@ export function AppSettings({
   }
 
   return (
-    <div className="settings-page">
-      <header className="settings-header">
-        <h1 className="settings-title">Settings</h1>
-        <p className="settings-description">
-          Manage audio, dictation, AI models, and agent capabilities.
-        </p>
-      </header>
+    <div className="settings-page" data-controlled={controlled || undefined}>
+      {controlled ? null : (
+        <>
+          <header className="settings-header">
+            <h1 className="settings-title">Settings</h1>
+            <p className="settings-description">
+              Manage audio, dictation, AI models, and agent capabilities.
+            </p>
+          </header>
 
-      <nav
-        className="settings-nav"
-        role="tablist"
-        aria-label="Settings sections"
-      >
-        {SETTINGS_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls={`settings-panel-${tab.id}`}
-            id={`settings-tab-${tab.id}`}
-            onClick={() => setActiveTab(tab.id)}
+          <nav
+            className="settings-nav"
+            role="tablist"
+            aria-label="Settings sections"
           >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
+            {SETTINGS_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                aria-controls={`settings-panel-${tab.id}`}
+                id={`settings-tab-${tab.id}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
 
       <div
         className="settings-tab-panel"

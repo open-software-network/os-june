@@ -1,3 +1,5 @@
+import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
+import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
@@ -5,10 +7,10 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
+import { IconPeople } from "central-icons/IconPeople";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { BotIcon } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   markAgentNewSessionPending,
@@ -25,8 +27,15 @@ import {
   sessionTimestamp,
 } from "../../lib/hermes-adapter";
 import { NOTE_DND_MIME } from "../../lib/dnd";
-import type { HermesSessionInfo, NoteListItemDto } from "../../lib/tauri";
+import type {
+  AccountStatus,
+  HermesSessionInfo,
+  NoteListItemDto,
+} from "../../lib/tauri";
+import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { PangolinSpinner } from "../PangolinSpinner";
+import { IconPangolin } from "../icons/IconPangolin";
 
 export type SidebarView =
   | "notes"
@@ -40,7 +49,16 @@ export type SidebarView =
 type SidebarProps = {
   notes: NoteListItemDto[];
   activeView: SidebarView;
+  // Settings is its own page reached from the user's name; these default so
+  // tests that mount the sidebar for non-settings views can skip the plumbing.
+  account?: AccountStatus;
+  settingsTab?: SettingsTab;
+  onSettingsTabChange?: (tab: SettingsTab) => void;
   onChangeView: (view: SidebarView) => void;
+  // Returns to wherever the user was before opening settings (falls back to
+  // Notes when not wired, e.g. unit tests).
+  onExitSettings?: () => void;
+  onSignOut?: () => void;
   onSelectNote: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
@@ -62,7 +80,12 @@ const AGENT_SIDEBAR_SESSION_LIMIT = 12;
 export function Sidebar({
   notes,
   activeView,
+  account = { signedIn: false, configured: false },
+  settingsTab = "account",
+  onSettingsTabChange,
   onChangeView,
+  onExitSettings,
+  onSignOut,
   onSelectNote,
   onDeleteNote,
   onOpenMoveDialog,
@@ -74,6 +97,8 @@ export function Sidebar({
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
+  const inSettings = activeView === "settings";
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
   const [selectedAgentSessionId, setSelectedAgentSessionId] =
     useState<string>();
@@ -228,25 +253,39 @@ export function Sidebar({
   }
 
   return (
-    <aside className="sidebar" data-collapsed={collapsed}>
+    <aside
+      className="sidebar"
+      data-collapsed={collapsed}
+      data-mode={inSettings ? "settings" : "default"}
+    >
       <header className="sidebar-header">
-        <a className="sidebar-brand" href="#" aria-label="Scribe">
+        <a className="sidebar-brand" href="#" aria-label="OS June">
           <img
             className="sidebar-brand-img light"
-            src="/os-scribe-light.svg"
+            src="/os-june-light.svg"
             alt=""
             height={16}
           />
           <img
             className="sidebar-brand-img dark"
-            src="/os-scribe-dark.svg"
+            src="/os-june-dark.svg"
             alt=""
             height={16}
           />
-          <span style={{ position: "absolute", left: -9999 }}>Scribe</span>
+          <span style={{ position: "absolute", left: -9999 }}>OS June</span>
         </a>
       </header>
 
+      {inSettings ? (
+        <SettingsSidebarNav
+          activeTab={settingsTab}
+          onSelectTab={(tab) => onSettingsTabChange?.(tab)}
+          onBack={() =>
+            onExitSettings ? onExitSettings() : onChangeView("notes")
+          }
+        />
+      ) : (
+        <>
       <label className="sidebar-search">
         <IconMagnifyingGlass size={15} />
         <input
@@ -349,21 +388,29 @@ export function Sidebar({
           </div>
         </div>
       </section>
+        </>
+      )}
 
       <footer className="sidebar-footer">
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "settings"}
-          aria-current={activeView === "settings" ? "page" : undefined}
-          aria-label="Settings"
-          onClick={() => onChangeView("settings")}
-        >
-          <span className="sidebar-nav-icon">
-            <IconSettingsGear4 size={16} />
-          </span>
-          <span className="sidebar-nav-label">Settings</span>
-        </button>
+        <SidebarIdentity
+          account={account}
+          menuOpen={identityMenuOpen}
+          inSettings={inSettings}
+          onToggleMenu={() => setIdentityMenuOpen((open) => !open)}
+          onCloseMenu={() => setIdentityMenuOpen(false)}
+          onOpenSettings={() => {
+            setIdentityMenuOpen(false);
+            onChangeView("settings");
+          }}
+          onSignOut={
+            onSignOut
+              ? () => {
+                  setIdentityMenuOpen(false);
+                  onSignOut();
+                }
+              : undefined
+          }
+        />
       </footer>
 
       {menu ? (
@@ -498,6 +545,130 @@ function NoteRow({
   );
 }
 
+function SettingsSidebarNav({
+  activeTab,
+  onSelectTab,
+  onBack,
+}: {
+  activeTab: SettingsTab;
+  onSelectTab: (tab: SettingsTab) => void;
+  onBack: () => void;
+}) {
+  return (
+    <section
+      className="sidebar-section sidebar-settings-section"
+      aria-label="Settings"
+    >
+      <button type="button" className="sidebar-settings-back" onClick={onBack}>
+        <span className="sidebar-nav-icon">
+          <IconChevronLeftSmall size={15} />
+        </span>
+        <span className="sidebar-nav-label">Back</span>
+      </button>
+      <div className="section-title">
+        <span className="section-title-label">Settings</span>
+      </div>
+      <nav className="sidebar-nav" aria-label="Settings sections">
+        {SETTINGS_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className="sidebar-nav-item"
+            data-active={activeTab === tab.id}
+            aria-current={activeTab === tab.id ? "page" : undefined}
+            onClick={() => onSelectTab(tab.id)}
+          >
+            <span className="sidebar-nav-label">{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+    </section>
+  );
+}
+
+// The user's name is the settings entry point: clicking it opens a small
+// popover whose actions open the settings page or sign out.
+function SidebarIdentity({
+  account,
+  menuOpen,
+  inSettings,
+  onToggleMenu,
+  onCloseMenu,
+  onOpenSettings,
+  onSignOut,
+}: {
+  account: AccountStatus;
+  menuOpen: boolean;
+  inSettings: boolean;
+  onToggleMenu: () => void;
+  onCloseMenu: () => void;
+  onOpenSettings: () => void;
+  onSignOut?: () => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const name = accountDisplayName(account);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointer(event: MouseEvent) {
+      if (!wrapRef.current?.contains(event.target as Node)) onCloseMenu();
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onCloseMenu();
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen, onCloseMenu]);
+
+  return (
+    <div className="sidebar-identity-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="sidebar-nav-item sidebar-identity"
+        data-active={inSettings}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={`${name} — account menu`}
+        onClick={onToggleMenu}
+      >
+        <span className="sidebar-nav-icon">
+          <IconPeople size={18} />
+        </span>
+        <span className="sidebar-nav-label">{name}</span>
+      </button>
+      {menuOpen ? (
+        <div className="sidebar-identity-menu" role="menu">
+          <button type="button" role="menuitem" onClick={onOpenSettings}>
+            <IconSettingsGear4 size={14} />
+            Settings
+          </button>
+          {account.signedIn && onSignOut ? (
+            <>
+              <div className="context-menu-separator" role="separator" />
+              <button type="button" role="menuitem" onClick={onSignOut}>
+                <IconArrowBoxRight size={14} />
+                Sign out
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function accountDisplayName(account: AccountStatus) {
+  return (
+    account.user?.displayName?.trim() ||
+    account.user?.handle?.trim() ||
+    "Account"
+  );
+}
+
 function AgentSessionRow({
   session,
   selected,
@@ -518,7 +689,11 @@ function AgentSessionRow({
   const title = session.title || session.preview || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
   return (
-    <article className="note-row agent-sidebar-row" data-selected={selected}>
+    <article
+      className="note-row agent-sidebar-row"
+      data-selected={selected}
+      data-status={status}
+    >
       <div
         className="note-row-main"
         role="button"
@@ -532,16 +707,22 @@ function AgentSessionRow({
         }}
       >
         <span className="note-row-icon">
-          <BotIcon size={15} />
+          {status === "running" ? (
+            <span role="status" aria-label="Working" title="Working">
+              <PangolinSpinner className="agent-sidebar-spinner" />
+            </span>
+          ) : (
+            <IconPangolin size={15} />
+          )}
         </span>
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
-          {status ? (
+          {waiting ? (
             <span
               className="agent-sidebar-working"
-              data-status={status}
-              aria-label={status === "waitingForUser" ? "Needs you" : "Working"}
-              title={status === "waitingForUser" ? "Needs you" : "Working"}
+              data-status="waitingForUser"
+              aria-label="Needs you"
+              title="Needs you"
             />
           ) : null}
         </span>

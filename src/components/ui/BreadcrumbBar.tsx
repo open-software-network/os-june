@@ -7,8 +7,10 @@ type BreadcrumbItem = {
 };
 
 type Props = {
-  backLabel: string;
-  onBack: () => void;
+  // Back is the history affordance; omit it for surfaces you don't drill into
+  // (the crumbs still read as the canonical location).
+  backLabel?: string;
+  onBack?: () => void;
   items: BreadcrumbItem[];
   actions?: ReactNode;
 };
@@ -16,7 +18,9 @@ type Props = {
 export function BreadcrumbBar({ backLabel, onBack, items, actions }: Props) {
   return (
     <div className="detail-bar" data-tauri-drag-region>
-      <BackButton label={backLabel} onClick={onBack} />
+      {onBack ? (
+        <BackButton label={backLabel ?? "Back"} onClick={onBack} />
+      ) : null}
       <nav className="detail-breadcrumb" aria-label="Breadcrumb">
         <ol>
           {items.map((item, index) => {

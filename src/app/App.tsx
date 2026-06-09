@@ -23,7 +23,10 @@ import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDi
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { NotesList } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
-import { AppSettings } from "../components/settings/AppSettings";
+import {
+  AppSettings,
+  type SettingsTab,
+} from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { Dialog } from "../components/ui/Dialog";
@@ -41,6 +44,7 @@ import {
   getNote,
   listNotes,
   openPrivacySettings,
+  osAccountsLogout,
   osAccountsTopUp,
   pauseRecording,
   removeNoteFromFolder,
@@ -127,6 +131,11 @@ export function App() {
   const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
+  // Where the back affordance in settings returns to — captured when settings
+  // is opened so "back" lands the user where they were, not on Notes.
+  const [settingsReturnView, setSettingsReturnView] =
+    useState<SidebarView>("notes");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
@@ -208,6 +217,17 @@ export function App() {
     [setAccount, signInRequired],
   );
 
+  // Log out from the sidebar identity popover. Dropping the session flips
+  // shouldBlockOnSignIn back on, so the app falls through to the AccountGate.
+  async function handleSignOut() {
+    try {
+      await osAccountsLogout();
+      handleAccountChanged({ signedIn: false, configured: account.configured });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   useEffect(() => {
     preloadRecordingSounds();
   }, []);
@@ -232,7 +252,7 @@ export function App() {
           setUpdateProgress(null);
           setPendingUpdate(payload);
         },
-        reportNoUpdate: () => setUpdateStatus("OS Scribe is up to date."),
+        reportNoUpdate: () => setUpdateStatus("OS June is up to date."),
         reportFailure: (message) =>
           setUpdateStatus(`Update check failed: ${message}`),
       },
@@ -903,7 +923,13 @@ export function App() {
       <Sidebar
         notes={state.notes}
         activeView={activeView}
+        account={account}
+        settingsTab={settingsTab}
+        onSettingsTabChange={setSettingsTab}
         onChangeView={(view) => {
+          if (view === "settings" && activeView !== "settings") {
+            setSettingsReturnView(activeView);
+          }
           setActiveView(view);
           if (view !== "agent") {
             setActiveAgentSession(undefined);
@@ -918,6 +944,8 @@ export function App() {
             setFolderReturnTarget(undefined);
           }
         }}
+        onExitSettings={() => setActiveView(settingsReturnView)}
+        onSignOut={() => void handleSignOut()}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
         onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
@@ -987,11 +1015,14 @@ export function App() {
                 onEnableMicrophone={handleEnableMicrophone}
                 onEnableAccessibility={handleEnableAccessibility}
                 onEnableSystemAudio={handleEnableSystemAudio}
+                activeTab={settingsTab}
+                onTabChange={setSettingsTab}
               />
             ) : activeView === "dictation" ? (
               <DictationHistoryView
                 onNavigateToSettings={(target) => {
                   setActiveView("settings");
+                  setSettingsTab("dictation");
                   const headingId =
                     target === "style" ? "style-heading" : "dictionary-heading";
                   window.setTimeout(() => {
@@ -1258,7 +1289,7 @@ function UpdateDialog({
     <Dialog
       open={!!payload || !!status}
       onClose={onClose}
-      title={payload ? `OS Scribe ${payload.version}` : "Software update"}
+      title={payload ? `OS June ${payload.version}` : "Software update"}
       description={
         payload
           ? "A new version is available."
