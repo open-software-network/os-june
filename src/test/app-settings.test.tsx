@@ -58,20 +58,20 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const baseSettings: DictationSettingsDto = {
   pushToTalkShortcut: {
-    code: "Space",
-    label: "Fn+Space",
+    code: "KeyD",
+    label: "Ctrl+Opt+D",
     pressCount: 1,
     modifiers: {
       command: false,
-      control: false,
-      option: false,
+      control: true,
+      option: true,
       shift: false,
-      function: true,
+      function: false,
     },
   },
   toggleShortcut: {
-    code: "Space",
-    label: "Ctrl+Opt+Space",
+    code: "KeyT",
+    label: "Ctrl+Opt+T",
     pressCount: 1,
     modifiers: {
       command: false,
@@ -451,14 +451,14 @@ describe("AppSettings", () => {
         type: "shortcut_captured",
         payload: {
           shortcut: {
-            code: "Fn",
-            label: "Fn",
+            code: "KeyT",
+            label: "Ctrl+T",
             modifiers: {
               command: false,
-              control: false,
+              control: true,
               option: false,
               shift: false,
-              function: true,
+              function: false,
             },
             pressCount: 1,
           },
@@ -468,14 +468,14 @@ describe("AppSettings", () => {
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith("push_to_talk", {
-        code: "Fn",
-        label: "Fn",
+        code: "KeyT",
+        label: "Ctrl+T",
         modifiers: {
           command: false,
-          control: false,
+          control: true,
           option: false,
           shift: false,
-          function: true,
+          function: false,
         },
         pressCount: 1,
       }),
@@ -495,12 +495,12 @@ describe("AppSettings", () => {
         type: "shortcut_captured",
         payload: {
           shortcut: {
-            code: "Space",
-            label: "Ctrl+Opt+Space",
+            code: "Digit1",
+            label: "Ctrl+1",
             modifiers: {
               command: false,
               control: true,
-              option: true,
+              option: false,
               shift: false,
               function: false,
             },
@@ -512,12 +512,12 @@ describe("AppSettings", () => {
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith("toggle", {
-        code: "Space",
-        label: "Ctrl+Opt+Space",
+        code: "Digit1",
+        label: "Ctrl+1",
         modifiers: {
           command: false,
           control: true,
-          option: true,
+          option: false,
           shift: false,
           function: false,
         },
