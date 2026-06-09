@@ -38,16 +38,25 @@ use crate::{
 };
 use chrono::{TimeZone, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::Row;
+use sqlx::{Row, SqlitePool};
+use std::collections::HashSet;
 use std::str::FromStr;
-use std::{path::PathBuf, time::Instant};
+use std::sync::{Mutex, OnceLock};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use tauri::{AppHandle, Manager};
+use tokio::sync::OnceCell;
 
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
-    repos.pause_running_agent_tasks_on_launch().await?;
+    // Complete stale tasks that already received their assistant reply
+    // before pausing the rest: the repair only considers queued/running
+    // tasks, so it must run before they are flipped to paused.
     repos.complete_agent_tasks_with_assistant_messages().await?;
+    repos.pause_running_agent_tasks_on_launch().await?;
     let active_recoveries = scan_recoverable_recordings(&repos.pool)
         .await
         .map_err(|error| AppError::new("recovery_scan_failed", error.to_string()))?;
@@ -1146,54 +1155,87 @@ fn recovery_source_path(
     None
 }
 
+static AGENT_PLACEHOLDER_TASKS_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn agent_placeholder_tasks_in_flight() -> &'static Mutex<HashSet<String>> {
+    AGENT_PLACEHOLDER_TASKS_IN_FLIGHT.get_or_init(Mutex::default)
+}
+
 fn schedule_agent_runtime_placeholder(repos: Repositories, task_id: String) {
+    // Two concurrent placeholder runs for the same task (e.g. a rapid
+    // double retry) would double-insert tool events and messages, so only
+    // one in-flight run per task is allowed.
+    {
+        let mut in_flight = agent_placeholder_tasks_in_flight()
+            .lock()
+            .expect("agent placeholder in-flight set is poisoned");
+        if !in_flight.insert(task_id.clone()) {
+            return;
+        }
+    }
     tokio::spawn(async move {
-        let _ = repos
-            .update_agent_task_status(
-                &task_id,
-                AgentTaskStatus::Running,
-                Some("Preparing local privacy and tool policy."),
-                None,
-            )
-            .await;
-        let _ = repos
-            .add_agent_tool_event(
-                &task_id,
-                "local_tool_policy",
-                AgentToolEventStatus::Completed,
-                "Autonomous private mode is active. Sensitive actions will be blocked or escalated.",
-                Some(r#"{"profile":"autonomous_private"}"#),
-                Some(r#"{"localToolsReady":true,"rawOutputShared":false}"#),
-                true,
-            )
-            .await;
-        let _ = repos
-            .add_agent_tool_event(
-                &task_id,
-                "backend_agent_runtime",
-                AgentToolEventStatus::Blocked,
-                "Backend agent orchestration is not configured in this build.",
-                Some(r#"{"endpoint":"/v1/agent/tasks"}"#),
-                Some(r#"{"reason":"agent_backend_unavailable"}"#),
-                true,
-            )
-            .await;
-        let _ = repos
-            .add_agent_message(
-                &task_id,
-                AgentMessageRole::Assistant,
-                "I created the task and set up the local privacy/tool policy. The backend agent runtime endpoint is not configured yet, so I paused execution before taking desktop actions.",
-            )
-            .await;
-        let _ = repos
-            .update_agent_task_status(
-                &task_id,
-                AgentTaskStatus::Paused,
-                Some("Paused until the backend agent runtime is configured."),
-                Some("Backend agent orchestration is not configured in this build."),
-            )
-            .await;
+        run_agent_runtime_placeholder(&repos, &task_id).await;
+        agent_placeholder_tasks_in_flight()
+            .lock()
+            .expect("agent placeholder in-flight set is poisoned")
+            .remove(&task_id);
     });
+}
+
+async fn run_agent_runtime_placeholder(repos: &Repositories, task_id: &str) {
+    // Only move a still-queued task to running. If the user cancelled the
+    // task (or it otherwise changed state) since this run was scheduled,
+    // the placeholder must not resurrect it.
+    let started = repos
+        .update_agent_task_status_if_in(
+            task_id,
+            AgentTaskStatus::Running,
+            Some("Preparing local privacy and tool policy."),
+            None,
+            &[AgentTaskStatus::Queued],
+        )
+        .await;
+    if !matches!(started, Ok(true)) {
+        return;
+    }
+    let _ = repos
+        .add_agent_tool_event(
+            task_id,
+            "local_tool_policy",
+            AgentToolEventStatus::Completed,
+            "Autonomous private mode is active. Sensitive actions will be blocked or escalated.",
+            Some(r#"{"profile":"autonomous_private"}"#),
+            Some(r#"{"localToolsReady":true,"rawOutputShared":false}"#),
+            true,
+        )
+        .await;
+    let _ = repos
+        .add_agent_tool_event(
+            task_id,
+            "backend_agent_runtime",
+            AgentToolEventStatus::Blocked,
+            "Backend agent orchestration is not configured in this build.",
+            Some(r#"{"endpoint":"/v1/agent/tasks"}"#),
+            Some(r#"{"reason":"agent_backend_unavailable"}"#),
+            true,
+        )
+        .await;
+    let _ = repos
+        .add_agent_message(
+            task_id,
+            AgentMessageRole::Assistant,
+            "I created the task and set up the local privacy/tool policy. The backend agent runtime endpoint is not configured yet, so I paused execution before taking desktop actions.",
+        )
+        .await;
+    let _ = repos
+        .update_agent_task_status_if_in(
+            task_id,
+            AgentTaskStatus::Paused,
+            Some("Paused until the backend agent runtime is configured."),
+            Some("Backend agent orchestration is not configured in this build."),
+            &[AgentTaskStatus::Running],
+        )
+        .await;
 }
 
 async fn hydrate_agent_task_from_hermes(
@@ -1202,51 +1244,16 @@ async fn hydrate_agent_task_from_hermes(
     task_id: &str,
 ) -> Result<(), AppError> {
     let task = repos.get_agent_task(task_id).await?;
-    let already_has_assistant_message = task
-        .messages
-        .iter()
-        .any(|message| message.role == AgentMessageRole::Assistant);
     let paths = app_paths(app)?;
     let hermes_db_path = paths.data_dir.join("hermes").join("state.db");
     if !hermes_db_path.exists() {
         return Ok(());
     }
-
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", hermes_db_path.display()))
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?
-        .create_if_missing(false);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+    let pool = hermes_state_pool(&hermes_db_path).await?;
 
     let session_id = match task.hermes_session_id.clone() {
         Some(session_id) if !session_id.trim().is_empty() => Some(session_id),
-        _ => {
-            let task_started_at = chrono::DateTime::parse_from_rfc3339(&task.created_at)
-                .map(|value| value.timestamp_millis() as f64 / 1000.0)
-                .unwrap_or(0.0);
-            let row = sqlx::query(
-                "SELECT id
-                 FROM sessions
-                 WHERE title = ?
-                 ORDER BY ABS(started_at - ?) ASC
-                 LIMIT 1",
-            )
-            .bind(&task.title)
-            .bind(task_started_at)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-            let session_id = row.map(|row| row.get::<String, _>("id"));
-            if let Some(session_id) = &session_id {
-                repos
-                    .set_agent_task_hermes_session(task_id, session_id)
-                    .await?;
-            }
-            session_id
-        }
+        _ => match_hermes_session_for_task(repos, &pool, &task).await?,
     };
 
     let Some(session_id) = session_id else {
@@ -1254,7 +1261,7 @@ async fn hydrate_agent_task_from_hermes(
     };
 
     let rows = sqlx::query(
-        "SELECT content, timestamp
+        "SELECT CAST(id AS TEXT) AS id, content, timestamp
          FROM messages
          WHERE session_id = ?
            AND role = 'assistant'
@@ -1263,41 +1270,137 @@ async fn hydrate_agent_task_from_hermes(
            AND trim(content) != ''
          ORDER BY timestamp ASC, id ASC",
     )
-    .bind(session_id)
+    .bind(&session_id)
     .fetch_all(&pool)
     .await
     .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-    let found_hermes_assistant_messages = !rows.is_empty();
+
+    // A task only counts as answered when the assistant replied AFTER the
+    // latest user message. Assistant messages from earlier turns must not
+    // complete a task that was re-queued by a newer user message.
+    let latest_user_message_at = task
+        .messages
+        .iter()
+        .filter(|message| message.role == AgentMessageRole::User)
+        .map(|message| message.created_at.clone())
+        .max();
+    let mut assistant_replied_to_latest_turn = false;
 
     for row in rows {
+        let hermes_message_id: String = row.get("id");
         let content: String = row.get("content");
         let timestamp: f64 = row.get("timestamp");
         let created_at = unix_timestamp_to_rfc3339(timestamp);
+        // Both timestamps are RFC3339 UTC with millisecond precision, so
+        // string ordering matches chronological ordering.
+        if latest_user_message_at
+            .as_deref()
+            .map(|user_at| created_at.as_str() > user_at)
+            .unwrap_or(true)
+        {
+            assistant_replied_to_latest_turn = true;
+        }
+        let external_id = format!("hermes:{session_id}:{hermes_message_id}");
         repos
             .add_agent_message_if_absent(
                 task_id,
                 AgentMessageRole::Assistant,
                 content.trim(),
                 &created_at,
+                &external_id,
             )
             .await?;
     }
-    if (already_has_assistant_message || found_hermes_assistant_messages)
+    if assistant_replied_to_latest_turn
         && matches!(
             task.status,
             AgentTaskStatus::Queued | AgentTaskStatus::Running
         )
     {
         repos
-            .update_agent_task_status(
+            .update_agent_task_status_if_in(
                 task_id,
                 AgentTaskStatus::Completed,
                 Some("Completed."),
                 None,
+                &[AgentTaskStatus::Queued, AgentTaskStatus::Running],
             )
             .await?;
     }
     Ok(())
+}
+
+/// How close (in seconds) a Hermes session's `started_at` must be to the
+/// task's creation time for heuristic title matching to bind them.
+const HERMES_SESSION_MATCH_WINDOW_SECONDS: f64 = 300.0;
+
+/// Heuristically binds a Hermes session to a task by title. Titles are
+/// derived from the first 64 characters of the prompt, so identical prompts
+/// collide; only bind when exactly one session with this title started near
+/// the task's creation time and it is not already bound to another task.
+/// When the match is ambiguous, skip hydration for this poll instead of
+/// persisting a guess.
+async fn match_hermes_session_for_task(
+    repos: &Repositories,
+    pool: &SqlitePool,
+    task: &AgentTaskDto,
+) -> Result<Option<String>, AppError> {
+    let Ok(task_started_at) = chrono::DateTime::parse_from_rfc3339(&task.created_at)
+        .map(|value| value.timestamp_millis() as f64 / 1000.0)
+    else {
+        return Ok(None);
+    };
+    let rows = sqlx::query(
+        "SELECT id
+         FROM sessions
+         WHERE title = ?
+           AND ABS(started_at - ?) <= ?
+         LIMIT 2",
+    )
+    .bind(&task.title)
+    .bind(task_started_at)
+    .bind(HERMES_SESSION_MATCH_WINDOW_SECONDS)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+    if rows.len() != 1 {
+        return Ok(None);
+    }
+    let session_id: String = rows[0].get("id");
+    if repos
+        .hermes_session_bound_to_other_task(&task.id, &session_id)
+        .await?
+    {
+        return Ok(None);
+    }
+    repos
+        .set_agent_task_hermes_session(&task.id, &session_id)
+        .await?;
+    Ok(Some(session_id))
+}
+
+/// Cached read pool for the Hermes `state.db`, re-opened only if the path
+/// changes, so per-task polling does not open a fresh pool every second.
+static HERMES_STATE_POOL: tokio::sync::Mutex<Option<(PathBuf, SqlitePool)>> =
+    tokio::sync::Mutex::const_new(None);
+
+async fn hermes_state_pool(path: &Path) -> Result<SqlitePool, AppError> {
+    let mut cached = HERMES_STATE_POOL.lock().await;
+    if let Some((cached_path, pool)) = cached.as_ref() {
+        if cached_path == path && !pool.is_closed() {
+            return Ok(pool.clone());
+        }
+    }
+    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
+    *cached = Some((path.to_path_buf(), pool.clone()));
+    Ok(pool)
 }
 
 fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
@@ -1309,21 +1412,33 @@ fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Cached app repositories pool. The database path is derived from the app
+/// data dir and never changes within a process, so the pool (and its
+/// migrations) are initialized once instead of on every Tauri command.
+static REPOSITORIES: OnceCell<Repositories> = OnceCell::const_new();
+
 pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppError> {
     let paths = app_paths(app)?;
-    let options =
-        SqliteConnectOptions::from_str(&format!("sqlite://{}", paths.database_path.display()))
+    REPOSITORIES
+        .get_or_try_init(|| async {
+            let options = SqliteConnectOptions::from_str(&format!(
+                "sqlite://{}",
+                paths.database_path.display()
+            ))
             .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
             .create_if_missing(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_with(options)
+            let pool = SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(options)
+                .await
+                .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
+            run_migrations(&pool)
+                .await
+                .map_err(|error| AppError::new("migration_failed", error.to_string()))?;
+            Ok(Repositories::new(pool))
+        })
         .await
-        .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
-    run_migrations(&pool)
-        .await
-        .map_err(|error| AppError::new("migration_failed", error.to_string()))?;
-    Ok(Repositories::new(pool))
+        .cloned()
 }
 
 fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {

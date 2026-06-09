@@ -354,6 +354,10 @@ impl Repositories {
         Ok(())
     }
 
+    /// Repairs genuinely stale `queued`/`running` tasks whose latest message
+    /// is already an assistant reply. `paused` and `waiting_for_user` are
+    /// deliberate resting states (placeholder pauses, clarify exchanges) and
+    /// must never be force-completed by this repair.
     pub async fn complete_agent_tasks_with_assistant_messages(&self) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE agent_tasks
@@ -372,12 +376,12 @@ impl Repositories {
                       WHERE task_id = agent_tasks.id AND role = 'assistant'),
                      updated_at
                  )
-             WHERE status IN ('queued', 'running', 'paused', 'waiting_for_user')
-               AND EXISTS (
-                   SELECT 1
-                   FROM agent_messages
-                   WHERE task_id = agent_tasks.id AND role = 'assistant'
-               )",
+             WHERE status IN ('queued', 'running')
+               AND (SELECT role
+                    FROM agent_messages
+                    WHERE task_id = agent_tasks.id
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT 1) = 'assistant'",
         )
         .execute(&self.pool)
         .await?;
@@ -506,38 +510,49 @@ impl Repositories {
         Ok(agent_message_from_row(row))
     }
 
+    /// Inserts a hydrated message exactly once. `external_id` carries the
+    /// source-side identity (e.g. a Hermes message id); the unique index on
+    /// `(task_id, external_id)` plus `INSERT OR IGNORE` makes concurrent
+    /// hydrations race-safe. Rows hydrated before external ids existed are
+    /// matched by content so they are not duplicated either.
     pub async fn add_agent_message_if_absent(
         &self,
         task_id: &str,
         role: AgentMessageRole,
         content: &str,
         created_at: &str,
+        external_id: &str,
     ) -> Result<bool, sqlx::Error> {
         let existing = sqlx::query(
             "SELECT 1 FROM agent_messages
-             WHERE task_id = ? AND role = ? AND content = ?
+             WHERE task_id = ?
+               AND role = ?
+               AND (external_id = ? OR (external_id IS NULL AND content = ?))
              LIMIT 1",
         )
         .bind(task_id)
         .bind(role.as_db())
+        .bind(external_id)
         .bind(content)
         .fetch_optional(&self.pool)
         .await?;
         if existing.is_some() {
             return Ok(false);
         }
-        sqlx::query(
-            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO agent_messages
+             (id, task_id, role, content, created_at, external_id)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(task_id)
         .bind(role.as_db())
         .bind(content)
         .bind(created_at)
+        .bind(external_id)
         .execute(&self.pool)
         .await?;
-        Ok(true)
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn update_agent_task_status(
@@ -567,6 +582,66 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         self.get_agent_task(task_id).await
+    }
+
+    /// Updates a task's status only when its current status is in
+    /// `allowed_current`. Returns whether the transition was applied. This
+    /// lets background work (e.g. the runtime placeholder) avoid clobbering
+    /// states the user reached concurrently, such as resurrecting a
+    /// cancelled task.
+    pub async fn update_agent_task_status_if_in(
+        &self,
+        task_id: &str,
+        status: AgentTaskStatus,
+        progress_summary: Option<&str>,
+        last_error: Option<&str>,
+        allowed_current: &[AgentTaskStatus],
+    ) -> Result<bool, sqlx::Error> {
+        if allowed_current.is_empty() {
+            return Ok(false);
+        }
+        let now = timestamp();
+        let completed_at = match status {
+            AgentTaskStatus::Completed | AgentTaskStatus::Cancelled => Some(now.clone()),
+            _ => None,
+        };
+        let placeholders = vec!["?"; allowed_current.len()].join(", ");
+        let sql = format!(
+            "UPDATE agent_tasks
+             SET status = ?, progress_summary = ?, last_error = ?, updated_at = ?,
+                 completed_at = COALESCE(?, completed_at)
+             WHERE id = ? AND status IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql)
+            .bind(status.as_db())
+            .bind(progress_summary)
+            .bind(last_error)
+            .bind(&now)
+            .bind(completed_at)
+            .bind(task_id);
+        for current in allowed_current {
+            query = query.bind(current.as_db());
+        }
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Returns whether a Hermes session is already bound to a different
+    /// task, so heuristic session matching never steals another task's
+    /// conversation.
+    pub async fn hermes_session_bound_to_other_task(
+        &self,
+        task_id: &str,
+        hermes_session_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT 1 FROM agent_tasks WHERE hermes_session_id = ? AND id != ? LIMIT 1",
+        )
+        .bind(hermes_session_id)
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     pub async fn add_agent_tool_event(
