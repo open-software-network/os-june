@@ -28,8 +28,8 @@
         "label": "hud",
         "url": "/hud.html",
         "title": "OS June Dictation",
-        "width": 340,
-        "height": 112,
+        "width": 124,
+        "height": 32,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -38,7 +38,7 @@
         "visibleOnAllWorkspaces": true,
         "focusable": false,
         "skipTaskbar": true,
-        "shadow": false,
+        "shadow": true,
         "visible": false
       },
       {

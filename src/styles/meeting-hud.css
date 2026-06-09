@@ -14,8 +14,8 @@
  *
  * Orientation triad: Rust resizes the window per screen third and emits
  * `meeting-hud-zone`; data-orient flips the layout. Horizontal (center third):
- * dot + 7 bars in a row. Vertical (left/right thirds): dot above 4 stacked
- * ticks.
+ * dot + 7 bars in a row. Vertical (left/right thirds): dot above a shorter
+ * 4-bar run of the same waveform — bars always stay upright.
  */
 
 :root {
@@ -148,31 +148,10 @@ body {
   transition: height 22ms linear;
 }
 
-/* Vertical: a short stack of 4 horizontal ticks under the dot; the same meter
- * drives them, the wave just travels downward instead of across. */
-.mhud[data-orient="vertical"] .mhud-bars {
-  flex-direction: column;
-  width: 22px;
-  height: auto;
-}
-
+/* Vertical: the dot stacks above a shorter run of the same waveform — the
+ * bars themselves always stay upright, just fewer of them. */
 .mhud[data-orient="vertical"] .mhud-bar:nth-child(n + 5) {
   display: none;
-}
-
-.mhud[data-orient="vertical"] .mhud-bar {
-  width: 22px;
-  height: 2px;
-}
-
-.mhud[data-orient="vertical"] .mhud-bar::before {
-  left: 50%;
-  top: 0;
-  bottom: auto;
-  width: calc(3px + var(--level, 0) * 15px);
-  height: 100%;
-  transform: translateX(-50%);
-  transition: width 22ms linear;
 }
 
 /* Paused: bars settle and dim (the meter also stops the carrier shimmer). */

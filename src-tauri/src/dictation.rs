@@ -71,14 +71,13 @@ pub struct HudClientRect {
     bottom: f64,
 }
 
-/// Stop-button hover and pill-region click pass-through state. Polled by
-/// [`spawn_hud_hover_thread`]; we don't poll from JS because WebKit throttles
-/// timers on the non-key HUD panel.
+/// Stop-button hover state. Polled by [`spawn_hud_hover_thread`]; we don't
+/// poll from JS because WebKit throttles timers on the non-key HUD panel.
+/// (The window is sized exactly to the pill, so there's no click pass-through
+/// to manage — the whole window is interactive.)
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
-    pill_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
-    last_passthrough: std::sync::atomic::AtomicBool,
 }
 
 pub fn configured_transcription_language() -> Option<String> {
@@ -553,9 +552,7 @@ pub fn setup(app: &mut tauri::App) {
     });
     app.manage(HudHoverState {
         stop_bounds: Mutex::new(None),
-        pill_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
-        last_passthrough: std::sync::atomic::AtomicBool::new(true),
     });
     spawn_hud_hover_thread(app.handle().clone());
     if let Err(error) = configure_hud_window(app.handle()) {
@@ -777,11 +774,110 @@ pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Opti
     }
 }
 
+/// Resize the HUD window to the pill's measured CSS size. The pill's width
+/// varies by state (error text, meeting prompt), and with the frosted surface
+/// being a window-filling NSVisualEffectView the window must track the pill
+/// exactly. Re-anchors horizontally so the pill's center stays put.
 #[tauri::command]
-pub fn dictation_hud_set_pill_bounds(state: State<'_, HudHoverState>, rect: Option<HudClientRect>) {
-    if let Ok(mut guard) = state.pill_bounds.lock() {
-        *guard = rect;
+pub fn dictation_hud_set_size(app: AppHandle, width: f64, height: f64) {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return;
+    };
+    let (Ok(position), Ok(old_size), Ok(scale)) =
+        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
+    else {
+        return;
+    };
+    let new_size = PhysicalSize::new(
+        (width * scale).round() as u32,
+        (height * scale).round() as u32,
+    );
+    if new_size == old_size {
+        return;
     }
+    let x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
+    let y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
+    let _ = hud.set_size(new_size);
+    let _ = hud.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Set the native window alpha. The exit dissolve is driven from the webview
+/// (rAF over ~160ms) but must fade the NSWindow itself — CSS opacity can't
+/// touch the vibrancy view or the native shadow.
+#[tauri::command]
+pub fn dictation_hud_set_alpha(app: AppHandle, alpha: f64) {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return;
+    };
+    let _ = app.run_on_main_thread(move || {
+        set_window_alpha(&hud, alpha.clamp(0.0, 1.0));
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn set_window_alpha(hud: &WebviewWindow, alpha: f64) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let Ok(handle) = hud.ns_window() else {
+        return;
+    };
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let window = handle as *mut AnyObject;
+        let _: () = msg_send![window, setAlphaValue: alpha];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_window_alpha(_hud: &WebviewWindow, _alpha: f64) {}
+
+/// Error-state shake. Pre-vibrancy this was a CSS translateX on the pill, but
+/// the pill now fills the window — a CSS nudge would slide the tint off the
+/// stationary frost. Wobble the window itself instead, tracing the same
+/// decaying curve as the old `hud-shake` keyframes.
+#[tauri::command]
+pub fn dictation_hud_shake(app: AppHandle) {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return;
+    };
+    thread::spawn(move || {
+        const DURATION_MS: f64 = 380.0;
+        const FRAME_MS: u64 = 16;
+        // (progress, logical x offset) — the old CSS keyframes.
+        const CURVE: [(f64, f64); 8] = [
+            (0.0, 0.0),
+            (0.12, -3.0),
+            (0.28, 3.0),
+            (0.44, -2.0),
+            (0.60, 2.0),
+            (0.76, -1.0),
+            (0.90, 1.0),
+            (1.0, 0.0),
+        ];
+        let (Ok(base), Ok(scale)) = (hud.outer_position(), hud.scale_factor()) else {
+            return;
+        };
+        let mut elapsed = 0.0;
+        while elapsed < DURATION_MS {
+            let t = elapsed / DURATION_MS;
+            let offset = CURVE
+                .windows(2)
+                .find(|w| t >= w[0].0 && t <= w[1].0)
+                .map(|w| {
+                    let (t0, x0) = w[0];
+                    let (t1, x1) = w[1];
+                    x0 + (x1 - x0) * ((t - t0) / (t1 - t0))
+                })
+                .unwrap_or(0.0);
+            let x = base.x + (offset * scale).round() as i32;
+            let _ = hud.set_position(PhysicalPosition::new(x, base.y));
+            thread::sleep(Duration::from_millis(FRAME_MS));
+            elapsed += FRAME_MS as f64;
+        }
+        let _ = hud.set_position(base);
+    });
 }
 
 fn rect_contains(
@@ -798,8 +894,8 @@ fn rect_contains(
     cx >= left && cx <= right && cy >= top && cy <= bottom
 }
 
-/// Polls the cursor against the cached pill/stop bounds and emits hover +
-/// pass-through state changes. Short-circuits when bounds are `None`.
+/// Polls the cursor against the cached stop-button bounds and emits hover
+/// state changes. Short-circuits when bounds are `None`.
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
         use std::sync::atomic::Ordering;
@@ -818,16 +914,11 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let visible = hud.is_visible().unwrap_or(false);
 
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
-            let pill_rect = hover_state.pill_bounds.lock().ok().and_then(|g| g.clone());
 
-            // Hidden or no known bounds: drop any stale hover, force
-            // pass-through so we never block clicks underneath.
-            if !visible || pill_rect.is_none() {
+            // Hidden or no stop button on screen: drop any stale hover.
+            if !visible || stop_rect.is_none() {
                 if hover_state.last_hover.swap(false, Ordering::Relaxed) {
                     let _ = app.emit("hud-stop-hover", false);
-                }
-                if !hover_state.last_passthrough.swap(true, Ordering::Relaxed) {
-                    let _ = hud.set_ignore_cursor_events(true);
                 }
                 continue;
             }
@@ -844,20 +935,6 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let cursor = hud.cursor_position().ok().map(|p| (p.x, p.y));
 
             let Some((cx, cy)) = cursor else { continue };
-
-            // Pass clicks through to the app underneath whenever the cursor
-            // isn't directly over the pill.
-            if let Some(pill) = pill_rect.as_ref() {
-                let over_pill = rect_contains(pill, position, scale_factor, cx, cy);
-                let should_passthrough = !over_pill;
-                let prev_passthrough = hover_state.last_passthrough.load(Ordering::Relaxed);
-                if should_passthrough != prev_passthrough {
-                    hover_state
-                        .last_passthrough
-                        .store(should_passthrough, Ordering::Relaxed);
-                    let _ = hud.set_ignore_cursor_events(should_passthrough);
-                }
-            }
 
             let is_hovered = match stop_rect.as_ref() {
                 Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
@@ -2061,6 +2138,9 @@ pub(crate) fn show_hud_window(app: &AppHandle) {
         if was_hidden {
             position_hud_window(app, &hud);
         }
+        // An interrupted exit fade may have left the native alpha low.
+        let alpha_hud = hud.clone();
+        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
         let _ = hud.show();
     }
 }
@@ -2116,11 +2196,6 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
 fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
     const HUD_TOP_MARGIN: i32 = 12;
-    // The pill is centered inside the window; the window is intentionally taller
-    // than the pill so the drop shadow has room to fall off softly instead of
-    // being clipped at the window edge. Anchor the *pill* (not the window) at
-    // HUD_TOP_MARGIN from the top, accounting for the transparent slack above it.
-    const PILL_HEIGHT: i32 = 32;
 
     let monitor = hud
         .cursor_position()
@@ -2133,9 +2208,9 @@ fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> 
     let work_top = work_area.position.y;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
-    let pill_top_slack = (window_size.height as i32 - PILL_HEIGHT) / 2;
+    // The window is exactly the pill — anchor it directly.
     let x = work_center_x - window_size.width as i32 / 2;
-    let y = work_top + HUD_TOP_MARGIN - pill_top_slack;
+    let y = work_top + HUD_TOP_MARGIN;
     Some((x, y))
 }
 
@@ -2176,10 +2251,26 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         hud.set_skip_taskbar(true)
             .map_err(|error| error.to_string())?;
-        hud.set_shadow(false).map_err(|error| error.to_string())?;
+        // The window is exactly the pill; depth comes from the native window
+        // shadow instead of a CSS one painted into a transparent gutter.
+        hud.set_shadow(true).map_err(|error| error.to_string())?;
 
         #[cfg(target_os = "macos")]
-        make_hud_nonactivating(&hud);
+        {
+            make_hud_nonactivating(&hud);
+            // Real behind-window blur (CSS backdrop-filter can't sample other
+            // apps' pixels). The radius must match the pill's CSS
+            // border-radius (--r-lg, 10px). Mirrors the meeting HUD.
+            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+            if let Err(error) = apply_vibrancy(
+                &hud,
+                NSVisualEffectMaterial::HudWindow,
+                Some(NSVisualEffectState::Active),
+                Some(10.0),
+            ) {
+                tracing::warn!(%error, "failed to apply dictation HUD vibrancy");
+            }
+        }
 
         let app_for_events = app.clone();
         hud.on_window_event(move |event| {

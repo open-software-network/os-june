@@ -161,6 +161,8 @@ fn main_window_dismissed(app: &AppHandle) -> bool {
 struct ZoneTracker {
     last_position: Option<PhysicalPosition<i32>>,
     stable_ticks: u32,
+    /// Settled while the button was still held — flip on release instead.
+    pending_release: bool,
 }
 
 fn spawn_supervisor(app: AppHandle) {
@@ -168,6 +170,7 @@ fn spawn_supervisor(app: AppHandle) {
         let mut tracker = ZoneTracker {
             last_position: None,
             stable_ticks: 0,
+            pending_release: false,
         };
         loop {
             let tick = supervise(&app, &mut tracker);
@@ -246,9 +249,10 @@ fn zone_for(hud: &WebviewWindow) -> Option<Zone> {
     })
 }
 
-/// Watch the drag position; once the window has held still for a few ticks,
-/// flip orientation if it crossed into a different third. Waiting for the
-/// settle keeps us from resizing in the middle of a native drag session.
+/// Watch the drag position; once the window has held still for a few ticks
+/// AND the mouse button is up, flip orientation if it crossed into a different
+/// third. Both guards exist so we never resize mid-drag — the resize would
+/// shift the pill out from under the cursor's grab point.
 fn track_zone(hud: &WebviewWindow, state: &MeetingHudState, tracker: &mut ZoneTracker) {
     let Ok(position) = hud.outer_position() else {
         return;
@@ -260,9 +264,35 @@ fn track_zone(hud: &WebviewWindow, state: &MeetingHudState, tracker: &mut ZoneTr
         tracker.stable_ticks = 0;
         return;
     }
-    if tracker.stable_ticks == SETTLE_TICKS {
-        apply_zone_now(hud, state);
+    if tracker.stable_ticks >= SETTLE_TICKS && !left_mouse_button_down() {
+        // Apply once per rest: bump past the threshold so we don't re-run
+        // zone math every tick while parked.
+        if tracker.stable_ticks == SETTLE_TICKS || tracker.pending_release {
+            tracker.pending_release = false;
+            apply_zone_now(hud, state);
+        }
+    } else if tracker.stable_ticks >= SETTLE_TICKS {
+        // Settled but still held — remember to flip on release.
+        tracker.pending_release = true;
     }
+}
+
+/// Whether the left mouse button is currently held, via the window server's
+/// combined session state — works regardless of which window has the cursor.
+#[cfg(target_os = "macos")]
+fn left_mouse_button_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        // CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState = 0,
+        //                          kCGMouseButtonLeft = 0)
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+    unsafe { CGEventSourceButtonState(0, 0) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn left_mouse_button_down() -> bool {
+    false
 }
 
 /// Recompute the zone and, if it changed, resize around the pill's center and
