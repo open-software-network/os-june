@@ -4235,8 +4235,11 @@ input:focus-visible,
 .record-shell[data-state="paused"],
 .record-shell[data-state="validating"] {
   /* Sized to fit: pause(40) + 16 + timer(44) + 24 + waveform(38) + 24
-   * + stop(40) + 12 shell border/padding = 238. 2px slack at 240. */
-  width: min(240px, calc(100% - var(--sp-8)));
+   * + stop(40) + 12 shell border/padding = 238. 2px slack at 240. The
+   * narrow-screen fallback is viewport-relative (not 100%) so it stays
+   * definite even when the shell sits inside the shrink-wrapped
+   * .record-dock — a percentage there collapses the pill to min-content. */
+  width: min(240px, calc(100vw - var(--sp-8)));
   overflow: hidden;
 }
 
