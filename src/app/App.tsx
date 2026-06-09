@@ -12,10 +12,13 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
 import {
+  AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
+  type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
@@ -67,7 +70,13 @@ import {
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
-import { titleFromPrompt } from "../lib/hermes-adapter";
+import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import {
+  AGENT_MENU_BAR_NEW_SESSION_EVENT,
+  AGENT_MENU_BAR_OPEN_SESSION_EVENT,
+  buildAgentMenuBarState,
+  emitAgentMenuBarState,
+} from "../lib/menu-bar";
 import type {
   BootstrapResponse,
   NoteDto,
@@ -100,6 +109,11 @@ const SIDEBAR_MIN_WIDTH = 188;
 const SIDEBAR_MAX_WIDTH = 320;
 const SIDEBAR_COLLAPSE_WIDTH = 160;
 const CHECK_FOR_UPDATES_EVENT = "scribe://check-for-updates";
+const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
+const AGENT_MENU_BAR_SESSION_LIMIT = 6;
+const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
+  250, 500, 1000, 2000, 4000, 8000,
+];
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -131,6 +145,10 @@ export function App() {
   const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
+  const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
+  const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
+  const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
+  const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] =
@@ -176,6 +194,17 @@ export function App() {
   const startOnFreshNoteRef = useRef(false);
   const signInRequired = shouldBlockOnSignIn(account);
   const appBlocked = accountLoading || signInRequired;
+  const publishAgentMenuBarState = useCallback(() => {
+    void emitAgentMenuBarState(
+      buildAgentMenuBarState({
+        sessions: agentMenuBarSessionsRef.current,
+        workingSessionIds: agentMenuBarWorkingSessionIdsRef.current,
+        waitingSessionIds: agentMenuBarWaitingSessionIdsRef.current,
+        lastStatus: agentMenuBarLastStatusRef.current,
+        limit: AGENT_MENU_BAR_SESSION_LIMIT,
+      }),
+    );
+  }, []);
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
   const originFolder = originFolderId
@@ -297,6 +326,175 @@ export function App() {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
     };
   }, []);
+
+  useEffect(() => {
+    publishAgentMenuBarState();
+  }, [publishAgentMenuBarState]);
+
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let cancelled = false;
+    let retryTimeout: number | undefined;
+
+    function loadAgentMenuBarSessions(attempt: number) {
+      listHermesSessions({ limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT })
+        .then((sessions) => {
+          if (cancelled) return;
+          agentMenuBarSessionsRef.current = sessions;
+          publishAgentMenuBarState();
+        })
+        .catch(() => {
+          if (cancelled) return;
+          const retryDelay = AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS[attempt];
+          if (retryDelay == null) return;
+          retryTimeout = window.setTimeout(
+            () => loadAgentMenuBarSessions(attempt + 1),
+            retryDelay,
+          );
+        });
+    }
+
+    loadAgentMenuBarSessions(0);
+
+    return () => {
+      cancelled = true;
+      if (retryTimeout != null) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
+  }, [appBlocked, bootstrapped, publishAgentMenuBarState]);
+
+  useEffect(() => {
+    function handleSessionsChanged(event: Event) {
+      const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
+      if (!detail) return;
+      agentMenuBarSessionsRef.current = detail.sessions;
+      agentMenuBarWorkingSessionIdsRef.current = new Set(
+        detail.workingSessionIds,
+      );
+      agentMenuBarWaitingSessionIdsRef.current = new Set(
+        detail.waitingSessionIds ?? [],
+      );
+      publishAgentMenuBarState();
+    }
+
+    function handleAgentStatusForMenuBar(event: Event) {
+      const detail = (event as CustomEvent<AgentSessionStatusDetail>).detail;
+      if (!detail) return;
+      agentMenuBarLastStatusRef.current = detail;
+      if (detail.sessionId) {
+        updateMenuBarSessionStatus(detail.sessionId, detail.status, {
+          working: agentMenuBarWorkingSessionIdsRef.current,
+          waiting: agentMenuBarWaitingSessionIdsRef.current,
+        });
+      }
+      publishAgentMenuBarState();
+    }
+
+    function handleAgentSessionDeleted(event: Event) {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      const sessionId = detail?.sessionId;
+      if (!sessionId) return;
+      agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
+        (session) => session.id !== sessionId,
+      );
+      agentMenuBarWorkingSessionIdsRef.current.delete(sessionId);
+      agentMenuBarWaitingSessionIdsRef.current.delete(sessionId);
+      publishAgentMenuBarState();
+    }
+
+    window.addEventListener(
+      AGENT_SESSIONS_CHANGED_EVENT,
+      handleSessionsChanged,
+    );
+    window.addEventListener(
+      AGENT_SESSION_STATUS_EVENT,
+      handleAgentStatusForMenuBar,
+    );
+    window.addEventListener(
+      AGENT_DELETE_SESSION_EVENT,
+      handleAgentSessionDeleted,
+    );
+    return () => {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        handleSessionsChanged,
+      );
+      window.removeEventListener(
+        AGENT_SESSION_STATUS_EVENT,
+        handleAgentStatusForMenuBar,
+      );
+      window.removeEventListener(
+        AGENT_DELETE_SESSION_EVENT,
+        handleAgentSessionDeleted,
+      );
+    };
+  }, [publishAgentMenuBarState]);
+
+  useEffect(() => {
+    let aborted = false;
+    const unlisteners: Array<() => void> = [];
+
+    async function installMenuBarListener<T>(
+      eventName: string,
+      handler: (payload: T) => void,
+    ) {
+      try {
+        const cleanup = await listen<T>(eventName, (event) =>
+          handler(event.payload),
+        );
+        if (aborted) cleanup();
+        else unlisteners.push(cleanup);
+      } catch {
+        // Native menu-bar events only exist inside the Tauri shell.
+      }
+    }
+
+    void installMenuBarListener<void>(AGENT_MENU_BAR_NEW_SESSION_EVENT, () => {
+      markAgentNewSessionPending();
+      setActiveAgentSession(undefined);
+      setActiveView("agent");
+      window.setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+        );
+      }, 0);
+    });
+
+    void installMenuBarListener<string>(
+      AGENT_MENU_BAR_OPEN_SESSION_EVENT,
+      (sessionId) => {
+        if (!sessionId) {
+          setActiveView("agent");
+          return;
+        }
+        const cachedSession = agentMenuBarSessionsRef.current.find(
+          (session) => session.id === sessionId,
+        );
+        if (cachedSession) {
+          setActiveAgentSession(cachedSession);
+          setActiveView("agent");
+          return;
+        }
+        void listHermesSessions({ limit: 100 })
+          .then((sessions) => {
+            agentMenuBarSessionsRef.current = sessions;
+            const session = sessions.find((item) => item.id === sessionId);
+            if (session) setActiveAgentSession(session);
+            setActiveView("agent");
+            publishAgentMenuBarState();
+          })
+          .catch(() => {
+            setActiveView("agent");
+          });
+      },
+    );
+
+    return () => {
+      aborted = true;
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, [publishAgentMenuBarState]);
 
   useEffect(() => {
     let aborted = false;
@@ -1259,6 +1457,27 @@ export function App() {
       />
     </main>
   );
+}
+
+function updateMenuBarSessionStatus(
+  sessionId: string,
+  status: AgentSessionStatusDetail["status"],
+  sessions: { working: Set<string>; waiting: Set<string> },
+) {
+  if (status === "waitingForUser") {
+    sessions.working.delete(sessionId);
+    sessions.waiting.add(sessionId);
+    return;
+  }
+  if (status === "starting" || status === "running") {
+    sessions.waiting.delete(sessionId);
+    sessions.working.add(sessionId);
+    return;
+  }
+  if (status === "completed" || status === "failed" || status === "cancelled") {
+    sessions.working.delete(sessionId);
+    sessions.waiting.delete(sessionId);
+  }
 }
 
 function UpdateDialog({

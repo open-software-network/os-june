@@ -89,6 +89,9 @@ type MenuState = {
 };
 
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
+const AGENT_SIDEBAR_SESSION_RETRY_DELAYS_MS = [
+  250, 500, 1000, 2000, 4000, 8000, 16000, 32000,
+];
 
 const SETTINGS_SIDEBAR_GROUPS: {
   title: string;
@@ -224,21 +227,38 @@ export function Sidebar({
 
   useEffect(() => {
     let cancelled = false;
-    listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_LIMIT })
-      .then((sessions) => {
-        if (!cancelled) {
-          setAgentSessions((current) =>
-            current.length > 0 ? current : sessions,
-          );
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
+    let retryTimeout: number | undefined;
+
+    function loadAgentSessions(attempt: number) {
+      listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_LIMIT })
+        .then((sessions) => {
+          if (!cancelled) {
+            setAgentSessions((current) =>
+              current.length > 0 ? current : sessions,
+            );
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          const retryDelay = AGENT_SIDEBAR_SESSION_RETRY_DELAYS_MS[attempt];
+          if (retryDelay != null) {
+            retryTimeout = window.setTimeout(
+              () => loadAgentSessions(attempt + 1),
+              retryDelay,
+            );
+            return;
+          }
           setAgentSessions((current) => (current.length > 0 ? current : []));
-        }
-      });
+        });
+    }
+
+    loadAgentSessions(0);
+
     return () => {
       cancelled = true;
+      if (retryTimeout != null) {
+        window.clearTimeout(retryTimeout);
+      }
     };
   }, []);
 

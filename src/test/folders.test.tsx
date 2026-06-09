@@ -136,6 +136,56 @@ describe("folders UI", () => {
     );
   });
 
+  it("retries initial agent session hydration when the bridge is still starting", async () => {
+    vi.useFakeTimers();
+    try {
+      hermesMocks.listHermesSessions
+        .mockRejectedValueOnce({
+          code: "hermes_bridge_not_running",
+          message: "Hermes bridge is not running.",
+        })
+        .mockResolvedValueOnce([
+          {
+            id: "session-1",
+            title: "Existing session",
+            preview: "Previous work",
+            last_active: "2026-06-04T19:00:00Z",
+          },
+        ]);
+
+      render(
+        <Sidebar
+          notes={notes}
+          activeView="notes"
+          onChangeView={vi.fn()}
+          onSelectNote={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onRemoveNoteFromFolder={vi.fn()}
+          onNewAgentSession={vi.fn()}
+          onSelectAgentSession={vi.fn()}
+        />,
+      );
+
+      expect(hermesMocks.listHermesSessions).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("No sessions yet")).toBeInTheDocument();
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+        await Promise.resolve();
+      });
+
+      expect(hermesMocks.listHermesSessions).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Existing session")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks agent sessions that need input", async () => {
     render(
       <Sidebar

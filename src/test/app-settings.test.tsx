@@ -356,10 +356,14 @@ describe("AppSettings", () => {
     });
 
     await user.click(language);
-    await user.click(await screen.findByRole("option", { name: "Indonesian" }));
+    expect(screen.getByRole("option", { name: "Vietnamese" })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+    await user.click(await screen.findByRole("option", { name: "Vietnamese" }));
 
-    expect(mocks.setDictationLanguage).toHaveBeenCalledWith("id");
-    await waitFor(() => expect(language).toHaveTextContent("Indonesian"));
+    expect(mocks.setDictationLanguage).toHaveBeenCalledWith("vi");
+    await waitFor(() => expect(language).toHaveTextContent("Vietnamese"));
   });
 
   it("lists system permissions with status and manage actions", async () => {

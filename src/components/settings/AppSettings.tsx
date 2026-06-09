@@ -133,16 +133,26 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
 const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "Auto-detect" },
   { value: "en", label: "English" },
-  { value: "es", label: "Spanish" },
+  { value: "ar", label: "Arabic" },
+  { value: "zh", label: "Chinese" },
+  { value: "nl", label: "Dutch" },
   { value: "fr", label: "French" },
   { value: "de", label: "German" },
+  { value: "hi", label: "Hindi" },
   { value: "id", label: "Indonesian" },
   { value: "it", label: "Italian" },
-  { value: "pt", label: "Portuguese" },
-  { value: "nl", label: "Dutch" },
   { value: "ja", label: "Japanese" },
   { value: "ko", label: "Korean" },
-  { value: "zh", label: "Chinese" },
+  { value: "no", label: "Norwegian" },
+  { value: "pl", label: "Polish" },
+  { value: "pt", label: "Portuguese" },
+  { value: "ru", label: "Russian" },
+  { value: "es", label: "Spanish" },
+  { value: "sv", label: "Swedish" },
+  { value: "th", label: "Thai" },
+  { value: "tr", label: "Turkish" },
+  { value: "uk", label: "Ukrainian" },
+  { value: "vi", label: "Vietnamese" },
 ];
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
@@ -1555,7 +1565,7 @@ function shortcutFromCapturePayload(
     code: value.code,
     label: value.label,
     modifiers,
-    pressCount: 1,
+    pressCount,
   };
 }
 
