@@ -1,18 +1,17 @@
 import { useEffect, useState } from "react";
 import spinners from "unicode-animations/braille";
 
-// The braille-system spinner, curled up pangolin-style: a six-dot ball rolling
-// clockwise around the full 2×4 cell, leaving a two-dot gap that travels with
-// it. Frames are generated over the cell's eight-dot perimeter — NOT by
-// complementing the stock arc, which never touches the bottom row and so left
-// dots 7+8 permanently parked there. Cadence comes from the package's braille
-// spinner so the roll matches the rest of the braille family.
+// The braille-system spinner, curled up pangolin-style: a three-dot ball
+// rolling clockwise around a 2×2 square, leaving a one-dot gap that travels
+// with it (⠲⠴⠦⠖). The square uses the cell's MIDDLE two rows (dots 2/5 and
+// 3/6) so it sits vertically centered in the glyph box — and reads square
+// rather than the tall oval the full 2×4 cell gives. Cadence keeps the
+// package's braille revolution period so the roll speed matches the family.
 const BRAILLE_BASE = 0x2800;
-const { interval: INTERVAL } = spinners.braille;
-// Dot bits clockwise from the top-left of the cell (dot layout: 1 4 / 2 5 /
+// Dot bits clockwise from the square's top-left (cell layout: 1 4 / 2 5 /
 // 3 6 / 7 8 — bits 1=0x01 2=0x02 3=0x04 4=0x08 5=0x10 6=0x20 7=0x40 8=0x80).
-const PERIMETER = [0x01, 0x08, 0x10, 0x20, 0x80, 0x40, 0x04, 0x02];
-const BALL_DOTS = 6;
+const PERIMETER = [0x02, 0x10, 0x20, 0x04];
+const BALL_DOTS = 3;
 const FRAMES = PERIMETER.map((_, start) =>
   String.fromCodePoint(
     BRAILLE_BASE +
@@ -25,8 +24,10 @@ const FRAMES = PERIMETER.map((_, start) =>
       ),
   ),
 );
+const INTERVAL =
+  (spinners.braille.frames.length * spinners.braille.interval) / FRAMES.length;
 // Resting pose for prefers-reduced-motion: the fully curled ball, no rolling.
-const STATIC_FRAME = String.fromCodePoint(BRAILLE_BASE + 0xff);
+const STATIC_FRAME = String.fromCodePoint(BRAILLE_BASE + 0x36);
 
 const prefersReducedMotion = () =>
   typeof window !== "undefined" &&
