@@ -123,6 +123,24 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
         }
     }
     ensure_column(_pool, "agent_tasks", "hermes_session_id", "TEXT").await?;
+    // `external_id` records the Hermes-side identity of hydrated agent
+    // messages so concurrent hydrations cannot double-insert the same
+    // message. The dedupe DELETE in this migration scans `agent_messages`,
+    // so only run it until the unique index exists (matching the pattern
+    // used for migration 006 above).
+    ensure_column(_pool, "agent_messages", "external_id", "TEXT").await?;
+    if !index_exists(_pool, "idx_agent_messages_task_external_id").await? {
+        for statement in include_str!("../../migrations/008_agent_message_identity.sql").split(';')
+        {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                sqlx::query(statement)
+                    .execute(_pool)
+                    .await
+                    .map_err(sqlx::migrate::MigrateError::Execute)?;
+            }
+        }
+    }
     Ok(())
 }
 

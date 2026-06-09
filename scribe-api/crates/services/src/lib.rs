@@ -28,8 +28,8 @@ pub use pricing::{PricingError, PricingTable};
 mod tests {
     use super::{
         DictateCleanupParams, DictateService, DictateServiceDeps, DictateTranscribeParams,
-        NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, PricingTable,
-        ServiceError,
+        NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeParams,
+        NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, ServiceError,
     };
     use async_trait::async_trait;
     use pretty_assertions::assert_eq;
@@ -256,6 +256,80 @@ mod tests {
             existing_generated_note: None,
             model_id: ModelId("text-model".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_corrupt_audio_fails_fast_without_taking_a_hold() {
+        // Regression: corrupt audio used to be probed only AFTER authorize,
+        // stranding a hold on the user's wallet until its TTL expired. A user
+        // retrying a bad upload could pile up holds and hit spurious
+        // balance/concurrency denials.
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            duration_probe: Arc::new(FailingDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "note_1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "recording.wav".to_string(),
+                title: "Title".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::InvalidInput { .. })));
+        assert_eq!(os_accounts.events(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn dictate_transcribe_corrupt_audio_fails_fast_without_taking_a_hold() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = DictateService::new(DictateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            cleaner: Arc::new(FixedCleaner),
+            duration_probe: Arc::new(FailingDurationProbe),
+            transcribe_hold_ttl_seconds: 30,
+            cleanup_hold_ttl_seconds: 30,
+            flat_estimate_credits: 1024,
+        });
+
+        let result = service
+            .transcribe(DictateTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                session_id: "session_1".to_string(),
+                utterance_id: "utt_1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "dictation.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::InvalidInput { .. })));
+        assert_eq!(os_accounts.events(), Vec::new());
     }
 
     #[tokio::test]
@@ -543,6 +617,16 @@ mod tests {
     impl AudioDurationProbe for FixedDurationProbe {
         fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
             Ok(Duration::from_millis(1500))
+        }
+    }
+
+    struct FailingDurationProbe;
+
+    impl AudioDurationProbe for FailingDurationProbe {
+        fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
+            Err(DomainError::InvalidInput {
+                reason: "invalid wav".to_string(),
+            })
         }
     }
 }

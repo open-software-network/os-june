@@ -54,10 +54,18 @@ impl NoteTranscribeService {
             filename = %params.filename,
             "note_transcribe: handler entered"
         );
-        // Flat-estimate mode: skip the duration probe and pricing table for
-        // the upfront authorize. The Hold is bigger than necessary; we trade
-        // it for not having to support every audio format the helper might
-        // produce.
+        // Probe duration and price BEFORE taking a hold: corrupt or
+        // unpriceable audio fails fast as invalid input without an OS
+        // Accounts round-trip and without stranding a hold on the user's
+        // wallet until its TTL expires. (Retried bad uploads used to pile up
+        // holds and could trip spurious balance/concurrency denials.)
+        let seconds = ceil_seconds(self.duration_probe.probe(&params.audio)?)?;
+        let actual = self
+            .pricing
+            .price_audio_seconds(&params.model_id.0, seconds)?;
+        // Flat-estimate mode: skip per-request estimation for the upfront
+        // authorize. The Hold is bigger than necessary; the actual charge
+        // below is what the user pays.
         let estimate = Credits(self.flat_estimate_credits);
         tracing::info!(
             note_id = %params.note_id,
@@ -77,13 +85,6 @@ impl NoteTranscribeService {
             model = %params.model_id.0,
             "note_transcribe: calling transcriber"
         );
-        // Probe duration BEFORE moving audio into the upstream call so we can
-        // settle a real cost. The Hold (flat estimate) is intentionally over-
-        // sized; the actual charge below is what the user pays.
-        let seconds = ceil_seconds(self.duration_probe.probe(&params.audio)?)?;
-        let actual = self
-            .pricing
-            .price_audio_seconds(&params.model_id.0, seconds)?;
         let transcript = self
             .transcriber
             .transcribe(TranscriptionRequest {

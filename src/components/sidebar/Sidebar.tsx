@@ -33,6 +33,7 @@ import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
+  emitAgentSessionsChanged,
 } from "../../lib/agent-events";
 import {
   deleteHermesSession,
@@ -236,6 +237,13 @@ export function Sidebar({
             setAgentSessions((current) =>
               current.length > 0 ? current : sessions,
             );
+            if (sessions.length > 0) {
+              emitAgentSessionsChanged({
+                sessions,
+                workingSessionIds: [],
+                waitingSessionIds: [],
+              });
+            }
           }
         })
         .catch(() => {

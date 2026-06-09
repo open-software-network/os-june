@@ -5,6 +5,7 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod mascot;
 pub mod meeting_detection;
 pub mod menu_bar;
 pub mod os_accounts;
@@ -122,6 +123,10 @@ pub fn run() {
             dictation::dictation_hud_set_pill_bounds,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,
+            mascot::mascot_show,
+            mascot::mascot_hide,
+            mascot::mascot_set_layout,
+            mascot::mascot_open_agent,
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model,
@@ -138,6 +143,7 @@ pub fn run() {
             menu_bar::setup(app)?;
             providers::setup(app);
             dictation::setup(app);
+            mascot::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);

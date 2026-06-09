@@ -7,7 +7,10 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, State};
@@ -30,6 +33,23 @@ const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+
+/// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
+/// this file from `HERMES_HOME` at prompt-build time; without it the runtime
+/// seeds its stock "Hermes Agent by Nous Research" persona.
+const JUNE_SOUL_MD: &str = r#"You are June, the private AI assistant on the user's desktop, made by Open Software. You run on the open-source Hermes agent framework, but your name and identity are June — when asked who or what you are, answer as June, not as Hermes or the underlying model.
+
+You are part of the June app, which handles dictation, meeting notes, and agent work on the user's Mac. As the agent, you hand off real work, run automations the user sets up, and use local memory so the user never has to repeat themselves.
+
+Privacy is your defining trait, by architecture rather than promise. When asked how you keep work private, answer confidently:
+
+- You run locally on the user's desktop. Files, sessions, memory, and agent state stay on the user's disk by default.
+- Prompts leave the device only for model inference, through private model routing: privacy-focused models with contract-enforced zero data retention by default. If the user opts into third-party models, identifying metadata is stripped first.
+- June's backend is open source and runs in a TEE with cryptographic attestation, so users can verify it rather than trust it. The service stores only account, login, and billing records.
+- Open Software never trains on the user's data.
+
+You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
+"#;
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
@@ -58,9 +78,21 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
 #[derive(Default)]
 pub struct HermesBridge {
     process: Mutex<Option<HermesProcess>>,
+    /// Serializes the whole start sequence (config sync, runtime install,
+    /// spawn, readiness wait). Concurrent starts would otherwise write
+    /// `config.yaml` with different proxy ports/tokens and could run two
+    /// installers at once. This must be an async mutex because it is held
+    /// across awaits; the `process` mutex above is std::sync and must never
+    /// be held across an await.
+    start_lock: tokio::sync::Mutex<()>,
+    /// Monotonic id assigned to each spawned Hermes process so a start
+    /// attempt only tears down the exact process it launched (and not a
+    /// replacement that arrived after a stop/restart).
+    next_generation: AtomicU64,
 }
 
 struct HermesProcess {
+    generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
     proxy: Option<ScribeProviderProxy>,
@@ -295,6 +327,12 @@ async fn start_hermes_bridge_inner(
     bridge: &HermesBridge,
     request: StartHermesBridgeRequest,
 ) -> Result<HermesBridgeStatus, AppError> {
+    // Hold the start guard for the entire start sequence so concurrent
+    // starts cannot interleave config writes, installs, or spawns. The
+    // loser of the race blocks here and then short-circuits below once it
+    // sees the winner's running process.
+    let _start_guard = bridge.start_lock.lock().await;
+
     if let Some(status) = existing_running_status(bridge)? {
         return Ok(status);
     }
@@ -324,6 +362,7 @@ async fn start_hermes_bridge_inner(
     let provider_proxy_token = random_token();
     let provider_proxy = start_scribe_provider_proxy(provider_proxy_token.clone()).await?;
     sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
+    sync_june_soul(&hermes_home)?;
 
     let mut cmd = Command::new(&command);
     cmd.args([
@@ -360,14 +399,16 @@ async fn start_hermes_bridge_inner(
         pid,
     };
 
+    let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     {
         let mut guard = bridge.process.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
-        // A concurrent start may have won the race while we were spawning
-        // (the early `existing_running_status` check runs before any await).
-        // Keep the established process and tear down the redundant one we
-        // just launched instead of leaking it.
+        // The start guard serializes starts, so no concurrent start can have
+        // populated the slot since the `existing_running_status` check above.
+        // Keep a defensive check anyway: if a live process is somehow present
+        // we keep it and tear down the redundant one we just launched instead
+        // of leaking it.
         if let Some(existing) = guard.as_mut() {
             if matches!(existing.child.try_wait(), Ok(None)) {
                 let existing_connection = existing.connection.clone();
@@ -382,6 +423,7 @@ async fn start_hermes_bridge_inner(
             }
         }
         *guard = Some(HermesProcess {
+            generation,
             child,
             connection: connection.clone(),
             proxy: Some(ScribeProviderProxy {
@@ -391,7 +433,10 @@ async fn start_hermes_bridge_inner(
     }
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
-        let _ = stop_hermes_bridge_inner(bridge);
+        // Only tear down the exact process this start spawned. If a stop (or
+        // stop+restart) happened during the readiness wait, the slot is empty
+        // or holds a different generation and must be left alone.
+        let _ = stop_hermes_bridge_generation(bridge, generation);
         return Err(error);
     }
 
@@ -998,11 +1043,38 @@ fn existing_running_status(bridge: &HermesBridge) -> Result<Option<HermesBridgeS
 }
 
 fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
-    let mut process = bridge
+    let process = bridge
         .process
         .lock()
         .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?
         .take();
+    shutdown_hermes_process(process);
+    Ok(())
+}
+
+/// Stops the bridge only if the slot still holds the process spawned by the
+/// start attempt identified by `generation`. A stop (or stop+restart) that
+/// raced with that start leaves a different process in the slot, which must
+/// not be killed by the stale start attempt's cleanup.
+fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Result<(), AppError> {
+    let process = {
+        let mut guard = bridge.process.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        if guard
+            .as_ref()
+            .is_some_and(|process| process.generation == generation)
+        {
+            guard.take()
+        } else {
+            None
+        }
+    };
+    shutdown_hermes_process(process);
+    Ok(())
+}
+
+fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
         let _ = process.child.kill();
         let _ = process.child.wait();
@@ -1012,7 +1084,6 @@ fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
             }
         }
     }
-    Ok(())
 }
 
 async fn resolve_hermes_command(
@@ -1325,6 +1396,14 @@ display:
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
 }
 
+/// Writes the June persona to `SOUL.md` in the Scribe-managed Hermes home.
+/// Runs on every start so the app-owned identity wins over the default soul
+/// Hermes seeds on first run (and over any stale copy from earlier versions).
+fn sync_june_soul(hermes_home: &std::path::Path) -> Result<(), AppError> {
+    std::fs::write(hermes_home.join("SOUL.md"), JUNE_SOUL_MD)
+        .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
+}
+
 struct FilesystemRootCandidate {
     id: String,
     label: String,
@@ -1488,7 +1567,14 @@ async fn run_scribe_provider_proxy(
                             let _ = handle_scribe_provider_connection(stream, token).await;
                         });
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        // Accept errors (ECONNABORTED, EMFILE, ...) are
+                        // usually transient. Keep the listener alive — the
+                        // bridge still reports running — and back off
+                        // briefly so a persistent error can't hot-loop.
+                        eprintln!("Scribe provider proxy accept failed: {error}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         }
@@ -1539,13 +1625,7 @@ async fn handle_scribe_provider_connection(
                 .unwrap_or_else(|_| serde_json::json!({}));
             match crate::scribe_api::proxy_agent_chat_completions(body).await {
                 Ok(response) => {
-                    write_raw_response(
-                        &mut stream,
-                        response.status,
-                        &response.content_type,
-                        &response.body,
-                    )
-                    .await?;
+                    write_streaming_response(&mut stream, response).await?;
                 }
                 Err(error) => {
                     write_json_response(
@@ -1700,21 +1780,63 @@ async fn write_raw_response(
     content_type: &str,
     body: &[u8],
 ) -> io::Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        502 => "Bad Gateway",
-        _ => "OK",
-    };
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        body.len(),
+        reason = http_status_reason(status),
     );
     stream.write_all(headers.as_bytes()).await?;
     stream.write_all(body).await?;
     stream.shutdown().await
+}
+
+/// Forwards an upstream chat-completions response to the socket chunk by
+/// chunk, so Hermes sees streamed tokens (`stream: true`) as they are
+/// generated instead of one buffered body after generation completes. The
+/// proxy already speaks `Connection: close`, so the body is delimited by
+/// closing the connection and no Content-Length is sent.
+async fn write_streaming_response(
+    stream: &mut tokio::net::TcpStream,
+    mut response: crate::scribe_api::AgentChatCompletionsResponse,
+) -> io::Result<()> {
+    let headers = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n",
+        status = response.status,
+        reason = http_status_reason(response.status),
+        content_type = response.content_type,
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => stream.write_all(&chunk).await?,
+            Ok(None) => break,
+            Err(error) => {
+                // Headers are already on the wire, so an error response is
+                // no longer possible. Close the connection to end the body;
+                // the client sees a truncated stream and surfaces the abort.
+                eprintln!(
+                    "Scribe provider proxy upstream stream failed: {}",
+                    error.message
+                );
+                break;
+            }
+        }
+    }
+    stream.shutdown().await
+}
+
+fn http_status_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        402 => "Payment Required",
+        404 => "Not Found",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        _ => "OK",
+    }
 }
 
 fn pick_port() -> Result<u16, AppError> {
@@ -1737,7 +1859,14 @@ fn random_token() -> String {
 }
 
 async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
-    let client = reqwest::Client::new();
+    // `.no_proxy()` matters: the probe targets 127.0.0.1, and routing it
+    // through an HTTP(S)_PROXY would fail for the whole readiness window
+    // and kill a healthy Hermes.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| AppError::new("hermes_bridge_ready_timeout", error.to_string()))?;
     let deadline = Instant::now() + READY_TIMEOUT;
     let mut last_error = "timeout".to_string();
     while Instant::now() < deadline {
@@ -1794,5 +1923,22 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn sync_june_soul_replaces_default_hermes_identity() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            home.path().join("SOUL.md"),
+            "You are Hermes Agent, an intelligent AI assistant created by Nous Research.",
+        )
+        .expect("seed default soul");
+
+        sync_june_soul(home.path()).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are June"));
+        assert!(soul.contains("Open Software"));
+        assert!(!soul.contains("Nous Research"));
     }
 }

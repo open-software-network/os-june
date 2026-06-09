@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
+
 mod audio;
 mod auth;
 mod envelope;
@@ -17,8 +19,8 @@ use std::time::Duration;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
 pub use envelope::{
-    ApiResponse, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL, ERR_PAYLOAD_TOO_LARGE,
-    ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    ApiResponse, ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
+    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
 pub use handlers::dictate::{

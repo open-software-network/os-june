@@ -54,8 +54,6 @@ import {
   listAgentTasks,
   downloadHermesBridgeFile,
   retryAgentTask,
-  saveAgentAssistantMessage,
-  saveAgentHermesSession,
   sendAgentMessage,
   startHermesBridge,
   suggestAgentSessionTitle,
@@ -90,8 +88,11 @@ import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
+  dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
+  type AgentReplyDetail,
+  type AgentSessionsChangedDetail,
   type AgentSessionStatusKind,
 } from "../../lib/agent-events";
 import {
@@ -101,7 +102,7 @@ import {
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
-  completedHermesMessageText as completedHermesRuntimeMessageText,
+  toolEventKey,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -157,12 +158,7 @@ export {
   AGENT_SESSIONS_CHANGED_EVENT,
 };
 
-export type AgentSessionsChangedDetail = {
-  sessions: HermesSessionInfo[];
-  selectedSessionId?: string;
-  workingSessionIds: string[];
-  waitingSessionIds?: string[];
-};
+export type { AgentSessionsChangedDetail };
 
 export type AgentNewSessionDetail = {
   prompt?: string;
@@ -195,9 +191,18 @@ type HermesRuntimeSessionResponse = {
 
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
+  pendingReply?: AgentReplyDetail;
 };
 
-export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
+// Module-scoped so a remount of AgentWorkspace (e.g. navigating away from the
+// agent view and back) does not re-submit a mascot reply that App still holds
+// in its pendingReply state.
+const handledMascotReplyIds = new Set<string>();
+
+export function AgentWorkspace({
+  initialSession,
+  pendingReply,
+}: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id;
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
@@ -213,9 +218,6 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     running: false,
   });
   const [bridgeStarting, setBridgeStarting] = useState(false);
-  const [hermesSessions, setHermesSessions] = useState<Record<string, string>>(
-    {},
-  );
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
@@ -282,6 +284,11 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     AgentChatGallerySection[] | null
   >(null);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
+  // The gateway's close listener is registered once per client instance, so
+  // it routes through this ref to always run the latest render's recovery
+  // closure (see recoverFromGatewayClose).
+  const gatewayCloseHandlerRef = useRef(() => {});
+  const gatewayRecoveringRef = useRef(false);
   // One live gateway subscription per Hermes session. A follow-up send while
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
@@ -306,18 +313,6 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     waitingSessionIds,
     workingSessionIds,
   ]);
-
-  const setTaskWorking = useCallback((taskId: string, working: boolean) => {
-    setWorkingTaskIds((current) => {
-      const next = new Set(current);
-      if (working) {
-        next.add(taskId);
-      } else {
-        next.delete(taskId);
-      }
-      return next;
-    });
-  }, []);
 
   const setSessionWorking = useCallback(
     (sessionId: string, working: boolean) => {
@@ -351,6 +346,43 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     [],
   );
 
+  const clearSessionActivity = useCallback((sessionId: string) => {
+    const nextWorking = new Set(workingSessionIdsRef.current);
+    nextWorking.delete(sessionId);
+    workingSessionIdsRef.current = nextWorking;
+    setWorkingSessionIds(nextWorking);
+
+    const nextWaiting = new Set(waitingSessionIdsRef.current);
+    nextWaiting.delete(sessionId);
+    waitingSessionIdsRef.current = nextWaiting;
+    setWaitingSessionIds(nextWaiting);
+
+    return {
+      activeCount: nextWorking.size + nextWaiting.size,
+      needsUserCount: nextWaiting.size,
+    };
+  }, []);
+
+  // Shared teardown for a session that is going away: its messages, pending
+  // sends, working/waiting flags, live gateway listener, and buffered live
+  // events. Both delete paths (sidebar event and session-bar menu) run this so
+  // neither leaves a phantom "working" session with a leaked listener behind.
+  const scrubHermesSessionState = useCallback(
+    (sessionId: string) => {
+      setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
+      setPendingHermesMessages((current) => {
+        const next = omitRecordKey(current, sessionId);
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+      clearSessionActivity(sessionId);
+      sessionGatewayUnlistenRef.current.get(sessionId)?.();
+      liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
+      setLiveEvents(liveEventsRef.current);
+    },
+    [clearSessionActivity],
+  );
+
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId),
     [selectedTaskId, tasks],
@@ -374,6 +406,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     [filesystemSnapshot],
   );
 
+  // Updates the task list without touching the selection — a late poll
+  // response must not re-select a task the user already navigated away from.
+  // Selection changes only where user intent exists (load, explicit click).
   const upsertTask = useCallback((task: AgentTaskDto) => {
     setTasks((prev) => {
       const rest = prev.filter((item) => item.id !== task.id);
@@ -381,7 +416,6 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         b.updatedAt.localeCompare(a.updatedAt),
       );
     });
-    setSelectedTaskId(task.id);
   }, []);
 
   const loadTasks = useCallback(async () => {
@@ -483,19 +517,19 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   }, [initialSession, initialSessionId]);
 
   useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent<AgentSessionsChangedDetail>(
-        AGENT_SESSIONS_CHANGED_EVENT,
-        {
-          detail: {
-            sessions: hermesSessionItems,
-            selectedSessionId: selectedHermesSessionId,
-            workingSessionIds: Array.from(workingSessionIds),
-            waitingSessionIds: Array.from(waitingSessionIds),
-          },
-        },
-      ),
-    );
+    if (!pendingReply?.text.trim()) return;
+    if (handledMascotReplyIds.has(pendingReply.requestId)) return;
+    handledMascotReplyIds.add(pendingReply.requestId);
+    void submitMascotReply(pendingReply);
+  }, [pendingReply]);
+
+  useEffect(() => {
+    dispatchAgentSessionsChanged({
+      sessions: hermesSessionItems,
+      selectedSessionId: selectedHermesSessionId,
+      workingSessionIds: Array.from(workingSessionIds),
+      waitingSessionIds: Array.from(waitingSessionIds),
+    });
   }, [
     hermesSessionItems,
     selectedHermesSessionId,
@@ -503,50 +537,41 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     workingSessionIds,
   ]);
 
+  // Latest-instance handlers for the mount-scoped window listeners below. The
+  // empty-deps effect would otherwise freeze first-render closures — where
+  // bridge is still { running: false }, so a post-submit loadHermesSessions
+  // silently no-ops and the sidebar never refreshes after event-driven runs.
+  const windowEventHandlersRef = useRef({
+    startNewTask,
+    removeHermesSessionLocally,
+  });
+  useEffect(() => {
+    windowEventHandlersRef.current = {
+      startNewTask,
+      removeHermesSessionLocally,
+    };
+    gatewayCloseHandlerRef.current = () => {
+      void recoverFromGatewayClose();
+    };
+  });
+
   useEffect(() => {
     function handleNewSession(event: Event) {
       const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
-      void startNewTask(detail?.prompt);
+      void windowEventHandlersRef.current.startNewTask(detail?.prompt);
     }
 
     function handleDeleteSession(event: Event) {
       const detail = (event as CustomEvent<AgentDeleteSessionDetail>).detail;
       if (!detail?.sessionId) return;
-      const { sessionId } = detail;
-      setHermesSessionItems((current) => {
-        const next = current.filter((session) => session.id !== sessionId);
-        setSelectedHermesSessionId((selected) => {
-          const nextSelected = selected === sessionId ? next[0]?.id : selected;
-          selectedHermesSessionIdRef.current = nextSelected;
-          return nextSelected;
-        });
-        return next;
-      });
-      setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
-      setPendingHermesMessages((current) => {
-        const next = omitRecordKey(current, sessionId);
-        pendingHermesMessagesRef.current = next;
-        return next;
-      });
-      setWorkingSessionIds((current) => {
-        const next = new Set(current);
-        next.delete(sessionId);
-        workingSessionIdsRef.current = next;
-        return next;
-      });
-      setWaitingSessionIds((current) => {
-        const next = new Set(current);
-        next.delete(sessionId);
-        waitingSessionIdsRef.current = next;
-        return next;
-      });
-      liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
-      setLiveEvents(liveEventsRef.current);
+      windowEventHandlersRef.current.removeHermesSessionLocally(
+        detail.sessionId,
+      );
     }
 
     const pending = pendingNewSessionRequest();
     if (pending) {
-      void startNewTask(pending.prompt);
+      void windowEventHandlersRef.current.startNewTask(pending.prompt);
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
@@ -583,11 +608,37 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
           return next;
         });
         void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
+        const combined = [...messages, ...retainedPending];
         if (
-          sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
+          shouldResumeSessionActivity(combined) &&
+          !waitingSessionIdsRef.current.has(selectedHermesSessionId)
         ) {
-          setSessionWorking(selectedHermesSessionId, false);
-          setSessionWaiting(selectedHermesSessionId, false);
+          // An in-flight run from before a remount or gateway drop: the
+          // latest message is the user's, so re-arm working state — the
+          // working-gated poll below picks the session back up and
+          // reconciles it from persisted messages.
+          setSessionWorking(selectedHermesSessionId, true);
+        }
+        if (sessionHasAssistantAfterLatestUser(combined)) {
+          const wasActive = sessionHasActiveWork(
+            selectedHermesSessionId,
+            workingSessionIdsRef.current,
+            waitingSessionIdsRef.current,
+            liveEventsRef.current,
+          );
+          const activityCounts = clearSessionActivity(selectedHermesSessionId);
+          if (wasActive) {
+            dispatchAgentSessionStatus({
+              sessionId: selectedHermesSessionId,
+              title:
+                hermesSessionItems.find(
+                  (session) => session.id === selectedHermesSessionId,
+                )?.title ?? "Agent session",
+              status: "completed",
+              summary: "June finished.",
+              ...activityCounts,
+            });
+          }
           liveEventsRef.current = {
             ...liveEventsRef.current,
             [selectedHermesSessionId]: [],
@@ -659,32 +710,19 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     return () => window.clearInterval(interval);
   }, [selectedTask?.id, selectedTask?.status, upsertTask]);
 
+  // Poll every working session — not just the selected one — so a run whose
+  // live gateway stream died (disconnect, navigation) still reconciles from
+  // persisted messages instead of staying "working" forever.
   useEffect(() => {
-    if (
-      !bridge.running ||
-      !selectedHermesSessionId ||
-      !workingSessionIds.has(selectedHermesSessionId)
-    )
-      return;
-    const sessionId = selectedHermesSessionId;
+    if (!bridge.running || workingSessionIds.size === 0) return;
+    const sessionIds = Array.from(workingSessionIds);
     const interval = window.setInterval(() => {
-      void refreshHermesSession(sessionId);
+      for (const sessionId of sessionIds) {
+        void refreshHermesSession(sessionId);
+      }
     }, 2500);
     return () => window.clearInterval(interval);
-  }, [bridge.running, selectedHermesSessionId, workingSessionIds]);
-
-  useEffect(() => {
-    // The conversation scrolls in the main card (.main-panel-body), not an
-    // inner pane — so drive that scroller to the bottom as turns arrive.
-    const scroller = listRef.current?.closest(".main-panel-body");
-    if (!(scroller instanceof HTMLElement)) return;
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
-  }, [
-    selectedTask?.messages.length,
-    selectedTask?.toolEvents.length,
-    selectedHermesMessages.length,
-    selectedHermesSessionId,
-  ]);
+  }, [bridge.running, workingSessionIds]);
 
   // Auto-grow the composer with its content (capped), since WKWebView has no
   // CSS field-sizing. Recomputing on `draft` also collapses it back after a
@@ -760,10 +798,50 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       await submitHermesSession(content);
       setError(null);
     } catch (err) {
-      // Restore the composer so a failed send doesn't eat the message or
-      // its attachments.
+      // Restore the composer so a failed send doesn't eat the message or its
+      // attachments — but only where the user hasn't typed or attached
+      // something new during the in-flight send.
+      setDraft((current) => (current.trim() ? current : message));
+      setAttachments((current) => (current.length ? current : attachments));
+      setError(messageFromError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitMascotReply(reply: AgentReplyDetail) {
+    const message = reply.text.trim();
+    if (!message) return;
+    if (submitting || importingFiles) {
+      // Another submission is in flight; keep the reply in the composer
+      // instead of dropping it silently.
       setDraft(message);
-      setAttachments(attachments);
+      return;
+    }
+    const targetSession = reply.session;
+    setActivePanel("chat");
+    setSelectedTaskId(undefined);
+    setDraft("");
+    setAttachments([]);
+    if (targetSession?.id) {
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
+      selectedHermesSessionIdRef.current = targetSession.id;
+      setSelectedHermesSessionId(targetSession.id);
+      setHermesSessionItems((current) =>
+        current.some((session) => session.id === targetSession.id)
+          ? current
+          : [targetSession, ...current],
+      );
+    }
+    setSubmitting(true);
+    try {
+      await submitHermesSession(message, targetSession);
+      setError(null);
+    } catch (err) {
+      // Same merge-restore as submit(): don't clobber a draft the user
+      // started typing while the reply was in flight.
+      setDraft((current) => (current.trim() ? current : message));
       setError(messageFromError(err));
     } finally {
       setSubmitting(false);
@@ -850,10 +928,15 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
   }
 
-  async function submitHermesSession(content: string) {
-    const targetSessionId = newSessionModeRef.current
-      ? undefined
-      : selectedHermesSessionId;
+  async function submitHermesSession(
+    content: string,
+    explicitSession?: HermesSessionInfo,
+  ) {
+    const targetSessionId = explicitSession?.id
+      ? explicitSession.id
+      : newSessionModeRef.current
+        ? undefined
+        : selectedHermesSessionId;
     const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
@@ -868,7 +951,11 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
-    const sessionDisplayTitle = sessionTitle ?? titleFromPrompt(content);
+    const sessionDisplayTitle =
+      explicitSession?.title?.trim() ||
+      explicitSession?.preview?.trim() ||
+      sessionTitle ||
+      titleFromPrompt(content);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -969,18 +1056,24 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         setSessionWaiting(storedSessionId, false);
         setSessionWorking(storedSessionId, true);
       }
+      const activityCounts =
+        status === "completed" || status === "failed" || status === "cancelled"
+          ? clearSessionActivity(storedSessionId)
+          : undefined;
       if (status) {
         dispatchAgentSessionStatus({
           sessionId: storedSessionId,
           title: sessionDisplayTitle,
           status,
           summary: agentStatusSummaryFromHermesEvent(event, status),
+          ...activityCounts,
         });
       }
       if (isTerminalHermesEvent(event.type)) {
         unlisten();
-        setSessionWorking(storedSessionId, false);
-        setSessionWaiting(storedSessionId, false);
+        if (!activityCounts) {
+          clearSessionActivity(storedSessionId);
+        }
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
         }, 300);
@@ -1017,10 +1110,62 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     const current = bridge.running ? bridge : await startBridge();
     const wsUrl = current.connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
-    const gateway = gatewayRef.current ?? new HermesGatewayClient();
-    gatewayRef.current = gateway;
+    let gateway = gatewayRef.current;
+    if (!gateway) {
+      gateway = new HermesGatewayClient();
+      gatewayRef.current = gateway;
+      // Fires only on unexpected drops — the unmount close() detaches the
+      // socket first, and a superseded socket never notifies.
+      gateway.onClose(() => gatewayCloseHandlerRef.current());
+    }
     await gateway.connect(wsUrl);
     return gateway;
+  }
+
+  // prompt.submit is ack-style: once acked there are no pending RPCs, so a
+  // socket drop mid-run rejects nothing and no event will ever arrive — the
+  // session would otherwise stay "working" (and broadcast "June is working.")
+  // forever. Try to reconnect and resubscribe the active runtime sessions;
+  // either way, refresh them immediately so the working-gated poll reconciles
+  // their true state from persisted messages.
+  async function recoverFromGatewayClose() {
+    if (gatewayRecoveringRef.current) return;
+    const activeSessionIds = new Set([
+      ...workingSessionIdsRef.current,
+      ...waitingSessionIdsRef.current,
+    ]);
+    if (!activeSessionIds.size) return;
+    gatewayRecoveringRef.current = true;
+    try {
+      const gateway = await ensureHermesGateway();
+      await Promise.all(
+        Array.from(activeSessionIds).map(async (sessionId) => {
+          try {
+            const resumed =
+              await gateway.request<HermesRuntimeSessionResponse>(
+                "session.resume",
+                { session_id: sessionId, cols: 96 },
+              );
+            const runtimeSessionId = resumed.session_id;
+            if (runtimeSessionId) {
+              setRuntimeSessionIds((current) => ({
+                ...current,
+                [sessionId]: runtimeSessionId,
+              }));
+            }
+          } catch {
+            // The runtime session may be gone; the poll reconciles it.
+          }
+        }),
+      );
+    } catch {
+      // Reconnect failed — fall back to the persisted-message poll.
+    } finally {
+      gatewayRecoveringRef.current = false;
+    }
+    for (const sessionId of activeSessionIds) {
+      void refreshHermesSession(sessionId);
+    }
   }
 
   async function startBridge() {
@@ -1036,78 +1181,6 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       throw err;
     } finally {
       setBridgeStarting(false);
-    }
-  }
-
-  async function submitToHermes(task: AgentTaskDto, content: string) {
-    try {
-      const gateway = await ensureHermesGateway();
-      const existingSessionId = task.hermesSessionId ?? hermesSessions[task.id];
-      const sessionId =
-        existingSessionId ??
-        (
-          await gateway.request<HermesRuntimeSessionResponse>(
-            "session.create",
-            {
-              title: task.title,
-              cols: 100,
-            },
-          )
-        ).session_id;
-      if (!sessionId) throw new Error("Hermes did not create a session.");
-      setHermesSessions((prev) => ({ ...prev, [task.id]: sessionId }));
-      setTaskWorking(task.id, true);
-      if (sessionId !== task.hermesSessionId) {
-        saveAgentHermesSession({
-          taskId: task.id,
-          hermesSessionId: sessionId,
-        })
-          .then(upsertTask)
-          .catch((err: unknown) => setError(messageFromError(err)));
-      }
-      const unlisten = gateway.onEvent((event) => {
-        if (event.session_id !== sessionId) return;
-        const liveEvent = { ...event, receivedAt: new Date().toISOString() };
-        const nextTaskEvents = [
-          ...(liveEventsRef.current[task.id] ?? []),
-          liveEvent,
-        ].slice(-200);
-        liveEventsRef.current = {
-          ...liveEventsRef.current,
-          [task.id]: nextTaskEvents,
-        };
-        setLiveEvents(liveEventsRef.current);
-        if (isTerminalHermesEvent(event.type)) {
-          unlisten();
-          setTaskWorking(task.id, false);
-          const completedText =
-            completedHermesRuntimeMessageText(nextTaskEvents);
-          if (completedText) {
-            void persistHermesAssistantMessage(task.id, completedText);
-          }
-        }
-      });
-      await gateway.request("prompt.submit", {
-        session_id: sessionId,
-        text: content,
-      });
-    } catch (err) {
-      setTaskWorking(task.id, false);
-      setError(messageFromError(err));
-    }
-  }
-
-  async function persistHermesAssistantMessage(
-    taskId: string,
-    content: string,
-  ) {
-    try {
-      const savedTask = await saveAgentAssistantMessage({ taskId, content });
-      liveEventsRef.current = { ...liveEventsRef.current, [taskId]: [] };
-      setLiveEvents(liveEventsRef.current);
-      upsertTask(savedTask);
-    } catch (err) {
-      setError(messageFromError(err));
     }
   }
 
@@ -1134,8 +1207,24 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       if (
         sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
       ) {
-        setSessionWorking(sessionId, false);
-        setSessionWaiting(sessionId, false);
+        const wasActive = sessionHasActiveWork(
+          sessionId,
+          workingSessionIdsRef.current,
+          waitingSessionIdsRef.current,
+          liveEventsRef.current,
+        );
+        const activityCounts = clearSessionActivity(sessionId);
+        if (wasActive) {
+          dispatchAgentSessionStatus({
+            sessionId,
+            title:
+              hermesSessionItems.find((session) => session.id === sessionId)
+                ?.title ?? "Agent session",
+            status: "completed",
+            summary: "June finished.",
+            ...activityCounts,
+          });
+        }
         liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
         setLiveEvents(liveEventsRef.current);
       }
@@ -1167,12 +1256,25 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     } catch (err) {
       const message = messageFromError(err);
       if (message.toLowerCase().includes("session not found")) {
-        setWorkingTaskIds(new Set());
-        const emptyWorkingSessions = new Set<string>();
-        workingSessionIdsRef.current = emptyWorkingSessions;
-        setWorkingSessionIds(emptyWorkingSessions);
-        liveEventsRef.current = {};
-        setLiveEvents({});
+        // The runtime session is gone. Scrub only the affected session/task —
+        // including its waiting flag, so the "Needs you" badge clears —
+        // without clobbering other healthy sessions' working state or live
+        // event streams.
+        setWorkingTaskIds((current) => {
+          if (!current.has(liveEventKey)) return current;
+          const next = new Set(current);
+          next.delete(liveEventKey);
+          return next;
+        });
+        for (const key of new Set([liveEventKey, sessionId])) {
+          sessionGatewayUnlistenRef.current.get(key)?.();
+          clearSessionActivity(key);
+        }
+        liveEventsRef.current = omitRecordKey(
+          liveEventsRef.current,
+          liveEventKey,
+        );
+        setLiveEvents(liveEventsRef.current);
         void loadHermesSessions();
       }
       setError(message);
@@ -1344,17 +1446,33 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     );
   }
 
+  // Drops a deleted session from local state. Removing it from items fires
+  // the sessions-changed effect, which syncs the sidebar; the shared scrub
+  // clears messages, pending sends, working/waiting flags, and live events so
+  // a running session doesn't linger as phantom "working" work.
+  function removeHermesSessionLocally(sessionId: string, selectNext = true) {
+    setHermesSessionItems((current) => {
+      const next = current.filter((session) => session.id !== sessionId);
+      setSelectedHermesSessionId((selected) => {
+        const nextSelected =
+          selected === sessionId
+            ? selectNext
+              ? next[0]?.id
+              : undefined
+            : selected;
+        selectedHermesSessionIdRef.current = nextSelected;
+        return nextSelected;
+      });
+      return next;
+    });
+    scrubHermesSessionState(sessionId);
+  }
+
   async function deleteSelectedHermesSession(sessionId: string) {
     try {
       await deleteHermesSession(sessionId);
-      // Dropping it from items fires the sessions-changed effect, which syncs
-      // the sidebar; clearing the selection falls the workspace back to empty.
-      setHermesSessionItems((current) =>
-        current.filter((item) => item.id !== sessionId),
-      );
-      setSelectedHermesSessionId((current) =>
-        current === sessionId ? undefined : current,
-      );
+      // Clearing the selection falls the workspace back to empty.
+      removeHermesSessionLocally(sessionId, false);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -1522,6 +1640,21 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       )
     : [];
 
+  // Aggregate size of the rendered conversation so streaming deltas — which
+  // grow text inside an existing turn without changing any count — still keep
+  // the scroller pinned to the bottom.
+  const renderedTurnsSignature = chatTurnsSignature(
+    selectedHermesSessionId ? hermesTurns : taskTurns,
+  );
+
+  useEffect(() => {
+    // The conversation scrolls in the main card (.main-panel-body), not an
+    // inner pane — so drive that scroller to the bottom as turns arrive.
+    const scroller = listRef.current?.closest(".main-panel-body");
+    if (!(scroller instanceof HTMLElement)) return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
+
   return (
     <section className="agent-workspace" aria-label="Agent">
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
@@ -1641,9 +1774,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                   }
                   onApproval={(part, choice) => {
                     const sessionId =
-                      part.sessionId ??
-                      selectedTask.hermesSessionId ??
-                      hermesSessions[selectedTask.id];
+                      part.sessionId ?? selectedTask.hermesSessionId;
                     if (!sessionId) return;
                     void respondToApproval(
                       selectedTask.id,
@@ -2850,6 +2981,26 @@ function CapabilityRow({
   );
 }
 
+// Sums turn/part counts plus streamed text lengths so the auto-scroll effect
+// re-fires as streamed output grows, not only when a whole turn is added.
+function chatTurnsSignature(turns: AgentChatTurn[]) {
+  return turns.reduce(
+    (total, turn) =>
+      total +
+      1 +
+      turn.parts.reduce(
+        (size, part) =>
+          size +
+          1 +
+          ("text" in part && typeof part.text === "string"
+            ? part.text.length
+            : 0),
+        0,
+      ),
+    0,
+  );
+}
+
 // Collapse runs of "thinking-only" assistant turns (reasoning/tool, no answer
 // text) into the next answer turn, so a back-to-back chain of thoughts shows as
 // a single "Thought" disclosure rather than several stacked in a row.
@@ -3910,17 +4061,6 @@ function appendLogText(current: string, next: string) {
   return `${current}${separator}${next}`;
 }
 
-function toolEventKey(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  return (
-    stringValue(payload?.id) ??
-    stringValue(payload?.call_id) ??
-    stringValue(payload?.tool_call_id) ??
-    stringValue(payload?.name) ??
-    `tool:${event.type}:${(event as LiveHermesEvent).receivedAt}`
-  );
-}
-
 function stringValue(value: unknown, preserveWhitespace = false) {
   if (typeof value === "string") {
     if (!value.trim()) return undefined;
@@ -4099,21 +4239,49 @@ function shouldRetainHermesSessionId(
   );
 }
 
+// Hermes may persist timestamps with second precision while pending entries
+// carry millisecond ISO strings, so allow a little backward skew when deciding
+// whether a persisted message is the stored copy of a pending one.
+const PENDING_MATCH_SKEW_MS = 1500;
+
 function retainUnpersistedPendingMessages(
   pending: HermesSessionMessage[],
   persisted: HermesSessionMessage[],
 ) {
-  return pending.filter(
-    (pendingMessage) =>
-      !persisted.some(
-        (message) =>
-          message.role === pendingMessage.role &&
-          sameVisibleMessageText(
-            visibleHermesMessageText(message),
-            visibleHermesMessageText(pendingMessage),
-          ),
-      ),
-  );
+  return pending.filter((pendingMessage) => {
+    const pendingAt = hermesMessageTimestampMs(pendingMessage);
+    return !persisted.some((message) => {
+      if (message.role !== pendingMessage.role) return false;
+      if (
+        !sameVisibleMessageText(
+          visibleHermesMessageText(message),
+          visibleHermesMessageText(pendingMessage),
+        )
+      ) {
+        return false;
+      }
+      if (pendingAt === undefined) return true;
+      // Only a message persisted at/after the pending send can be its stored
+      // copy — an older identical message (e.g. a re-sent "continue") must
+      // not swallow the new pending entry and fake a completed turn.
+      const persistedAt = hermesMessageTimestampMs(message);
+      return (
+        persistedAt === undefined ||
+        persistedAt >= pendingAt - PENDING_MATCH_SKEW_MS
+      );
+    });
+  });
+}
+
+function hermesMessageTimestampMs(message: HermesSessionMessage) {
+  const raw = message.timestamp ?? message.created_at;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "number") {
+    // Hermes sometimes reports epoch seconds rather than milliseconds.
+    return raw > 1e12 ? raw : raw * 1000;
+  }
+  const parsed = Date.parse(String(raw));
+  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 function sessionHasAssistantAfterLatestUser(messages: HermesSessionMessage[]) {
@@ -4129,6 +4297,38 @@ function sessionHasAssistantAfterLatestUser(messages: HermesSessionMessage[]) {
   if (latestAssistantIndex < 0) return false;
   if (latestUserIndex < 0) return true;
   return latestAssistantIndex > latestUserIndex;
+}
+
+// A session whose latest message is a recent user prompt with no assistant
+// reply yet is treated as an in-flight run — e.g. the workspace was unmounted
+// mid-run (navigation) or the gateway dropped — so working state and the poll
+// are re-armed to catch the conversation up. The recency window keeps long-
+// abandoned sessions (a trailing "thanks" from days ago) from spinning.
+const RESUME_ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
+
+function shouldResumeSessionActivity(messages: HermesSessionMessage[]) {
+  if (sessionHasAssistantAfterLatestUser(messages)) return false;
+  const latestUser = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!latestUser) return false;
+  const sentAt = hermesMessageTimestampMs(latestUser);
+  return (
+    sentAt !== undefined && Date.now() - sentAt < RESUME_ACTIVITY_WINDOW_MS
+  );
+}
+
+function sessionHasActiveWork(
+  sessionId: string,
+  workingSessionIds: Set<string>,
+  waitingSessionIds: Set<string>,
+  liveEvents: Record<string, LiveHermesEvent[]>,
+) {
+  return (
+    workingSessionIds.has(sessionId) ||
+    waitingSessionIds.has(sessionId) ||
+    (liveEvents[sessionId]?.length ?? 0) > 0
+  );
 }
 
 function isTerminalHermesEvent(type: string) {

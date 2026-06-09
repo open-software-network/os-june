@@ -1,6 +1,6 @@
 use crate::envelope::{
-    ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL, ERR_PAYLOAD_TOO_LARGE,
-    ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
+    ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
+    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
 };
 use axum::{http::StatusCode, response::IntoResponse};
 use scribe_domain::AuthError;
@@ -19,6 +19,8 @@ pub enum ApiError {
     Unprocessable { code: i32, message: String },
     #[error("insufficient_credits")]
     InsufficientCredits,
+    #[error("authorization_denied")]
+    AuthorizationDenied,
     #[error("upstream_provider_failed")]
     Upstream,
     #[error("internal_error")]
@@ -70,6 +72,14 @@ impl IntoResponse for ApiError {
                 ERR_INSUFFICIENT_CREDITS,
                 "insufficient_credits",
             ),
+            // Transient metering denial (e.g. a concurrency cap): the user is
+            // funded and the upstream providers are fine — tell the client to
+            // retry shortly instead of pretending the provider failed.
+            Self::AuthorizationDenied => error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                ERR_AUTHORIZATION_DENIED,
+                "authorization_denied",
+            ),
             Self::Upstream => error_response(
                 StatusCode::BAD_GATEWAY,
                 ERR_UPSTREAM,
@@ -90,7 +100,8 @@ impl From<ServiceError> for ApiError {
             ServiceError::ModelNotPriced => Self::unprocessable("model_not_priced"),
             ServiceError::PriceOverflow => Self::unprocessable("price_overflow"),
             ServiceError::InsufficientCredits => Self::InsufficientCredits,
-            ServiceError::AuthorizationDenied | ServiceError::UpstreamProvider => Self::Upstream,
+            ServiceError::AuthorizationDenied => Self::AuthorizationDenied,
+            ServiceError::UpstreamProvider => Self::Upstream,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
         }
     }
@@ -101,5 +112,47 @@ pub(crate) fn from_auth_error(error: &AuthError) -> ApiError {
         AuthError::MissingToken | AuthError::InvalidToken => {
             ApiError::unauthorized("invalid_access_token")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiError;
+    use axum::{http::StatusCode, response::IntoResponse};
+    use pretty_assertions::assert_eq;
+    use scribe_services::ServiceError;
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("read body");
+        serde_json::from_slice(&bytes).expect("body is JSON")
+    }
+
+    #[tokio::test]
+    async fn authorization_denied_maps_to_429_with_structured_code() {
+        // Regression: a transient metering denial (e.g. concurrency cap) used
+        // to surface as 502 upstream_provider_failed — the client told users
+        // the provider couldn't process their audio when a short retry would
+        // have succeeded.
+        let response = ApiError::from(ServiceError::AuthorizationDenied).into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 4401);
+        assert_eq!(body["message"], "authorization_denied");
+        assert_eq!(body["success"], false);
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_keeps_its_existing_code_and_message() {
+        // The desktop client string-matches "upstream_provider_failed"; the
+        // shape of genuine provider failures must not change.
+        let response = ApiError::from(ServiceError::UpstreamProvider).into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 5001);
+        assert_eq!(body["message"], "upstream_provider_failed");
     }
 }

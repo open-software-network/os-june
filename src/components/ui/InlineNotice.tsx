@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 export type InlineNoticeTone = "warning" | "destructive";
 
 type InlineNoticeProps = {
-  eyebrow: ReactNode;
+  eyebrow?: ReactNode;
   body: ReactNode;
   actions?: ReactNode;
   icon?: ReactNode;
@@ -32,10 +32,12 @@ export function InlineNotice({
       aria-label={ariaLabel}
     >
       <p className="inline-notice-message">
-        <span className="inline-notice-eyebrow">
-          {icon}
-          {eyebrow}
-        </span>
+        {eyebrow || icon ? (
+          <span className="inline-notice-eyebrow">
+            {icon}
+            {eyebrow}
+          </span>
+        ) : null}
         <span className="inline-notice-body">{body}</span>
       </p>
       {actions ? <div className="inline-notice-actions">{actions}</div> : null}

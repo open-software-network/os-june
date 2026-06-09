@@ -10,6 +10,7 @@ pub mod routing;
 pub mod venice;
 pub mod wav_probe;
 
+mod retry;
 mod transcription;
 
 pub use audio_probe::MultiFormatDurationProbe;

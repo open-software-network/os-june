@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OS June Mascot</title>
+  </head>
+  <body>
+    <main id="mascot" class="mascot" data-expanded="false">
+      <section
+        id="mascot-stack"
+        class="mascot-stack"
+        aria-label="Agent sessions"
+      ></section>
+      <button
+        id="mascot-toggle"
+        class="mascot-toggle"
+        type="button"
+        aria-label="Expand June mascot"
+        aria-expanded="false"
+      >
+        <span class="mascot-chevron" aria-hidden="true"></span>
+      </button>
+      <button
+        id="mascot-avatar"
+        class="mascot-avatar"
+        type="button"
+        aria-label="Open Agent"
+      >
+        <img id="mascot-image" alt="" />
+      </button>
+    </main>
+    <script type="module" src="/src/mascot.ts"></script>
+  </body>
+</html>

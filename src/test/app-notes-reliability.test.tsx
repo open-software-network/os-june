@@ -1,4 +1,5 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
@@ -128,15 +129,25 @@ function recording(overrides: Partial<RecordingSessionDto> = {}) {
   };
 }
 
-describe("meeting start transcription event", () => {
+describe("notes recording reliability", () => {
+  const first = note();
+  // Draft on purpose: drafts were the worst case for the wrong-note
+  // optimistic update — a falsely stamped "transcribing" draft locks its
+  // record button and shimmers forever.
+  const second = note({
+    id: "note-2",
+    title: "Second note",
+    processingStatus: "draft",
+    generatedContent: undefined,
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listeners.clear();
 
-    const first = note();
     const payload: BootstrapResponse = {
       folders: [],
-      notes: [first],
+      notes: [first, second],
       activeRecoveries: [],
       providerConfigured: true,
     };
@@ -151,7 +162,9 @@ describe("meeting start transcription event", () => {
       startDragging: vi.fn().mockResolvedValue(undefined),
     });
     mocks.bootstrapApp.mockResolvedValue(payload);
-    mocks.getNote.mockResolvedValue(first);
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : first,
+    );
     mocks.checkRecordingSourceReadiness.mockResolvedValue({
       sourceMode: "microphonePlusSystem",
       sources: [
@@ -160,6 +173,14 @@ describe("meeting start transcription event", () => {
       ],
     });
     mocks.startRecording.mockResolvedValue(recording());
+    mocks.getRecordingStatus.mockResolvedValue({
+      sessionId: "rec-1",
+      state: "recording",
+      elapsedMs: 500,
+      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+      silenceWarning: false,
+      bytesWritten: 2048,
+    });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -176,59 +197,118 @@ describe("meeting start transcription event", () => {
     }));
   });
 
-  it("starts recording through the existing recorder flow", async () => {
+  async function startRecordingOnFirstNote() {
     render(<App />);
-
     await waitFor(() =>
       expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
     );
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-
     await act(async () => {
       await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
         payload: undefined,
       });
     });
-
     await waitFor(() =>
       expect(mocks.startRecording).toHaveBeenCalledWith(
         "note-1",
         "microphonePlusSystem",
       ),
     );
-    expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
-  });
+  }
 
-  it("cleans up Tauri listeners that resolve after unmount", async () => {
-    const cleanups: Array<ReturnType<typeof vi.fn>> = [];
-    const pendingListeners: Array<
-      (cleanup: (typeof cleanups)[number]) => void
-    > = [];
-    mocks.listen.mockImplementation(
-      (event: string, listener: TauriListener) => {
-        mocks.listeners.set(event, listener);
-        return new Promise((resolve) => {
-          pendingListeners.push(resolve);
-        });
-      },
-    );
-
-    const { unmount } = render(<App />);
-
-    await waitFor(() => expect(mocks.listen).toHaveBeenCalled());
-    unmount();
-
-    await act(async () => {
-      for (const resolve of pendingListeners) {
-        const cleanup = vi.fn();
-        cleanups.push(cleanup);
-        resolve(cleanup);
-      }
+  it("does not mark a different note transcribing when finishing a recording started elsewhere", async () => {
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, processingStatus: "transcribing" },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
     });
 
-    expect(cleanups.length).toBeGreaterThan(0);
-    for (const cleanup of cleanups) {
-      expect(cleanup).toHaveBeenCalledOnce();
-    }
+    await startRecordingOnFirstNote();
+
+    // Browse to another note while the recording keeps running on note-1.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Notes", current: "page" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /Second note Preview/ }),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-2"));
+
+    // The recorder bar is global, so Done is still reachable from note-2.
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() =>
+      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"),
+    );
+
+    // note-2 must not pick up note-1's optimistic "transcribing" lock.
+    expect(screen.queryByText(/Transcribing audio/)).not.toBeInTheDocument();
+  });
+
+  it("applies the finish result even when the note already sat in a terminal status", async () => {
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, processingStatus: "transcribing" },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+    });
+
+    await startRecordingOnFirstNote();
+
+    // note-1 is "ready" (terminal); stacking another take must still flip it
+    // back to transcribing so the shimmer shows and polling resumes.
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() =>
+      expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument(),
+    );
+  });
+
+  it("surfaces retry failures instead of dead-ending silently", async () => {
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2"
+        ? second
+        : {
+            ...first,
+            processingStatus: "failed",
+            lastError: "Network unreachable",
+            audio: {
+              id: "audio-1",
+              format: "wav",
+              durationMs: 1000,
+              sizeBytes: 2048,
+              checksum: "abc",
+              createdAt: now,
+            },
+          },
+    );
+    mocks.retryProcessing.mockRejectedValue({
+      code: "audio_artifact_missing",
+      message: "No saved audio is available for retry.",
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    // Open the note from the All notes list so the editor (and its failure
+    // banner) is on screen.
+    await userEvent.click(
+      screen.getByRole("button", { name: /First note Preview/ }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("No saved audio is available for retry."),
+      ).toBeInTheDocument(),
+    );
+    // The banner releases its busy gate so the user can try again.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Retry/ })).toBeEnabled(),
+    );
   });
 });

@@ -1,6 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
+import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, vi } from "vitest";
+
+// Resolve framer-motion animations instantly. Without this the frameloop
+// stalls when tests swap fake/real timers, leaving AnimatePresence exits
+// stuck in the DOM and exit-dependent assertions flaky.
+MotionGlobalConfig.skipAnimations = true;
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
   check: vi.fn(async () => null),

@@ -166,7 +166,7 @@ export function buildHermesSessionChatTurns(
       if (content) {
         turn.parts.push({
           type: "text",
-          text: collapseRepeatedMessageText(content),
+          text: content,
           status: "complete",
         });
       }
@@ -194,9 +194,7 @@ export function completedHermesMessageText(events: LiveHermesEvent[]) {
     .map((part) => part.text)
     .join("")
     .trim();
-  return turn?.status === "complete"
-    ? collapseRepeatedMessageText(text ?? "")
-    : "";
+  return turn?.status === "complete" ? (text ?? "") : "";
 }
 
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
@@ -218,16 +216,47 @@ function appendPersistedToolEvents(
   turns: AgentChatTurn[],
   toolEvents: AgentToolEventDto[],
 ) {
+  // A single synthetic turn that collects events newer than every persisted
+  // assistant message (an in-flight turn that has not been persisted yet).
+  let trailingTurn: AgentChatTurn | undefined;
   for (const event of toolEvents) {
-    const turn =
-      lastAssistantTurn(turns) ?? createAssistantTurn(turns, event.createdAt);
+    const status = toolStatus(event.status);
+    let turn: AgentChatTurn | undefined;
+    if (event.createdAt) {
+      turn = assistantTurnForTimestamp(turns, event.createdAt);
+      if (!turn) {
+        trailingTurn ??= createAssistantTurn(turns, event.createdAt);
+        turn = trailingTurn;
+      }
+    } else {
+      turn = lastAssistantTurn(turns);
+      if (!turn) {
+        trailingTurn ??= createAssistantTurn(turns, event.createdAt);
+        turn = trailingTurn;
+      }
+    }
     upsertToolPart(turn.parts, {
       id: event.id,
       name: event.toolName,
       text: event.summary,
-      status: toolStatus(event.status),
+      status,
     });
+    if (turn === trailingTurn) {
+      turn.status = status === "running" ? "running" : "complete";
+    }
   }
+}
+
+function assistantTurnForTimestamp(
+  turns: AgentChatTurn[],
+  createdAt: string | undefined,
+) {
+  if (!createdAt) return undefined;
+  for (const turn of turns) {
+    if (turn.role !== "assistant") continue;
+    if (turn.createdAt >= createdAt) return turn;
+  }
+  return undefined;
 }
 
 function appendLiveHermesEvents(
@@ -235,6 +264,7 @@ function appendLiveHermesEvents(
   events: LiveHermesEvent[],
 ) {
   let currentAssistant: AgentChatTurn | null = null;
+  const toolCreatedTurns = new Set<AgentChatTurn>();
 
   for (const event of events) {
     const text = eventText(event);
@@ -247,7 +277,11 @@ function appendLiveHermesEvents(
     if (event.type === "message.delta") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
-      appendAssistantTextPart(currentAssistant.parts, text, "running");
+      appendAssistantTextPart(
+        currentAssistant.parts,
+        deltaEventText(event),
+        "running",
+      );
       continue;
     }
 
@@ -265,7 +299,7 @@ function appendLiveHermesEvents(
     if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
-      appendReasoningPart(currentAssistant.parts, text);
+      appendReasoningPart(currentAssistant.parts, deltaEventText(event));
       continue;
     }
 
@@ -278,11 +312,18 @@ function appendLiveHermesEvents(
         }
         continue;
       }
-      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      currentAssistant.status =
-        toolEventStatus(event) === "running"
-          ? "running"
-          : currentAssistant.status;
+      if (!currentAssistant) {
+        currentAssistant = createAssistantTurn(turns, event.receivedAt);
+        toolCreatedTurns.add(currentAssistant);
+      }
+      const status = toolEventStatus(event);
+      if (status === "running") {
+        currentAssistant.status = "running";
+      } else if (toolCreatedTurns.has(currentAssistant)) {
+        // A turn that exists only because of tool events has nothing left to
+        // stream once its tool reaches a terminal state.
+        currentAssistant.status = "complete";
+      }
       const payload = event.payload as Record<string, unknown> | undefined;
       upsertToolPart(currentAssistant.parts, {
         id: toolEventKey(event),
@@ -293,7 +334,7 @@ function appendLiveHermesEvents(
             "tool",
         ),
         text,
-        status: toolEventStatus(event),
+        status,
       });
       continue;
     }
@@ -376,12 +417,12 @@ function appendLiveHermesEvents(
       continue;
     }
 
-    if (event.type === "error" && text) {
+    if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       upsertToolPart(currentAssistant.parts, {
         id: `error:${event.receivedAt}`,
         name: "Error",
-        text,
+        text: text || "The agent reported an error.",
         status: "failed",
       });
       currentAssistant.status = "complete";
@@ -392,8 +433,11 @@ function appendLiveHermesEvents(
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
+  // The `turns.length` suffix keeps ids unique when several turns are created
+  // within the same millisecond, while staying deterministic across rebuilds
+  // of the same event list (these ids are used as React keys).
   const turn: AgentChatTurn = {
-    id: `assistant:${createdAt}`,
+    id: `assistant:${createdAt}:${turns.length}`,
     role: "assistant",
     createdAt,
     status: "running",
@@ -415,45 +459,56 @@ function appendAssistantTextPart(
   delta: string,
   status: "running" | "complete",
 ) {
-  if (!delta.trim()) return;
+  if (!delta) return;
   const last = parts.at(-1);
   if (last?.type === "text") {
-    last.text = appendMessageText(last.text, delta);
+    last.text += delta;
     last.status = status;
     return;
   }
   parts.push({ type: "text", text: delta, status });
 }
 
+// `message.complete` carries the authoritative full text for the turn, so we
+// reconcile it against the concatenation of every streamed text part rather
+// than only the last one (a turn can interleave text -> tool -> text).
 function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   if (!text.trim()) return;
-  const lastText = [...parts]
-    .reverse()
-    .find((part): part is AgentChatTextPart => part.type === "text");
-  if (lastText) {
-    lastText.text = collapseRepeatedMessageText(
-      completeMessageText(lastText.text, text),
-    );
-    lastText.status = "complete";
+  const textParts = parts.filter(
+    (part): part is AgentChatTextPart => part.type === "text",
+  );
+  if (textParts.length === 0) {
+    parts.push({ type: "text", text, status: "complete" });
+    return;
+  }
+  const last = textParts[textParts.length - 1] as AgentChatTextPart;
+  const earlier = textParts.slice(0, -1);
+  const earlierText = earlier.map((part) => part.text).join("");
+  if (!earlier.length) {
+    last.text = text;
+  } else if (text.startsWith(earlierText)) {
+    last.text = text.slice(earlierText.length);
   } else {
-    parts.push({
-      type: "text",
-      text: collapseRepeatedMessageText(text),
-      status: "complete",
-    });
+    // The streamed parts cannot be reconciled with the complete text; replace
+    // the text parts wholesale, keeping tool parts in position.
+    for (const part of earlier) {
+      const index = parts.indexOf(part);
+      if (index >= 0) parts.splice(index, 1);
+    }
+    last.text = text;
+  }
+  last.status = "complete";
+  for (const part of earlier) {
+    part.status = "complete";
   }
 }
 
 function appendReasoningPart(parts: AgentChatPart[], delta: string) {
-  if (
-    !delta.trim() ||
-    delta === "thinking.delta" ||
-    delta === "reasoning.delta"
-  )
+  if (!delta || delta === "thinking.delta" || delta === "reasoning.delta")
     return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
-    last.text = appendMessageText(last.text, delta);
+    last.text += delta;
     last.status = "running";
     return;
   }
@@ -583,6 +638,18 @@ function eventText(event: HermesGatewayEvent) {
         key === "content",
     );
     if (value) return value;
+  }
+  return "";
+}
+
+// Streaming deltas must be appended verbatim — including whitespace-only
+// chunks — so this intentionally bypasses the trimming in `stringValue`.
+function deltaEventText(event: HermesGatewayEvent) {
+  const payload = event.payload as Record<string, unknown> | undefined;
+  if (!payload) return "";
+  for (const key of ["text", "delta", "message", "content"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value) return value;
   }
   return "";
 }
@@ -731,9 +798,10 @@ function stringifyObject(value: unknown) {
   }
 }
 
-function toolEventKey(event: HermesGatewayEvent) {
+export function toolEventKey(event: HermesGatewayEvent) {
   const payload = event.payload as Record<string, unknown> | undefined;
   return (
+    stringValue(payload?.tool_id) ??
     stringValue(payload?.id) ??
     stringValue(payload?.call_id) ??
     stringValue(payload?.tool_call_id) ??
@@ -795,59 +863,6 @@ function approvalChoiceValue(value: unknown): AgentApprovalChoice | undefined {
     return value;
   }
   return undefined;
-}
-
-function appendMessageText(current: string, next: string) {
-  if (!next.trim()) return current;
-  if (!current) return next;
-  if (next.startsWith(current)) return next;
-  if (current.endsWith(next)) return current;
-  return `${current}${next}`;
-}
-
-function completeMessageText(current: string, complete: string) {
-  if (!complete.trim()) return current;
-  if (!current.trim()) return complete;
-  if (complete.trim() === current.trim()) return current;
-  if (complete.includes(current.trim()) || complete.length >= current.length)
-    return complete;
-  return appendMessageText(current, complete);
-}
-
-function collapseRepeatedMessageText(value: string) {
-  let text = value.trim();
-  if (!text) return "";
-
-  for (;;) {
-    const match = text.match(/^([\s\S]+?)\s+\1$/);
-    if (!match?.[1]) break;
-    text = match[1].trim();
-  }
-
-  const paragraphs = text.split(/\n{2,}/);
-  const dedupedParagraphs = paragraphs.filter((paragraph, index) => {
-    if (index === 0) return true;
-    return !sameMessageText(paragraph, paragraphs[index - 1] ?? "");
-  });
-  text = dedupedParagraphs.join("\n\n").trim();
-
-  const lines = text.split("\n");
-  const dedupedLines = lines.filter((line, index) => {
-    if (index === 0) return true;
-    return !sameMessageText(line, lines[index - 1] ?? "");
-  });
-  text = dedupedLines.join("\n").trim();
-
-  const half = Math.floor(text.length / 2);
-  const left = text.slice(0, half).trim();
-  const right = text.slice(half).trim();
-  if (left && sameMessageText(left, right)) return left;
-
-  return text;
-}
-
-function sameMessageText(left: string, right: string) {
-  return left.replace(/\s+/g, " ").trim() === right.replace(/\s+/g, " ").trim();
 }
 
 function appendLogText(current: string, next: string) {

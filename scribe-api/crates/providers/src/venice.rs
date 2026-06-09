@@ -1,3 +1,4 @@
+use crate::retry::{self, UpstreamAttemptError};
 use crate::transcription::TranscriptionWireResponse;
 use async_trait::async_trait;
 use reqwest::multipart::{Form, Part};
@@ -90,14 +91,44 @@ impl VeniceTranscriber {
 #[async_trait]
 impl Transcriber for VeniceTranscriber {
     async fn transcribe(&self, request: TranscriptionRequest) -> Result<Transcript, DomainError> {
-        let model_id = request.model.0.clone();
         let url = format!("{}/audio/transcriptions", self.base_url);
-        let audio_part = Part::bytes(request.audio)
+        // Bounded retry on transient failures (connection reset, 429, 5xx).
+        // Safe to replay: the metering charge only settles after this call
+        // succeeds, so a retried attempt can never double-charge.
+        for attempt in 0..retry::UPSTREAM_ATTEMPTS {
+            let error = match self.transcribe_once(&url, &request).await {
+                Ok(transcript) => return Ok(transcript),
+                Err(error) => error,
+            };
+            if error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
+                tracing::warn!(
+                    %url,
+                    model = %request.model.0,
+                    attempt,
+                    "venice: transient upstream failure, retrying"
+                );
+                tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
+                continue;
+            }
+            return Err(error.error);
+        }
+        Err(DomainError::UpstreamProvider)
+    }
+}
+
+impl VeniceTranscriber {
+    async fn transcribe_once(
+        &self,
+        url: &str,
+        request: &TranscriptionRequest,
+    ) -> Result<Transcript, UpstreamAttemptError> {
+        let model_id = &request.model.0;
+        let audio_part = Part::bytes(request.audio.clone())
             .file_name(request.filename.clone())
             .mime_str(crate::transcription::audio_mime(&request.filename))
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %model_id, "venice: audio mime build failed");
-                DomainError::UpstreamProvider
+                UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
             })?;
         let form = Form::new()
             .text("model", model_id.clone())
@@ -105,27 +136,35 @@ impl Transcriber for VeniceTranscriber {
             .part("file", audio_part);
         let response = self
             .http
-            .post(&url)
+            .post(url)
             .bearer_auth(&self.api_key)
             .multipart(form)
             .send()
             .await
             .map_err(|error| {
-                tracing::error!(%error, %url, model = %model_id, "venice: transport error");
-                DomainError::UpstreamProvider
+                let retryable = retry::is_retryable_transport_error(&error);
+                tracing::error!(%error, %url, model = %model_id, retryable, "venice: transport error");
+                UpstreamAttemptError {
+                    error: DomainError::UpstreamProvider,
+                    retryable,
+                }
             })?;
         let status = response.status();
         if !status.is_success() {
+            let retryable = retry::is_retryable_status(status);
             let body = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model = %model_id, body_bytes = body.len(), "venice: non-success response");
-            return Err(DomainError::UpstreamProvider);
+            tracing::error!(%status, %url, model = %model_id, body_bytes = body.len(), retryable, "venice: non-success response");
+            return Err(UpstreamAttemptError {
+                error: DomainError::UpstreamProvider,
+                retryable,
+            });
         }
         let parsed = response
             .json::<TranscriptionWireResponse>()
             .await
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %model_id, "venice: response JSON parse failed");
-                DomainError::UpstreamProvider
+                UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
             })?;
         let text = parsed.text.trim().to_string();
         if text.is_empty() {
@@ -133,9 +172,9 @@ impl Transcriber for VeniceTranscriber {
             // surface it as a 400 so the client can stay silent ("nothing
             // captured") instead of flashing a backend error.
             tracing::info!(%url, model = %model_id, "venice: no speech in audio");
-            return Err(DomainError::InvalidInput {
+            return Err(UpstreamAttemptError::fatal(DomainError::InvalidInput {
                 reason: "no_speech".to_string(),
-            });
+            }));
         }
         Ok(Transcript {
             text,
@@ -295,21 +334,67 @@ impl VeniceChat {
         &self,
         body: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, DomainError> {
+        let url = format!("{}/chat/completions", self.base_url);
+        // Bounded retry on transient failures — same rationale as the
+        // transcribers: metering settles only after success, so a replay
+        // can never double-charge.
+        for attempt in 0..retry::UPSTREAM_ATTEMPTS {
+            let error = match self.complete_once(&url, &body).await {
+                Ok(parsed) => return Ok(parsed),
+                Err(error) => error,
+            };
+            if error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
+                tracing::warn!(
+                    %url,
+                    model = %body.model,
+                    attempt,
+                    "venice: transient chat failure, retrying"
+                );
+                tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
+                continue;
+            }
+            return Err(error.error);
+        }
+        Err(DomainError::UpstreamProvider)
+    }
+
+    async fn complete_once(
+        &self,
+        url: &str,
+        body: &ChatCompletionRequest,
+    ) -> Result<ChatCompletionResponse, UpstreamAttemptError> {
         let response = self
             .http
-            .post(format!("{}/chat/completions", self.base_url))
+            .post(url)
             .bearer_auth(&self.api_key)
-            .json(&body)
+            .json(body)
             .send()
             .await
-            .map_err(|_| DomainError::UpstreamProvider)?;
-        if !response.status().is_success() {
-            return Err(DomainError::UpstreamProvider);
+            .map_err(|error| {
+                let retryable = retry::is_retryable_transport_error(&error);
+                tracing::error!(%error, %url, model = %body.model, retryable, "venice: chat transport error");
+                UpstreamAttemptError {
+                    error: DomainError::UpstreamProvider,
+                    retryable,
+                }
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let retryable = retry::is_retryable_status(status);
+            let body_text = response.text().await.unwrap_or_default();
+            tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), retryable, "venice: chat non-success response");
+            return Err(UpstreamAttemptError {
+                error: DomainError::UpstreamProvider,
+                retryable,
+            });
         }
         response
             .json::<ChatCompletionResponse>()
             .await
-            .map_err(|_| DomainError::UpstreamProvider)
+            .map_err(|error| {
+                tracing::error!(%error, %url, model = %body.model, "venice: chat response JSON parse failed");
+                UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
+            })
     }
 
     async fn complete_raw(
@@ -813,6 +898,121 @@ mod tests {
                 5
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn generator_retries_transient_429_then_succeeds() {
+        // Regression: a single rate-limit response from Venice used to fail
+        // note generation outright as upstream_provider_failed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "content": "Recovered note" } }],
+                "usage": { "prompt_tokens": 3, "completion_tokens": 4 }
+            })))
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Transcript".to_string(),
+                manual_notes: None,
+                language: None,
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+            })
+            .await;
+
+        assert_eq!(
+            generated.map(|value| value.content),
+            Ok("Recovered note".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn generator_does_not_retry_deterministic_client_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Transcript".to_string(),
+                manual_notes: None,
+                language: None,
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+            })
+            .await;
+
+        assert_eq!(generated, Err(scribe_domain::DomainError::UpstreamProvider));
+    }
+
+    #[tokio::test]
+    async fn transcriber_retries_transient_503_then_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "Hello" })))
+            .mount(&server)
+            .await;
+        let transcriber = super::VeniceTranscriber::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let transcript = scribe_domain::Transcriber::transcribe(
+            &transcriber,
+            scribe_domain::TranscriptionRequest {
+                audio: b"fake wav".to_vec(),
+                filename: "dictation.wav".to_string(),
+                title: "Dictation".to_string(),
+                context: None,
+                language: None,
+                model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+            },
+        )
+        .await;
+
+        assert_eq!(transcript.map(|value| value.text), Ok("Hello".to_string()));
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
+import { MASCOT_ENABLED_KEY } from "../lib/mascot-settings";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -26,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
+  mascotShow: vi.fn(),
+  mascotHide: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
@@ -56,6 +59,8 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
     mocks.updateHermesBridgeMessagingPlatform,
+  mascotShow: mocks.mascotShow,
+  mascotHide: mocks.mascotHide,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
@@ -111,6 +116,7 @@ const signedInAccount = {
 describe("AppSettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     mocks.eventHandler = undefined;
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
@@ -213,6 +219,8 @@ describe("AppSettings", () => {
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
+    mocks.mascotShow.mockResolvedValue(undefined);
+    mocks.mascotHide.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
       ...(kind === "toggle"
@@ -715,5 +723,36 @@ describe("AppSettings", () => {
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();
     expect(screen.getByText("USER.md")).toBeInTheDocument();
     expect(screen.queryByText("Logs")).toBeNull();
+  });
+
+  it("toggles the desktop mascot from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const mascotSwitch = await screen.findByRole("switch", {
+      name: "Show desktop mascot",
+    });
+
+    expect(mascotSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(mascotSwitch);
+    expect(localStorage.getItem(MASCOT_ENABLED_KEY)).toBe("false");
+    expect(mocks.mascotHide).toHaveBeenCalledTimes(1);
+
+    await user.click(mascotSwitch);
+    expect(localStorage.getItem(MASCOT_ENABLED_KEY)).toBe("true");
+    expect(mocks.mascotShow).toHaveBeenCalledTimes(1);
   });
 });

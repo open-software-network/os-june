@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
+  type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 
 const mocks = vi.hoisted(() => ({
@@ -30,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
+  deleteHermesSession: vi.fn(),
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
@@ -79,6 +82,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 vi.mock("../lib/hermes-adapter", () => ({
+  deleteHermesSession: mocks.deleteHermesSession,
   listHermesSessionMessages: mocks.listHermesSessionMessages,
   listHermesSessions: mocks.listHermesSessions,
   sessionTimestamp: (session: { last_active?: string; started_at?: string }) =>
@@ -91,6 +95,7 @@ vi.mock("../lib/hermes-gateway", () => ({
     connect = vi.fn();
     close = vi.fn();
     onEvent = vi.fn(() => vi.fn());
+    onClose = vi.fn(() => vi.fn());
     request = mocks.gatewayRequest;
   },
 }));
@@ -145,6 +150,7 @@ describe("AgentWorkspace", () => {
       "/Users/junho/Downloads/sample.pdf",
     );
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
+    mocks.deleteHermesSession.mockResolvedValue(undefined);
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
     });
@@ -486,5 +492,168 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/junho/Library/Application Support/CleanShot/media/screenshot.png",
     );
+  });
+
+  it("keeps a re-sent duplicate message and the running state against older identical history", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "continue",
+        timestamp: "2026-06-04T12:00:00.000Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "older answer",
+        timestamp: "2026-06-04T12:00:01.000Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("older answer")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "continue");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "continue",
+      }),
+    );
+
+    // The just-sent message must not be swallowed by the older identical one.
+    expect(screen.getAllByText("continue")).toHaveLength(2);
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+    // Let the working-gated poll (2.5s) refresh against the same old
+    // history: the new pending "continue" must survive and the run must not
+    // be marked finished against the old answer.
+    const refreshCallsBefore =
+      mocks.listHermesSessionMessages.mock.calls.length;
+    await waitFor(
+      () =>
+        expect(
+          mocks.listHermesSessionMessages.mock.calls.length,
+        ).toBeGreaterThan(refreshCallsBefore),
+      { timeout: 4000 },
+    );
+    // Give the refresh's state updates time to land before asserting.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(screen.getAllByText("continue")).toHaveLength(2);
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+  });
+
+  it("resumes working state when the latest persisted message is a recent user prompt", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "long running task",
+        timestamp: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    // A remount mid-run (navigation away and back) re-arms the working state
+    // and poll instead of leaving the conversation frozen.
+    expect(await screen.findByText("long running task")).toBeInTheDocument();
+    expect(await screen.findByText("Thinking…")).toBeInTheDocument();
+  });
+
+  it("does not resume working state for a stale session that ended on a user message", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "thanks!",
+        timestamp: "2026-06-01T12:00:00.000Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("thanks!")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking…")).toBeNull();
+  });
+
+  it("refreshes the session list after an event-driven new session run", async () => {
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    const callsBefore = mocks.listHermesSessions.mock.calls.length;
+
+    window.dispatchEvent(
+      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+        detail: { prompt: "write a project update" },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "write a project update",
+      }),
+    );
+    // The mount-time listener must call through to the latest handlers — a
+    // first-render closure would no-op loadHermesSessions (bridge not yet
+    // running) and the sidebar would never refresh.
+    await waitFor(() =>
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
+        callsBefore,
+      ),
+    );
+  });
+
+  it("scrubs working state when deleting the selected session from the session bar", async () => {
+    const user = userEvent.setup();
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    try {
+      render(<AgentWorkspace />);
+      expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+      await user.type(screen.getByRole("textbox"), "do something long");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(sessionDetails.at(-1)?.workingSessionIds).toContain(
+          "session-1",
+        ),
+      );
+
+      mocks.listHermesSessions.mockResolvedValue([]);
+      await user.click(
+        screen.getByRole("button", { name: "Session actions" }),
+      );
+      await user.click(
+        screen.getByRole("menuitem", { name: "Delete session" }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.deleteHermesSession).toHaveBeenCalledWith("session-1"),
+      );
+      await waitFor(() => {
+        const last = sessionDetails.at(-1);
+        expect(last?.workingSessionIds).toEqual([]);
+        expect(last?.sessions.map((session) => session.id)).not.toContain(
+          "session-1",
+        );
+      });
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
   });
 });

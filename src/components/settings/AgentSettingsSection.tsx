@@ -9,6 +9,8 @@ import {
   hermesBridgeMessagingPlatforms,
   hermesBridgeSkills,
   hermesBridgeToolsets,
+  mascotHide,
+  mascotShow,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
@@ -17,6 +19,13 @@ import {
   type HermesToolsetInfo,
   type HermesFilesystemSnapshot,
 } from "../../lib/tauri";
+import {
+  getMascotEnabled,
+  MASCOT_VISIBILITY_CHANGED_EVENT,
+  setMascotEnabled,
+  type MascotVisibilityChangedDetail,
+} from "../../lib/mascot-settings";
+import { Switch } from "../ui/Switch";
 
 type AgentSettingsPanel = "skills" | "messaging" | "files";
 
@@ -35,6 +44,9 @@ export function AgentSettingsSection() {
     useState<HermesFilesystemSnapshot | null>(null);
   const [selectedPlatformId, setSelectedPlatformId] = useState<string>();
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
+  const [mascotEnabled, setMascotEnabledState] = useState(() =>
+    getMascotEnabled(),
+  );
 
   useEffect(() => {
     if (panel === "skills" && (!skills || !toolsets)) {
@@ -47,6 +59,40 @@ export function AgentSettingsSection() {
       void loadFilesystemSnapshot();
     }
   }, [panel]);
+
+  useEffect(() => {
+    function handleVisibilityChanged(event: Event) {
+      const detail = (event as CustomEvent<MascotVisibilityChangedDetail>)
+        .detail;
+      if (detail) setMascotEnabledState(detail.enabled);
+    }
+
+    window.addEventListener(
+      MASCOT_VISIBILITY_CHANGED_EVENT,
+      handleVisibilityChanged,
+    );
+    return () => {
+      window.removeEventListener(
+        MASCOT_VISIBILITY_CHANGED_EVENT,
+        handleVisibilityChanged,
+      );
+    };
+  }, []);
+
+  async function handleMascotEnabledChange(enabled: boolean) {
+    setMascotEnabledState(enabled);
+    setMascotEnabled(enabled);
+    try {
+      if (enabled) {
+        await mascotShow();
+      } else {
+        await mascotHide();
+      }
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
 
   async function loadCapabilities() {
     setLoading(true);
@@ -193,6 +239,28 @@ export function AgentSettingsSection() {
       <p className="settings-group-description">
         Configure Hermes capabilities and external messaging channels.
       </p>
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Desktop mascot</h3>
+              <p className="settings-row-description">
+                Keep June visible at the bottom right with live agent session
+                status.
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={mascotEnabled}
+                onCheckedChange={(enabled) =>
+                  void handleMascotEnabledChange(enabled)
+                }
+                aria-label="Show desktop mascot"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
       <div className="settings-card settings-agent-card">
         <div
           className="settings-section-tabs"

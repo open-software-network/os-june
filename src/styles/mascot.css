@@ -1,0 +1,402 @@
+@import "./tokens.css";
+
+:root {
+  color: white;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+.mascot {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+.mascot-stack {
+  position: absolute;
+  z-index: 1;
+  right: 70px;
+  bottom: 44px;
+  display: grid;
+  gap: 5px;
+  width: min(250px, calc(100vw - 84px));
+  pointer-events: auto;
+}
+
+.mascot[data-expanded="false"] .mascot-stack {
+  display: none;
+}
+
+.mascot-card {
+  position: relative;
+  min-height: 46px;
+  border: 1px solid color-mix(in oklch, white 22%, transparent);
+  border-radius: 14px;
+  background: color-mix(in oklch, black 88%, transparent);
+  color: white;
+  box-shadow:
+    0 12px 28px oklch(0% 0 none / 36%),
+    0 1px 5px oklch(0% 0 none / 30%),
+    inset 0 1px 0 color-mix(in oklch, white 14%, transparent);
+  backdrop-filter: blur(12px) saturate(1.2);
+  overflow: hidden;
+}
+
+.mascot-card-body {
+  display: grid;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 36px 8px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mascot-card-body h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: white;
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1.08;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mascot-card-body p {
+  margin: 1px 0 0;
+  overflow: hidden;
+  color: color-mix(in oklch, white 92%, transparent);
+  font-size: 12.5px;
+  font-weight: 430;
+  letter-spacing: 0;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mascot-status {
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.mascot-status[data-status="received"],
+.mascot-status[data-status="starting"],
+.mascot-status[data-status="running"] {
+  border: 2px solid color-mix(in oklch, white 42%, transparent);
+  border-top-color: white;
+  animation: mascot-spin 900ms linear infinite;
+}
+
+.mascot-status[data-status="waitingForUser"] {
+  background: oklch(0.78 0.16 76);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklch, oklch(0.78 0.16 76) 20%, transparent);
+}
+
+.mascot-status[data-status="completed"] {
+  display: grid;
+  place-items: center;
+  background: oklch(0.75 0.19 148);
+}
+
+.mascot-status[data-status="completed"]::before {
+  content: "";
+  width: 6px;
+  height: 4px;
+  border: solid oklch(0.12 0.02 148);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg) translateY(-1px);
+}
+
+.mascot-status[data-status="failed"],
+.mascot-status[data-status="cancelled"] {
+  background: oklch(0.65 0.22 28);
+}
+
+.mascot-status[data-status="failed"]::before,
+.mascot-status[data-status="failed"]::after,
+.mascot-status[data-status="cancelled"]::before,
+.mascot-status[data-status="cancelled"]::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 3px;
+  width: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: white;
+}
+
+.mascot-status[data-status="failed"]::before,
+.mascot-status[data-status="cancelled"]::before {
+  transform: rotate(45deg);
+}
+
+.mascot-status[data-status="failed"]::after,
+.mascot-status[data-status="cancelled"]::after {
+  transform: rotate(-45deg);
+}
+
+.mascot-status[data-status="idle"] {
+  border: 2px solid color-mix(in oklch, white 32%, transparent);
+}
+
+.mascot-status {
+  transition: opacity 120ms var(--ease-out);
+}
+
+.mascot-card:hover .mascot-status,
+.mascot-card:focus-within .mascot-status {
+  opacity: 0;
+}
+
+.mascot-card-actions {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mascot-reply {
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in oklch, white 11%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, white 10%, transparent);
+  color: white;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 560;
+  letter-spacing: 0;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.mascot-card:hover .mascot-reply,
+.mascot-card:focus-within .mascot-reply {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.mascot-reply-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px;
+  padding: 0 8px 8px 14px;
+}
+
+.mascot-reply-input {
+  min-width: 0;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in oklch, white 15%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, black 62%, transparent);
+  color: white;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0;
+  outline: none;
+}
+
+.mascot-reply-input::placeholder {
+  color: color-mix(in oklch, white 44%, transparent);
+}
+
+.mascot-reply-send {
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: white;
+  color: black;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 680;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.mascot-dismiss {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid color-mix(in oklch, white 12%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, black 85%, transparent);
+  color: white;
+  box-shadow: 0 6px 14px oklch(0% 0 none / 30%);
+  cursor: pointer;
+}
+
+.mascot-dismiss::before,
+.mascot-dismiss::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.mascot-dismiss::before {
+  transform: rotate(45deg);
+}
+
+.mascot-dismiss::after {
+  transform: rotate(-45deg);
+}
+
+.mascot-card:not([data-status="waitingForUser"]) .mascot-dismiss {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.92);
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.mascot-card:not([data-status="waitingForUser"]):hover .mascot-dismiss,
+.mascot-card:not([data-status="waitingForUser"]) .mascot-dismiss:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.mascot-toggle {
+  position: absolute;
+  z-index: 3;
+  right: 3px;
+  bottom: 40px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklch, black 86%, transparent);
+  color: white;
+  box-shadow:
+    0 8px 20px oklch(0% 0 none / 32%),
+    inset 0 1px 0 color-mix(in oklch, white 12%, transparent);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.mascot[data-has-entries="false"] .mascot-toggle {
+  display: none;
+}
+
+.mascot-chevron {
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(3px) rotate(225deg);
+  transition: transform 140ms var(--ease-out);
+}
+
+.mascot-toggle[aria-expanded="true"] .mascot-chevron {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.mascot-avatar {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.mascot-avatar img {
+  display: block;
+  width: 60px;
+  height: 59px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 10px 14px oklch(0% 0 none / 32%))
+    drop-shadow(0 2px 2px oklch(0% 0 none / 26%));
+}
+
+.mascot[data-active="true"] .mascot-avatar img {
+  animation: mascot-work 1250ms ease-in-out infinite;
+  transform-origin: 50% 72%;
+}
+
+.mascot-avatar:focus-visible,
+.mascot-toggle:focus-visible,
+.mascot-reply:focus-visible,
+.mascot-reply-input:focus-visible,
+.mascot-reply-send:focus-visible,
+.mascot-dismiss:focus-visible {
+  outline: 2px solid oklch(0.72 0.18 250);
+  outline-offset: 2px;
+}
+
+@keyframes mascot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes mascot-work {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  30% {
+    transform: translateY(-2px) rotate(-2deg);
+  }
+  62% {
+    transform: translateY(1px) rotate(2deg);
+  }
+}

@@ -652,6 +652,26 @@ export async function listAgentTasks() {
   return invoke<AgentTaskListResponse>("list_agent_tasks");
 }
 
+export async function mascotShow() {
+  return invoke<void>("mascot_show");
+}
+
+export async function mascotHide() {
+  return invoke<void>("mascot_hide");
+}
+
+export async function mascotSetLayout(input: {
+  expanded: boolean;
+  cardCount?: number;
+  replying?: boolean;
+}) {
+  return invoke<void>("mascot_set_layout", { request: input });
+}
+
+export async function mascotOpenAgent(session?: HermesSessionInfo) {
+  return invoke<void>("mascot_open_agent", { session });
+}
+
 export async function createAgentTask(input: {
   prompt: string;
   title?: string;

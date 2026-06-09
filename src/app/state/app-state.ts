@@ -23,8 +23,10 @@ export type NotesAction =
   | { type: "bootstrapLoaded"; payload: BootstrapResponse }
   | { type: "noteLoaded"; note: NoteDto }
   | { type: "noteUpdated"; note: NoteDto }
+  | { type: "noteProcessingUpdated"; note: NoteDto }
   | { type: "recordingStatusChanged"; status: RecordingStatusDto }
   | { type: "recordingStatusCleared" }
+  | { type: "recordingSessionLost"; sessionId: string }
   | { type: "folderCreated"; folder: FolderDto }
   | { type: "folderRenamed"; folder: FolderDto }
   | { type: "folderDeleted"; folderId: string }
@@ -66,14 +68,19 @@ export function notesReducer(
         selectedNoteId: action.note.id,
         selectedNote: action.note,
       };
-    case "noteUpdated": {
-      const note = mergeNoteUpdate(state, action.note);
-      return {
-        ...upsertNote(state, note),
-        selectedNote:
-          state.selectedNoteId === note.id ? note : state.selectedNote,
-      };
-    }
+    // Incidental updates (autosave, folder moves, polls): the snapshot may
+    // carry stale DB state, so the processing status is merged to never
+    // regress an in-flight pipeline or reopen a terminal one.
+    case "noteUpdated":
+      return applyNoteUpdate(state, mergeNoteUpdate(state, action.note));
+    // Authoritative results of commands whose purpose is to change the
+    // processing status (retry, recover, finish recording). Applied as-is so
+    // they can restart processing on a note that already sits in a terminal
+    // status — failed → transcribing on retry, ready → transcribing when
+    // stacking another take — which the merge would otherwise swallow,
+    // leaving the note stuck stale with no shimmer and no polling.
+    case "noteProcessingUpdated":
+      return applyNoteUpdate(state, action.note);
     case "recordingStatusChanged":
       return {
         ...state,
@@ -84,6 +91,13 @@ export function notesReducer(
         ...state,
         recordingStatus: undefined,
       };
+    // The backend no longer knows this session (e.g. it was finalized or the
+    // capture process restarted). Only clear if the UI still shows that exact
+    // session so a fresh recording started in the meantime is untouched.
+    case "recordingSessionLost":
+      return state.recordingStatus?.sessionId === action.sessionId
+        ? { ...state, recordingStatus: undefined }
+        : state;
     case "folderCreated":
       return {
         ...state,
@@ -153,6 +167,13 @@ export function notesReducer(
     default:
       return state;
   }
+}
+
+function applyNoteUpdate(state: NotesState, note: NoteDto): NotesState {
+  return {
+    ...upsertNote(state, note),
+    selectedNote: state.selectedNoteId === note.id ? note : state.selectedNote,
+  };
 }
 
 function mergeNoteUpdate(state: NotesState, note: NoteDto): NoteDto {

@@ -53,6 +53,13 @@ impl DictateService {
         &self,
         params: DictateTranscribeParams,
     ) -> Result<DictateTranscribeOutput, ServiceError> {
+        // Probe duration and price BEFORE taking a hold — see the matching
+        // comment in note_transcribe.rs: bad audio fails fast and never
+        // strands a hold on the user's wallet.
+        let seconds = ceil_seconds(self.duration_probe.probe(&params.audio)?)?;
+        let actual = self
+            .pricing
+            .price_audio_seconds(&params.model_id.0, seconds)?;
         // Flat-estimate mode — see the matching comment in note_transcribe.rs.
         let estimate = Credits(self.flat_estimate_credits);
         let authorization = authorize_or_deny(AuthorizeParams {
@@ -63,13 +70,6 @@ impl DictateService {
             hold_ttl_seconds: self.transcribe_hold_ttl_seconds,
         })
         .await?;
-        // Probe duration BEFORE moving audio into the upstream call so we
-        // can settle a real cost; the Hold (flat estimate) is intentionally
-        // oversized.
-        let seconds = ceil_seconds(self.duration_probe.probe(&params.audio)?)?;
-        let actual = self
-            .pricing
-            .price_audio_seconds(&params.model_id.0, seconds)?;
         let transcript = self
             .transcriber
             .transcribe(TranscriptionRequest {

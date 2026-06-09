@@ -4122,36 +4122,65 @@ input:focus-visible,
   height: 40px;
 }
 
-.record-consent-popover {
+.record-dock {
+  position: relative;
+  display: inline-flex;
+  align-self: flex-end;
+}
+
+/* Centered over the recorder pill. The dock shrink-wraps the pill and the
+ * footer centers the dock in the canvas, so 50% of the dock is the pill's
+ * (and the canvas's) center. The framer-motion child owns translateY, so
+ * the centering transform lives here, not on the animated node. */
+.record-consent-note {
   position: absolute;
-  right: 0;
+  left: 50%;
   bottom: calc(100% + var(--sp-2));
   z-index: 4;
-  width: min(280px, calc(100vw - var(--sp-8)));
-  padding: var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--card) 96%, var(--warm-soft));
-  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - var(--sp-8));
 }
 
-.record-consent-popover p {
-  margin: 0;
+/* Scoped to .record-dock to outrank the later, equal-specificity base
+ * .inline-notice rule, which would otherwise win on background/border/padding. */
+/* Matches the "Generating notes…" pill's padding/height/radius/surface so the
+ * two status messages read as the same family. */
+.record-dock .record-consent-note-surface {
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-color: transparent;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-body);
+  box-shadow: none;
 }
 
-.record-consent-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  margin-top: var(--sp-3);
+.record-dock .record-consent-note-surface .inline-notice-message {
+  flex-wrap: nowrap;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.record-consent-actions .btn {
-  height: var(--control-sm);
-  padding-inline: var(--sp-3);
+/* Dismiss reads as a quiet text link, not a button — no underline, just a
+ * medium-weight label in the app's link color (matching .agent-markdown a)
+ * that deepens to foreground on hover. line-height matches the message so the
+ * two text runs share a baseline. */
+.record-dock .record-consent-note-surface .inline-notice-actions .btn {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.record-dock .record-consent-note-surface .inline-notice-actions .btn:hover {
+  background: none;
+  color: var(--foreground);
 }
 
 .record-options-trigger {
@@ -4403,8 +4432,11 @@ input:focus-visible,
 .record-shell[data-state="paused"],
 .record-shell[data-state="validating"] {
   /* Sized to fit: pause(40) + 16 + timer(44) + 24 + waveform(38) + 24
-   * + stop(40) + 12 shell border/padding = 238. 2px slack at 240. */
-  width: min(240px, calc(100% - var(--sp-8)));
+   * + stop(40) + 12 shell border/padding = 238. 2px slack at 240. The
+   * narrow-screen fallback is viewport-relative (not 100%) so it stays
+   * definite even when the shell sits inside the shrink-wrapped
+   * .record-dock — a percentage there collapses the pill to min-content. */
+  width: min(240px, calc(100vw - var(--sp-8)));
   overflow: hidden;
 }
 

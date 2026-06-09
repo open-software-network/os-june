@@ -41,10 +41,16 @@ export class HermesGatewayClient {
   private nextId = 0;
   private pending = new Map<string | number, PendingCall>();
   private socket?: WebSocket;
+  private connectPromise?: Promise<void>;
   private handlers = new Set<(event: HermesGatewayEvent) => void>();
+  private closeHandlers = new Set<() => void>();
 
   async connect(wsUrl: string) {
     if (this.socket?.readyState === WebSocket.OPEN) return;
+    // Coalesce concurrent connects: a second caller arriving while the
+    // handshake is in flight must not kill the first caller's socket — it
+    // just awaits the same connection attempt.
+    if (this.connectPromise) return this.connectPromise;
     this.close();
     const socket = new WebSocket(wsUrl);
     this.socket = socket;
@@ -52,10 +58,14 @@ export class HermesGatewayClient {
       this.handleMessage(event.data),
     );
     socket.addEventListener("close", () => {
-      if (this.socket === socket) this.socket = undefined;
+      // A stale socket's close event must not reject requests pending on
+      // the socket that replaced it, nor notify close listeners.
+      if (this.socket !== socket) return;
+      this.socket = undefined;
       this.rejectAll(new Error("Hermes gateway connection closed."));
+      for (const handler of [...this.closeHandlers]) handler();
     });
-    await new Promise<void>((resolve, reject) => {
+    const connectPromise = new Promise<void>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         reject(new Error("Hermes gateway connection timed out."));
         socket.close();
@@ -76,17 +86,35 @@ export class HermesGatewayClient {
         },
         { once: true },
       );
+    }).finally(() => {
+      if (this.connectPromise === connectPromise) {
+        this.connectPromise = undefined;
+      }
     });
+    this.connectPromise = connectPromise;
+    return connectPromise;
   }
 
   close() {
-    this.socket?.close();
+    // Detach before closing so the close event reads as intentional — the
+    // identity guard in the close handler then skips rejectAll/onClose.
+    const socket = this.socket;
     this.socket = undefined;
+    socket?.close();
   }
 
   onEvent(handler: (event: HermesGatewayEvent) => void) {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  // Fires only for unexpected disconnects of the current socket — an explicit
+  // close() or a superseded (stale) socket does not notify.
+  onClose(handler: () => void) {
+    this.closeHandlers.add(handler);
+    return () => {
+      this.closeHandlers.delete(handler);
+    };
   }
 
   request<T>(

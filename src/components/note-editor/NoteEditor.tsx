@@ -83,6 +83,9 @@ const SOURCE_FILTERS = [
   { value: "system", label: "System" },
 ] as const;
 
+const RECORD_CONSENT_REVEAL_DELAY_MS = 420;
+const RECORD_CONSENT_AUTO_HIDE_MS = 5000;
+
 function formatTurnTime(startMs?: number, endMs?: number) {
   if (startMs === undefined || endMs === undefined || endMs <= startMs) {
     return null;
@@ -126,8 +129,9 @@ export function NoteEditor({
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = visibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
+  const recordingActive = Boolean(recordingForNote);
   const [optionsOpen, setOptionsOpen] = useState(false);
-  const [recordConsentOpen, setRecordConsentOpen] = useState(false);
+  const [consentReminderVisible, setConsentReminderVisible] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   // The source filter is ephemeral view state — reset it when navigating
   // to a different note so it never leaks across transcripts.
@@ -171,12 +175,48 @@ export function NoteEditor({
   useEffect(() => {
     if (recordingForNote) setOptionsOpen(false);
   }, [recordingForNote]);
+  const consentEdgeRef = useRef({ noteId: note.id, recording: false });
   useEffect(() => {
-    if (recordingForNote) setRecordConsentOpen(false);
-  }, [recordingForNote]);
+    const prev = consentEdgeRef.current;
+    const shouldReveal =
+      prev.noteId !== note.id
+        ? recordingActive
+        : recordingActive && !prev.recording;
+
+    consentEdgeRef.current = { noteId: note.id, recording: recordingActive };
+    // Undo the ref mutation on cleanup so StrictMode's double-invoke replays
+    // the same edge — otherwise the second invoke sees its own write and the
+    // reminder never appears in development.
+    const restoreEdge = () => {
+      consentEdgeRef.current = prev;
+    };
+
+    if (!recordingActive) {
+      setConsentReminderVisible(false);
+      return restoreEdge;
+    }
+
+    if (!shouldReveal) return restoreEdge;
+
+    setConsentReminderVisible(false);
+    const timer = window.setTimeout(
+      () => setConsentReminderVisible(true),
+      RECORD_CONSENT_REVEAL_DELAY_MS,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      restoreEdge();
+    };
+  }, [note.id, recordingActive]);
+
   useEffect(() => {
-    setRecordConsentOpen(false);
-  }, [note.id]);
+    if (!consentReminderVisible) return;
+    const timer = window.setTimeout(
+      () => setConsentReminderVisible(false),
+      RECORD_CONSENT_AUTO_HIDE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [consentReminderVisible]);
   const processingLock =
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating" ||
@@ -353,163 +393,166 @@ export function NoteEditor({
             }
           />
         ) : (
-          <div
-            className="record-shell"
-            data-state={shellState}
-            data-options-open={
-              !recordingForNote && !processingLock && optionsOpen
-            }
-          >
-            {!recordingForNote && !processingLock ? (
-              <div
-                className="record-options-panel"
-                data-open={optionsOpen}
-                aria-hidden={!optionsOpen}
-              >
-                <div className="record-options-panel-inner">
-                  {systemUnsupported ? (
-                    <p className="record-options-unsupported">
-                      System audio requires macOS 14.2 or later.
-                    </p>
-                  ) : (
-                    <div
-                      className="record-options-row"
-                      data-locked={systemDenied || undefined}
-                    >
-                      <Switch
-                        checked={systemOn}
-                        disabled={systemDenied}
-                        aria-labelledby="record-options-system"
-                        onCheckedChange={(next) =>
-                          onSourceModeChange(
-                            next ? "microphonePlusSystem" : "microphoneOnly",
-                          )
-                        }
-                      />
-                      <span
-                        id="record-options-system"
-                        className="record-options-label"
+          <div className="record-dock">
+            <AnimatePresence>
+              {recordingForNote && consentReminderVisible ? (
+                <motion.div
+                  key="consent"
+                  className="record-consent-note"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
+                >
+                  <InlineNotice
+                    className="record-consent-note-surface"
+                    aria-label="Recording consent reminder"
+                    body="Make sure everyone has agreed to be recorded."
+                    actions={
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => setConsentReminderVisible(false)}
                       >
-                        Capture system audio
-                      </span>
-                      {systemDenied ? (
+                        Dismiss
+                      </button>
+                    }
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            <div
+              className="record-shell"
+              data-state={shellState}
+              data-options-open={
+                !recordingForNote && !processingLock && optionsOpen
+              }
+            >
+              {!recordingForNote && !processingLock ? (
+                <div
+                  className="record-options-panel"
+                  data-open={optionsOpen}
+                  aria-hidden={!optionsOpen}
+                >
+                  <div className="record-options-panel-inner">
+                    {systemUnsupported ? (
+                      <p className="record-options-unsupported">
+                        System audio requires macOS 14.2 or later.
+                      </p>
+                    ) : (
+                      <div
+                        className="record-options-row"
+                        data-locked={systemDenied || undefined}
+                      >
+                        <Switch
+                          checked={systemOn}
+                          disabled={systemDenied}
+                          aria-labelledby="record-options-system"
+                          onCheckedChange={(next) =>
+                            onSourceModeChange(
+                              next ? "microphonePlusSystem" : "microphoneOnly",
+                            )
+                          }
+                        />
+                        <span
+                          id="record-options-system"
+                          className="record-options-label"
+                        >
+                          Capture system audio
+                        </span>
+                        {systemDenied ? (
+                          <button
+                            type="button"
+                            className="btn btn-ghost record-options-enable"
+                            onClick={onEnableSystemAudio}
+                          >
+                            Enable
+                          </button>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              <div className="record-stage">
+                <AnimatePresence initial={false}>
+                  {recordingForNote ? (
+                    <motion.div
+                      key="recorder"
+                      className="record-state record-state-recorder"
+                      initial={{ opacity: 0 }}
+                      animate={{
+                        opacity: 1,
+                        transition: {
+                          duration: 0.22,
+                          delay: 0.14,
+                          ease: [0.22, 1, 0.36, 1],
+                        },
+                      }}
+                      exit={{
+                        opacity: 0,
+                        transition: {
+                          duration: 0.12,
+                          ease: [0.22, 1, 0.36, 1],
+                        },
+                      }}
+                    >
+                      <RecorderBar
+                        status={recordingForNote}
+                        onPause={onPauseRecording}
+                        onResume={onResumeRecording}
+                        onDone={onFinishRecording}
+                      />
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="idle"
+                      className="record-state record-state-idle"
+                      initial={{ opacity: 0 }}
+                      animate={{
+                        opacity: 1,
+                        // Symmetric to the recorder enter — delay the reveal
+                        // so the idle pill resolves as the shell finishes
+                        // collapsing back, not while it's still wide.
+                        transition: {
+                          duration: 0.22,
+                          delay: 0.12,
+                          ease: [0.22, 1, 0.36, 1],
+                        },
+                      }}
+                      exit={{
+                        opacity: 0,
+                        transition: {
+                          duration: 0.12,
+                          ease: [0.22, 1, 0.36, 1],
+                        },
+                      }}
+                    >
+                      <div className="record-idle">
                         <button
                           type="button"
-                          className="btn btn-ghost record-options-enable"
-                          onClick={onEnableSystemAudio}
+                          className="record-button"
+                          aria-label="Record"
+                          title="Record"
+                          onClick={onStartRecording}
                         >
-                          Enable
+                          <IconMicrophone size={20} />
                         </button>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : null}
-            <div className="record-stage">
-              <AnimatePresence initial={false}>
-                {recordingForNote ? (
-                  <motion.div
-                    key="recorder"
-                    className="record-state record-state-recorder"
-                    initial={{ opacity: 0 }}
-                    animate={{
-                      opacity: 1,
-                      transition: {
-                        duration: 0.22,
-                        delay: 0.14,
-                        ease: [0.22, 1, 0.36, 1],
-                      },
-                    }}
-                    exit={{
-                      opacity: 0,
-                      transition: { duration: 0.12, ease: [0.22, 1, 0.36, 1] },
-                    }}
-                  >
-                    <RecorderBar
-                      status={recordingForNote}
-                      onPause={onPauseRecording}
-                      onResume={onResumeRecording}
-                      onDone={onFinishRecording}
-                    />
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="idle"
-                    className="record-state record-state-idle"
-                    initial={{ opacity: 0 }}
-                    animate={{
-                      opacity: 1,
-                      // Symmetric to the recorder enter — delay the reveal
-                      // so the idle pill resolves as the shell finishes
-                      // collapsing back, not while it's still wide.
-                      transition: {
-                        duration: 0.22,
-                        delay: 0.12,
-                        ease: [0.22, 1, 0.36, 1],
-                      },
-                    }}
-                    exit={{
-                      opacity: 0,
-                      transition: { duration: 0.12, ease: [0.22, 1, 0.36, 1] },
-                    }}
-                  >
-                    <div className="record-idle">
-                      <button
-                        type="button"
-                        className="record-button"
-                        aria-label="Record"
-                        title="Record"
-                        aria-expanded={recordConsentOpen}
-                        onClick={() => setRecordConsentOpen(true)}
-                      >
-                        <IconMicrophone size={20} />
-                      </button>
-                      <button
-                        type="button"
-                        className="record-options-trigger"
-                        aria-label="Recording options"
-                        aria-expanded={optionsOpen}
-                        data-rotated={optionsOpen}
-                        onClick={() => setOptionsOpen((value) => !value)}
-                      >
-                        <IconChevronBottom size={16} />
-                      </button>
-                    </div>
-                    {recordConsentOpen ? (
-                      <div
-                        className="record-consent-popover"
-                        role="dialog"
-                        aria-label="Recording consent reminder"
-                      >
-                        <p>
-                          Make sure everyone has agreed to be recorded before
-                          you start.
-                        </p>
-                        <div className="record-consent-actions">
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            onClick={() => setRecordConsentOpen(false)}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            onClick={() => {
-                              setRecordConsentOpen(false);
-                              onStartRecording();
-                            }}
-                          >
-                            Continue
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          className="record-options-trigger"
+                          aria-label="Recording options"
+                          aria-expanded={optionsOpen}
+                          data-rotated={optionsOpen}
+                          onClick={() => setOptionsOpen((value) => !value)}
+                        >
+                          <IconChevronBottom size={16} />
+                        </button>
                       </div>
-                    ) : null}
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </div>
           </div>
         )}

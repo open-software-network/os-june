@@ -1447,12 +1447,14 @@ name = "scribe-api"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "pretty_assertions",
  "scribe-config",
  "scribe-domain",
  "scribe-services",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tower",
  "tower-http",
  "tracing",

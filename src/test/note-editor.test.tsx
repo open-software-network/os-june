@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
 
@@ -57,6 +57,10 @@ const recovery: RecoverableRecordingDto = {
 };
 
 describe("NoteEditor", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("edits title and renders the generated note as a preview", async () => {
     const user = userEvent.setup();
     const onTitleChange = vi.fn();
@@ -334,7 +338,7 @@ describe("NoteEditor", () => {
     expect(status).toHaveTextContent("+1");
   });
 
-  it("keeps recording available when the note has an interrupted recording", async () => {
+  it("starts recording immediately without a consent gate", async () => {
     const user = userEvent.setup();
     const onStartRecording = vi.fn();
     render(
@@ -346,6 +350,7 @@ describe("NoteEditor", () => {
       />,
     );
 
+    // An interrupted recording must not disable the record button.
     expect(screen.getByText("Interrupted recording")).toBeInTheDocument();
 
     const recordButton = screen.getByRole("button", { name: "Record" });
@@ -353,38 +358,110 @@ describe("NoteEditor", () => {
 
     await user.click(recordButton);
 
-    expect(onStartRecording).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("dialog", { name: "Recording consent reminder" }),
-    ).toHaveTextContent(/everyone has agreed to be recorded/i);
-
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
+    // The click records straight away — no blocking dialog in the way.
     expect(onStartRecording).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("lets users dismiss the recording consent reminder", async () => {
-    const user = userEvent.setup();
-    const onStartRecording = vi.fn();
+  it("surfaces a dismissible consent reminder after the recorder settles", async () => {
+    vi.useFakeTimers();
     render(
       <NoteEditor
         {...props}
         note={note()}
-        onStartRecording={onStartRecording}
+        recordingStatus={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 1000,
+          level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+          silenceWarning: false,
+          bytesWritten: 2048,
+        }}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Record" }));
     expect(
-      screen.getByRole("dialog", { name: "Recording consent reminder" }),
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(419);
+    });
+
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(
+      screen.getByRole("status", { name: "Recording consent reminder" }),
+    ).toHaveTextContent(/everyone has agreed to be recorded/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    // It fades out via AnimatePresence, so it lingers for the exit animation
+    // before unmounting — advance past it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("auto-hides the consent reminder after five seconds", async () => {
+    vi.useFakeTimers();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        recordingStatus={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 1000,
+          level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+          silenceWarning: false,
+          bytesWritten: 2048,
+        }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(420);
+    });
+
+    expect(
+      screen.getByRole("status", { name: "Recording consent reminder" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    // Just shy of the auto-hide window the reminder is still up.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999);
+    });
 
     expect(
-      screen.queryByRole("dialog", { name: "Recording consent reminder" }),
+      screen.getByRole("status", { name: "Recording consent reminder" }),
+    ).toBeInTheDocument();
+
+    // Cross the 5s mark so the auto-hide fires...
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    // ...then advance past the AnimatePresence exit fade.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
     ).not.toBeInTheDocument();
-    expect(onStartRecording).not.toHaveBeenCalled();
   });
 
   it("keeps existing notes visible while showing processing status below them", () => {
