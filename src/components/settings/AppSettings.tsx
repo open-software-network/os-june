@@ -1379,7 +1379,7 @@ function shortcutFromCapturePayload(
     code: value.code,
     label: value.label,
     modifiers,
-    pressCount: 1,
+    pressCount,
   };
 }
 

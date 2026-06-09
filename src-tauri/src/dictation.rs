@@ -265,20 +265,6 @@ impl DictationShortcutSetting {
         }
     }
 
-    fn control_option_space() -> Self {
-        Self {
-            key_code: 0x31,
-            code: "Space".to_string(),
-            modifiers: DictationShortcutModifiers {
-                control: true,
-                option: true,
-                ..DictationShortcutModifiers::default()
-            },
-            label: "Ctrl+Opt+Space".to_string(),
-            press_count: 1,
-        }
-    }
-
     fn control_option_t() -> Self {
         Self {
             key_code: 0x11,
@@ -314,11 +300,6 @@ impl DictationShortcutSetting {
             return default_shortcut_for_kind(kind);
         }
         self.key_code = key_code;
-        if kind == DictationShortcutKind::Toggle
-            && self.same_trigger_as(&DictationShortcutSetting::control_option_space())
-        {
-            return DictationShortcutSetting::control_option_t();
-        }
         self.press_count = if self.press_count == 2 { 2 } else { 1 };
         self
     }
@@ -2390,12 +2371,12 @@ mod tests {
             DictationShortcutSetting::bare_fn()
         );
         assert_eq!(settings.push_to_talk_shortcut.press_count, 1);
+        assert_eq!(settings.toggle_shortcut.key_code, 0x31);
+        assert_eq!(settings.toggle_shortcut.code, "Space");
+        assert_eq!(settings.toggle_shortcut.label, "Ctrl+Opt+Space");
         assert_eq!(settings.toggle_shortcut.press_count, 1);
         assert_eq!(settings.style, DictationStyle::Standard);
         assert_eq!(settings.language, None);
-        assert!(settings
-            .toggle_shortcut
-            .same_trigger_as(&DictationShortcutSetting::control_option_t()));
     }
 
     #[test]
@@ -2425,6 +2406,41 @@ mod tests {
         assert_eq!(settings.push_to_talk_shortcut.label, "Ctrl+Opt");
         assert!(settings.push_to_talk_shortcut.modifiers.control);
         assert!(settings.push_to_talk_shortcut.modifiers.option);
+    }
+
+    #[test]
+    fn shortcut_updates_are_written_in_reloadable_settings_file() {
+        let directory = tempfile::tempdir().expect("settings tempdir should be created");
+        let state = DictationSettingsState {
+            path: directory.path().join("dictation-settings.json"),
+            settings: Mutex::new(DictationSettings::default()),
+        };
+
+        let settings = update_settings(&state, |settings| {
+            settings.push_to_talk_shortcut = DictationShortcutSetting::bare_fn();
+            settings.toggle_shortcut = DictationShortcutSetting {
+                key_code: 0x31,
+                code: "Space".to_string(),
+                modifiers: DictationShortcutModifiers {
+                    control: true,
+                    option: true,
+                    ..DictationShortcutModifiers::default()
+                },
+                label: "Ctrl+Opt+Space".to_string(),
+                press_count: 1,
+            };
+        })
+        .expect("shortcut settings should save");
+
+        let stored = std::fs::read_to_string(&state.path).expect("settings file should be written");
+        let reloaded: DictationSettings =
+            serde_json::from_str(&stored).expect("settings file should reload");
+
+        assert_eq!(
+            reloaded.push_to_talk_shortcut,
+            settings.push_to_talk_shortcut
+        );
+        assert_eq!(reloaded.toggle_shortcut, settings.toggle_shortcut);
     }
 
     #[test]
