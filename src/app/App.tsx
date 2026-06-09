@@ -628,17 +628,14 @@ export function App() {
   }, []);
 
   // The detached meeting HUD (shown when the main window is closed/minimized
-  // mid-recording) emits back here: clicking the pill "reopen"s the app on the
-  // meeting being recorded; the stop button "stop"s it. Routed through a ref so
-  // the single listener always calls the latest finish closure. Both actions
-  // surface the window so the user lands back on the note.
-  const hudFinishRef = useRef(handleFinishRecording);
-  hudFinishRef.current = handleFinishRecording;
-
+  // mid-recording) is a presence indicator, not a control surface: clicking it
+  // emits "reopen", and we bring the window forward and land back on the meeting
+  // being recorded. All recording controls stay in-app.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let aborted = false;
-    function surfaceRecordingNote() {
+    void listen<{ action: "reopen" }>("meeting-hud-action", (event) => {
+      if (event.payload?.action !== "reopen") return;
       const main = getCurrentWindow();
       void main.show();
       void main.unminimize();
@@ -648,20 +645,7 @@ export function App() {
         setActiveView("notes");
         void handleSelectNote(noteId);
       }
-    }
-    void listen<{ action: "reopen" | "stop"; sessionId?: string }>(
-      "meeting-hud-action",
-      (event) => {
-        const action = event.payload?.action;
-        const sessionId = event.payload?.sessionId;
-        if (action === "reopen") {
-          surfaceRecordingNote();
-        } else if (action === "stop" && sessionId) {
-          void hudFinishRef.current(sessionId);
-          surfaceRecordingNote();
-        }
-      },
-    ).then((cleanup) => {
+    }).then((cleanup) => {
       // If the listener resolves after unmount, tear it down immediately.
       if (aborted) cleanup();
       else unlisten = cleanup;

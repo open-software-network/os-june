@@ -1,4 +1,4 @@
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -14,11 +14,8 @@ import { meterLevelForSources, visualPeakScale } from "./lib/recorder-levels";
 import type { RecordingStatusDto } from "./lib/tauri";
 import "./styles/meeting-hud.css";
 
-type MeetingHudAction = "reopen" | "stop";
-
 const appWindow = getCurrentWindow();
 const pill = document.querySelector<HTMLDivElement>("#mhud");
-const stopButton = document.querySelector<HTMLButtonElement>("#mhud-stop");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".mhud-bar"));
 
 // Shares the dictation HUD's + recorder bar's synthesis, ballistics, and
@@ -35,12 +32,10 @@ const meter = createBarMeter(
 const POLL_WINDOW_PEAKS = 6;
 
 let recording = false;
-let sessionId: string | undefined;
 
 function applyStatus(status: RecordingStatusDto) {
   const paused = status.state === "paused";
   recording = status.state === "recording";
-  sessionId = status.sessionId || sessionId;
 
   if (pill) {
     pill.dataset.state = paused ? "paused" : "recording";
@@ -60,6 +55,11 @@ function applyStatus(status: RecordingStatusDto) {
       ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS))
       : level.peak;
   meter.pushLevel(visualPeakScale(raw));
+
+  // The first status arrives once the window is actually shown; if the initial
+  // (hidden-window) bounds came back degenerate, re-push now — otherwise the
+  // pill never becomes interactive and clicks pass straight through it.
+  if (!boundsValid) pushPillBounds();
 }
 
 function startBarLoop() {
@@ -88,29 +88,34 @@ function resetBars() {
 }
 
 // The pill rect drives native click pass-through (Rust polls the cursor against
-// it). Pushing after layout is enough — the pill is a fixed size.
+// it). The pill is a fixed size, so once we get a real (non-degenerate) rect it
+// holds — `boundsValid` guards the re-push in applyStatus.
+let boundsValid = false;
+
 function pushPillBounds() {
   if (!pill) return;
   const { left, right, top, bottom } = pill.getBoundingClientRect();
+  boundsValid = right > left;
   void invoke("meeting_hud_set_pill_bounds", {
     rect: { left, right, top, bottom },
   }).catch(() => {});
 }
 
-function sendAction(action: MeetingHudAction) {
-  void emit("meeting-hud-action", { action, sessionId }).catch(() => {});
+// Focus the main window from Rust (reliable app activation — clicking a
+// non-activating panel won't bring a backgrounded app forward on its own); Rust
+// then emits the action React uses to land back on the recording note.
+function reopenScribe() {
+  void invoke("meeting_hud_reopen").catch(() => {});
 }
 
 // One surface, two gestures: a press that moves past a small threshold drags
-// the window; a press that stays put is a click → reopen Scribe. Presses that
-// start on the stop button are ignored here so they never drag or reopen.
+// the window; a press that stays put is a click → reopen Scribe.
 const DRAG_THRESHOLD_PX = 4;
 let pressStart: { x: number; y: number } | undefined;
 let dragging = false;
 
 pill?.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
-  if ((event.target as HTMLElement).closest("button")) return;
   pressStart = { x: event.screenX, y: event.screenY };
   dragging = false;
 });
@@ -131,20 +136,14 @@ pill?.addEventListener("pointerup", (event) => {
   if (event.button !== 0) return;
   const wasClick = !!pressStart && !dragging;
   pressStart = undefined;
-  if (wasClick) sendAction("reopen");
+  if (wasClick) reopenScribe();
 });
 
 pill?.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    sendAction("reopen");
+    reopenScribe();
   }
-});
-
-stopButton?.addEventListener("click", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  sendAction("stop");
 });
 
 void listen<RecordingStatusDto>("meeting-hud-status", (event) => {

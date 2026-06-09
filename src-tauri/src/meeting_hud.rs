@@ -1,18 +1,16 @@
 //! Floating meeting-recording HUD.
 //!
-//! A small always-on-top pill — sibling to the dictation HUD — that surfaces
-//! the live recording controls (pause/resume, elapsed timer, waveform, finish)
-//! whenever the main window is closed or minimized mid-recording, so a meeting
-//! keeps recording in plain sight and the user can stop it without re-opening
-//! the app.
+//! A small always-on-top pill — sibling to the dictation HUD — that surfaces a
+//! "still recording" signal (record dot + live waveform) whenever the main
+//! window is closed or minimized mid-recording. It's a presence indicator, not
+//! a control surface: clicking it reopens the app on the meeting being recorded
+//! (see [`meeting_hud_reopen`]); all recording controls stay in-app.
 //!
 //! Unlike the dictation HUD (driven by helper-process events) the recording
 //! lifecycle is owned by the React main window. This module is deliberately a
 //! thin mirror: a background supervisor reads the live status straight from the
 //! audio capture layer, drives the HUD's visibility against the main window's
-//! state, and pumps status to the webview. Button presses are emitted back as
-//! `meeting-hud-action` events that the main window routes through its existing
-//! pause/resume/finish handlers, keeping a single owner of the lifecycle.
+//! state, and pumps status to the webview.
 //!
 //! The macOS panel plumbing (non-activating NSPanel, cursor-driven click
 //! pass-through) mirrors `dictation.rs`; the two HUDs keep independent copies so
@@ -94,6 +92,23 @@ pub fn meeting_hud_set_pill_bounds(
 #[tauri::command]
 pub fn meeting_hud_latest_status(state: State<'_, MeetingHudState>) -> Option<RecordingStatusDto> {
     state.latest_status.lock().ok().and_then(|g| g.clone())
+}
+
+/// Clicking the HUD reopens the app on the meeting being recorded. Activation is
+/// done here in Rust because clicking a non-activating panel can't pull a
+/// backgrounded app forward on its own; React then hears the emitted action and
+/// navigates to the recording note.
+#[tauri::command]
+pub fn meeting_hud_reopen(app: AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+    }
+    let _ = app.emit(
+        "meeting-hud-action",
+        serde_json::json!({ "action": "reopen" }),
+    );
 }
 
 fn is_live(state: RecordingState) -> bool {

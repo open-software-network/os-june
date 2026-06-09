@@ -1,11 +1,11 @@
 @import "./tokens.css";
 
 /*
- * Meeting recording HUD — styled to match the dictation HUD (hud.css) so the
- * two read as one family. A floating dark, blurred pill that appears when the
- * main window is closed/minimized mid-recording: a record dot + live waveform +
- * a stop button. Click the pill to bring Scribe back to the meeting; drag to
- * move. Forced dark so it reads over any app behind it.
+ * Meeting recording HUD — a small, blurred presence indicator (sibling to the
+ * dictation HUD, hud.css). When the main window is closed/minimized mid-meeting
+ * this floats as a record dot + live waveform: a calm "still recording" signal.
+ * Click it to bring Scribe back to the meeting; drag to move. No controls — all
+ * recording controls live in-app, one click away.
  */
 
 :root {
@@ -48,16 +48,14 @@ body {
   user-select: none;
 }
 
-/* Pill — mirrors .hud (hud.css): same surface, border, radius, shadow + blur. */
+/* Pill — mirrors .hud (hud.css): same surface, border, radius, shadow + blur,
+ * with roomy padding so the dot + waveform aren't cramped. */
 .mhud {
-  --mhud-stop-bg: color-mix(in oklch, var(--foreground) 5%, transparent);
-  --mhud-stop-bg-hover: color-mix(in oklch, var(--foreground) 16%, transparent);
-
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: 10px;
   height: 32px;
-  padding: 3px 8px 3px 9px;
+  padding: 0 14px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: color-mix(in oklch, var(--popover) 82%, transparent);
@@ -84,8 +82,8 @@ body {
 /* Recording dot ------------------------------------------------------- */
 .mhud-dot {
   flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 999px;
   background: var(--rec);
   /* A slow ring "breath" — no opacity flicker, so the colour stays constant. */
@@ -103,14 +101,14 @@ body {
   }
   70%,
   100% {
-    box-shadow: 0 0 0 5px oklch(0% 0 none / 0%);
+    box-shadow: 0 0 0 6px oklch(0% 0 none / 0%);
   }
 }
 
 /* Waveform — mirrors the dictation HUD bars (.hud-bar). */
 .mhud-bars {
   display: flex;
-  gap: 2.5px;
+  gap: 3px;
   align-items: center;
   justify-content: center;
   height: 22px;
@@ -141,39 +139,7 @@ body {
   opacity: 0.32;
 }
 
-/* Stop button — mirrors .hud-stop: subtle inset surface, white square glyph,
- * hover highlight. */
-.mhud-stop {
-  position: relative;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: var(--mhud-stop-bg);
-  color: var(--foreground);
-  cursor: pointer;
-  -webkit-user-drag: none;
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-.mhud-stop:hover {
-  background: var(--mhud-stop-bg-hover);
-}
-
-.mhud-stop-glyph {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  background: var(--foreground);
-  pointer-events: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .mhud-stop,
   .mhud-bar::before {
     transition: none;
   }
