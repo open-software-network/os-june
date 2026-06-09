@@ -372,12 +372,56 @@ body {
   transform-origin: 50% 72%;
 }
 
+.mascot-context-menu {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: 68px;
+  min-width: 132px;
+  padding: 5px;
+  border: 1px solid color-mix(in oklch, white 14%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklch, black 90%, transparent);
+  box-shadow:
+    0 14px 30px oklch(0% 0 none / 34%),
+    inset 0 1px 0 color-mix(in oklch, white 13%, transparent);
+  backdrop-filter: blur(12px) saturate(1.2);
+  pointer-events: auto;
+}
+
+.mascot-context-menu[hidden] {
+  display: none;
+}
+
+.mascot-context-menu button {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: white;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  letter-spacing: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mascot-context-menu button:hover,
+.mascot-context-menu button:focus-visible {
+  background: color-mix(in oklch, white 13%, transparent);
+  outline: none;
+}
+
 .mascot-avatar:focus-visible,
 .mascot-toggle:focus-visible,
 .mascot-reply:focus-visible,
 .mascot-reply-input:focus-visible,
 .mascot-reply-send:focus-visible,
-.mascot-dismiss:focus-visible {
+.mascot-dismiss:focus-visible,
+.mascot-context-menu button:focus-visible {
   outline: 2px solid oklch(0.72 0.18 250);
   outline-offset: 2px;
 }

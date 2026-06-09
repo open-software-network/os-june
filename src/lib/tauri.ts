@@ -664,6 +664,7 @@ export async function mascotSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   replying?: boolean;
+  contextMenuOpen?: boolean;
 }) {
   return invoke<void>("mascot_set_layout", { request: input });
 }

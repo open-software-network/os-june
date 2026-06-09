@@ -73,6 +73,67 @@ describe("desktop mascot", () => {
     expect(mascotElement().dataset.hasEntries).toBe("false");
   });
 
+  it("temporarily expands a collapsed active bubble on mascot hover", async () => {
+    await loadMascot();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+
+    toggleElement().dispatchEvent(
+      new Event("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await flushPromises();
+
+    expect(mascotElement().dataset.expanded).toBe("false");
+    expect(stackElement()).toBeEmptyDOMElement();
+
+    mascotElement().dispatchEvent(new Event("pointerenter"));
+    await flushPromises();
+
+    expect(mascotElement().dataset.expanded).toBe("true");
+    expect(stackElement()).toHaveTextContent("Review the branch.");
+    expect(document.querySelector(".mascot-dismiss")).toBeTruthy();
+    expect(document.querySelector(".mascot-reply")).toBeTruthy();
+    expect(localStorage.getItem("scribe:mascot:expanded")).toBe("false");
+
+    mascotElement().dispatchEvent(new Event("pointerleave"));
+    await flushPromises();
+
+    expect(mascotElement().dataset.expanded).toBe("false");
+    expect(stackElement()).toBeEmptyDOMElement();
+  });
+
+  it("shows a hide pet option from the avatar context menu", async () => {
+    await loadMascot();
+
+    avatarElement().dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+    await flushPromises();
+
+    expect(contextMenuElement().hidden).toBe(false);
+    expect(contextMenuElement()).toHaveAttribute("aria-hidden", "false");
+    expect(hidePetButton()).toHaveTextContent("Hide pet");
+    expect(mocks.invoke).toHaveBeenCalledWith("mascot_set_layout", {
+      request: {
+        expanded: false,
+        cardCount: 0,
+        replying: false,
+        contextMenuOpen: true,
+      },
+    });
+
+    hidePetButton().click();
+    await flushPromises();
+
+    expect(localStorage.getItem("scribe:mascot:enabled")).toBe("false");
+    expect(mocks.invoke).toHaveBeenCalledWith("mascot_hide");
+  });
+
   it("briefly shows Done before removing the bubble when the agent completes", async () => {
     vi.useFakeTimers();
     await loadMascot();
@@ -217,9 +278,7 @@ function emitStatus(detail: {
   title: string;
   summary: string;
 }) {
-  window.dispatchEvent(
-    new CustomEvent(AGENT_SESSION_STATUS_EVENT, { detail }),
-  );
+  window.dispatchEvent(new CustomEvent(AGENT_SESSION_STATUS_EVENT, { detail }));
 }
 
 function emitSessionsChanged(detail: {
@@ -262,10 +321,30 @@ function toggleElement() {
   return toggle as HTMLButtonElement;
 }
 
+function avatarElement() {
+  const avatar = document.querySelector<HTMLButtonElement>("#mascot-avatar");
+  expect(avatar).toBeTruthy();
+  return avatar as HTMLButtonElement;
+}
+
 function replyButton() {
   const reply = document.querySelector<HTMLButtonElement>(".mascot-reply");
   expect(reply).toBeTruthy();
   return reply as HTMLButtonElement;
+}
+
+function contextMenuElement() {
+  const contextMenu = document.querySelector<HTMLElement>(
+    "#mascot-context-menu",
+  );
+  expect(contextMenu).toBeTruthy();
+  return contextMenu as HTMLElement;
+}
+
+function hidePetButton() {
+  const hidePet = document.querySelector<HTMLButtonElement>("#mascot-hide-pet");
+  expect(hidePet).toBeTruthy();
+  return hidePet as HTMLButtonElement;
 }
 
 function mascotMarkup() {
@@ -293,6 +372,17 @@ function mascotMarkup() {
       >
         <img id="mascot-image" alt="" />
       </button>
+      <div
+        id="mascot-context-menu"
+        class="mascot-context-menu"
+        role="menu"
+        aria-hidden="true"
+        hidden
+      >
+        <button id="mascot-hide-pet" type="button" role="menuitem">
+          Hide pet
+        </button>
+      </div>
     </main>
   `;
 }

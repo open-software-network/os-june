@@ -14,6 +14,7 @@ import {
   getMascotEnabled,
   MASCOT_ENABLED_KEY,
   MASCOT_VISIBILITY_CHANGED_EVENT,
+  setMascotEnabled,
   type MascotVisibilityChangedDetail,
 } from "./lib/mascot-settings";
 import {
@@ -50,12 +51,17 @@ const stack = document.querySelector<HTMLElement>("#mascot-stack");
 const toggle = document.querySelector<HTMLButtonElement>("#mascot-toggle");
 const avatar = document.querySelector<HTMLButtonElement>("#mascot-avatar");
 const image = document.querySelector<HTMLImageElement>("#mascot-image");
+const contextMenu = document.querySelector<HTMLElement>("#mascot-context-menu");
+const hidePet = document.querySelector<HTMLButtonElement>("#mascot-hide-pet");
 
 if (image) image.src = mascotUrl;
 
 const state = {
   enabled: getMascotEnabled(),
   expanded: localStorage.getItem(EXPANDED_KEY) === "true",
+  hovered: false,
+  focused: false,
+  contextMenuOpen: false,
   sessions: [] as HermesSessionInfo[],
   selectedSessionId: undefined as string | undefined,
   workingSessionIds: new Set<string>(),
@@ -158,6 +164,12 @@ function applyStatus(detail?: AgentSessionStatusDetail) {
 
 function applyVisibility(enabled: boolean) {
   state.enabled = enabled;
+  if (!enabled) {
+    state.hovered = false;
+    state.focused = false;
+    state.contextMenuOpen = false;
+    state.replyingEntryId = undefined;
+  }
   render();
   if (enabled) {
     void mascotShow().catch(() => {});
@@ -173,12 +185,19 @@ function render() {
   const realEntries = buildEntries(false);
   const entries = state.expanded ? buildEntries(true) : realEntries;
   const hasEntries = realEntries.length > 0;
-  const expanded = state.enabled && state.expanded && realEntries.length > 0;
+  const expanded =
+    state.enabled &&
+    (state.expanded ||
+      state.hovered ||
+      state.focused ||
+      Boolean(state.replyingEntryId)) &&
+    realEntries.length > 0;
   const active = realEntries.some((entry) => isActiveStatus(entry.status));
 
   mascot.dataset.expanded = expanded ? "true" : "false";
   mascot.dataset.active = active ? "true" : "false";
   mascot.dataset.hasEntries = hasEntries ? "true" : "false";
+  mascot.dataset.contextMenuOpen = state.contextMenuOpen ? "true" : "false";
   // Only rebuild the cards when their visible content changes. Status events
   // arrive in bursts while a session works; recreating identical nodes on
   // each one restarts CSS animations (the status spinner) and reads as
@@ -211,6 +230,13 @@ function render() {
     "aria-label",
     expanded ? "Collapse June mascot" : "Expand June mascot",
   );
+  if (contextMenu) {
+    contextMenu.hidden = !state.contextMenuOpen;
+    contextMenu.setAttribute(
+      "aria-hidden",
+      state.contextMenuOpen ? "false" : "true",
+    );
+  }
 
   void syncWindowLayout(expanded, expanded ? entries.length : 0);
   scheduleStatusPrune();
@@ -602,19 +628,28 @@ function statusSubject(record: StatusRecord) {
 
 async function syncWindowLayout(expanded: boolean, cardCount: number) {
   const replying = Boolean(state.replyingEntryId);
-  const key = `${state.enabled}:${expanded}:${cardCount}:${replying}`;
+  const contextMenuOpen = state.contextMenuOpen;
+  const key = `${state.enabled}:${expanded}:${cardCount}:${replying}:${contextMenuOpen}`;
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
   if (!state.enabled) {
     await mascotHide().catch(() => {});
     return;
   }
-  await mascotSetLayout({ expanded, cardCount, replying }).catch(() => {});
+  await mascotSetLayout({
+    expanded,
+    cardCount,
+    replying,
+    ...(contextMenuOpen ? { contextMenuOpen } : {}),
+  }).catch(() => {});
   await mascotShow().catch(() => {});
 }
 
 function setExpanded(expanded: boolean) {
   if (!expanded) {
+    state.hovered = false;
+    state.focused = false;
+    state.contextMenuOpen = false;
     state.replyingEntryId = undefined;
   }
   state.expanded = expanded;
@@ -651,6 +686,63 @@ function toggleExpanded() {
   setExpanded(!renderedExpanded);
 }
 
+function setHoverExpanded(hovered: boolean) {
+  const changed = state.hovered !== hovered;
+  state.hovered = hovered;
+  let contextMenuClosed = false;
+  if (!hovered && state.contextMenuOpen) {
+    state.contextMenuOpen = false;
+    contextMenuClosed = true;
+  }
+  if (changed || contextMenuClosed) render();
+}
+
+function setFocusExpanded(focused: boolean) {
+  const changed = state.focused !== focused;
+  state.focused = focused;
+  let contextMenuClosed = false;
+  if (!focused && state.contextMenuOpen) {
+    state.contextMenuOpen = false;
+    contextMenuClosed = true;
+  }
+  if (changed || contextMenuClosed) render();
+}
+
+function openContextMenu() {
+  state.contextMenuOpen = true;
+  render();
+  window.setTimeout(() => hidePet?.focus(), 0);
+}
+
+function closeContextMenu() {
+  if (!state.contextMenuOpen) return;
+  state.contextMenuOpen = false;
+  render();
+}
+
+function hidePetFromContextMenu() {
+  closeContextMenu();
+  setMascotEnabled(false);
+}
+
+mascot?.addEventListener("pointerenter", () => {
+  setHoverExpanded(true);
+});
+
+mascot?.addEventListener("pointerleave", () => {
+  setHoverExpanded(false);
+});
+
+mascot?.addEventListener("focusin", () => {
+  setFocusExpanded(true);
+});
+
+mascot?.addEventListener("focusout", (event) => {
+  const next = event.relatedTarget;
+  if (next instanceof Node && mascot.contains(next)) return;
+  setFocusExpanded(false);
+});
+
 toggle?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -666,6 +758,33 @@ toggle?.addEventListener("keydown", (event) => {
 avatar?.addEventListener("click", () => {
   const [entry] = buildEntries(false);
   void openAgent(entry?.session);
+});
+
+avatar?.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  openContextMenu();
+});
+
+contextMenu?.addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+
+hidePet?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  hidePetFromContextMenu();
+});
+
+window.addEventListener("pointerdown", (event) => {
+  if (!state.contextMenuOpen) return;
+  const target = event.target;
+  if (target instanceof Node && contextMenu?.contains(target)) return;
+  closeContextMenu();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeContextMenu();
 });
 
 window.addEventListener(MASCOT_VISIBILITY_CHANGED_EVENT, (event) => {
