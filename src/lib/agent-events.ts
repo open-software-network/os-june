@@ -1,12 +1,12 @@
 import type { HermesSessionInfo } from "./tauri";
 
-export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
-export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
-export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
-export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
-export const AGENT_SESSION_STATUS_EVENT = "scribe:agent:session-status";
-export const AGENT_OPEN_EVENT = "scribe:agent:open";
-export const AGENT_REPLY_EVENT = "scribe:agent:reply";
+export const AGENT_NEW_SESSION_EVENT = "june:agent:new-session";
+export const AGENT_DELETE_SESSION_EVENT = "june:agent:delete-session";
+export const AGENT_SESSIONS_CHANGED_EVENT = "june:agent:sessions-changed";
+export const AGENT_NEW_SESSION_PENDING_KEY = "june:agent:new-session-pending";
+export const AGENT_SESSION_STATUS_EVENT = "june:agent:session-status";
+export const AGENT_OPEN_EVENT = "june:agent:open";
+export const AGENT_REPLY_EVENT = "june:agent:reply";
 
 export type AgentSessionStatusKind =
   | "received"

@@ -9,10 +9,10 @@ inputs:
     description: Phala CVM name. The action probes `phala cvms list --json` and branches between `phala deploy -n <name>` (create) and `phala deploy --cvm-id <name>` (update) since the CLI doesn't expose an upsert flag.
     required: true
   compose-file:
-    description: Path to docker-compose.yml containing the literal placeholder ${SCRIBE_IMAGE}.
+    description: Path to docker-compose.yml containing the literal placeholder ${JUNE_IMAGE}.
     required: true
   image-ref:
-    description: Full GHCR image ref (tag or @sha256:digest) to substitute for ${SCRIBE_IMAGE}.
+    description: Full GHCR image ref (tag or @sha256:digest) to substitute for ${JUNE_IMAGE}.
     required: true
   api-key:
     description: Phala Cloud API key (PHALA_CLOUD_API_KEY).
@@ -62,8 +62,8 @@ runs:
           echo "::error::compose-file not found: $COMPOSE_FILE"
           exit 1
         fi
-        if ! grep -q '\${SCRIBE_IMAGE}' "$COMPOSE_FILE"; then
-          echo "::error::compose-file is missing the \${SCRIBE_IMAGE} placeholder."
+        if ! grep -q '\${JUNE_IMAGE}' "$COMPOSE_FILE"; then
+          echo "::error::compose-file is missing the \${JUNE_IMAGE} placeholder."
           exit 1
         fi
         if [[ ! "$IMAGE_REF" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[A-Za-z0-9_.-]{1,128}|@sha256:[a-f0-9]{64})$ ]]; then
@@ -71,7 +71,7 @@ runs:
           exit 1
         fi
         rendered="${RUNNER_TEMP}/$(basename "$COMPOSE_FILE")"
-        perl -0pe 's/\$\{SCRIBE_IMAGE\}/$ENV{IMAGE_REF}/g' "$COMPOSE_FILE" > "$rendered"
+        perl -0pe 's/\$\{JUNE_IMAGE\}/$ENV{IMAGE_REF}/g' "$COMPOSE_FILE" > "$rendered"
         echo "Rendered compose for $IMAGE_REF at $rendered."
         echo "rendered=${rendered}" >> "$GITHUB_OUTPUT"
 

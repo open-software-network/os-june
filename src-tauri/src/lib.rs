@@ -10,14 +10,14 @@ pub mod meeting_detection;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
-pub mod scribe_api;
+pub mod june_api;
 
 use tauri::Emitter;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
-const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
+const CHECK_FOR_UPDATES_EVENT: &str = "june://check-for-updates";
 
 pub fn run() {
     providers::load_local_env();
@@ -153,7 +153,7 @@ pub fn run() {
             Ok(())
         })
         .build(context)
-        .expect("failed to build OS Scribe")
+        .expect("failed to build OS June")
         .run(|app, event| match event {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);

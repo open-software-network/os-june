@@ -1,6 +1,6 @@
 //! Model-picker state. The Tauri side persists which transcription /
 //! generation models the user selected; provider keys and URLs live in
-//! Scribe API, never here.
+//! June API, never here.
 
 use crate::domain::types::AppError;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -92,8 +92,8 @@ pub struct VeniceModelDto {
     pub output_credits_per_million_tokens: Option<u64>,
 }
 
-impl From<crate::scribe_api::ModelDto> for VeniceModelDto {
-    fn from(value: crate::scribe_api::ModelDto) -> Self {
+impl From<crate::june_api::ModelDto> for VeniceModelDto {
+    fn from(value: crate::june_api::ModelDto) -> Self {
         let pricing = pricing_with_display(value.pricing, &value.price_description);
         Self {
             description: value.description,
@@ -139,7 +139,7 @@ pub fn configured_transcription_provider() -> String {
 }
 
 pub fn provider_configured() -> bool {
-    crate::scribe_api::configured()
+    crate::june_api::configured()
 }
 
 pub fn transcription_model() -> String {
@@ -205,7 +205,7 @@ pub async fn list_venice_models(
 ) -> Result<VeniceModelsResponse, AppError> {
     let model_type = request.mode.api_type();
     let selected_model = selected_model_for_mode(&state, request.mode)?;
-    let mut models = crate::scribe_api::list_models(model_type)
+    let mut models = crate::june_api::list_models(model_type)
         .await?
         .into_iter()
         .map(VeniceModelDto::from)

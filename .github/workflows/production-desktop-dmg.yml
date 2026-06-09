@@ -40,7 +40,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-scribe,os-scribe-releases
+          repositories: os-june,os-june-releases
 
       - uses: actions/checkout@v4
         with:
@@ -106,7 +106,7 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          PRODUCTION_SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
+          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         run: |
           set -euo pipefail
           missing=0
@@ -123,7 +123,7 @@ jobs:
             PRODUCTION_OS_ACCOUNTS_URL \
             PRODUCTION_OS_ACCOUNTS_API_URL \
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
-            PRODUCTION_SCRIBE_API_URL
+            PRODUCTION_JUNE_API_URL
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required for a production auto-update release."
@@ -192,8 +192,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          keychain="$RUNNER_TEMP/os-scribe-signing.keychain-db"
-          keychain_password="os-scribe-$RANDOM-$RANDOM"
+          keychain="$RUNNER_TEMP/os-june-signing.keychain-db"
+          keychain_password="os-june-$RANDOM-$RANDOM"
           cert="$RUNNER_TEMP/certificate.p12"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
           security create-keychain -p "$keychain_password" "$keychain"
@@ -224,13 +224,13 @@ jobs:
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
+          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         with:
           owner: open-software-network
-          repo: os-scribe-releases
+          repo: os-june-releases
           tagName: v${{ env.VERSION }}
-          releaseName: OS Scribe v${{ env.VERSION }}
-          releaseBody: "Stable OS Scribe release v${{ env.VERSION }}."
+          releaseName: OS June v${{ env.VERSION }}
+          releaseBody: "Stable OS June release v${{ env.VERSION }}."
           releaseCommitish: main
           # Plain notes only: the in-app update dialog renders latest.json's
           # `notes` as plain text, so GitHub's auto-generated markdown would show
@@ -265,6 +265,6 @@ jobs:
           {
             echo "### Production macOS release"
             echo "- Version: \`$VERSION\`"
-            echo "- Release repo: \`open-software-network/os-scribe-releases\`"
-            echo "- Update manifest: \`https://github.com/open-software-network/os-scribe-releases/releases/latest/download/latest.json\`"
+            echo "- Release repo: \`open-software-network/os-june-releases\`"
+            echo "- Update manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

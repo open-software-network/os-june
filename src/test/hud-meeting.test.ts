@@ -78,7 +78,7 @@ describe("meeting detection HUD", () => {
 
     await Promise.resolve();
     expect(mocks.emit).toHaveBeenCalledWith(
-      "scribe://meeting-start-transcription",
+      "june://meeting-start-transcription",
     );
     await vi.runAllTimersAsync();
     expect(mocks.hide).toHaveBeenCalledOnce();

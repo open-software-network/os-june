@@ -21,7 +21,7 @@ use tokio::{
 
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
-const SCRIBE_HERMES_COMMAND_ENV: &str = "SCRIBE_HERMES_COMMAND";
+const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
 const HERMES_AGENT_INSTALL_COMMIT: &str = "31c40c72c03cb11d5e596d015d61e7dd118cecee";
 const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/31c40c72c03cb11d5e596d015d61e7dd118cecee.tar.gz";
@@ -31,8 +31,8 @@ const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
-const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
-const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
+const JUNE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -95,10 +95,10 @@ struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
-    proxy: Option<ScribeProviderProxy>,
+    proxy: Option<JuneProviderProxy>,
 }
 
-struct ScribeProviderProxy {
+struct JuneProviderProxy {
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -344,7 +344,7 @@ async fn start_hermes_bridge_inner(
         "ws://127.0.0.1:{port}/api/ws?token={}",
         urlencoding::encode(&token)
     );
-    let hermes_home = resolve_scribe_hermes_home(app)?;
+    let hermes_home = resolve_june_hermes_home(app)?;
     let command_resolution = resolve_hermes_command(app, &hermes_home).await?;
     let command = command_resolution.command;
     let _command_source = command_resolution.source;
@@ -360,7 +360,7 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy_token = random_token();
-    let provider_proxy = start_scribe_provider_proxy(provider_proxy_token.clone()).await?;
+    let provider_proxy = start_june_provider_proxy(provider_proxy_token.clone()).await?;
     sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
     sync_june_soul(&hermes_home)?;
 
@@ -383,7 +383,7 @@ async fn start_hermes_bridge_inner(
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
-            format!("Could not start the Scribe-managed Hermes runtime. {error}"),
+            format!("Could not start the June-managed Hermes runtime. {error}"),
         )
     })?;
     let pid = child.id();
@@ -426,7 +426,7 @@ async fn start_hermes_bridge_inner(
             generation,
             child,
             connection: connection.clone(),
-            proxy: Some(ScribeProviderProxy {
+            proxy: Some(JuneProviderProxy {
                 shutdown: Some(provider_proxy.shutdown),
             }),
         });
@@ -675,7 +675,7 @@ pub async fn hermes_bridge_filesystem_snapshot(
     let hermes_home = connection
         .as_ref()
         .map(|item| PathBuf::from(&item.hermes_home))
-        .unwrap_or(resolve_scribe_hermes_home(&app)?);
+        .unwrap_or(resolve_june_hermes_home(&app)?);
     let roots = filesystem_roots(&hermes_home)?
         .into_iter()
         .filter_map(|root| {
@@ -737,7 +737,7 @@ pub async fn import_hermes_bridge_file(
             "Dropped files must be 50 MB or smaller.",
         ));
     }
-    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let hermes_home = resolve_june_hermes_home(&app)?;
     let upload_dir = hermes_home.join("workspace").join("uploads");
     fs::create_dir_all(&upload_dir)
         .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
@@ -762,7 +762,7 @@ pub async fn import_hermes_bridge_file(
 }
 
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
-    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let hermes_home = resolve_june_hermes_home(&app)?;
     let requested = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
@@ -1090,7 +1090,7 @@ async fn resolve_hermes_command(
     app: &AppHandle,
     hermes_home: &Path,
 ) -> Result<HermesCommandResolution, AppError> {
-    if let Ok(command) = std::env::var(SCRIBE_HERMES_COMMAND_ENV) {
+    if let Ok(command) = std::env::var(JUNE_HERMES_COMMAND_ENV) {
         let command = command.trim();
         if !command.is_empty() {
             return Ok(HermesCommandResolution {
@@ -1118,7 +1118,7 @@ async fn resolve_hermes_command(
     if let Err(error) = install_managed_hermes_runtime(app, hermes_home).await {
         if let Some(command) = user_local_hermes_command() {
             eprintln!(
-                "failed to install Scribe-managed Hermes runtime; using existing user-local Hermes fallback: {}",
+                "failed to install June-managed Hermes runtime; using existing user-local Hermes fallback: {}",
                 error.message
             );
             return Ok(HermesCommandResolution {
@@ -1235,16 +1235,16 @@ async fn install_managed_hermes_runtime(
             Command::new("/bin/bash")
                 .arg("-c")
                 .arg(MANAGED_HERMES_INSTALL_SCRIPT)
-                .env("SCRIBE_HERMES_RUNTIME_DIR", &runtime_dir)
-                .env("SCRIBE_HERMES_INSTALL_DIR", &install_dir)
-                .env("SCRIBE_HERMES_HOME", &hermes_home)
-                .env("SCRIBE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env("JUNE_HERMES_RUNTIME_DIR", &runtime_dir)
+                .env("JUNE_HERMES_INSTALL_DIR", &install_dir)
+                .env("JUNE_HERMES_HOME", &hermes_home)
+                .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
                 .env(
-                    "SCRIBE_HERMES_SOURCE_TARBALL_URL",
+                    "JUNE_HERMES_SOURCE_TARBALL_URL",
                     HERMES_SOURCE_TARBALL_URL,
                 )
                 .env(
-                    "SCRIBE_HERMES_SOURCE_TARBALL_SHA256",
+                    "JUNE_HERMES_SOURCE_TARBALL_SHA256",
                     HERMES_SOURCE_TARBALL_SHA256,
                 )
                 .env("HERMES_HOME", &hermes_home)
@@ -1272,7 +1272,7 @@ async fn install_managed_hermes_runtime(
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             format!(
-                "Could not set up the Scribe-managed Hermes runtime. Install log: {}.",
+                "Could not set up the June-managed Hermes runtime. Install log: {}.",
                 install_log.display()
             ),
         ));
@@ -1294,12 +1294,12 @@ async fn install_managed_hermes_runtime(
 const MANAGED_HERMES_INSTALL_SCRIPT: &str = r#"
 set -euo pipefail
 
-runtime_dir="${SCRIBE_HERMES_RUNTIME_DIR:?}"
-install_dir="${SCRIBE_HERMES_INSTALL_DIR:?}"
-hermes_home="${SCRIBE_HERMES_HOME:?}"
-install_commit="${SCRIBE_HERMES_INSTALL_COMMIT:?}"
-source_tarball_url="${SCRIBE_HERMES_SOURCE_TARBALL_URL:?}"
-source_tarball_sha256="${SCRIBE_HERMES_SOURCE_TARBALL_SHA256:?}"
+runtime_dir="${JUNE_HERMES_RUNTIME_DIR:?}"
+install_dir="${JUNE_HERMES_INSTALL_DIR:?}"
+hermes_home="${JUNE_HERMES_HOME:?}"
+install_commit="${JUNE_HERMES_INSTALL_COMMIT:?}"
+source_tarball_url="${JUNE_HERMES_SOURCE_TARBALL_URL:?}"
+source_tarball_sha256="${JUNE_HERMES_SOURCE_TARBALL_SHA256:?}"
 
 mkdir -p "$runtime_dir" "$hermes_home"
 
@@ -1358,7 +1358,7 @@ fn apply_isolated_hermes_env(cmd: &mut Command, hermes_home: &std::path::Path, t
         .env("no_proxy", "127.0.0.1,localhost,::1");
 }
 
-fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
+fn resolve_june_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
     let path = app
         .path()
         .app_data_dir()
@@ -1396,7 +1396,7 @@ display:
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
 }
 
-/// Writes the June persona to `SOUL.md` in the Scribe-managed Hermes home.
+/// Writes the June persona to `SOUL.md` in the June-managed Hermes home.
 /// Runs on every start so the app-owned identity wins over the default soul
 /// Hermes seeds on first run (and over any stale copy from earlier versions).
 fn sync_june_soul(hermes_home: &std::path::Path) -> Result<(), AppError> {
@@ -1523,35 +1523,35 @@ fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-async fn start_scribe_provider_proxy(
+async fn start_june_provider_proxy(
     token: String,
-) -> Result<RunningScribeProviderProxy, AppError> {
+) -> Result<RunningJuneProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
+        .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     listener
         .set_nonblocking(true)
-        .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
+        .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let port = listener
         .local_addr()
-        .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?
+        .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?
         .port();
     let listener = tokio::net::TcpListener::from_std(listener)
-        .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
+        .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let (shutdown, shutdown_rx) = oneshot::channel();
-    tauri::async_runtime::spawn(run_scribe_provider_proxy(
+    tauri::async_runtime::spawn(run_june_provider_proxy(
         listener,
         Arc::new(token),
         shutdown_rx,
     ));
-    Ok(RunningScribeProviderProxy { port, shutdown })
+    Ok(RunningJuneProviderProxy { port, shutdown })
 }
 
-struct RunningScribeProviderProxy {
+struct RunningJuneProviderProxy {
     port: u16,
     shutdown: oneshot::Sender<()>,
 }
 
-async fn run_scribe_provider_proxy(
+async fn run_june_provider_proxy(
     listener: tokio::net::TcpListener,
     token: Arc<String>,
     mut shutdown: oneshot::Receiver<()>,
@@ -1564,7 +1564,7 @@ async fn run_scribe_provider_proxy(
                     Ok((stream, _)) => {
                         let token = token.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = handle_scribe_provider_connection(stream, token).await;
+                            let _ = handle_june_provider_connection(stream, token).await;
                         });
                     }
                     Err(error) => {
@@ -1572,7 +1572,7 @@ async fn run_scribe_provider_proxy(
                         // usually transient. Keep the listener alive — the
                         // bridge still reports running — and back off
                         // briefly so a persistent error can't hot-loop.
-                        eprintln!("Scribe provider proxy accept failed: {error}");
+                        eprintln!("June provider proxy accept failed: {error}");
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 }
@@ -1581,7 +1581,7 @@ async fn run_scribe_provider_proxy(
     }
 }
 
-async fn handle_scribe_provider_connection(
+async fn handle_june_provider_connection(
     mut stream: tokio::net::TcpStream,
     token: Arc<String>,
 ) -> io::Result<()> {
@@ -1615,7 +1615,7 @@ async fn handle_scribe_provider_connection(
                     "id": model,
                     "object": "model",
                     "created": 0,
-                    "owned_by": "scribe"
+                    "owned_by": "june"
                 }]
             });
             write_json_response(&mut stream, 200, body).await?;
@@ -1623,7 +1623,7 @@ async fn handle_scribe_provider_connection(
         ("POST", "/v1/chat/completions") => {
             let body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
-            match crate::scribe_api::proxy_agent_chat_completions(body).await {
+            match crate::june_api::proxy_agent_chat_completions(body).await {
                 Ok(response) => {
                     write_streaming_response(&mut stream, response).await?;
                 }
@@ -1633,7 +1633,7 @@ async fn handle_scribe_provider_connection(
                         502,
                         serde_json::json!({
                             "error": {
-                                "message": format!("Scribe agent provider failed: {}", error.message),
+                                "message": format!("June agent provider failed: {}", error.message),
                                 "type": error.code
                             }
                         }),
@@ -1673,7 +1673,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
             break;
         }
-        if buffer.len() > SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES {
+        if buffer.len() > JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "HTTP headers are too large",
@@ -1713,7 +1713,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
             }
         })
         .unwrap_or(0);
-    if content_length > SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES {
+    if content_length > JUNE_PROVIDER_PROXY_MAX_BODY_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "HTTP body is too large",
@@ -1797,7 +1797,7 @@ async fn write_raw_response(
 /// closing the connection and no Content-Length is sent.
 async fn write_streaming_response(
     stream: &mut tokio::net::TcpStream,
-    mut response: crate::scribe_api::AgentChatCompletionsResponse,
+    mut response: crate::june_api::AgentChatCompletionsResponse,
 ) -> io::Result<()> {
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n",
@@ -1815,7 +1815,7 @@ async fn write_streaming_response(
                 // no longer possible. Close the connection to end the body;
                 // the client sees a truncated stream and surfaces the abort.
                 eprintln!(
-                    "Scribe provider proxy upstream stream failed: {}",
+                    "June provider proxy upstream stream failed: {}",
                     error.message
                 );
                 break;

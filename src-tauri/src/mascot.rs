@@ -6,7 +6,7 @@ use tauri::{
 
 const MASCOT_WINDOW_LABEL: &str = "mascot";
 const MAIN_WINDOW_LABEL: &str = "main";
-const AGENT_OPEN_EVENT: &str = "scribe:agent:open";
+const AGENT_OPEN_EVENT: &str = "june:agent:open";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

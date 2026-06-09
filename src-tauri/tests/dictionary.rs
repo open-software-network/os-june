@@ -1,5 +1,5 @@
 use chrono::{Duration, SecondsFormat, Utc};
-use os_scribe_lib::db::{migrations::run_migrations, repositories::Repositories};
+use os_june_lib::db::{migrations::run_migrations, repositories::Repositories};
 use sqlx::sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {

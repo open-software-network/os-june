@@ -6,9 +6,9 @@ use tauri::{
 };
 
 const TRAY_ID: &str = "agent-menu-bar";
-const AGENT_MENU_BAR_STATE_EVENT: &str = "scribe:menu-bar:agent-state";
-const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "scribe:menu-bar:new-agent-session";
-const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "scribe:menu-bar:open-agent-session";
+const AGENT_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:agent-state";
+const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "june:menu-bar:new-agent-session";
+const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "june:menu-bar:open-agent-session";
 
 const MENU_SHOW_ID: &str = "agent_menu_bar_show";
 const MENU_NEW_SESSION_ID: &str = "agent_menu_bar_new_session";

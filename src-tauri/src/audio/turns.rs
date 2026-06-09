@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn normalization_boosts_quiet_wav_without_touching_original() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-normalize-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-normalize-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("quiet.wav");
         let output = dir.join("normalized.wav");
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn normalization_reuses_loud_enough_wav() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-normalize-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-normalize-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("loud.wav");
         let output = dir.join("normalized.wav");
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn normalization_downmixes_and_downsamples_for_transcription() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-normalize-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-normalize-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("stereo.wav");
         let output = dir.join("prepared.wav");
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn flags_silent_track_and_keeps_audible_one() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-silence-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-silence-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let silent = dir.join("silent.wav");
         let audible = dir.join("audible.wav");

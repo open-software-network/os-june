@@ -3,7 +3,7 @@ type ResolvedTheme = "light" | "dark";
 
 type StartViewTransition = (callback: () => void) => unknown;
 
-const STORAGE_KEY = "os-scribe:theme";
+const STORAGE_KEY = "os-june:theme";
 const VALID: ThemePreference[] = ["system", "light", "dark"];
 
 let systemMedia: MediaQueryList | undefined;

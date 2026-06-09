@@ -39,7 +39,7 @@ export type UpdateInstallProgress = {
   contentLength?: number;
 };
 
-export async function checkForScribeUpdate<TUpdate extends UpdaterUpdate>(
+export async function checkForJuneUpdate<TUpdate extends UpdaterUpdate>(
   deps: UpdateCheckDeps<TUpdate>,
   mode: UpdateCheckMode,
 ) {
@@ -59,7 +59,7 @@ export async function checkForScribeUpdate<TUpdate extends UpdaterUpdate>(
   }
 }
 
-export async function installScribeUpdate<TUpdate extends UpdaterUpdate>({
+export async function installJuneUpdate<TUpdate extends UpdaterUpdate>({
   update,
   relaunch,
   reportProgress,

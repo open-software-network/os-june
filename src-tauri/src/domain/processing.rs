@@ -8,7 +8,7 @@ use crate::{
     domain::types::{
         AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode, TranscriptDto,
     },
-    scribe_api::{
+    june_api::{
         generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
         TranscriptionProviderResult, TranscriptionRequest,
     },
@@ -259,7 +259,7 @@ pub async fn process_saved_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
-    let temp_dir = session_temp_dir("os-scribe-transcription", session_id);
+    let temp_dir = session_temp_dir("os-june-transcription", session_id);
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir)
         .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
@@ -429,7 +429,7 @@ pub async fn process_saved_source_audio(
         )
         .await?;
 
-    let segment_dir = session_temp_dir("os-scribe-turns", session_id);
+    let segment_dir = session_temp_dir("os-june-turns", session_id);
     let _ = std::fs::remove_dir_all(&segment_dir);
     std::fs::create_dir_all(&segment_dir)
         .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
@@ -1479,7 +1479,7 @@ async fn cleanup_note_transcript_text(
     let _ = NOTE_TRANSCRIPT_CLEANUP_INSTRUCTIONS;
     match tokio::time::timeout(
         Duration::from_millis(NOTE_TRANSCRIPT_CLEANUP_TIMEOUT_MS),
-        crate::scribe_api::cleanup_text(crate::scribe_api::DictateCleanupRequestParams {
+        crate::june_api::cleanup_text(crate::june_api::DictateCleanupRequestParams {
             text: text.to_string(),
             dictionary_context: context.map(str::to_string),
             style: "note_transcript_cleanup".to_string(),
@@ -1521,7 +1521,7 @@ fn tail_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scribe_api::TranscriptionProviderResult;
+    use crate::june_api::TranscriptionProviderResult;
     use std::{
         collections::HashMap,
         path::PathBuf,
@@ -1534,13 +1534,13 @@ mod tests {
 
     #[test]
     fn session_temp_dir_sanitizes_untrusted_session_ids() {
-        let temp_dir = session_temp_dir("os-scribe-turns", "../../outside/session");
+        let temp_dir = session_temp_dir("os-june-turns", "../../outside/session");
         let file_name = temp_dir
             .file_name()
             .and_then(|value| value.to_str())
             .expect("temp dir file name");
 
-        assert_eq!(file_name, "os-scribe-turns-______outside_session");
+        assert_eq!(file_name, "os-june-turns-______outside_session");
         assert!(!temp_dir
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir)));
@@ -1767,12 +1767,12 @@ mod tests {
     #[test]
     fn transcription_failure_messages_hide_provider_codes() {
         assert_eq!(
-            user_facing_transcription_failure_message("scribe_request_failed", "no_speech"),
+            user_facing_transcription_failure_message("june_request_failed", "no_speech"),
             "No speech detected. Try speaking louder or moving closer to the microphone."
         );
         assert_eq!(
             user_facing_transcription_failure_message(
-                "scribe_request_failed",
+                "june_request_failed",
                 "upstream_provider_failed"
             ),
             "The transcription provider could not process this audio."
@@ -1874,7 +1874,7 @@ mod tests {
     #[test]
     fn drops_silent_system_source_but_keeps_microphone() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-drop-silent-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -1899,7 +1899,7 @@ mod tests {
     #[test]
     fn keeps_silent_system_source_when_it_is_the_only_one() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-drop-silent-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let system_path = dir.join("system.wav");
         write_test_wav(&system_path, &[0, 0, 0, 0]);
@@ -1920,7 +1920,7 @@ mod tests {
     #[test]
     fn keeps_audible_system_source() {
         let dir =
-            std::env::temp_dir().join(format!("os-scribe-drop-silent-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");

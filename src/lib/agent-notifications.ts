@@ -24,13 +24,13 @@ const DEDUPE_WINDOW_MS = 15_000;
 const NOTIFICATION_SOUND = "Ping";
 
 type AgentNotificationGlobal = typeof globalThis & {
-  __scribeAgentNotificationTimes?: Map<string, number>;
+  __juneAgentNotificationTimes?: Map<string, number>;
 };
 
 function recentNotificationTimes(now: number) {
   const target = globalThis as AgentNotificationGlobal;
-  target.__scribeAgentNotificationTimes ??= new Map<string, number>();
-  const recent = target.__scribeAgentNotificationTimes;
+  target.__juneAgentNotificationTimes ??= new Map<string, number>();
+  const recent = target.__juneAgentNotificationTimes;
   for (const [key, timestamp] of recent) {
     if (now - timestamp >= DEDUPE_WINDOW_MS) recent.delete(key);
   }
@@ -95,10 +95,10 @@ export function agentNotificationCopy(
 
 function agentNotificationGroup(detail: AgentSessionStatusDetail) {
   if (detail.sessionId) {
-    return `scribe-agent-${detail.sessionId}`;
+    return `june-agent-${detail.sessionId}`;
   }
   const fallback = detail.title || detail.prompt || "session";
-  return `scribe-agent-${detail.status}-${fallback.slice(0, 64)}`;
+  return `june-agent-${detail.status}-${fallback.slice(0, 64)}`;
 }
 
 function playAgentNotificationTone(status: AgentSessionStatusKind) {

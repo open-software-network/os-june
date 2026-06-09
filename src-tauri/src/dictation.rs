@@ -3,7 +3,7 @@ use crate::domain::{
     types::{AppError, ListDictationHistoryResponse},
 };
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
-use crate::scribe_api::{
+use crate::june_api::{
     cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
     TranscriptionProviderResult,
 };
@@ -53,7 +53,7 @@ pub struct HotkeyStatus {
 
 /// Position the HUD remembers between dictation sessions in the same process.
 /// Intentionally process-scoped, not disk-persisted: every fresh launch of
-/// Scribe should put the pill back at top-center, but within a single run
+/// June should put the pill back at top-center, but within a single run
 /// the user's drag-to-corner choice should stick.
 pub struct HudPosition {
     inner: Mutex<Option<(i32, i32)>>,
@@ -1209,38 +1209,38 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
             paths.push(
                 repo_dir
                     .join(".tauri-helper")
-                    .join("OS Scribe Dictation Helper.app")
+                    .join("OS June Dictation Helper.app")
                     .join("Contents")
                     .join("MacOS")
-                    .join("os-scribe-dictation-helper"),
+                    .join("os-june-dictation-helper"),
             );
         }
     }
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            paths.push(exe_dir.join("os-scribe-dictation-helper"));
-            paths.push(exe_dir.join("../Resources/os-scribe-dictation-helper"));
+            paths.push(exe_dir.join("os-june-dictation-helper"));
+            paths.push(exe_dir.join("../Resources/os-june-dictation-helper"));
         }
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        paths.push(resource_dir.join("os-scribe-dictation-helper"));
+        paths.push(resource_dir.join("os-june-dictation-helper"));
         paths.push(
             resource_dir
                 .join("native")
                 .join("bin")
-                .join("OS Scribe Dictation Helper.app")
+                .join("OS June Dictation Helper.app")
                 .join("Contents")
                 .join("MacOS")
-                .join("os-scribe-dictation-helper"),
+                .join("os-june-dictation-helper"),
         );
         paths.push(
             resource_dir
-                .join("OS Scribe Dictation Helper.app")
+                .join("OS June Dictation Helper.app")
                 .join("Contents")
                 .join("MacOS")
-                .join("os-scribe-dictation-helper"),
+                .join("os-june-dictation-helper"),
         );
     }
 
@@ -1427,7 +1427,7 @@ fn dictation_transcription_provider(provider: String) -> Result<String, AppError
     if provider != OPENAI_PROVIDER && provider != VENICE_PROVIDER {
         return Err(AppError::new(
             "dictation_provider_not_configured",
-            "Dictation requires an OpenAI or Venice transcription model through Scribe API.",
+            "Dictation requires an OpenAI or Venice transcription model through June API.",
         ));
     }
     Ok(provider)
@@ -2044,7 +2044,7 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         || normalized_message.contains("no recorded audio")
         || normalized_message.contains("audio file is too short")
         || normalized_message.contains("did not return any transcript")
-        // Scribe API collapses an empty dictation to a BadRequest whose message
+        // June API collapses an empty dictation to a BadRequest whose message
         // is the service reason (e.g. "no_speech", "dictation_text_empty").
         // Treat those as "nothing captured", not a fault.
         || normalized_message.contains("no_speech")
@@ -2097,7 +2097,7 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
     // Restore the in-memory drag position if it's still on-screen. This
     // doesn't persist across app restarts — that's deliberate; quitting
-    // Scribe resets the HUD to top-center so it can't end up lost on a
+    // June resets the HUD to top-center so it can't end up lost on a
     // monitor that's no longer connected.
     if let Some(state) = app.try_state::<HudPosition>() {
         let saved = state.inner.lock().ok().and_then(|guard| *guard);
@@ -2195,7 +2195,7 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
 /// `NSWindowStyleMaskNonactivatingPanel` style bit, so clicking the drag
 /// handle or stop button doesn't steal focus from whichever app the user is
 /// dictating into. Without this, every interaction with the HUD activates
-/// OS Scribe and yanks the text cursor out of the user's document.
+/// OS June and yanks the text cursor out of the user's document.
 #[cfg(target_os = "macos")]
 fn make_hud_nonactivating(hud: &WebviewWindow) {
     use objc2::msg_send;
@@ -2859,7 +2859,7 @@ mod tests {
         let event = serde_json::json!({
             "type": "recording_ready",
             "payload": {
-                "path": "/tmp/os-scribe-dictation-test.m4a",
+                "path": "/tmp/os-june-dictation-test.m4a",
                 "observedAudioLevel": "0.1732",
             }
         });
@@ -2868,7 +2868,7 @@ mod tests {
 
         assert_eq!(
             info.audio_path,
-            PathBuf::from("/tmp/os-scribe-dictation-test.m4a")
+            PathBuf::from("/tmp/os-june-dictation-test.m4a")
         );
         assert_eq!(info.observed_audio_level, Some(0.1732));
     }
@@ -2876,7 +2876,7 @@ mod tests {
     #[test]
     fn dictation_text_empty_error_is_silent() {
         let event = app_error_event(AppError::new(
-            "scribe_request_failed",
+            "june_request_failed",
             "dictation_text_empty",
         ));
         assert!(is_silent_transcription_error(&event));
@@ -2950,13 +2950,13 @@ mod tests {
     #[test]
     fn no_speech_error_with_detected_audio_is_visible_error() {
         let outcome = outcome_from_transcription_result(
-            Err(AppError::new("scribe_request_failed", "no_speech")),
+            Err(AppError::new("june_request_failed", "no_speech")),
             Some(0.2),
         );
 
         let event = outcome.event.expect("no speech emits an event");
         assert_eq!(event["payload"]["code"], "dictation_audio_without_text");
-        assert_eq!(event["payload"]["underlyingCode"], "scribe_request_failed");
+        assert_eq!(event["payload"]["underlyingCode"], "june_request_failed");
         assert_eq!(event["payload"]["underlyingMessage"], "no_speech");
         assert!(!is_silent_transcription_error(&event));
     }

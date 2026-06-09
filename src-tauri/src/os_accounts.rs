@@ -1,10 +1,10 @@
 //! Identity-only integration with OS Accounts (Login with Open Software).
 //!
 //! Tokens live in the OS keychain (never the webview). Metering goes through
-//! Scribe API, which holds the App API key — never this binary.
+//! June API, which holds the App API key — never this binary.
 //!
 //! Debug builds can opt into a plaintext token file for local development via
-//! `OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE=1`; release builds always use Keychain.
+//! `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1`; release builds always use Keychain.
 
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -28,16 +28,16 @@ use tokio::{
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
-// Scopes Scribe needs. profile:read for /me, billing:read for /billing/balance,
-// credits:spend so Scribe API can authorize-and-charge against the user's
+// Scopes June needs. profile:read for /me, billing:read for /billing/balance,
+// credits:spend so June API can authorize-and-charge against the user's
 // wallet for transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
-// Scribe's OS Accounts token store. Keep this app-scoped so Scribe does not
+// June's OS Accounts token store. Keep this app-scoped so June does not
 // touch credentials written by other Open Software apps on startup.
-const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
+const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.accounts";
 const KEYCHAIN_USER: &str = "tokens";
 #[cfg(debug_assertions)]
-const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE";
+const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
 #[cfg(debug_assertions)]
 const DEV_PLAINTEXT_TOKEN_FILE: &str = "dev-os-accounts-tokens.json";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -174,7 +174,7 @@ impl Config {
 
     /// Where OS Accounts redirects after the user signs in. Dev builds use a
     /// loopback HTTP listener (works in `pnpm tauri:dev`, no installed bundle
-    /// required). Release builds use the `osscribe://` custom URI scheme,
+    /// required). Release builds use the `osjune://` custom URI scheme,
     /// registered by `tauri-plugin-deep-link` against the signed `.app`
     /// bundle — no temp HTTP listener, no macOS firewall prompt, cleaner UX.
     fn redirect_uri(&self) -> String {
@@ -185,7 +185,7 @@ impl Config {
         #[cfg(not(debug_assertions))]
         {
             let _ = self.loopback_port; // suppress dead_code lint in release builds
-            "osscribe://auth/callback".to_string()
+            "osjune://auth/callback".to_string()
         }
     }
 }
@@ -359,7 +359,7 @@ pub fn os_accounts_top_up() -> Result<(), AppError> {
 }
 
 /// Register the deep-link handler at app setup. Drains any in-flight
-/// login's callback slot when an `osscribe://auth/callback?...` URL
+/// login's callback slot when an `osjune://auth/callback?...` URL
 /// arrives — works in both cold-launch (OS starts the app with the URL)
 /// and warm-launch (app already running, OS hands the URL to the existing
 /// instance via tauri-plugin-single-instance's deep-link feature).
@@ -376,11 +376,11 @@ pub fn setup_deep_link(app: &tauri::App) {
             return;
         };
         // Match on the parsed URL components — `starts_with` would also
-        // accept `osscribe://auth/callback-extra?...` and similar, letting
+        // accept `osjune://auth/callback-extra?...` and similar, letting
         // an unrelated webpage drain the one-shot. CSRF would still reject
         // downstream, but tightening the gate here keeps the in-flight
         // login intact when a stray URL fires the handler.
-        if url.scheme() != "osscribe" || url.host_str() != Some("auth") || url.path() != "/callback"
+        if url.scheme() != "osjune" || url.host_str() != Some("auth") || url.path() != "/callback"
         {
             return;
         }
@@ -500,7 +500,7 @@ async fn await_authorization_code(
 }
 
 // Branded loopback success page. Self-contained (the loopback origin can't
-// reach the app's bundled fonts/assets), but mirrors the OS Accounts / Scribe
+// reach the app's bundled fonts/assets), but mirrors the OS Accounts / June
 // look: warm-grey surface, inset card, OS mark, calm hierarchy — and follows
 // the system light/dark preference.
 #[cfg(debug_assertions)]
@@ -508,7 +508,7 @@ const SUCCESS_BODY: &str = r##"<!doctype html>
 <html lang=en>
 <meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>OS Scribe</title>
+<title>OS June</title>
 <style>
   :root{--bg:#f1f0ed;--card:#fff;--fg:#2b2a28;--muted:#8a8884;--border:#e7e4de;--mark-fg:#fff;--ok:#2c6747;--ok-soft:#e7efe9}
   @media (prefers-color-scheme:dark){:root{--bg:#181817;--card:#252423;--fg:#fafafa;--muted:#b2b0ac;--border:rgba(255,255,255,.10);--mark-fg:#181817;--ok:#6fbf94;--ok-soft:rgba(111,191,148,.16)}}
@@ -526,7 +526,7 @@ const SUCCESS_BODY: &str = r##"<!doctype html>
   <main class=card>
     <div class=mark>OS</div>
     <span class=check><svg viewBox="0 0 14 14" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round><path d="M3 7.5 6 10l5-6"/></svg>Signed in</span>
-    <h1 class=title>Signed in to OS Scribe</h1>
+    <h1 class=title>Signed in to OS June</h1>
     <p class=sub>You can close this tab and return to the app.</p>
   </main>
 </body>
@@ -615,7 +615,7 @@ fn http_client() -> &'static reqwest::Client {
             .timeout(HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-scribe/0.1")
+            .user_agent("os-june/0.1")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })

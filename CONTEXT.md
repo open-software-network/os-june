@@ -1,47 +1,47 @@
-# OS Scribe
+# OS June
 
-OS Scribe is a Tauri desktop app that records meetings/dictation, transcribes
+OS June is a Tauri desktop app that records meetings/dictation, transcribes
 the audio, and turns the transcript into structured notes. It depends on the
 **OS Accounts** identity-and-credits platform for sign-in and for billing
 metered AI usage.
 
 ## Language
 
-**Scribe (the app)**:
+**June (the app)**:
 The user-facing Tauri desktop product — the macOS `.app` users install. The
-binary on disk is named `os-scribe`, the Cargo package is `os-scribe`, the
-bundle identifier is `co.opensoftware.scribe`.
+binary on disk is named `os-june`, the Cargo package is `os-june`, the
+bundle identifier is `co.opensoftware.june`.
 _Avoid_: notetaker, OS Notetaker (legacy names — fully removed from code as of
 the bundle rename; don't reintroduce).
 
-**Scribe API**:
+**June API**:
 The confidential backend service that holds the App API key and the upstream
 AI provider keys, runs `authorize`→`charge` against OS Accounts on behalf of
-the Scribe app, and proxies the metered AI calls (transcription, generation).
-Lives in the same repo as Scribe under its own Cargo workspace; ships as a
-separate container image to GHCR. Cargo crates use the `scribe-*` prefix; the
-binary is `scribe`.
-_Avoid_: backend, proxy, AI proxy (use **Scribe API**).
+the June app, and proxies the metered AI calls (transcription, generation).
+Lives in the same repo as June under its own Cargo workspace; ships as a
+separate container image to GHCR. Cargo crates use the `june-*` prefix; the
+binary is `june`.
+_Avoid_: backend, proxy, AI proxy (use **June API**).
 
 **OS Accounts**:
 The Open Software identity-and-credits platform. Source of truth for *who the
-user is* and *how many credits they have*. Scribe and Scribe API both depend on
+user is* and *how many credits they have*. June and June API both depend on
 it; it never depends on them.
 _Avoid_: accounts, the identity service, the auth service.
 
 **Upstream provider**:
-A third-party AI service Scribe API calls on the user's behalf — currently
+A third-party AI service June API calls on the user's behalf — currently
 **OpenAI** (transcription) and **Venice** (transcription + generation).
-Upstream provider API keys live only in Scribe API's environment, never in
-Scribe. In code, each upstream sits behind a domain trait (`Transcriber`,
-`Generator`) defined in `scribe-domain` and implemented in `scribe-providers`.
+Upstream provider API keys live only in June API's environment, never in
+June. In code, each upstream sits behind a domain trait (`Transcriber`,
+`Generator`) defined in `june-domain` and implemented in `june-providers`.
 _Avoid_: AI provider, model provider, vendor.
 
 **Dictation**:
-A latency-critical Scribe mode where the user pushes-to-talk, speaks a short
+A latency-critical June mode where the user pushes-to-talk, speaks a short
 phrase, releases, and expects cleaned-up text inserted into the foreground
 app within a few hundred milliseconds. Distinct from **note transcription**
-(long-form, recorded session, async). Dictation goes through Scribe API in
+(long-form, recorded session, async). Dictation goes through June API in
 v1, so the binary holds no upstream provider key, but the request shape and
 charge timing are tuned for low latency (a dictation ADR may capture this
 if/when written).
@@ -49,7 +49,7 @@ _Avoid_: speech-to-text (too generic; covers both dictation and note
 transcription).
 
 **Note transcription**:
-Scribe records a full meeting or capture session, then transcribes the saved
+June records a full meeting or capture session, then transcribes the saved
 audio file as a single batch operation and runs **note generation** on the
 transcript. Higher tolerance for latency than dictation; cost typically
 dominates dictation by 100×+ per call (minutes of audio vs single phrases).
@@ -63,20 +63,20 @@ follows a successful note transcription; not used in dictation.
 _Avoid_: notes generation, AI summarisation.
 
 **Credit price** (per upstream model):
-The number of OS Accounts credits Scribe charges per unit of consumed work
+The number of OS Accounts credits June charges per unit of consumed work
 (audio seconds for transcription, tokens for generation) for a given upstream
-model. Stored as a typed lookup in `scribe-config` keyed by `model_id`. An
+model. Stored as a typed lookup in `june-config` keyed by `model_id`. An
 upstream model with no credit price configured is rejected at the
 `/transcribe` or `/generate` boundary before any work runs — there is no
 "default rate".
-_Avoid_: rate, tariff, cost (cost is the *upstream's* dollar cost to Scribe;
+_Avoid_: rate, tariff, cost (cost is the *upstream's* dollar cost to June;
 credit price is what the user pays in credits).
 
 ## Flagged ambiguities
 
 - Term **"proxy"** is overloaded. In conversation it usually means
-  Scribe API (the thing in front of OpenAI / Venice), not a network proxy in
-  the HTTP-CONNECT sense. Prefer **Scribe API**.
+  June API (the thing in front of OpenAI / Venice), not a network proxy in
+  the HTTP-CONNECT sense. Prefer **June API**.
 - Term **"transcribe"** is overloaded between **dictation** (short, latency-
   critical) and **note transcription** (long, batch). Always qualify which.
 - Term **"credits"** always means OS Accounts credits (integers, `$1 = 1000
@@ -86,8 +86,8 @@ credit price is what the user pays in credits).
 
 > **Dev:** "Can I add a Whisper model to the picker?"
 >
-> **PM:** "Sure — but make sure it has a **credit price** in `scribe-config`
-> before you list it, otherwise **Scribe API** will reject `/v1/transcribe`
+> **PM:** "Sure — but make sure it has a **credit price** in `june-config`
+> before you list it, otherwise **June API** will reject `/v1/transcribe`
 > requests for that **upstream model**. The picker shouldn't show models the
 > server can't price."
 >
@@ -102,5 +102,5 @@ credit price is what the user pays in credits).
 <!--
   This document is a glossary, not a spec.
   Implementation details, endpoints, env vars, and code shape live in
-  ./docs/os-accounts-backend.md and the future scribe-api crates.
+  ./docs/os-accounts-backend.md and the future june-api crates.
 -->

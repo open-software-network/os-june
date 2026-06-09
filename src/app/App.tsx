@@ -94,15 +94,15 @@ import type {
 import { useAccountStatus } from "../lib/account-status";
 import { shouldBlockOnSignIn } from "../lib/account-gate";
 import {
-  checkScribeUpdate,
-  relaunchScribe,
-  type ScribeUpdate,
+  checkJuneUpdate,
+  relaunchJune,
+  type JuneUpdate,
 } from "../lib/updater";
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
-  checkForScribeUpdate,
-  installScribeUpdate,
+  checkForJuneUpdate,
+  installJuneUpdate,
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "./update-decision";
@@ -111,7 +111,7 @@ const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 188;
 const SIDEBAR_MAX_WIDTH = 320;
 const SIDEBAR_COLLAPSE_WIDTH = 160;
-const CHECK_FOR_UPDATES_EVENT = "scribe://check-for-updates";
+const CHECK_FOR_UPDATES_EVENT = "june://check-for-updates";
 const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_MENU_BAR_SESSION_LIMIT = 6;
 const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
@@ -178,7 +178,7 @@ export function App() {
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [pendingUpdate, setPendingUpdate] =
-    useState<UpdatePromptPayload<ScribeUpdate> | null>(null);
+    useState<UpdatePromptPayload<JuneUpdate> | null>(null);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] =
@@ -278,9 +278,9 @@ export function App() {
   const runUpdateCheck = useCallback((mode: "launch" | "manual") => {
     if (installingUpdateRef.current) return;
     setUpdateStatus(mode === "manual" ? "Checking for updates..." : null);
-    void checkForScribeUpdate(
+    void checkForJuneUpdate(
       {
-        check: checkScribeUpdate,
+        check: checkJuneUpdate,
         prompt: (payload) => {
           setUpdateStatus(null);
           setUpdateProgress(null);
@@ -683,7 +683,7 @@ export function App() {
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
-  // returns to OS Scribe. The helper poll is what surfaces fresh mic /
+  // returns to OS June. The helper poll is what surfaces fresh mic /
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
@@ -1509,9 +1509,9 @@ export function App() {
           if (!pendingUpdate || installingUpdate) return;
           setInstallingUpdate(true);
           setUpdateStatus(null);
-          void installScribeUpdate({
+          void installJuneUpdate({
             update: pendingUpdate.update,
-            relaunch: relaunchScribe,
+            relaunch: relaunchJune,
             reportProgress: setUpdateProgress,
             reportFailure: (message) => {
               setInstallingUpdate(false);
@@ -1554,7 +1554,7 @@ function UpdateDialog({
   onClose,
   onInstall,
 }: {
-  payload: UpdatePromptPayload<ScribeUpdate> | null;
+  payload: UpdatePromptPayload<JuneUpdate> | null;
   status: string | null;
   installing: boolean;
   progress: UpdateInstallProgress | null;
@@ -1897,7 +1897,7 @@ function withFakeRecovery(payload: BootstrapResponse): {
       new URLSearchParams(window.location.search).get("fake-recovery") ===
         "1" ||
       window.location.hash.toLowerCase() === "#fake-recovery" ||
-      localStorage.getItem("os-scribe:dev:fake-recovery") === "1";
+      localStorage.getItem("os-june:dev:fake-recovery") === "1";
   } catch {
     return { payload };
   }

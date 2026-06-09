@@ -40,7 +40,7 @@ type MascotEntry = {
   session?: HermesSessionInfo;
 };
 
-const EXPANDED_KEY = "scribe:mascot:expanded";
+const EXPANDED_KEY = "june:mascot:expanded";
 const MAX_VISIBLE_CARDS = 3;
 const COMPLETED_STATUS_TTL_MS = 12 * 1000;
 const FAILED_STATUS_TTL_MS = 8 * 1000;

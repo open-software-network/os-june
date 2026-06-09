@@ -59,7 +59,7 @@ describe("desktop mascot", () => {
 
     expect(mascotElement().dataset.expanded).toBe("false");
     expect(stackElement()).toBeEmptyDOMElement();
-    expect(localStorage.getItem("scribe:mascot:expanded")).toBe("false");
+    expect(localStorage.getItem("june:mascot:expanded")).toBe("false");
     expect(toggleElement().hidden).toBe(false);
     expect(mocks.invoke).toHaveBeenCalledWith("mascot_set_layout", {
       request: { expanded: false, cardCount: 0, replying: false },

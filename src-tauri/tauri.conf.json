@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OS Scribe",
+  "productName": "OS June",
   "version": "0.0.3",
-  "identifier": "co.opensoftware.scribe",
+  "identifier": "co.opensoftware.june",
   "build": {
     "beforeDevCommand": "./scripts/tauri-before-dev.sh",
     "beforeBuildCommand": "pnpm run build",
@@ -68,18 +68,18 @@
     "deep-link": {
       "mobile": [
         {
-          "scheme": ["osscribe"],
+          "scheme": ["osjune"],
           "appLink": false
         }
       ],
       "desktop": {
-        "schemes": ["osscribe"]
+        "schemes": ["osjune"]
       }
     },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwMDUxRDBGNzYyRDU0MTgKUldRWVZDMTJEeDBGVUZWQ3VsVWxCdmhFbk9McWFVWjBGTEZZZHN0NFZRQjFZaFZRVzF4Sm9NdnkK",
       "endpoints": [
-        "https://github.com/open-software-network/os-scribe-releases/releases/latest/download/latest.json"
+        "https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json"
       ]
     }
   },
@@ -95,11 +95,11 @@
     ],
     "targets": ["app", "dmg"],
     "resources": {
-      "../.tauri-helper/OS Scribe.app": "native/bin/OS Scribe.app",
-      "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app"
+      "../.tauri-helper/OS June.app": "native/bin/OS June.app",
+      "../.tauri-helper/OS June Dictation Helper.app": "native/bin/OS June Dictation Helper.app"
     },
     "macOS": {
-      "bundleName": "OS Scribe",
+      "bundleName": "OS June",
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],

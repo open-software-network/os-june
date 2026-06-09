@@ -9,7 +9,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
-    println!("cargo:rerun-if-env-changed=SCRIBE_API_URL");
+    println!("cargo:rerun-if-env-changed=JUNE_API_URL");
     build_system_audio_helper();
     build_dictation_helper();
     tauri_build::build();
@@ -35,11 +35,11 @@ fn build_system_audio_helper() {
         .parent()
         .expect("src-tauri should have a repository parent")
         .join(".tauri-helper");
-    let app_dir = helper_dir.join("OS Scribe.app");
+    let app_dir = helper_dir.join("OS June.app");
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     std::fs::create_dir_all(&macos_dir).expect("system audio helper app dir should be created");
-    let executable = macos_dir.join("os-scribe-system-audio-recorder");
+    let executable = macos_dir.join("os-june-system-audio-recorder");
 
     let source_modified = std::fs::metadata(&source)
         .and_then(|metadata| metadata.modified())
@@ -87,15 +87,15 @@ fn build_system_audio_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>OS Scribe</string>
+  <string>OS June</string>
   <key>CFBundleExecutable</key>
-  <string>os-scribe-system-audio-recorder</string>
+  <string>os-june-system-audio-recorder</string>
   <key>CFBundleIdentifier</key>
-  <string>co.opensoftware.scribe.audio-capture</string>
+  <string>co.opensoftware.june.audio-capture</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>OS Scribe</string>
+  <string>OS June</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -107,7 +107,7 @@ fn build_system_audio_helper() {
   <key>LSUIElement</key>
   <true/>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>OS Scribe records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
+  <string>OS June records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
 </dict>
 </plist>
 "#;
@@ -144,14 +144,14 @@ fn build_dictation_helper() {
         .parent()
         .expect("src-tauri should have a repository parent")
         .join(".tauri-helper");
-    let app_dir = helper_dir.join("OS Scribe Dictation Helper.app");
+    let app_dir = helper_dir.join("OS June Dictation Helper.app");
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     let resources_dir = contents_dir.join("Resources");
     std::fs::create_dir_all(&macos_dir).expect("dictation helper app dir should be created");
     std::fs::create_dir_all(&resources_dir)
         .expect("dictation helper resources dir should be created");
-    let executable = macos_dir.join("os-scribe-dictation-helper");
+    let executable = macos_dir.join("os-june-dictation-helper");
 
     let source_modified = std::fs::metadata(&source)
         .and_then(|metadata| metadata.modified())
@@ -201,15 +201,15 @@ fn build_dictation_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>OS Scribe Dictation Helper</string>
+  <string>OS June Dictation Helper</string>
   <key>CFBundleExecutable</key>
-  <string>os-scribe-dictation-helper</string>
+  <string>os-june-dictation-helper</string>
   <key>CFBundleIdentifier</key>
-  <string>co.opensoftware.scribe.dictation-helper</string>
+  <string>co.opensoftware.june.dictation-helper</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>OS Scribe Dictation Helper</string>
+  <string>OS June Dictation Helper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -221,7 +221,7 @@ fn build_dictation_helper() {
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>OS Scribe needs microphone access to turn your speech into text.</string>
+  <string>OS June needs microphone access to turn your speech into text.</string>
 </dict>
 </plist>
 "#;

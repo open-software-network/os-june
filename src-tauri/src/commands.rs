@@ -357,7 +357,7 @@ pub async fn save_agent_hermes_session(
 pub async fn suggest_agent_session_title(
     request: SuggestAgentSessionTitleRequest,
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
-    let title = crate::scribe_api::suggest_agent_session_title(&request.prompt).await?;
+    let title = crate::june_api::suggest_agent_session_title(&request.prompt).await?;
     Ok(SuggestAgentSessionTitleResponse { title })
 }
 

@@ -248,7 +248,7 @@ pub fn helper_permission_check() -> Result<(), AppError> {
         ));
     }
     terminate_existing_helpers();
-    let temp = std::env::temp_dir().join(format!("os-scribe-audio-check-{}", uuid::Uuid::new_v4()));
+    let temp = std::env::temp_dir().join(format!("os-june-audio-check-{}", uuid::Uuid::new_v4()));
     let output_path = temp.with_extension("wav");
     let status_path = temp.with_extension("json");
     let pid_path = temp.with_extension("pid");
@@ -343,7 +343,7 @@ pub fn helper_app_path() -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
         .join(".tauri-helper")
-        .join("OS Scribe.app");
+        .join("OS June.app");
     if dev_path.exists() {
         return dev_path;
     }
@@ -356,7 +356,7 @@ pub fn helper_app_path() -> PathBuf {
                 .join("Resources")
                 .join("native")
                 .join("bin")
-                .join("OS Scribe.app");
+                .join("OS June.app");
             if resource_path.exists() {
                 return resource_path;
             }
@@ -388,7 +388,7 @@ fn send_signal(pid: u32, signal: &str) {
 }
 
 fn terminate_existing_helpers() {
-    let helper_name = "os-scribe-system-audio-recorder";
+    let helper_name = "os-june-system-audio-recorder";
     let Ok(output) = Command::new("pgrep").arg("-f").arg(helper_name).output() else {
         return;
     };

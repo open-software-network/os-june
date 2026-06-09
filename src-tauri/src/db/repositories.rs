@@ -344,7 +344,7 @@ impl Repositories {
         sqlx::query(
             "UPDATE agent_tasks
              SET status = 'paused',
-                 progress_summary = 'Paused when OS Scribe restarted.',
+                 progress_summary = 'Paused when OS June restarted.',
                  updated_at = ?
              WHERE status IN ('queued', 'running')",
         )

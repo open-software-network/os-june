@@ -49,7 +49,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
     <div className="welcome-screen">
       <div className="welcome-card">
         <span className="welcome-mark" aria-hidden>
-          <ScribeMark />
+          <JuneMark />
         </span>
         <h1 className="welcome-title">Welcome to OS June</h1>
         <p className="welcome-subtitle">
@@ -121,7 +121,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
   );
 }
 
-function ScribeMark() {
+function JuneMark() {
   return (
     <svg
       width="24"

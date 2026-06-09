@@ -1,11 +1,11 @@
 import type { AgentSessionStatusDetail } from "./agent-events";
 import type { HermesSessionInfo } from "./tauri";
 
-export const AGENT_MENU_BAR_STATE_EVENT = "scribe:menu-bar:agent-state";
+export const AGENT_MENU_BAR_STATE_EVENT = "june:menu-bar:agent-state";
 export const AGENT_MENU_BAR_NEW_SESSION_EVENT =
-  "scribe:menu-bar:new-agent-session";
+  "june:menu-bar:new-agent-session";
 export const AGENT_MENU_BAR_OPEN_SESSION_EVENT =
-  "scribe:menu-bar:open-agent-session";
+  "june:menu-bar:open-agent-session";
 
 export type AgentMenuBarSessionStatus = "idle" | "running" | "waitingForUser";
 

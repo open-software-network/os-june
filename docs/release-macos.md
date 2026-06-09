@@ -1,9 +1,9 @@
-# Releasing OS Scribe for macOS
+# Releasing OS June for macOS
 
-OS Scribe ships signed, notarized macOS builds with in-app auto-updates through
+OS June ships signed, notarized macOS builds with in-app auto-updates through
 `tauri-plugin-updater`. The source repo stays private; update artifacts,
 signatures, the DMG, and `latest.json` are published to the public
-`open-software-network/os-scribe-releases` repo.
+`open-software-network/os-june-releases` repo.
 
 The first updater-capable build must be installed manually once — earlier builds
 ship without the updater, so they can't pull it in — and every release after that
@@ -14,7 +14,7 @@ workflow; don't hard-code a specific number in this runbook.
 
 Create or confirm these before cutting the first updater release:
 
-- Public GitHub repo: `open-software-network/os-scribe-releases`.
+- Public GitHub repo: `open-software-network/os-june-releases`.
 - Release GitHub App (org-owned) installed on the public releases repo with
   `contents:write`, exposed as `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`.
   The workflow mints a short-lived, repo-scoped token from it at run time
@@ -28,7 +28,7 @@ Create or confirm these before cutting the first updater release:
   password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
-  `PRODUCTION_SCRIBE_API_URL`.
+  `PRODUCTION_JUNE_API_URL`.
 
 The updater keypair is separate from the Apple Developer ID certificate. The
 public key is embedded in `src-tauri/tauri.conf.json`; the private key must live
@@ -38,7 +38,7 @@ permanently breaks auto-update for all builds signed with its public key.
 Generate a keypair with:
 
 ```sh
-pnpm tauri signer generate --write-keys keys/os-scribe-updater.key
+pnpm tauri signer generate --write-keys keys/os-june-updater.key
 ```
 
 Do not commit `keys/`. Copy the private key contents into
@@ -68,12 +68,12 @@ The workflow performs the release steps in order:
 7. Signs with the Apple Developer ID cert, notarizes with Apple API key
    credentials, signs updater artifacts with the Ed25519 updater key, and
    publishes the release assets plus `latest.json` to
-   `open-software-network/os-scribe-releases`.
+   `open-software-network/os-june-releases`.
 
 The app polls:
 
 ```text
-https://github.com/open-software-network/os-scribe-releases/releases/latest/download/latest.json
+https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json
 ```
 
 That endpoint is baked into shipped builds. Keep it alive until every install
@@ -95,13 +95,13 @@ been installed over a previous updater-capable build and relaunched successfully
 ## First updater release validation
 
 After the workflow publishes a release, download the DMG from
-`open-software-network/os-scribe-releases`, install the app into
+`open-software-network/os-june-releases`, install the app into
 `/Applications`, and run:
 
 ```sh
 VERSION="0.2.0"
-APP="/Applications/OS Scribe.app"
-DMG="$HOME/Downloads/OS Scribe_${VERSION}_aarch64.dmg"
+APP="/Applications/OS June.app"
+DMG="$HOME/Downloads/OS June_${VERSION}_aarch64.dmg"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose "$APP"
@@ -111,10 +111,10 @@ xcrun stapler validate "$DMG"
 plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 ```
 
-Confirm `osscribe` appears in `CFBundleURLSchemes`.
+Confirm `osjune` appears in `CFBundleURLSchemes`.
 
 For the first updater-to-updater validation, install an older updater-capable
-build, run **OS Scribe -> Check for updates…**, confirm the prompt shows the
+build, run **OS June -> Check for updates…**, confirm the prompt shows the
 new version and release notes, install, and verify the app relaunches without
 Gatekeeper warnings. Also confirm microphone and Accessibility permissions are
 still granted after relaunch.

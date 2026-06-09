@@ -1,0 +1,23 @@
+[package]
+name = "june-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+june-config.workspace = true
+june-domain.workspace = true
+june-services.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true

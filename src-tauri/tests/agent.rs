@@ -1,4 +1,4 @@
-use os_scribe_lib::{
+use os_june_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{AgentMessageRole, AgentSafetyProfile, AgentTaskStatus, AgentToolEventStatus},
 };
@@ -83,7 +83,7 @@ async fn pauses_active_agent_tasks_on_launch() {
     assert_eq!(loaded.status, AgentTaskStatus::Paused);
     assert_eq!(
         loaded.progress_summary.as_deref(),
-        Some("Paused when OS Scribe restarted.")
+        Some("Paused when OS June restarted.")
     );
 }
 

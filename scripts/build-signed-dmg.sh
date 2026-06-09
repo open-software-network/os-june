@@ -22,8 +22,8 @@ ensure_temp_dir() {
 
 import_signing_certificate() {
   ensure_temp_dir
-  local keychain="$TEMP_DIR/os-scribe-signing.keychain-db"
-  local keychain_password="os-scribe-$RANDOM-$$"
+  local keychain="$TEMP_DIR/os-june-signing.keychain-db"
+  local keychain_password="os-june-$RANDOM-$$"
 
   security create-keychain -p "$keychain_password" "$keychain" >/dev/null
   security set-keychain-settings -lut 21600 "$keychain" >/dev/null

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  checkForScribeUpdate,
-  installScribeUpdate,
+  checkForJuneUpdate,
+  installJuneUpdate,
   type UpdaterUpdate,
 } from "../app/update-decision";
 
@@ -17,11 +17,11 @@ function update(body?: string): UpdaterUpdate {
   };
 }
 
-describe("checkForScribeUpdate", () => {
+describe("checkForJuneUpdate", () => {
   it("prompts with version and release notes when an update is available", async () => {
     const prompt = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => update(" Fixes transcription. "),
         prompt,
@@ -43,7 +43,7 @@ describe("checkForScribeUpdate", () => {
     const prompt = vi.fn();
     const reportNoUpdate = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => null,
         prompt,
@@ -60,7 +60,7 @@ describe("checkForScribeUpdate", () => {
   it("reports no update for a manual check", async () => {
     const reportNoUpdate = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => null,
         prompt: vi.fn(),
@@ -77,7 +77,7 @@ describe("checkForScribeUpdate", () => {
     const prompt = vi.fn();
     const reportFailure = vi.fn();
 
-    await checkForScribeUpdate(
+    await checkForJuneUpdate(
       {
         check: async () => {
           throw new Error("signature mismatch");
@@ -94,13 +94,13 @@ describe("checkForScribeUpdate", () => {
   });
 });
 
-describe("installScribeUpdate", () => {
+describe("installJuneUpdate", () => {
   it("reports download progress, installs, and relaunches", async () => {
     const candidate = update("notes");
     const relaunch = vi.fn(async () => undefined);
     const reportProgress = vi.fn();
 
-    await installScribeUpdate({
+    await installJuneUpdate({
       update: candidate,
       relaunch,
       reportProgress,

@@ -3918,7 +3918,7 @@ function promptWithAttachments(
   return [
     message || "Use the attached file(s).",
     "",
-    "Attached files copied into the Scribe Hermes workspace:",
+    "Attached files copied into the June Hermes workspace:",
     ...attachments.map(
       (attachment) =>
         `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,

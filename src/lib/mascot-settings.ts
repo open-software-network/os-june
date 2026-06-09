@@ -1,6 +1,6 @@
-export const MASCOT_ENABLED_KEY = "scribe:mascot:enabled";
+export const MASCOT_ENABLED_KEY = "june:mascot:enabled";
 export const MASCOT_VISIBILITY_CHANGED_EVENT =
-  "scribe:mascot:visibility-changed";
+  "june:mascot:visibility-changed";
 
 export type MascotVisibilityChangedDetail = {
   enabled: boolean;

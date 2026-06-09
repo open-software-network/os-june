@@ -16,7 +16,7 @@ trap cleanup EXIT INT TERM
 
 cd "$ROOT_DIR"
 
-./scripts/run-scribe-api.sh &
+./scripts/run-june-api.sh &
 API_PID="$!"
 
 existing_frontend_pids="$(lsof -tiTCP:"$FRONTEND_PORT" -sTCP:LISTEN 2>/dev/null || true)"
@@ -36,7 +36,7 @@ if [[ -n "$existing_frontend_pids" ]]; then
       exit $?
     fi
 
-    if [[ "$command" == *"vite"* && "$cwd" == */conductor/workspaces/os-scribe/* ]]; then
+    if [[ "$command" == *"vite"* && "$cwd" == */conductor/workspaces/os-june/* ]]; then
       echo "Stopping Vite from another workspace: $cwd (pid $pid)" >&2
       kill "$pid" 2>/dev/null || true
       continue
