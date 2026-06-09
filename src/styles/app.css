@@ -1569,13 +1569,15 @@ input:focus-visible,
 
 /* Inside disclosures the icon drops its boxed treatment — just the glyph — so
  * the row reads as one quiet line of text rather than a chip. The tool glyph
- * and the expand hint stack in the same cell; hover cross-fades between them. */
+ * and the expand/minimize hints stack in the same cell; hover cross-fades
+ * between them. The cell is pinned to the icon size so the swap is pure
+ * opacity — any size mismatch here reads as a one-pixel hover glitch. */
 .agent-tool-disclosure .agent-tool-icon {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: auto;
-  height: auto;
+  width: 15px;
+  height: 15px;
   border-radius: 0;
   background: transparent;
   color: var(--muted-foreground);
@@ -1586,16 +1588,19 @@ input:focus-visible,
   transition: opacity 120ms var(--ease-out);
 }
 
-.agent-tool-icon-expand {
+.agent-tool-icon-expand,
+.agent-tool-icon-minimize {
   opacity: 0;
 }
 
-.agent-tool-disclosure > summary:hover .agent-tool-icon-expand {
+/* Closed rows hint expand; open rows hint collapse. */
+.agent-tool-disclosure:not([open]) > summary:hover .agent-tool-icon-expand,
+.agent-tool-disclosure[open] > summary:hover .agent-tool-icon-minimize {
   opacity: 1;
 }
 
 /* Static rows render as a div (no summary), so this only ever fires on rows
- * that actually have the expand icon to swap to. */
+ * that actually have a swap icon to reveal. */
 .agent-tool-disclosure > summary:hover .agent-tool-icon-glyph {
   opacity: 0;
 }
@@ -1811,20 +1816,27 @@ input:focus-visible,
   }
 }
 
-/* Status reads as a quiet word, not a badge — hierarchy comes from color
- * alone (terracotta while live, red on failure). */
+/* Status renders as a small tinted badge (same recipe as .agent-safety-badge)
+ * so it reads as state, not stray prose — neutral by default, terracotta while
+ * live, red on failure. */
 .agent-tool-live-status {
   flex: 0 0 auto;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+  font-weight: 500;
   line-height: 1.4;
 }
 
 .agent-tool-live-status[data-status="running"] {
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
 }
 
 .agent-tool-live-status[data-status="failed"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
   color: var(--destructive);
 }
 

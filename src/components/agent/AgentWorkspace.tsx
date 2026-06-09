@@ -18,6 +18,7 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconExpandSimple } from "central-icons/IconExpandSimple";
 import { IconLayersTwo } from "central-icons/IconLayersTwo";
+import { IconMinimize45 } from "central-icons/IconMinimize45";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
@@ -3388,12 +3389,16 @@ function AgentToolDisclosure({
   const body = text && text.trim() ? text : null;
   const summary = (expandable: boolean) => (
     <>
-      {/* On hover the tool glyph itself becomes the expand affordance —
-       * the two icons stack in one cell and cross-fade. */}
+      {/* On hover the tool glyph itself becomes the expand affordance — the
+       * icons stack in one cell and cross-fade (expand when closed, minimize
+       * when open). All three share one size so the swap never shifts a pixel. */}
       <span className="agent-tool-icon">
         <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
         {expandable ? (
-          <IconExpandSimple size={14} className="agent-tool-icon-expand" />
+          <>
+            <IconExpandSimple size={15} className="agent-tool-icon-expand" />
+            <IconMinimize45 size={15} className="agent-tool-icon-minimize" />
+          </>
         ) : null}
       </span>
       <span className="agent-tool-name">{name}</span>
