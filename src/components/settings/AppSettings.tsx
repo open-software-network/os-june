@@ -278,6 +278,11 @@ export function AppSettings({
   }, [capturingShortcut]);
 
   useEffect(() => {
+    setMicOpen(false);
+    setLanguageOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
 
@@ -691,8 +696,6 @@ export function AppSettings({
         {activeTab === "billing" ? (
           <BillingSettingsSection
             account={account}
-            loading={accountLoading}
-            onAccountChanged={onAccountChanged}
             onRefresh={onAccountRefresh}
           />
         ) : null}
@@ -769,13 +772,7 @@ export function AppSettings({
                         aria-label="Default transcription language"
                         aria-haspopup="listbox"
                         aria-expanded={languageOpen}
-                        onClick={() => {
-                          setLanguageOpen((value) => {
-                            const next = !value;
-                            if (next) updateLanguagePopoverPlacement();
-                            return next;
-                          });
-                        }}
+                        onClick={() => setLanguageOpen((value) => !value)}
                       >
                         <span>{languageLabel(settings.language ?? "")}</span>
                         <IconChevronDownSmall size={14} />
@@ -846,11 +843,7 @@ export function AppSettings({
                       aria-haspopup="listbox"
                       aria-expanded={micOpen}
                       onClick={() => {
-                        setMicOpen((value) => {
-                          const next = !value;
-                          if (next) updateMicrophonePopoverPlacement();
-                          return next;
-                        });
+                        setMicOpen((value) => !value);
                         void requestMicrophones();
                       }}
                     >

@@ -39,8 +39,6 @@ export function AccountSettings({
       />
       <BillingSettingsSection
         account={account}
-        loading={loading}
-        onAccountChanged={onAccountChanged}
         onRefresh={onRefresh}
       />
     </div>
@@ -158,7 +156,10 @@ export function AccountSettingsSection({
   );
 }
 
-export function BillingSettingsSection({ account, onRefresh }: Props) {
+export function BillingSettingsSection({
+  account,
+  onRefresh,
+}: Pick<Props, "account" | "onRefresh">) {
   const [refreshing, setRefreshing] = useState(false);
   const [billingStatus, setBillingStatus] = useState<string>();
   const [spins, setSpins] = useState(0);
