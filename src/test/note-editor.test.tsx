@@ -334,7 +334,7 @@ describe("NoteEditor", () => {
     expect(status).toHaveTextContent("+1");
   });
 
-  it("keeps recording available when the note has an interrupted recording", async () => {
+  it("starts recording immediately without a consent gate", async () => {
     const user = userEvent.setup();
     const onStartRecording = vi.fn();
     render(
@@ -346,6 +346,7 @@ describe("NoteEditor", () => {
       />,
     );
 
+    // An interrupted recording must not disable the record button.
     expect(screen.getByText("Interrupted recording")).toBeInTheDocument();
 
     const recordButton = screen.getByRole("button", { name: "Record" });
@@ -353,38 +354,39 @@ describe("NoteEditor", () => {
 
     await user.click(recordButton);
 
-    expect(onStartRecording).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("dialog", { name: "Recording consent reminder" }),
-    ).toHaveTextContent(/everyone has agreed to be recorded/i);
-
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
+    // The click records straight away — no blocking dialog in the way.
     expect(onStartRecording).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("lets users dismiss the recording consent reminder", async () => {
+  it("surfaces a dismissible consent reminder once recording starts", async () => {
     const user = userEvent.setup();
-    const onStartRecording = vi.fn();
     render(
       <NoteEditor
         {...props}
         note={note()}
-        onStartRecording={onStartRecording}
+        recordingStatus={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 1000,
+          level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+          silenceWarning: false,
+          bytesWritten: 2048,
+        }}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Record" }));
     expect(
-      screen.getByRole("dialog", { name: "Recording consent reminder" }),
-    ).toBeInTheDocument();
+      screen.getByRole("status", { name: "Recording consent reminder" }),
+    ).toHaveTextContent(/everyone has agreed to be recorded/i);
 
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Got it" }));
 
     expect(
-      screen.queryByRole("dialog", { name: "Recording consent reminder" }),
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
     ).not.toBeInTheDocument();
-    expect(onStartRecording).not.toHaveBeenCalled();
   });
 
   it("keeps existing notes visible while showing processing status below them", () => {
