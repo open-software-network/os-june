@@ -27,10 +27,14 @@ type AgentNotificationGlobal = typeof globalThis & {
   __scribeAgentNotificationTimes?: Map<string, number>;
 };
 
-function recentNotificationTimes() {
+function recentNotificationTimes(now: number) {
   const target = globalThis as AgentNotificationGlobal;
   target.__scribeAgentNotificationTimes ??= new Map<string, number>();
-  return target.__scribeAgentNotificationTimes;
+  const recent = target.__scribeAgentNotificationTimes;
+  for (const [key, timestamp] of recent) {
+    if (now - timestamp >= DEDUPE_WINDOW_MS) recent.delete(key);
+  }
+  return recent;
 }
 
 export async function notifyAgentSessionStatus(
@@ -42,10 +46,9 @@ export async function notifyAgentSessionStatus(
   const group = agentNotificationGroup(detail);
   const dedupeKey = `${group}:${copy.title}:${copy.body}`;
   const now = Date.now();
-  const recent = recentNotificationTimes();
+  const recent = recentNotificationTimes(now);
   const previous = recent.get(dedupeKey);
   if (previous && now - previous < DEDUPE_WINDOW_MS) return false;
-  recent.set(dedupeKey, now);
 
   let granted = await isPermissionGranted().catch(() => false);
   if (!granted) {
@@ -53,6 +56,10 @@ export async function notifyAgentSessionStatus(
     granted = permission === "granted";
   }
   if (!granted) return false;
+
+  // Record the dedupe slot only once we know the notification will be shown,
+  // so a permission denial does not swallow the next legitimate notification.
+  recent.set(dedupeKey, now);
 
   sendNotification({
     title: copy.title,
@@ -125,7 +132,20 @@ function playAgentNotificationTone(status: AgentSessionStatusKind) {
     gain.connect(context.destination);
     oscillator.start(now);
     oscillator.stop(now + 0.24);
-    oscillator.addEventListener("ended", () => void context.close());
+    let closed = false;
+    const closeContext = () => {
+      if (closed) return;
+      closed = true;
+      void context.close().catch(() => {});
+    };
+    oscillator.addEventListener("ended", closeContext);
+    // WKWebView can keep the context suspended (no user gesture), in which
+    // case "ended" never fires; resume it and close on a fallback timer so
+    // contexts cannot accumulate.
+    if (context.state === "suspended") {
+      void context.resume().catch(() => {});
+    }
+    window.setTimeout(closeContext, 2_000);
   } catch {
     // Native notifications remain authoritative; the local tone is a fallback.
   }

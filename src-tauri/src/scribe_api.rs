@@ -99,11 +99,33 @@ pub struct DictateCleanupRequestParams {
     pub utterance_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawScribeResponse {
+/// Response from the agent chat-completions proxy. Holds the upstream
+/// reqwest response so callers can forward body bytes as they arrive
+/// (Hermes requests `stream: true`) instead of buffering the whole
+/// generation before the first token is visible.
+pub struct AgentChatCompletionsResponse {
     pub status: u16,
     pub content_type: String,
-    pub body: Vec<u8>,
+    upstream: reqwest::Response,
+}
+
+impl AgentChatCompletionsResponse {
+    /// Next chunk of the upstream body as it arrives. Returns `Ok(None)`
+    /// once the body is complete.
+    pub async fn chunk(&mut self) -> Result<Option<Vec<u8>>, AppError> {
+        Ok(self
+            .upstream
+            .chunk()
+            .await
+            .map_err(network_error)?
+            .map(|chunk| chunk.to_vec()))
+    }
+
+    /// Buffer the entire body. For small non-streamed responses such as
+    /// session-title suggestions.
+    pub async fn collect_body(self) -> Result<Vec<u8>, AppError> {
+        Ok(self.upstream.bytes().await.map_err(network_error)?.to_vec())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -303,7 +325,7 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
 
 pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
-) -> Result<RawScribeResponse, AppError> {
+) -> Result<AgentChatCompletionsResponse, AppError> {
     limit_agent_chat_messages_for_proxy(&mut body);
     if let Some(object) = body.as_object_mut() {
         object.insert(
@@ -332,11 +354,10 @@ pub async fn proxy_agent_chat_completions(
             .and_then(|value| value.to_str().ok())
             .unwrap_or("application/json")
             .to_string();
-        let body = response.bytes().await.map_err(network_error)?.to_vec();
-        return Ok(RawScribeResponse {
+        return Ok(AgentChatCompletionsResponse {
             status,
             content_type,
-            body,
+            upstream: response,
         });
     }
     Err(AppError::new("unauthorized", "Not signed in."))
@@ -368,16 +389,16 @@ fn limit_agent_chat_messages(body: &mut serde_json::Value, max_messages: usize) 
         .cloned()
         .collect::<Vec<_>>();
     let remaining_capacity = max_messages.saturating_sub(next_messages.len());
-    if remaining_capacity == 0 {
-        *messages = next_messages;
-        return;
-    }
 
     let tail = agent_message_chunks(&messages[instruction_count..]);
     let mut suffix = Vec::new();
     let mut suffix_len = 0usize;
     for chunk in tail.into_iter().rev() {
-        if suffix_len + chunk.len() > remaining_capacity {
+        // Always keep the most recent chunk (the latest turn plus its tool
+        // results), even when it alone exceeds the budget — otherwise the
+        // request would go out with only system/developer messages.
+        // Truncate older chunks instead.
+        if !suffix.is_empty() && suffix_len + chunk.len() > remaining_capacity {
             break;
         }
         suffix_len += chunk.len();
@@ -490,7 +511,8 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
             format!("Title generation returned status {}.", response.status),
         ));
     }
-    let value: serde_json::Value = serde_json::from_slice(&response.body)
+    let body = response.collect_body().await?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|error| AppError::new("agent_title_invalid", error.to_string()))?;
     let text = extract_chat_completion_text(&value).ok_or_else(|| {
         AppError::new(
@@ -765,6 +787,49 @@ mod tests {
         assert_eq!(messages[1]["role"], "assistant");
         assert_eq!(messages[2]["role"], "tool");
         assert_eq!(messages[3]["content"], "next request");
+    }
+
+    #[test]
+    fn agent_proxy_keeps_latest_chunk_even_when_it_exceeds_the_budget() {
+        let tool_calls = (0..6)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("call_{index}"),
+                    "type": "function",
+                    "function": { "name": "browser_console", "arguments": "{}" }
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut messages = vec![
+            serde_json::json!({ "role": "system", "content": "system prompt" }),
+            serde_json::json!({ "role": "user", "content": "old context" }),
+            serde_json::json!({ "role": "user", "content": "latest request" }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": tool_calls
+            }),
+        ];
+        messages.extend((0..6).map(|index| {
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": format!("call_{index}"),
+                "content": format!("result {index}")
+            })
+        }));
+        let mut body = serde_json::json!({ "messages": messages });
+
+        // The most recent chunk (assistant turn + 6 tool results) alone
+        // exceeds the budget; it must still be kept rather than stripping
+        // the conversation down to the system prompt.
+        limit_agent_chat_messages(&mut body, 4);
+
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 8);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[7]["content"], "result 5");
     }
 }
 

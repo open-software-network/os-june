@@ -7,7 +7,10 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, State};
@@ -58,9 +61,21 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
 #[derive(Default)]
 pub struct HermesBridge {
     process: Mutex<Option<HermesProcess>>,
+    /// Serializes the whole start sequence (config sync, runtime install,
+    /// spawn, readiness wait). Concurrent starts would otherwise write
+    /// `config.yaml` with different proxy ports/tokens and could run two
+    /// installers at once. This must be an async mutex because it is held
+    /// across awaits; the `process` mutex above is std::sync and must never
+    /// be held across an await.
+    start_lock: tokio::sync::Mutex<()>,
+    /// Monotonic id assigned to each spawned Hermes process so a start
+    /// attempt only tears down the exact process it launched (and not a
+    /// replacement that arrived after a stop/restart).
+    next_generation: AtomicU64,
 }
 
 struct HermesProcess {
+    generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
     proxy: Option<ScribeProviderProxy>,
@@ -295,6 +310,12 @@ async fn start_hermes_bridge_inner(
     bridge: &HermesBridge,
     request: StartHermesBridgeRequest,
 ) -> Result<HermesBridgeStatus, AppError> {
+    // Hold the start guard for the entire start sequence so concurrent
+    // starts cannot interleave config writes, installs, or spawns. The
+    // loser of the race blocks here and then short-circuits below once it
+    // sees the winner's running process.
+    let _start_guard = bridge.start_lock.lock().await;
+
     if let Some(status) = existing_running_status(bridge)? {
         return Ok(status);
     }
@@ -360,14 +381,16 @@ async fn start_hermes_bridge_inner(
         pid,
     };
 
+    let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     {
         let mut guard = bridge.process.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
-        // A concurrent start may have won the race while we were spawning
-        // (the early `existing_running_status` check runs before any await).
-        // Keep the established process and tear down the redundant one we
-        // just launched instead of leaking it.
+        // The start guard serializes starts, so no concurrent start can have
+        // populated the slot since the `existing_running_status` check above.
+        // Keep a defensive check anyway: if a live process is somehow present
+        // we keep it and tear down the redundant one we just launched instead
+        // of leaking it.
         if let Some(existing) = guard.as_mut() {
             if matches!(existing.child.try_wait(), Ok(None)) {
                 let existing_connection = existing.connection.clone();
@@ -382,6 +405,7 @@ async fn start_hermes_bridge_inner(
             }
         }
         *guard = Some(HermesProcess {
+            generation,
             child,
             connection: connection.clone(),
             proxy: Some(ScribeProviderProxy {
@@ -391,7 +415,10 @@ async fn start_hermes_bridge_inner(
     }
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
-        let _ = stop_hermes_bridge_inner(bridge);
+        // Only tear down the exact process this start spawned. If a stop (or
+        // stop+restart) happened during the readiness wait, the slot is empty
+        // or holds a different generation and must be left alone.
+        let _ = stop_hermes_bridge_generation(bridge, generation);
         return Err(error);
     }
 
@@ -998,11 +1025,38 @@ fn existing_running_status(bridge: &HermesBridge) -> Result<Option<HermesBridgeS
 }
 
 fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
-    let mut process = bridge
+    let process = bridge
         .process
         .lock()
         .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?
         .take();
+    shutdown_hermes_process(process);
+    Ok(())
+}
+
+/// Stops the bridge only if the slot still holds the process spawned by the
+/// start attempt identified by `generation`. A stop (or stop+restart) that
+/// raced with that start leaves a different process in the slot, which must
+/// not be killed by the stale start attempt's cleanup.
+fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Result<(), AppError> {
+    let process = {
+        let mut guard = bridge.process.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        if guard
+            .as_ref()
+            .is_some_and(|process| process.generation == generation)
+        {
+            guard.take()
+        } else {
+            None
+        }
+    };
+    shutdown_hermes_process(process);
+    Ok(())
+}
+
+fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
         let _ = process.child.kill();
         let _ = process.child.wait();
@@ -1012,7 +1066,6 @@ fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
             }
         }
     }
-    Ok(())
 }
 
 async fn resolve_hermes_command(
@@ -1488,7 +1541,14 @@ async fn run_scribe_provider_proxy(
                             let _ = handle_scribe_provider_connection(stream, token).await;
                         });
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        // Accept errors (ECONNABORTED, EMFILE, ...) are
+                        // usually transient. Keep the listener alive — the
+                        // bridge still reports running — and back off
+                        // briefly so a persistent error can't hot-loop.
+                        eprintln!("Scribe provider proxy accept failed: {error}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         }
@@ -1539,13 +1599,7 @@ async fn handle_scribe_provider_connection(
                 .unwrap_or_else(|_| serde_json::json!({}));
             match crate::scribe_api::proxy_agent_chat_completions(body).await {
                 Ok(response) => {
-                    write_raw_response(
-                        &mut stream,
-                        response.status,
-                        &response.content_type,
-                        &response.body,
-                    )
-                    .await?;
+                    write_streaming_response(&mut stream, response).await?;
                 }
                 Err(error) => {
                     write_json_response(
@@ -1700,21 +1754,63 @@ async fn write_raw_response(
     content_type: &str,
     body: &[u8],
 ) -> io::Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        502 => "Bad Gateway",
-        _ => "OK",
-    };
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        body.len(),
+        reason = http_status_reason(status),
     );
     stream.write_all(headers.as_bytes()).await?;
     stream.write_all(body).await?;
     stream.shutdown().await
+}
+
+/// Forwards an upstream chat-completions response to the socket chunk by
+/// chunk, so Hermes sees streamed tokens (`stream: true`) as they are
+/// generated instead of one buffered body after generation completes. The
+/// proxy already speaks `Connection: close`, so the body is delimited by
+/// closing the connection and no Content-Length is sent.
+async fn write_streaming_response(
+    stream: &mut tokio::net::TcpStream,
+    mut response: crate::scribe_api::AgentChatCompletionsResponse,
+) -> io::Result<()> {
+    let headers = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n",
+        status = response.status,
+        reason = http_status_reason(response.status),
+        content_type = response.content_type,
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => stream.write_all(&chunk).await?,
+            Ok(None) => break,
+            Err(error) => {
+                // Headers are already on the wire, so an error response is
+                // no longer possible. Close the connection to end the body;
+                // the client sees a truncated stream and surfaces the abort.
+                eprintln!(
+                    "Scribe provider proxy upstream stream failed: {}",
+                    error.message
+                );
+                break;
+            }
+        }
+    }
+    stream.shutdown().await
+}
+
+fn http_status_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        402 => "Payment Required",
+        404 => "Not Found",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        _ => "OK",
+    }
 }
 
 fn pick_port() -> Result<u16, AppError> {
@@ -1737,7 +1833,14 @@ fn random_token() -> String {
 }
 
 async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
-    let client = reqwest::Client::new();
+    // `.no_proxy()` matters: the probe targets 127.0.0.1, and routing it
+    // through an HTTP(S)_PROXY would fail for the whole readiness window
+    // and kill a healthy Hermes.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| AppError::new("hermes_bridge_ready_timeout", error.to_string()))?;
     let deadline = Instant::now() + READY_TIMEOUT;
     let mut last_error = "timeout".to_string();
     while Instant::now() < deadline {
