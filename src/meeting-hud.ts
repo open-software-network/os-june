@@ -59,9 +59,21 @@ function applyStatus(status: RecordingStatusDto) {
 
 // Orientation triad: parked in the left or right third of the screen the pill
 // stands vertical (dot above the waveform); the middle third lies flat. Rust
-// owns all of it — zone math plus the turn itself, a Core Animation transform
-// on the native contentView that carries frost, tint, and this whole DOM in
-// one move. Nothing to do here; the layout below stays horizontal forever.
+// owns the turn itself — a Core Animation transform on the native contentView
+// that carries frost, tint, and this whole DOM in one move. Our only job is
+// the counter-turn: flip `data-orient` so CSS spins the bars back the other
+// way (same duration/curve) and the waveform keeps reading left-to-right.
+function applyZone(payload: { vertical: boolean; animate: boolean }) {
+  if (!pill) return;
+  if (!payload.animate) pill.classList.add("mhud-snap");
+  pill.dataset.orient = payload.vertical ? "vertical" : "horizontal";
+  if (!payload.animate) {
+    // Let the snapped state paint before the transition comes back.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => pill.classList.remove("mhud-snap"));
+    });
+  }
+}
 
 function startBarLoop() {
   const tick = (now: number) => {
@@ -140,6 +152,13 @@ document.addEventListener("keydown", (event) => {
 void listen<RecordingStatusDto>("meeting-hud-status", (event) => {
   if (event.payload) applyStatus(event.payload);
 });
+
+void listen<{ vertical: boolean; animate: boolean }>(
+  "meeting-hud-zone",
+  (event) => {
+    if (event.payload) applyZone(event.payload);
+  },
+);
 
 resetBars();
 startBarLoop();

@@ -22,7 +22,9 @@
 //! lies horizontal. The supervisor watches the drag position and, once the
 //! window settles, turns the *native contentView layer* a quarter turn — frost,
 //! tint, dot, and waveform rotate as one unit under a single Core Animation
-//! ease, so nothing can clip or drift out of sync mid-turn.
+//! ease, so nothing can clip or drift out of sync mid-turn. The one exception:
+//! the webview counter-rotates the bars (CSS, same duration/curve) so the
+//! waveform itself still reads left-to-right when the pill stands upright.
 
 use crate::audio::capture;
 use crate::domain::types::{RecordingState, RecordingStatusDto};
@@ -283,7 +285,9 @@ fn left_mouse_button_down() -> bool {
 /// Recompute the zone and, if it changed, turn the pill to the new orientation.
 /// The whole turn is one Core Animation transform on the native contentView —
 /// frost, tint, dot, and waveform rotate together, so nothing clips against the
-/// frame or drifts out of sync (the window itself never resizes).
+/// frame or drifts out of sync (the window itself never resizes). The webview
+/// hears `meeting-hud-zone` at the same moment and counter-rotates the bars so
+/// the waveform keeps reading left-to-right (meeting-hud.css).
 fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
     let Some(zone) = zone_for(hud) else {
         return;
@@ -297,6 +301,11 @@ fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
         return;
     }
     let animate = hud.is_visible().unwrap_or(false);
+    let _ = hud.emit_to(
+        WINDOW_LABEL,
+        "meeting-hud-zone",
+        serde_json::json!({ "vertical": zone.is_vertical(), "animate": animate }),
+    );
     set_orientation(hud, zone.is_vertical(), animate);
 }
 

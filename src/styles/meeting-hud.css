@@ -17,7 +17,8 @@
  * upright; the middle third lies flat. The quarter turn happens in Rust
  * (meeting_hud.rs) as ONE Core Animation transform on the native contentView,
  * carrying frost, tint, dot, and waveform together — so this stylesheet lays
- * the pill out horizontally, always, and never rotates anything.
+ * the pill out horizontally, always. The one counter-move: data-orient spins
+ * the bars back the other way so the waveform still reads left-to-right.
  */
 
 :root {
@@ -139,6 +140,24 @@ body:active {
   align-items: center;
   justify-content: center;
   height: 22px;
+  transform: rotate(0deg);
+  /* Counter-turn: must match the native turn (TURN_SECS + --ease-out control
+   * points in meeting_hud.rs) so the bars appear to hold still while the
+   * pill rotates around them. */
+  transition: transform 320ms var(--ease-out);
+}
+
+/* The native contentView turn is visually clockwise; spin the bars back the
+ * other way so the waveform still reads left-to-right in the upright pill
+ * (the 29px bar run fits the pill's 32px cross axis). */
+.mhud[data-orient="vertical"] .mhud-bars {
+  transform: rotate(-90deg);
+}
+
+/* Orientation applied while the HUD is hidden snaps (the native side snaps
+ * too); meeting-hud.ts removes the class once the snapped state painted. */
+.mhud.mhud-snap .mhud-bars {
+  transition: none;
 }
 
 .mhud-bar {
@@ -172,6 +191,7 @@ body:active {
 @media (prefers-reduced-motion: reduce) {
   .mhud-bar,
   .mhud-bar::before,
+  .mhud-bars,
   .mhud-dot {
     transition: none;
   }
