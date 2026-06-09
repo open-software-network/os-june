@@ -843,11 +843,23 @@ impl Repositories {
         &self,
         note_id: &str,
     ) -> Result<Vec<String>, sqlx::Error> {
-        let rows = sqlx::query("SELECT path FROM audio_artifacts WHERE note_id = ?")
-            .bind(note_id)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().map(|row| row.get("path")).collect())
+        let rows = sqlx::query(
+            "SELECT path, partial_path, compressed_path FROM audio_artifacts WHERE note_id = ?",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .flat_map(|row| {
+                [
+                    row.get::<Option<String>, _>("path"),
+                    row.get::<Option<String>, _>("partial_path"),
+                    row.get::<Option<String>, _>("compressed_path"),
+                ]
+            })
+            .flatten()
+            .collect())
     }
 
     pub async fn delete_note(&self, note_id: &str) -> Result<(), sqlx::Error> {
@@ -1331,6 +1343,9 @@ impl Repositories {
             size_bytes: 0,
             checksum: String::new(),
             created_at: timestamp(),
+            compressed_format: None,
+            compressed_size_bytes: None,
+            compression_ratio: None,
         };
         sqlx::query(
             "INSERT INTO audio_artifacts
@@ -1354,7 +1369,8 @@ impl Repositories {
         session_id: &str,
     ) -> Result<Vec<AudioArtifactDto>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at
+            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at,
+                    compressed_format, compressed_size_bytes, compression_status
              FROM audio_artifacts
              WHERE recording_session_id = ?
              ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
@@ -1362,18 +1378,7 @@ impl Repositories {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| AudioArtifactDto {
-                id: row.get("id"),
-                source: row.get("source"),
-                format: row.get("format"),
-                duration_ms: row.get("duration_ms"),
-                size_bytes: row.get("size_bytes"),
-                checksum: row.get("checksum"),
-                created_at: row.get("created_at"),
-            })
-            .collect())
+        Ok(rows.into_iter().map(audio_artifact_from_row).collect())
     }
 
     pub async fn source_artifact_paths_for_session(
@@ -1450,6 +1455,9 @@ impl Repositories {
             size_bytes,
             checksum: checksum.to_string(),
             created_at: timestamp(),
+            compressed_format: None,
+            compressed_size_bytes: None,
+            compression_ratio: None,
         };
         sqlx::query(
             "INSERT INTO audio_artifacts (id, note_id, recording_session_id, source, path, format, duration_ms, size_bytes, checksum, status, expected_duration_ms, created_at)
@@ -1487,7 +1495,8 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Option<AudioArtifactDto>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at
+            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at,
+                    compressed_format, compressed_size_bytes, compression_status
              FROM audio_artifacts
              WHERE note_id = ? AND status = 'valid'
              ORDER BY created_at DESC
@@ -1496,21 +1505,13 @@ impl Repositories {
         .bind(note_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|row| AudioArtifactDto {
-            id: row.get("id"),
-            source: row.get("source"),
-            format: row.get("format"),
-            duration_ms: row.get("duration_ms"),
-            size_bytes: row.get("size_bytes"),
-            checksum: row.get("checksum"),
-            created_at: row.get("created_at"),
-        }))
+        Ok(row.map(audio_artifact_from_row))
     }
 
     pub async fn latest_valid_audio_artifact_paths(
         &self,
         note_id: &str,
-    ) -> Result<Vec<(String, String, String, String)>, sqlx::Error> {
+    ) -> Result<Vec<RetryAudioSource>, sqlx::Error> {
         let session = sqlx::query(
             "SELECT recording_session_id
              FROM audio_artifacts
@@ -1526,7 +1527,7 @@ impl Repositories {
         };
         let session_id: String = session.get("recording_session_id");
         let rows = sqlx::query(
-            "SELECT id, source, path, recording_session_id
+            "SELECT id, source, path, recording_session_id, compressed_path, compression_status
              FROM audio_artifacts
              WHERE note_id = ? AND recording_session_id = ? AND status = 'valid'
              ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
@@ -1537,15 +1538,83 @@ impl Repositories {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|row| {
-                (
-                    row.get("id"),
-                    row.get("source"),
-                    row.get("path"),
-                    row.get("recording_session_id"),
-                )
+            .map(|row| RetryAudioSource {
+                artifact_id: row.get("id"),
+                source: row.get("source"),
+                path: row.get("path"),
+                session_id: row.get("recording_session_id"),
+                compressed_path: row.get("compressed_path"),
+                compression_status: row.get("compression_status"),
             })
             .collect())
+    }
+
+    /// Validated artifacts of a session that have no archival copy yet.
+    pub async fn compressible_artifacts_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<CompressibleArtifact>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, source, path
+             FROM audio_artifacts
+             WHERE recording_session_id = ?
+               AND status = 'valid'
+               AND compression_status IS NULL
+               AND path IS NOT NULL
+             ORDER BY CASE source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| CompressibleArtifact {
+                id: row.get("id"),
+                source: row.get("source"),
+                path: row.get("path"),
+            })
+            .collect())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_artifact_compression(
+        &self,
+        artifact_id: &str,
+        format: &str,
+        compressed_path: &str,
+        compressed_size_bytes: i64,
+        compressed_checksum: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE audio_artifacts
+             SET compressed_format = ?, compressed_path = ?, compressed_size_bytes = ?,
+                 compressed_checksum = ?, compression_status = ?, compression_error = ?
+             WHERE id = ?",
+        )
+        .bind(format)
+        .bind(compressed_path)
+        .bind(compressed_size_bytes)
+        .bind(compressed_checksum)
+        .bind(status)
+        .bind(error)
+        .bind(artifact_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_artifact_original_removed(
+        &self,
+        artifact_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE audio_artifacts SET original_removed_at = ? WHERE id = ?")
+            .bind(timestamp())
+            .bind(artifact_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn latest_audio_sources(
@@ -1553,7 +1622,8 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Vec<AudioArtifactDto>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at
+            "SELECT id, source, format, duration_ms, size_bytes, checksum, created_at,
+                    compressed_format, compressed_size_bytes, compression_status
              FROM audio_artifacts
              WHERE note_id = ? AND status = 'valid'
              ORDER BY created_at DESC",
@@ -1561,18 +1631,7 @@ impl Repositories {
         .bind(note_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| AudioArtifactDto {
-                id: row.get("id"),
-                source: row.get("source"),
-                format: row.get("format"),
-                duration_ms: row.get("duration_ms"),
-                size_bytes: row.get("size_bytes"),
-                checksum: row.get("checksum"),
-                created_at: row.get("created_at"),
-            })
-            .collect())
+        Ok(rows.into_iter().map(audio_artifact_from_row).collect())
     }
 
     async fn latest_transcript(&self, note_id: &str) -> Result<Option<TranscriptDto>, sqlx::Error> {
@@ -2314,6 +2373,56 @@ pub struct SourceArtifactPath {
     pub partial_path: Option<String>,
     pub final_path: Option<String>,
     pub expected_duration_ms: i64,
+}
+
+/// Validated artifact eligible for archival compression.
+#[derive(Debug, Clone)]
+pub struct CompressibleArtifact {
+    pub id: String,
+    pub source: String,
+    pub path: String,
+}
+
+/// Saved audio available for retry: the WAV path plus the compressed archive
+/// (when one was created) so retry can restore a deleted WAV original.
+#[derive(Debug, Clone)]
+pub struct RetryAudioSource {
+    pub artifact_id: String,
+    pub source: String,
+    pub path: String,
+    pub session_id: String,
+    pub compressed_path: Option<String>,
+    pub compression_status: Option<String>,
+}
+
+fn audio_artifact_from_row(row: sqlx::sqlite::SqliteRow) -> AudioArtifactDto {
+    let size_bytes: i64 = row.get("size_bytes");
+    let compression_succeeded = row
+        .get::<Option<String>, _>("compression_status")
+        .as_deref()
+        == Some("succeeded");
+    let compressed_format: Option<String> = compression_succeeded
+        .then(|| row.get::<Option<String>, _>("compressed_format"))
+        .flatten();
+    let compressed_size_bytes: Option<i64> = compression_succeeded
+        .then(|| row.get::<Option<i64>, _>("compressed_size_bytes"))
+        .flatten()
+        .filter(|size| *size > 0);
+    let compression_ratio = compressed_size_bytes
+        .filter(|_| size_bytes > 0)
+        .map(|compressed| compressed as f64 / size_bytes as f64);
+    AudioArtifactDto {
+        id: row.get("id"),
+        source: row.get("source"),
+        format: row.get("format"),
+        duration_ms: row.get("duration_ms"),
+        size_bytes,
+        checksum: row.get("checksum"),
+        created_at: row.get("created_at"),
+        compressed_format,
+        compressed_size_bytes,
+        compression_ratio,
+    }
 }
 
 pub fn timestamp() -> String {

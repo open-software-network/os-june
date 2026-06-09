@@ -729,17 +729,18 @@ pub async fn retry_from_saved_audio(
     paths: &AppPaths,
     note_id: &str,
 ) -> Result<NoteDto, AppError> {
-    let sources = repos
-        .latest_valid_audio_artifact_paths(note_id)
-        .await?
-        .into_iter()
-        .filter_map(|(id, source, path, session_id)| {
-            paths
-                .contained_recording_file(path)
-                .ok()
-                .map(|path| (id, source, path, session_id))
-        })
-        .collect::<Vec<_>>();
+    let mut sources = Vec::new();
+    for retry_source in repos.latest_valid_audio_artifact_paths(note_id).await? {
+        let Some(path) = materialize_retry_audio(paths, &retry_source).await else {
+            continue;
+        };
+        sources.push((
+            retry_source.artifact_id,
+            retry_source.source,
+            path,
+            retry_source.session_id,
+        ));
+    }
     if sources.is_empty() {
         return Err(AppError::new(
             "audio_artifact_missing",
@@ -780,6 +781,69 @@ pub async fn retry_from_saved_audio(
         manual_notes,
     )
     .await
+}
+
+/// Resolves a recording path inside the recordings directory even when the
+/// file itself no longer exists (containment is then checked on its parent
+/// directory, since `canonicalize` needs an existing path).
+pub fn expected_recording_path(paths: &AppPaths, raw: &str) -> Option<PathBuf> {
+    match paths.contained_recording_file(raw) {
+        Ok(path) => Some(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let raw_path = std::path::Path::new(raw);
+            let parent = paths.contained_recording_file(raw_path.parent()?).ok()?;
+            Some(parent.join(raw_path.file_name()?))
+        }
+        Err(_) => None,
+    }
+}
+
+/// Resolves the WAV for a retry source, restoring it from the FLAC archive
+/// when the original was deleted by storage policy.
+pub async fn materialize_retry_audio(
+    paths: &AppPaths,
+    source: &crate::db::repositories::RetryAudioSource,
+) -> Option<PathBuf> {
+    let wav_path = expected_recording_path(paths, &source.path)?;
+    if wav_path.exists() {
+        return Some(wav_path);
+    }
+    if source.compression_status.as_deref() != Some("succeeded") {
+        return None;
+    }
+    let compressed = source.compressed_path.as_deref()?;
+    let flac_path = paths.contained_recording_file(compressed).ok()?;
+    if !flac_path.exists() {
+        return None;
+    }
+    let restored = wav_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::audio::compression::decode_flac_to_wav(&flac_path, &restored)
+    })
+    .await
+    {
+        Ok(Ok(path)) => {
+            tracing::info!(
+                artifact_id = %source.artifact_id,
+                path = %path.display(),
+                "restored WAV from FLAC archive for retry"
+            );
+            Some(path)
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                artifact_id = %source.artifact_id,
+                code = %error.code,
+                message = %error.message,
+                "could not restore WAV from FLAC archive"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(artifact_id = %source.artifact_id, %error, "FLAC restore task failed");
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

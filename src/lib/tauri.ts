@@ -240,6 +240,17 @@ export type AudioArtifactDto = {
   sizeBytes: number;
   checksum: string;
   createdAt: string;
+  compressedFormat?: "flac";
+  compressedSizeBytes?: number;
+  /** Compressed size as a fraction of the original WAV size (0–1). */
+  compressionRatio?: number;
+};
+
+export type AudioStorageMode = "wavOnly" | "compressedAfterValidation";
+
+export type AudioStorageSettingsDto = {
+  mode: AudioStorageMode;
+  keepWavAfterCompression: boolean;
 };
 
 export type NoteDto = NoteListItemDto & {
@@ -974,6 +985,18 @@ export async function osAccountsLogout() {
 
 export async function osAccountsTopUp() {
   return invoke<void>("os_accounts_top_up");
+}
+
+export async function audioStorageSettings() {
+  return invoke<AudioStorageSettingsDto>("audio_storage_settings");
+}
+
+export async function setAudioStorageSettings(
+  settings: AudioStorageSettingsDto,
+) {
+  return invoke<AudioStorageSettingsDto>("set_audio_storage_settings", {
+    settings,
+  });
 }
 
 export async function dictationSettings() {

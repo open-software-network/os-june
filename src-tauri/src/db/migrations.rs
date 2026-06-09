@@ -42,6 +42,13 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
     .await?;
     ensure_column(_pool, "audio_artifacts", "validation_summary", "TEXT").await?;
     ensure_column(_pool, "audio_artifacts", "last_error", "TEXT").await?;
+    ensure_column(_pool, "audio_artifacts", "compressed_path", "TEXT").await?;
+    ensure_column(_pool, "audio_artifacts", "compressed_format", "TEXT").await?;
+    ensure_column(_pool, "audio_artifacts", "compressed_size_bytes", "INTEGER").await?;
+    ensure_column(_pool, "audio_artifacts", "compressed_checksum", "TEXT").await?;
+    ensure_column(_pool, "audio_artifacts", "compression_status", "TEXT").await?;
+    ensure_column(_pool, "audio_artifacts", "compression_error", "TEXT").await?;
+    ensure_column(_pool, "audio_artifacts", "original_removed_at", "TEXT").await?;
     ensure_column(_pool, "transcripts", "recording_session_id", "TEXT").await?;
     ensure_column(_pool, "transcripts", "source_artifact_id", "TEXT").await?;
     ensure_column(_pool, "transcripts", "source", "TEXT").await?;
