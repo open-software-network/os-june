@@ -17,6 +17,7 @@ import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconExpandSimple } from "central-icons/IconExpandSimple";
+import { IconLayersTwo } from "central-icons/IconLayersTwo";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
@@ -24,6 +25,7 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
+import { PangolinSpinner } from "../PangolinSpinner";
 import {
   type CSSProperties,
   type FormEvent,
@@ -3068,7 +3070,9 @@ function ContextCompactionPart({
   return (
     <details className="agent-context-summary">
       <summary>
-        <IconPangolin size={14} />
+        {/* Layers, not the pangolin — the pangolin is the brand mark and the
+         * working loader, so it shouldn't also mark compaction. */}
+        <IconLayersTwo size={14} />
         <span>Context compacted</span>
         <p>{part.preview}</p>
         <time>{relativeDate(createdAt)}</time>
@@ -3160,6 +3164,7 @@ function ClarifyPart({
                   {part.choices.length ? (
                     <button
                       type="button"
+                      className="btn btn-ghost"
                       disabled={submitting !== undefined}
                       onClick={() => {
                         setDraft("");
@@ -3171,12 +3176,17 @@ function ClarifyPart({
                   ) : null}
                   <button
                     type="button"
+                    className="btn btn-ghost"
                     disabled={disabled}
                     onClick={() => onClarify(part, "")}
                   >
                     Skip
                   </button>
-                  <button type="submit" disabled={disabled || !draft.trim()}>
+                  <button
+                    type="submit"
+                    className="btn btn-secondary"
+                    disabled={disabled || !draft.trim()}
+                  >
                     {submitting !== undefined ? "Sending" : "Send"}
                   </button>
                 </div>
@@ -3234,39 +3244,41 @@ function ApprovalPart({
             )}
           </p>
         ) : (
+          // System buttons (.btn) — quiet soft-fill choices, ghost deny. The
+          // repeated per-button icons read as noise, so labels stand alone.
           <div className="agent-approval-actions">
             <button
               type="button"
+              className="btn btn-secondary"
               disabled={disabled}
               onClick={() => onApproval(part, "once")}
             >
-              <CheckIcon size={14} />
               Approve once
             </button>
             <button
               type="button"
+              className="btn btn-secondary"
               disabled={disabled}
               onClick={() => onApproval(part, "session")}
             >
-              <CheckIcon size={14} />
               This session
             </button>
             {part.allowPermanent ? (
               <button
                 type="button"
+                className="btn btn-secondary"
                 disabled={disabled}
                 onClick={() => onApproval(part, "always")}
               >
-                <CheckIcon size={14} />
                 Always
               </button>
             ) : null}
             <button
               type="button"
+              className="btn btn-ghost agent-approval-deny"
               disabled={disabled}
               onClick={() => onApproval(part, "deny")}
             >
-              <XIcon size={14} />
               Deny
             </button>
           </div>
@@ -3348,14 +3360,15 @@ function AgentToolDisclosure({
   const body = text && text.trim() ? text : null;
   const summary = (expandable: boolean) => (
     <>
+      {/* On hover the tool glyph itself becomes the expand affordance —
+       * the two icons stack in one cell and cross-fade. */}
       <span className="agent-tool-icon">
-        <IconConsoleSimple size={15} />
+        <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
+        {expandable ? (
+          <IconExpandSimple size={14} className="agent-tool-icon-expand" />
+        ) : null}
       </span>
       <span className="agent-tool-name">{name}</span>
-      {expandable ? (
-        // Expand affordance — hidden until hover so the row stays quiet.
-        <IconExpandSimple size={13} className="agent-tool-expand" />
-      ) : null}
       {statusNode}
       {redacted ? <span className="agent-redacted">Redacted</span> : null}
     </>
@@ -3390,8 +3403,13 @@ function AgentToolPartRow({
       text={part.text}
       statusNode={
         part.status === "running" ? (
-          <span className="agent-tool-live-status" data-status="running">
-            Running
+          <span
+            className="agent-tool-spinner"
+            role="status"
+            aria-label="Running"
+            title="Running"
+          >
+            <PangolinSpinner />
           </span>
         ) : part.status === "failed" ? (
           <span className="agent-tool-live-status" data-status="failed">
@@ -3528,11 +3546,19 @@ function HermesToolRow({ item }: { item: HermesToolItem }) {
       status={item.status}
       text={item.text}
       statusNode={
-        item.status === "completed" ? null : (
-          <StatusPill
-            status={item.status === "failed" ? "failed" : "running"}
-            compact
-          />
+        item.status === "completed" ? null : item.status === "failed" ? (
+          <span className="agent-tool-live-status" data-status="failed">
+            Failed
+          </span>
+        ) : (
+          <span
+            className="agent-tool-spinner"
+            role="status"
+            aria-label="Running"
+            title="Running"
+          >
+            <PangolinSpinner />
+          </span>
         )
       }
     />

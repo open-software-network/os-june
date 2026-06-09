@@ -1114,41 +1114,34 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-.agent-clarify-choices button,
-.agent-clarify-form button {
-  display: inline-flex;
+/* Choice rows stay quiet: hairline outline, transparent fill, soft tint on
+ * hover. The numeral is a bare muted digit — no keycap chip. */
+.agent-clarify-choices button {
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: var(--sp-3);
   min-height: var(--control-sm);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   padding: 0 var(--sp-3);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: transparent;
+  color: var(--foreground);
   font: inherit;
-}
-
-.agent-clarify-choices button {
-  justify-content: flex-start;
-  gap: var(--sp-3);
   text-align: left;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-clarify-choices button span {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-xs);
-  background: var(--surface-subtle);
+  flex: 0 0 auto;
+  min-width: 14px;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+  text-align: center;
 }
 
-.agent-clarify-choices button:hover:not(:disabled),
-.agent-clarify-form button:hover:not(:disabled) {
-  background: var(--tertiary);
+.agent-clarify-choices button:hover:not(:disabled) {
+  background: var(--surface-subtle);
 }
 
 .agent-clarify-choices button:disabled,
@@ -1202,6 +1195,8 @@ input:focus-visible,
   white-space: pre-wrap;
 }
 
+/* Buttons come from the .btn system (secondary fills, ghost deny) — this
+ * block only lays them out and adds the deny accent. */
 .agent-approval-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1209,41 +1204,26 @@ input:focus-visible,
   margin-top: var(--sp-4);
 }
 
-.agent-approval-actions button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: var(--card);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
-}
-
-.agent-approval-actions button:hover:not(:disabled) {
-  background: var(--surface-subtle);
-  border-color: var(--ring);
-}
-
 .agent-approval-actions button:disabled {
   opacity: 0.55;
 }
 
+.agent-approval-deny {
+  color: var(--muted-foreground);
+}
+
+.agent-approval-deny:hover:not(:disabled) {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+/* The resolved record is a quiet line of text, not a chip. */
 .agent-approval-result {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   width: fit-content;
   margin-top: var(--sp-3) !important;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--surface);
   color: var(--foreground) !important;
   font-size: var(--fs-sm) !important;
 }
@@ -1443,7 +1423,7 @@ input:focus-visible,
   width: min(760px, 100%);
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
 .agent-context-summary summary {
@@ -1501,7 +1481,7 @@ input:focus-visible,
   width: min(760px, 100%);
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
 .agent-hermes-note summary {
@@ -1554,7 +1534,9 @@ input:focus-visible,
 .agent-tool-disclosure {
   width: min(760px, 100%);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  /* Body-sized like the rest of the meta layer — the lighter color alone
+   * keeps it subordinate to the answer text. */
+  font-size: var(--fs-lg);
 }
 
 .agent-tool-disclosure > summary,
@@ -1586,9 +1568,11 @@ input:focus-visible,
 }
 
 /* Inside disclosures the icon drops its boxed treatment — just the glyph — so
- * the row reads as one quiet line of text rather than a chip. */
+ * the row reads as one quiet line of text rather than a chip. The tool glyph
+ * and the expand hint stack in the same cell; hover cross-fades between them. */
 .agent-tool-disclosure .agent-tool-icon {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
   flex: 0 0 auto;
   width: auto;
   height: auto;
@@ -1597,34 +1581,55 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* Expand hint surfaces on hover (and stays while open, as the collapse hint). */
-.agent-tool-expand {
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-  opacity: 0;
+.agent-tool-disclosure .agent-tool-icon > svg {
+  grid-area: 1 / 1;
   transition: opacity 120ms var(--ease-out);
 }
 
-.agent-tool-disclosure > summary:hover .agent-tool-expand,
-.agent-tool-disclosure[open] > summary .agent-tool-expand {
+.agent-tool-icon-expand {
+  opacity: 0;
+}
+
+.agent-tool-disclosure > summary:hover .agent-tool-icon-expand {
   opacity: 1;
 }
 
+/* Static rows render as a div (no summary), so this only ever fires on rows
+ * that actually have the expand icon to swap to. */
+.agent-tool-disclosure > summary:hover .agent-tool-icon-glyph {
+  opacity: 0;
+}
+
+/* Running rows trade the status word for the rolling pangolin. */
+.agent-tool-spinner {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--warm-strong);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+/* Braille cells are 2×4 (tall); widen so the curl reads as a circle. */
+.agent-tool-spinner > span {
+  display: inline-block;
+  transform: scaleX(1.35);
+  transform-origin: center;
+}
+
+/* Name inherits the row's muted color (the whole line darkens on hover). */
 .agent-tool-name {
   overflow: hidden;
-  color: var(--foreground);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-tool-disclosure .agent-tool-live-status,
-.agent-tool-disclosure .agent-status-pill {
-  margin-left: auto;
-}
-
-/* StatusPill rows (hermes/tool events) flatten to the same quiet-word
- * treatment inside disclosures. */
+/* Status sits beside the name (not floated to the far edge) so the row reads
+ * as one phrase. StatusPill rows (hermes/tool events) flatten to the same
+ * quiet-word treatment inside disclosures. */
 .agent-tool-disclosure .agent-status-pill {
   min-height: 0;
   border: 0;
@@ -1729,13 +1734,17 @@ input:focus-visible,
   background: var(--tertiary);
 }
 
+/* The whole thinking layer sits at body size — muted color (not a size
+ * step-down) is what separates it from the answer. */
 .agent-reasoning {
   width: 100%;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
-.agent-reasoning summary {
+/* Direct-child selectors only — tool rows nest their own <summary> inside the
+ * reasoning body, and a descendant selector here would shrink-wrap them. */
+.agent-reasoning > summary {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -1744,24 +1753,24 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.agent-reasoning summary:hover {
+.agent-reasoning > summary:hover {
   color: var(--foreground);
 }
 
-.agent-reasoning summary::-webkit-details-marker {
+.agent-reasoning > summary::-webkit-details-marker {
   display: none;
 }
 
-.agent-reasoning summary svg {
+.agent-reasoning > summary svg {
   align-self: center;
   color: var(--muted-foreground);
 }
 
-.agent-reasoning summary span {
+.agent-reasoning > summary span {
   font-weight: 500;
 }
 
-.agent-reasoning[open] summary p {
+.agent-reasoning[open] > summary p {
   display: none;
 }
 
