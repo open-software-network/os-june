@@ -1457,7 +1457,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   // Expose a dev-tools handle so the response gallery can be toggled from the
   // browser console:  __agentGallery()  shows it,  __agentGallery(false)  hides
   // it. Lets us audit/tune the styling of every response part type in one place.
+  // Dev builds only — the handle never exists in production bundles.
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     const handle = window as unknown as Record<string, unknown>;
     handle.__agentGallery = (show: boolean = true) => {
       setGallerySections(show ? buildAgentChatGallery() : null);
