@@ -156,6 +156,36 @@ body {
   justify-content: center;
   gap: 2.5px;
   height: 22px;
+  transform: rotate(0deg);
+  /* Counter-turn: must match the native turn (TURN_SECS + --ease-out control
+   * points in hud_native.rs) so the bars appear to hold still while the pill
+   * rotates around them. */
+  transition: transform 320ms var(--ease-out);
+}
+
+/* Upright (parked in a side screen third while listening): the native
+ * contentView turn is visually clockwise; spin the bars back the other way so
+ * the waveform still reads left-to-right. */
+.hud[data-orient="vertical"] .hud-bars {
+  transform: rotate(-90deg);
+}
+
+/* Mid-turn the counter-rotating run's corners poke past the viz box — drop
+ * paint containment so they aren't clipped (the pill has slack around it). */
+.hud[data-orient="vertical"] .hud-viz {
+  contain: layout;
+}
+
+/* Upright, the full 7-bar run crowds the pill's 32px cross axis — keep a
+ * shorter 4-bar run of the same waveform (mirrors the meeting HUD). */
+.hud[data-orient="vertical"] .hud-bar:nth-child(n + 5) {
+  display: none;
+}
+
+/* Orientation applied while the HUD is hidden snaps (the native side snaps
+ * too); hud.ts removes the class once the snapped state painted. */
+.hud.hud-orient-snap .hud-bars {
+  transition: none;
 }
 
 /* The bar boxes stay a fixed size; only their absolutely-positioned inner
@@ -482,6 +512,7 @@ body {
   .hud > *,
   .hud-stop,
   .hud-stop::before,
+  .hud-bars,
   .hud-bar::before {
     transition: none;
   }

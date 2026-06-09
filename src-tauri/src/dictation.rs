@@ -2,6 +2,7 @@ use crate::domain::{
     processing::{build_dictionary_context, merge_transcription_context},
     types::{AppError, ListDictationHistoryResponse},
 };
+use crate::hud_native;
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
 use crate::scribe_api::{
     cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
@@ -78,6 +79,16 @@ pub struct HudClientRect {
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
+}
+
+/// Upright (side-zone) state for the dictation pill. Only the listening pill
+/// may stand — every text-bearing state flattens first through the
+/// [`dictation_hud_flatten`] choke point before it measures or resizes.
+pub struct HudOrient {
+    vertical: std::sync::atomic::AtomicBool,
+    /// Window frame to restore when flattening (the listening pill's size —
+    /// while upright the window is a square grown around it).
+    horizontal_size: Mutex<Option<PhysicalSize<u32>>>,
 }
 
 pub fn configured_transcription_language() -> Option<String> {
@@ -554,6 +565,10 @@ pub fn setup(app: &mut tauri::App) {
         stop_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
     });
+    app.manage(HudOrient {
+        vertical: std::sync::atomic::AtomicBool::new(false),
+        horizontal_size: Mutex::new(None),
+    });
     app.manage(HudFrameLock::default());
     spawn_hud_hover_thread(app.handle().clone());
     if let Err(error) = configure_hud_window(app.handle()) {
@@ -797,6 +812,12 @@ pub fn dictation_hud_set_size(app: AppHandle, width: f64, height: f64, animate: 
     let Some(hud) = app.get_webview_window("hud") else {
         return;
     };
+    // Upright (side-parked listening) ignores resize requests — the flatten
+    // choke point in syncWindowToPill restores horizontal mode first, so a
+    // request arriving here while vertical is a stray.
+    if hud_is_vertical(&app) {
+        return;
+    }
     let lock = app.try_state::<HudFrameLock>();
     let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
     let Ok(scale) = hud.scale_factor() else {
@@ -828,8 +849,10 @@ fn animate_frame_to(hud: &WebviewWindow, new_size: PhysicalSize<u32>, animate: b
             let t = f64::from(step) / f64::from(STEPS);
             // ease-out cubic — fast start, soft landing.
             let e = 1.0 - (1.0 - t).powi(3);
-            let w = f64::from(old_size.width) + f64::from(new_size.width as i32 - old_size.width as i32) * e;
-            let h = f64::from(old_size.height) + f64::from(new_size.height as i32 - old_size.height as i32) * e;
+            let w = f64::from(old_size.width)
+                + f64::from(new_size.width as i32 - old_size.width as i32) * e;
+            let h = f64::from(old_size.height)
+                + f64::from(new_size.height as i32 - old_size.height as i32) * e;
             let x = f64::from(position.x) + f64::from(target_x - position.x) * e;
             let y = f64::from(position.y) + f64::from(target_y - position.y) * e;
             let _ = hud.set_size(PhysicalSize::new(w.round() as u32, h.round() as u32));
@@ -924,6 +947,213 @@ pub fn dictation_hud_shake(app: AppHandle) {
     });
 }
 
+fn hud_is_vertical(app: &AppHandle) -> bool {
+    app.try_state::<HudOrient>()
+        .map(|orient| orient.vertical.load(std::sync::atomic::Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+/// Webview choke point: every state-driven measure/resize awaits this first,
+/// so the pill is guaranteed flat (and the window back to pill-sized) before
+/// any horizontal layout math runs. No-op when already flat. Blocks until the
+/// turn lands, like `dictation_hud_set_size` blocks through its morph.
+#[tauri::command]
+pub fn dictation_hud_flatten(app: AppHandle) {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return;
+    };
+    hud_flatten(&app, &hud);
+}
+
+/// Stand the listening pill upright: grow the window into a square around the
+/// pill (invisible — the gutters are transparent), pin the frost to the
+/// pill's rect, then turn the native contentView a quarter turn. The webview
+/// hears `dictation-hud-orient` on the same beat and counter-rotates the bars
+/// so the waveform keeps reading left-to-right (hud.css).
+#[cfg(target_os = "macos")]
+fn hud_stand_upright(app: &AppHandle, hud: &WebviewWindow) {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use std::sync::atomic::Ordering;
+
+    let Some(orient) = app.try_state::<HudOrient>() else {
+        return;
+    };
+    if orient.vertical.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let lock = app.try_state::<HudFrameLock>();
+    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
+    let (Ok(position), Ok(size), Ok(scale)) =
+        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
+    else {
+        orient.vertical.store(false, Ordering::SeqCst);
+        return;
+    };
+    if let Ok(mut guard) = orient.horizontal_size.lock() {
+        *guard = Some(size);
+    }
+    let side = size.width.max(size.height);
+    let target = PhysicalPosition::new(
+        position.x + (size.width as i32 - side as i32) / 2,
+        position.y + (size.height as i32 - side as i32) / 2,
+    );
+    let animate = hud.is_visible().unwrap_or(false);
+    let _ = app.emit_to(
+        "hud",
+        "dictation-hud-orient",
+        serde_json::json!({ "vertical": true, "animate": animate }),
+    );
+
+    let pill_w = size.width as f64 / scale;
+    let pill_h = size.height as f64 / scale;
+    let side_logical = side as f64 / scale;
+    let window = hud.clone();
+    let _ = hud.run_on_main_thread(move || {
+        let _ = window.set_size(PhysicalSize::new(side, side));
+        let _ = window.set_position(target);
+        unsafe {
+            hud_native::set_frost_frame(
+                &window,
+                NSRect::new(
+                    NSPoint::new((side_logical - pill_w) / 2.0, (side_logical - pill_h) / 2.0),
+                    NSSize::new(pill_w, pill_h),
+                ),
+                false,
+                false,
+            );
+            hud_native::rotate_content(&window, -std::f64::consts::FRAC_PI_2, animate);
+        }
+    });
+    if animate {
+        // The shadow shape is derived from the rendered content; refresh it
+        // once the turn settles, off this thread so callers never stall.
+        let window = hud.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs_f64(hud_native::TURN_SECS + 0.06));
+            let handle = window.clone();
+            let _ = window.run_on_main_thread(move || unsafe {
+                hud_native::invalidate_shadow(&handle);
+            });
+        });
+    }
+}
+
+/// Lay the pill back flat: turn the contentView home, then shrink the square
+/// window back around the remembered pill frame and let the frost fill the
+/// window again (its horizontal, window-equals-pill mode). Blocks through the
+/// turn so callers can sequence resizes after it.
+#[cfg(target_os = "macos")]
+fn hud_flatten(app: &AppHandle, hud: &WebviewWindow) {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use std::sync::atomic::Ordering;
+
+    let Some(orient) = app.try_state::<HudOrient>() else {
+        return;
+    };
+    if !orient.vertical.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let animate = hud.is_visible().unwrap_or(false);
+    let _ = app.emit_to(
+        "hud",
+        "dictation-hud-orient",
+        serde_json::json!({ "vertical": false, "animate": animate }),
+    );
+    let window = hud.clone();
+    let _ = hud.run_on_main_thread(move || unsafe {
+        hud_native::rotate_content(&window, 0.0, animate);
+    });
+    if animate {
+        thread::sleep(Duration::from_secs_f64(hud_native::TURN_SECS + 0.03));
+    }
+
+    let lock = app.try_state::<HudFrameLock>();
+    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
+    let (Ok(position), Ok(size), Ok(scale)) =
+        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
+    else {
+        return;
+    };
+    let restore = orient
+        .horizontal_size
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+        .unwrap_or(size);
+    let target = PhysicalPosition::new(
+        position.x + (size.width as i32 - restore.width as i32) / 2,
+        position.y + (size.height as i32 - restore.height as i32) / 2,
+    );
+    let pill_w = restore.width as f64 / scale;
+    let pill_h = restore.height as f64 / scale;
+    let window = hud.clone();
+    let _ = hud.run_on_main_thread(move || {
+        let _ = window.set_size(restore);
+        let _ = window.set_position(target);
+        unsafe {
+            hud_native::set_frost_frame(
+                &window,
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pill_w, pill_h)),
+                true,
+                false,
+            );
+            hud_native::invalidate_shadow(&window);
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hud_flatten(_app: &AppHandle, _hud: &WebviewWindow) {}
+
+/// Drag-settle tracker for the orientation flip, mirroring the meeting HUD:
+/// once the window has held still for a few hover-thread ticks AND the mouse
+/// button is up, stand or flatten by screen third. Both guards exist so the
+/// frame never changes mid-drag — that would shift the pill out from under
+/// the cursor's grab point.
+#[cfg(target_os = "macos")]
+struct HudZoneTracker {
+    last_position: Option<PhysicalPosition<i32>>,
+    stable_ticks: u32,
+    /// Settled while the button was still held — flip on release instead.
+    pending_release: bool,
+}
+
+/// At the hover thread's 33ms tick, ~5 stable ticks ≈ 165ms of rest.
+#[cfg(target_os = "macos")]
+const HUD_ZONE_SETTLE_TICKS: u32 = 5;
+
+#[cfg(target_os = "macos")]
+fn track_hud_zone(app: &AppHandle, hud: &WebviewWindow, tracker: &mut HudZoneTracker) {
+    let Ok(position) = hud.outer_position() else {
+        return;
+    };
+    if tracker.last_position == Some(position) {
+        tracker.stable_ticks = tracker.stable_ticks.saturating_add(1);
+    } else {
+        tracker.last_position = Some(position);
+        tracker.stable_ticks = 0;
+        return;
+    }
+    if tracker.stable_ticks >= HUD_ZONE_SETTLE_TICKS && !hud_native::left_mouse_button_down() {
+        // Apply once per rest: bump past the threshold so we don't re-run
+        // zone math every tick while parked.
+        if tracker.stable_ticks == HUD_ZONE_SETTLE_TICKS || tracker.pending_release {
+            tracker.pending_release = false;
+            let Some(zone) = hud_native::zone_for(hud) else {
+                return;
+            };
+            let vertical = hud_is_vertical(app);
+            if zone.is_vertical() && !vertical {
+                hud_stand_upright(app, hud);
+            } else if !zone.is_vertical() && vertical {
+                hud_flatten(app, hud);
+            }
+        }
+    } else if tracker.stable_ticks >= HUD_ZONE_SETTLE_TICKS {
+        tracker.pending_release = true;
+    }
+}
+
 fn rect_contains(
     rect: &HudClientRect,
     position: PhysicalPosition<i32>,
@@ -939,11 +1169,19 @@ fn rect_contains(
 }
 
 /// Polls the cursor against the cached stop-button bounds and emits hover
-/// state changes. Short-circuits when bounds are `None`.
+/// state changes. Short-circuits when bounds are `None`. Doubles as the
+/// orientation watcher: the stop bounds being present is exactly "the pill is
+/// listening", the only state allowed to stand upright in a side zone.
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
         use std::sync::atomic::Ordering;
         let tick = Duration::from_millis(33);
+        #[cfg(target_os = "macos")]
+        let mut zone_tracker = HudZoneTracker {
+            last_position: None,
+            stable_ticks: 0,
+            pending_release: false,
+        };
         loop {
             thread::sleep(tick);
 
@@ -958,6 +1196,15 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let visible = hud.is_visible().unwrap_or(false);
 
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
+
+            #[cfg(target_os = "macos")]
+            if visible && stop_rect.is_some() {
+                track_hud_zone(&app, &hud, &mut zone_tracker);
+            } else {
+                zone_tracker.last_position = None;
+                zone_tracker.stable_ticks = 0;
+                zone_tracker.pending_release = false;
+            }
 
             // Hidden or no stop button on screen: drop any stale hover.
             if !visible || stop_rect.is_none() {
@@ -2304,16 +2551,11 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
             make_hud_nonactivating(&hud);
             // Real behind-window blur (CSS backdrop-filter can't sample other
             // apps' pixels). The radius must match the pill's CSS
-            // border-radius (--r-lg, 10px). Mirrors the meeting HUD.
-            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-            if let Err(error) = apply_vibrancy(
-                &hud,
-                NSVisualEffectMaterial::HudWindow,
-                Some(NSVisualEffectState::Active),
-                Some(10.0),
-            ) {
-                tracing::warn!(%error, "failed to apply dictation HUD vibrancy");
-            }
+            // border-radius (--r-lg, 10px). Hand-rolled (not window_vibrancy)
+            // so the upright turn can pin the frost to the pill inside the
+            // temporarily-square window; `None` = fill the window and track
+            // its resizes, exactly like window_vibrancy, the rest of the time.
+            unsafe { hud_native::install_frost(&hud, None, 10.0) };
         }
 
         let app_for_events = app.clone();

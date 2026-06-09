@@ -48,6 +48,9 @@ let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
 let hideRequestId = 0;
+// Mirrors Rust's HudOrient: true while the listening pill stands upright in a
+// side screen third (the native contentView is rotated a quarter turn).
+let hudVertical = false;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -247,6 +250,30 @@ function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
 }
 
+// Upright (parked in a side screen third while listening) the native
+// contentView is rotated a quarter turn by Rust — pixels turn, DOM geometry
+// doesn't. This maps a DOM rect into the window coordinates the cursor
+// actually reports: the pill turns visually clockwise about the (square)
+// window's center, so DOM (x, y) lands at (cx + cy - y, cy - cx + x).
+function visualRect(rect: DOMRect) {
+  if (!hudVertical) {
+    const { left, right, top, bottom } = rect;
+    return { left, right, top, bottom };
+  }
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+  const x1 = cx + cy - rect.top;
+  const x2 = cx + cy - rect.bottom;
+  const y1 = cy - cx + rect.left;
+  const y2 = cy - cx + rect.right;
+  return {
+    left: Math.min(x1, x2),
+    right: Math.max(x1, x2),
+    top: Math.min(y1, y2),
+    bottom: Math.max(y1, y2),
+  };
+}
+
 // Hover + click pass-through are computed in Rust against rects we push from
 // here. WebKit throttles JS timers on the non-key HUD panel, so any polling
 // done in JS only fires reliably during a mouse-down.
@@ -257,9 +284,8 @@ function pushStopBoundsToNative() {
     );
     return;
   }
-  const { left, right, top, bottom } = stopButton.getBoundingClientRect();
   void invoke("dictation_hud_set_stop_bounds", {
-    rect: { left, right, top, bottom },
+    rect: visualRect(stopButton.getBoundingClientRect()),
   }).catch(() => {});
 }
 
@@ -271,6 +297,10 @@ function pushStopBoundsToNative() {
 // the native motion finishes).
 async function syncWindowToPill(options?: { morph?: boolean }) {
   if (!hud) return;
+  // Flatten first: an upright pill (side-parked listening) must turn back and
+  // give the window its pill-sized frame before any horizontal layout math —
+  // resolves immediately when already flat.
+  await invoke("dictation_hud_flatten").catch(() => {});
   hud.offsetWidth;
   const { width, height } = hud.getBoundingClientRect();
   if (options?.morph) hud.classList.add("is-morphing");
@@ -555,6 +585,48 @@ dragHandle?.addEventListener("pointerdown", (event) => {
   void appWindow.startDragging().catch(() => {});
 });
 
+// Upright, DOM hit-testing no longer matches what's on screen, so the
+// per-element handlers above/below go quiet (raw coordinates miss their
+// elements) and these document-level handlers take over: a press on the stop
+// button's visual rect clicks stop; a press anywhere else drags, the same
+// immediate grab the handle gives when flat. Capture-phase + preventDefault
+// keeps stray raw hits (e.g. the DOM stop button's unrotated spot out in the
+// gutter) from reaching the real handlers.
+function pointInVisualStop(x: number, y: number) {
+  if (!stopButton || hud?.dataset.state !== "listening") return false;
+  const rect = visualRect(stopButton.getBoundingClientRect());
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+let uprightStopPress = false;
+
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (!hudVertical || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    uprightStopPress = pointInVisualStop(event.clientX, event.clientY);
+    if (!uprightStopPress) {
+      void appWindow.startDragging().catch(() => {});
+    }
+  },
+  true,
+);
+
+document.addEventListener(
+  "pointerup",
+  (event) => {
+    if (!hudVertical || event.button !== 0) return;
+    event.stopPropagation();
+    if (uprightStopPress && pointInVisualStop(event.clientX, event.clientY)) {
+      stopButton?.click();
+    }
+    uprightStopPress = false;
+  },
+  true,
+);
+
 stopButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   setStopHover(false);
@@ -603,6 +675,32 @@ void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
 void listen<boolean>("hud-stop-hover", (event) => {
   setStopHover(Boolean(event.payload));
 });
+
+// Orientation: Rust turns the native contentView (frost + tint + this DOM as
+// one unit) and tells us on the same beat; our only moves are the bar
+// counter-rotation (hud.css, same duration/curve, so the waveform keeps
+// reading left-to-right) and re-aiming the stop rect at rotated geometry.
+void listen<{ vertical: boolean; animate: boolean }>(
+  "dictation-hud-orient",
+  (event) => {
+    if (!event.payload || !hud) return;
+    hudVertical = event.payload.vertical;
+    if (!event.payload.animate) hud.classList.add("hud-orient-snap");
+    hud.dataset.orient = event.payload.vertical ? "vertical" : "horizontal";
+    if (!event.payload.animate) {
+      // Let the snapped state paint before the transition comes back.
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() =>
+          hud?.classList.remove("hud-orient-snap"),
+        );
+      });
+    }
+  },
+);
+
+// Window geometry changes (the upright square snap, resize morphs) shift the
+// stop button's window-space rect; re-aim the native hover/click math.
+window.addEventListener("resize", () => pushStopBoundsToNative());
 
 void invoke<string | undefined>("latest_dictation_event")
   .then((payload) => {

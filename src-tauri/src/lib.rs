@@ -5,6 +5,7 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod hud_native;
 pub mod mascot;
 pub mod meeting_detection;
 pub mod meeting_hud;
@@ -124,6 +125,7 @@ pub fn run() {
             dictation::dictation_hud_set_size,
             dictation::dictation_hud_set_alpha,
             dictation::dictation_hud_shake,
+            dictation::dictation_hud_flatten,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,
             mascot::mascot_show,
