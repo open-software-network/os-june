@@ -386,27 +386,29 @@ export function NoteEditor({
         ) : (
           <div className="record-dock">
             {recordingForNote && consentReminderVisible ? (
-              <motion.div
-                className="record-consent-note"
-                initial={{ opacity: 0, y: 3 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-              >
-                <InlineNotice
-                  className="record-consent-note-surface"
-                  aria-label="Recording consent reminder"
-                  body="Make sure everyone has agreed to be recorded."
-                  actions={
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={() => setConsentReminderVisible(false)}
-                    >
-                      Dismiss
-                    </button>
-                  }
-                />
-              </motion.div>
+              <div className="record-consent-note">
+                <motion.div
+                  className="record-consent-note-anim"
+                  initial={{ opacity: 0, y: 3 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <InlineNotice
+                    className="record-consent-note-surface"
+                    aria-label="Recording consent reminder"
+                    body="Make sure everyone has agreed to be recorded."
+                    actions={
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => setConsentReminderVisible(false)}
+                      >
+                        Dismiss
+                      </button>
+                    }
+                  />
+                </motion.div>
+              </div>
             ) : null}
             <div
               className="record-shell"

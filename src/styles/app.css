@@ -3970,25 +3970,33 @@ input:focus-visible,
   align-self: flex-end;
 }
 
+/* Centered over the recorder pill. The dock shrink-wraps the pill and the
+ * footer centers the dock in the canvas, so 50% of the dock is the pill's
+ * (and the canvas's) center. The framer-motion child owns translateY, so
+ * the centering transform lives here, not on the animated node. */
 .record-consent-note {
   position: absolute;
-  right: 0;
+  left: 50%;
   bottom: calc(100% + var(--sp-2));
   z-index: 4;
+  transform: translateX(-50%);
   width: max-content;
   max-width: calc(100vw - var(--sp-8));
 }
 
-.record-consent-note-surface {
+/* Scoped to .record-dock to outrank the later, equal-specificity base
+ * .inline-notice rule, which would otherwise win on background/border/padding. */
+.record-dock .record-consent-note-surface {
   gap: var(--sp-3);
   padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
   border-color: transparent;
   border-radius: var(--r-sm);
   background: color-mix(in oklch, var(--muted) 70%, transparent);
   color: var(--muted-foreground);
+  box-shadow: none;
 }
 
-.record-consent-note-surface .inline-notice-message {
+.record-dock .record-consent-note-surface .inline-notice-message {
   flex-wrap: nowrap;
   font-size: var(--fs-sm);
   white-space: nowrap;
