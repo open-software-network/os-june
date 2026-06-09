@@ -29,7 +29,7 @@
         "url": "/hud.html",
         "title": "OS June Dictation",
         "width": 340,
-        "height": 32,
+        "height": 112,
         "resizable": false,
         "decorations": false,
         "transparent": true,
