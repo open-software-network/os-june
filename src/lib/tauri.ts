@@ -799,6 +799,16 @@ export async function deleteHermesBridgeSession(sessionId: string) {
   });
 }
 
+export async function ensureHermesBridgeSession(input: {
+  sessionId: string;
+  title?: string;
+  model?: string;
+}) {
+  return invoke<unknown>("ensure_hermes_bridge_session", {
+    request: input,
+  });
+}
+
 export async function updateHermesBridgeMessagingPlatform(input: {
   platformId: string;
   enabled?: boolean;

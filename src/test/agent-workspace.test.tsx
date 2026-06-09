@@ -10,6 +10,7 @@ import {
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
+  ensureHermesBridgeSession: vi.fn(),
   getAgentTask: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
@@ -50,6 +51,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri", () => ({
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
+  ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   getAgentTask: mocks.getAgentTask,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
@@ -142,6 +144,7 @@ describe("AgentWorkspace", () => {
     mocks.downloadHermesBridgeFile.mockResolvedValue(
       "/Users/junho/Downloads/sample.pdf",
     );
+    mocks.ensureHermesBridgeSession.mockResolvedValue({});
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
     });
@@ -214,6 +217,10 @@ describe("AgentWorkspace", () => {
       title: "Summarize Current Page",
       cols: 96,
     });
+    expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+      sessionId: "session-2",
+      title: "Summarize Current Page",
+    });
     expect(
       await screen.findByText("Summarize Current Page"),
     ).toBeInTheDocument();
@@ -248,6 +255,72 @@ describe("AgentWorkspace", () => {
       session_id: "runtime-session-1",
       text: "write a project update",
     });
+  });
+
+  it("keeps an optimistic Hermes session visible while the persisted list lags", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ prompt: "open the release notes" }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([existingSession]);
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "open the release notes",
+      }),
+    );
+
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("open the release notes")).toBeInTheDocument();
+  });
+
+  it("keeps polling when a follow-up user message is still only pending locally", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "previous request",
+        timestamp: "2026-06-04T12:00:00.000Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "previous answer",
+        timestamp: "2026-06-04T12:00:01.000Z",
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("previous answer")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "follow up while pending");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "follow up while pending",
+      }),
+    );
+    expect(await screen.findByText("Working now.")).toBeInTheDocument();
+
+    await new Promise((resolve) => window.setTimeout(resolve, 2700));
+
+    expect(screen.getByText("follow up while pending")).toBeInTheDocument();
+    expect(screen.getByText("Working now.")).toBeInTheDocument();
   });
 
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {

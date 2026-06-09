@@ -154,6 +154,14 @@ pub struct DeleteHermesSessionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EnsureHermesSessionRequest {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadHermesFileRequest {
     pub path: String,
 }
@@ -505,6 +513,48 @@ pub async fn hermes_bridge_sessions(
         None,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn ensure_hermes_bridge_session(
+    bridge: State<'_, HermesBridge>,
+    request: EnsureHermesSessionRequest,
+) -> Result<serde_json::Value, AppError> {
+    let session_id = request.session_id.trim();
+    if session_id.is_empty() {
+        return Err(AppError::new(
+            "hermes_session_id_required",
+            "Hermes session ID is required.",
+        ));
+    }
+    let mut body = serde_json::json!({ "id": session_id });
+    if let Some(title) = request
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["title"] = serde_json::Value::String(title.to_string());
+    }
+    if let Some(model) = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["model"] = serde_json::Value::String(model.to_string());
+    }
+    match hermes_api_json(&bridge, reqwest::Method::POST, "/api/sessions", Some(body)).await {
+        Ok(value) => Ok(value),
+        Err(error) if error.code == "hermes_bridge_api_failed" && error.message.contains("409") => {
+            Ok(serde_json::json!({
+                "object": "hermes.session.ensure",
+                "id": session_id,
+                "created": false
+            }))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
