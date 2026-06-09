@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
 
@@ -57,6 +57,10 @@ const recovery: RecoverableRecordingDto = {
 };
 
 describe("NoteEditor", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("edits title and renders the generated note as a preview", async () => {
     const user = userEvent.setup();
     const onTitleChange = vi.fn();
@@ -361,8 +365,8 @@ describe("NoteEditor", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("surfaces a dismissible consent reminder once recording starts", async () => {
-    const user = userEvent.setup();
+  it("surfaces a dismissible consent reminder after the recorder settles", async () => {
+    vi.useFakeTimers();
     render(
       <NoteEditor
         {...props}
@@ -379,10 +383,26 @@ describe("NoteEditor", () => {
     );
 
     expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(419);
+    });
+
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(
       screen.getByRole("status", { name: "Recording consent reminder" }),
     ).toHaveTextContent(/everyone has agreed to be recorded/i);
 
-    await user.click(screen.getByRole("button", { name: "Got it" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
     expect(
       screen.queryByRole("status", { name: "Recording consent reminder" }),

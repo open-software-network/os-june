@@ -3,7 +3,6 @@ import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
-import { IconRecord } from "central-icons/IconRecord";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
@@ -84,6 +83,9 @@ const SOURCE_FILTERS = [
   { value: "system", label: "System" },
 ] as const;
 
+const RECORD_CONSENT_REVEAL_DELAY_MS = 420;
+const RECORD_CONSENT_AUTO_HIDE_MS = 5000;
+
 function formatTurnTime(startMs?: number, endMs?: number) {
   if (startMs === undefined || endMs === undefined || endMs <= startMs) {
     return null;
@@ -127,9 +129,8 @@ export function NoteEditor({
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = visibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
+  const recordingActive = Boolean(recordingForNote);
   const [optionsOpen, setOptionsOpen] = useState(false);
-  // Consent is a gentle, non-blocking reminder that slides in *after*
-  // recording starts — clicking record never stalls behind a dialog.
   const [consentReminderVisible, setConsentReminderVisible] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   // The source filter is ephemeral view state — reset it when navigating
@@ -174,25 +175,38 @@ export function NoteEditor({
   useEffect(() => {
     if (recordingForNote) setOptionsOpen(false);
   }, [recordingForNote]);
-  // Surface the consent reminder the moment a recording begins (or when we
-  // land on a note that's already recording), and clear it once recording
-  // ends. Tracking the idle -> recording edge keeps frequent meter-tick
-  // status updates from resurrecting a reminder the user already dismissed.
   const consentEdgeRef = useRef({ noteId: note.id, recording: false });
   useEffect(() => {
-    const isRecording = Boolean(recordingForNote);
     const prev = consentEdgeRef.current;
-    if (prev.noteId !== note.id) setConsentReminderVisible(isRecording);
-    else if (isRecording && !prev.recording) setConsentReminderVisible(true);
-    else if (!isRecording) setConsentReminderVisible(false);
-    consentEdgeRef.current = { noteId: note.id, recording: isRecording };
-  }, [note.id, recordingForNote]);
-  // The reminder is a transient courtesy, not a gate — let it fade on its own
-  // so it never lingers over the waveform.
+    const shouldReveal =
+      prev.noteId !== note.id
+        ? recordingActive
+        : recordingActive && !prev.recording;
+
+    consentEdgeRef.current = { noteId: note.id, recording: recordingActive };
+
+    if (!recordingActive) {
+      setConsentReminderVisible(false);
+      return;
+    }
+
+    if (!shouldReveal) return;
+
+    setConsentReminderVisible(false);
+    const timer = window.setTimeout(
+      () => setConsentReminderVisible(true),
+      RECORD_CONSENT_REVEAL_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [note.id, recordingActive]);
+
   useEffect(() => {
     if (!consentReminderVisible) return;
-    const timer = setTimeout(() => setConsentReminderVisible(false), 6000);
-    return () => clearTimeout(timer);
+    const timer = window.setTimeout(
+      () => setConsentReminderVisible(false),
+      RECORD_CONSENT_AUTO_HIDE_MS,
+    );
+    return () => window.clearTimeout(timer);
   }, [consentReminderVisible]);
   const processingLock =
     note.processingStatus === "transcribing" ||
@@ -374,14 +388,13 @@ export function NoteEditor({
             {recordingForNote && consentReminderVisible ? (
               <motion.div
                 className="record-consent-note"
-                initial={{ opacity: 0, y: 6 }}
+                initial={{ opacity: 0, y: 3 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
               >
                 <InlineNotice
+                  className="record-consent-note-surface"
                   aria-label="Recording consent reminder"
-                  icon={<IconRecord size={14} aria-hidden />}
-                  eyebrow="Now recording"
                   body="Make sure everyone has agreed to be recorded."
                   actions={
                     <button
@@ -389,7 +402,7 @@ export function NoteEditor({
                       className="btn btn-ghost"
                       onClick={() => setConsentReminderVisible(false)}
                     >
-                      Got it
+                      Dismiss
                     </button>
                   }
                 />

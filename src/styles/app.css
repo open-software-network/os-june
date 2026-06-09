@@ -3964,26 +3964,34 @@ input:focus-visible,
   height: 40px;
 }
 
-/* Wraps the recorder pill so the consent reminder can float above it
- * without nudging the pill or fighting the shell's overflow clipping. */
 .record-dock {
   position: relative;
   display: inline-flex;
   align-self: flex-end;
 }
 
-/* A gentle, non-blocking nudge that slides up once recording begins —
- * anchored to the pill's right edge so it reads as belonging to it. */
 .record-consent-note {
   position: absolute;
   right: 0;
   bottom: calc(100% + var(--sp-2));
   z-index: 4;
-  width: min(300px, calc(100vw - var(--sp-8)));
+  width: max-content;
+  max-width: calc(100vw - var(--sp-8));
 }
 
-.record-consent-note .inline-notice {
-  box-shadow: var(--shadow-lg);
+.record-consent-note-surface {
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  border-color: transparent;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+}
+
+.record-consent-note-surface .inline-notice-message {
+  flex-wrap: nowrap;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
 }
 
 .record-options-trigger {
