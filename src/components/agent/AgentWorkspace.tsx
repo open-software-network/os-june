@@ -101,6 +101,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText as completedHermesRuntimeMessageText,
+  toolEventKey,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -3800,17 +3801,6 @@ function appendLogText(current: string, next: string) {
       ? ""
       : "\n";
   return `${current}${separator}${next}`;
-}
-
-function toolEventKey(event: HermesGatewayEvent) {
-  const payload = event.payload as Record<string, unknown> | undefined;
-  return (
-    stringValue(payload?.id) ??
-    stringValue(payload?.call_id) ??
-    stringValue(payload?.tool_call_id) ??
-    stringValue(payload?.name) ??
-    `tool:${event.type}:${(event as LiveHermesEvent).receivedAt}`
-  );
 }
 
 function stringValue(value: unknown, preserveWhitespace = false) {
