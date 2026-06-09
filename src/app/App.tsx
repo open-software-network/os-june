@@ -1021,6 +1021,7 @@ export function App() {
             ) : activeView === "dictation" ? (
               <DictationHistoryView
                 onNavigateToSettings={(target) => {
+                  setSettingsReturnView(activeView);
                   setActiveView("settings");
                   setSettingsTab("dictation");
                   const headingId =

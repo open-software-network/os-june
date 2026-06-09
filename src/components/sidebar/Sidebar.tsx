@@ -236,6 +236,11 @@ export function Sidebar({
         next.delete(session.id);
         return next;
       });
+      setWaitingAgentSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(session.id);
+        return next;
+      });
       dispatchAgentEvent(AGENT_DELETE_SESSION_EVENT, {
         sessionId: session.id,
       });
