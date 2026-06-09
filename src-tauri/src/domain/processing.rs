@@ -856,6 +856,7 @@ async fn transcribe_prepared_audio(
     transcriber: TurnTranscriber,
     request: TranscribePreparedAudioRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
+    let request_language = crate::dictation::configured_transcription_language();
     let chunk_dir = request.temp_dir.join("chunks");
     let audio_paths = if request.audio_path.exists() {
         split_wav_for_transcription(&request.audio_path, &chunk_dir, &request.chunk_stem)?
@@ -868,6 +869,7 @@ async fn transcribe_prepared_audio(
             audio_path: audio_paths.into_iter().next().unwrap_or(request.audio_path),
             title: request.title,
             context: request.base_context,
+            language: request_language,
             operation_id: Some(request.operation_id),
         })
         .await;
@@ -887,6 +889,7 @@ async fn transcribe_prepared_audio(
             audio_path,
             title: request.title.clone(),
             context,
+            language: request_language.clone(),
             operation_id: Some(format!("{}-chunk-{index}", request.operation_id)),
         })
         .await?;

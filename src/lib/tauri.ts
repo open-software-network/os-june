@@ -102,6 +102,7 @@ export type DictationSettingsDto = {
   toggleShortcut: DictationShortcutSetting;
   microphone: DictationMicrophoneSetting;
   style: DictationStyle;
+  language?: string;
 };
 
 export type DictationSettingsResponse = {
@@ -799,6 +800,16 @@ export async function deleteHermesBridgeSession(sessionId: string) {
   });
 }
 
+export async function ensureHermesBridgeSession(input: {
+  sessionId: string;
+  title?: string;
+  model?: string;
+}) {
+  return invoke<unknown>("ensure_hermes_bridge_session", {
+    request: input,
+  });
+}
+
 export async function updateHermesBridgeMessagingPlatform(input: {
   platformId: string;
   enabled?: boolean;
@@ -995,6 +1006,12 @@ export async function setDictationMicrophone(id?: string, name?: string) {
 
 export async function setDictationStyle(style: DictationStyle) {
   return invoke<DictationSettingsDto>("set_dictation_style", { style });
+}
+
+export async function setDictationLanguage(language?: string) {
+  return invoke<DictationSettingsDto>("set_dictation_language", {
+    language: language || undefined,
+  });
 }
 
 export async function dictationHelperCommand(command: Record<string, unknown>) {

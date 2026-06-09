@@ -16,6 +16,7 @@ import {
   dictationSettings,
   listVeniceModels,
   providerModelSettings,
+  setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
   setVeniceModel,
@@ -98,17 +99,18 @@ const EMPTY_MODIFIERS: DictationShortcutModifiers = {
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   pushToTalkShortcut: {
-    code: "Fn",
-    label: "Fn",
+    code: "KeyD",
+    label: "Ctrl+Opt+D",
     pressCount: 1,
     modifiers: {
       ...EMPTY_MODIFIERS,
-      function: true,
+      control: true,
+      option: true,
     },
   },
   toggleShortcut: {
-    code: "Space",
-    label: "Ctrl+Opt+Space",
+    code: "KeyT",
+    label: "Ctrl+Opt+T",
     pressCount: 1,
     modifiers: {
       ...EMPTY_MODIFIERS,
@@ -118,7 +120,22 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   },
   microphone: {},
   style: "standard",
+  language: undefined,
 };
+
+const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Auto-detect" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "it", label: "Italian" },
+  { value: "pt", label: "Portuguese" },
+  { value: "nl", label: "Dutch" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "zh", label: "Chinese" },
+];
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionProvider: "venice",
@@ -308,7 +325,8 @@ export function AppSettings({
     }
     if (helperEvent.type === "fn_monitor_unavailable") {
       setStatus(
-        helperEvent.payload?.message ?? "Fn/Globe shortcut is unavailable.",
+        helperEvent.payload?.message ??
+          "Global shortcut monitoring is unavailable.",
       );
       return;
     }
@@ -414,6 +432,20 @@ export function AppSettings({
         mode === "transcription"
           ? "Transcription model updated."
           : "Text model updated.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function selectLanguage(language: string) {
+    try {
+      const next = await setDictationLanguage(language || undefined);
+      setSettings(next);
+      setStatus(
+        language
+          ? `Default transcription language set to ${languageLabel(language)}.`
+          : "Default transcription language set to auto-detect.",
       );
     } catch (error) {
       setStatus(messageFromError(error));
@@ -579,6 +611,35 @@ export function AppSettings({
                     onChange={() => void startShortcutCapture("toggle")}
                     onCancel={() => void cancelShortcutCapture()}
                   />
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Language</h3>
+                      <p className="settings-row-description">
+                        Default language hint for note transcription and
+                        dictation.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <select
+                        className="select-trigger settings-language-select"
+                        aria-label="Default transcription language"
+                        value={settings.language ?? ""}
+                        onChange={(event) =>
+                          void selectLanguage(event.currentTarget.value)
+                        }
+                      >
+                        {LANGUAGE_OPTIONS.map((option) => (
+                          <option
+                            key={option.value || "auto"}
+                            value={option.value}
+                          >
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -1311,6 +1372,12 @@ function shortcutForKind(
   return kind === "toggle"
     ? settings.toggleShortcut
     : settings.pushToTalkShortcut;
+}
+
+function languageLabel(value: string) {
+  return (
+    LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? value
+  );
 }
 
 function stringPayloadValue(value: unknown) {

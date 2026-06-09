@@ -72,22 +72,21 @@ The selected transcription and cleanup models are executed server-side through
 Scribe API, so missing provider keys surface in the Scribe API logs rather than
 the desktop process.
 
-The default shortcut is bare `Fn`/Globe and the default activation mode is `Push-to-talk`. If macOS opens emoji, input-source, or system dictation UI when pressing Fn, set System Settings > Keyboard > "Press Fn key to" or "Press Globe key to" to `Do Nothing`. Settings records the shortcut you press, including bare `Fn`/Globe, `Fn+Space`, or another shortcut with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Push-to-talk for custom shortcuts depends on macOS exposing both key-down and key-up events for that shortcut.
+The default push-to-talk shortcut is `Ctrl+Opt+D`; toggle dictation defaults to `Ctrl+Opt+T`. Settings records shortcuts with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Modifier-only shortcuts such as bare Fn/Globe or Ctrl+Opt are rejected because macOS does not expose them as reliable global key chords for all keyboards.
 
 Manual validation:
 
 1. Launch Scribe API with OS Accounts, OpenAI, and Venice env configured.
 2. Grant microphone and Accessibility permissions.
 3. Focus a text field in TextEdit, VS Code, or a browser.
-4. In Settings, press Change, record `Fn`/Globe, and choose `Push-to-talk`.
-5. Hold Fn/Globe to start dictation.
+4. In Settings, confirm push-to-talk shows `Ctrl+Opt+D`.
+5. Hold `Ctrl+Opt+D` to start dictation.
 6. Speak a short sentence.
-7. Release Fn/Globe to stop, transcribe, and paste.
-8. Switch activation mode to `Toggle`.
-9. Press Fn/Globe once to start dictation, then press it again to stop.
-10. Confirm the HUD transitions through listening, transcribing, pasting, and success.
-11. Confirm the transcript appears in the original focused text field.
-12. Select a microphone in Settings, restart, and confirm the selection persists.
+7. Release `Ctrl+Opt+D` to stop, transcribe, and paste.
+8. Press `Ctrl+Opt+T` once to start toggle dictation, then press it again to stop.
+9. Confirm the HUD transitions through listening, transcribing, pasting, and success.
+10. Confirm the transcript appears in the original focused text field.
+11. Select a microphone in Settings, restart, and confirm the selection persists.
 
 ## macOS Audio Permission Debugging
 

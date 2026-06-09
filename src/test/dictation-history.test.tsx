@@ -34,20 +34,20 @@ describe("DictationHistoryView", () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
-          code: "Fn",
-          label: "Fn",
+          code: "KeyD",
+          label: "Ctrl+Opt+D",
           pressCount: 1,
           modifiers: {
             command: false,
-            control: false,
-            option: false,
+            control: true,
+            option: true,
             shift: false,
-            function: true,
+            function: false,
           },
         },
         toggleShortcut: {
-          code: "Space",
-          label: "Ctrl+Opt+Space",
+          code: "KeyT",
+          label: "Ctrl+Opt+T",
           pressCount: 1,
           modifiers: {
             command: false,
@@ -92,9 +92,7 @@ describe("DictationHistoryView", () => {
     );
     expect(screen.getByText("Push to talk")).toBeInTheDocument();
     expect(screen.getByText("Hands-free")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Shortcut Ctrl+Opt+Space"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Shortcut Ctrl+Opt+T")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Copy" }));
     await waitFor(() =>
@@ -132,14 +130,14 @@ describe("DictationHistoryView", () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
-          code: "Fn",
-          label: "Fn",
+          code: "KeyD",
+          label: "Ctrl+Opt+D",
           pressCount: 1,
           modifiers: {},
         },
         toggleShortcut: {
-          code: "Space",
-          label: "Ctrl+Opt+Space",
+          code: "KeyT",
+          label: "Ctrl+Opt+T",
           pressCount: 1,
           modifiers: {},
         },
@@ -165,14 +163,14 @@ describe("DictationHistoryView", () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
-          code: "Fn",
-          label: "Fn",
+          code: "KeyD",
+          label: "Ctrl+Opt+D",
           pressCount: 1,
           modifiers: {},
         },
         toggleShortcut: {
-          code: "Space",
-          label: "Ctrl+Opt+Space",
+          code: "KeyT",
+          label: "Ctrl+Opt+T",
           pressCount: 1,
           modifiers: {},
         },

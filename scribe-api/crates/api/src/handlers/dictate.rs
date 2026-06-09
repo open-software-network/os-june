@@ -42,6 +42,12 @@ pub(crate) async fn transcribe(
         context.as_deref(),
         validation::MAX_TRANSCRIPTION_CONTEXT_CHARS,
     )?;
+    let language = form.optional_text("language");
+    validation::validate_optional_text_len(
+        "language",
+        language.as_deref(),
+        validation::MAX_LANGUAGE_CHARS,
+    )?;
     let filename = form
         .take_filename()
         .unwrap_or_else(|| "dictation.wav".to_string());
@@ -54,6 +60,7 @@ pub(crate) async fn transcribe(
             audio,
             filename,
             context,
+            language,
             model_id: ModelId(model_id),
         })
         .await?;

@@ -228,11 +228,11 @@ struct MonitoredShortcut {
     let modifiers: ShortcutModifiers
     let pressCount: Int
 
-    static let bareFn = MonitoredShortcut(
-        keyCode: 0,
-        code: "Fn",
-        label: "Fn",
-        modifiers: ShortcutModifiers(function: true),
+    static let defaultPushToTalk = MonitoredShortcut(
+        keyCode: 0x02,
+        code: "KeyD",
+        label: "Ctrl+Opt+D",
+        modifiers: ShortcutModifiers(control: true, option: true),
         pressCount: 1
     )
 
@@ -335,11 +335,11 @@ final class ShortcutKeyMonitor {
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
     private var shortcuts: [ShortcutKind: MonitoredShortcut] = [
-        .pushToTalk: .bareFn,
+        .pushToTalk: .defaultPushToTalk,
         .toggle: MonitoredShortcut(
-            keyCode: 0x31,
-            code: "Space",
-            label: "Ctrl+Opt+Space",
+            keyCode: 0x11,
+            code: "KeyT",
+            label: "Ctrl+Opt+T",
             modifiers: ShortcutModifiers(control: true, option: true),
             pressCount: 1
         ),
@@ -367,7 +367,7 @@ final class ShortcutKeyMonitor {
 
         if globalMonitor == nil, eventTap == nil {
             emit("fn_monitor_unavailable", [
-                "message": "Could not monitor Fn/Globe key events.",
+                "message": "Could not monitor global shortcut key events.",
             ])
         }
     }
@@ -391,7 +391,12 @@ final class ShortcutKeyMonitor {
         }
 
         let isDown = flags.contains(.maskSecondaryFn)
-        let identity = ShortcutIdentity(MonitoredShortcut.bareFn)
+        let identity = ShortcutIdentity(MonitoredShortcut(
+            keyCode: 0,
+            code: "Fn",
+            label: "Fn",
+            modifiers: ShortcutModifiers(function: true)
+        ))
         if isDown {
             handlePhysicalDown(identity: identity)
         } else {
@@ -501,7 +506,12 @@ final class ShortcutKeyMonitor {
             handlePhysicalUp(identity: identity)
         case .flagsChanged:
             if hasBareFnShortcut {
-                let identity = ShortcutIdentity(MonitoredShortcut.bareFn)
+                let identity = ShortcutIdentity(MonitoredShortcut(
+                    keyCode: 0,
+                    code: "Fn",
+                    label: "Fn",
+                    modifiers: ShortcutModifiers(function: true)
+                ))
                 if event.modifierFlags.contains(.function) {
                     handlePhysicalDown(identity: identity)
                 } else {
@@ -589,15 +599,10 @@ final class ShortcutKeyMonitor {
             guard let self else {
                 return
             }
-            self.finishCapture(
-                MonitoredShortcut(
-                    keyCode: 0,
-                    code: "Fn",
-                    label: "Fn",
-                    modifiers: ShortcutModifiers(function: true),
-                    pressCount: self.capturePressCount
-                )
-            )
+            self.pendingBareFnCapture = nil
+            emit("shortcut_capture_error", [
+                "message": "Shortcut must include a supported non-modifier key.",
+            ])
         }
         pendingBareFnCapture = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)

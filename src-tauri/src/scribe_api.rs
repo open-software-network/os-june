@@ -29,6 +29,7 @@ pub struct TranscriptionRequest {
     pub audio_path: PathBuf,
     pub title: String,
     pub context: Option<String>,
+    pub language: Option<String>,
     pub operation_id: Option<String>,
 }
 
@@ -84,6 +85,7 @@ pub struct GenerationProviderResult {
 pub struct DictateTranscribeRequest {
     pub audio_path: PathBuf,
     pub context: Option<String>,
+    pub language: Option<String>,
     pub session_id: String,
     pub utterance_id: String,
 }
@@ -196,6 +198,9 @@ pub async fn transcribe_saved_audio(
     {
         form = form.text("context", context.to_string());
     }
+    if let Some(language) = normalized_language(request.language.as_deref()) {
+        form = form.text("language", language.to_string());
+    }
     let response: TranscribeResponse = post_multipart("/v1/notes/transcribe", form).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
@@ -252,11 +257,23 @@ pub async fn dictate_transcribe(
     {
         form = form.text("context", context.to_string());
     }
+    if let Some(language) = normalized_language(request.language.as_deref()) {
+        form = form.text("language", language.to_string());
+    }
     let response: TranscribeResponse = post_multipart("/v1/dictate", form).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
         language: response.language,
         provider: response.provider,
+    })
+}
+
+fn normalized_language(language: Option<&str>) -> Option<&str> {
+    language.map(str::trim).filter(|value| {
+        value.len() == 2
+            && value
+                .chars()
+                .all(|character| character.is_ascii_lowercase())
     })
 }
 

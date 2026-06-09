@@ -137,8 +137,8 @@ export function DictationHistoryView({
 
   const groups = useMemo(() => groupHistoryItems(filtered), [filtered]);
 
-  const pushToTalk = settings?.pushToTalkShortcut.label ?? "Fn";
-  const toggle = settings?.toggleShortcut.label ?? "Ctrl+Opt+Space";
+  const pushToTalk = settings?.pushToTalkShortcut.label ?? "Ctrl+Opt+D";
+  const toggle = settings?.toggleShortcut.label ?? "Ctrl+Opt+T";
 
   // Show each optional feature only while it's still unconfigured, and only
   // once we know its state (avoids the card flashing in then vanishing). The

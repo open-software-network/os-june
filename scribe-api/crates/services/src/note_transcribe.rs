@@ -91,6 +91,7 @@ impl NoteTranscribeService {
                 filename: params.filename,
                 title: params.title,
                 context: params.context,
+                language: params.language,
                 model: params.model_id.clone(),
             })
             .await?;
@@ -131,6 +132,7 @@ pub struct NoteTranscribeParams {
     pub filename: String,
     pub title: String,
     pub context: Option<String>,
+    pub language: Option<String>,
     pub model_id: ModelId,
 }
 
