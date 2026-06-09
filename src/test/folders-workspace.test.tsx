@@ -136,6 +136,56 @@ describe("Sidebar primary navigation", () => {
     await user.click(screen.getByRole("button", { name: "Dictation" }));
     expect(onChangeView).toHaveBeenCalledWith("dictation");
   });
+
+  it("renders grouped icon settings navigation without focusing the identity row", async () => {
+    const user = userEvent.setup();
+    const onSettingsTabChange = vi.fn();
+    const onExitSettings = vi.fn();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="settings"
+        settingsTab="billing"
+        onSettingsTabChange={onSettingsTabChange}
+        onExitSettings={onExitSettings}
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByLabelText("OS June")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back to app" }));
+    expect(onExitSettings).toHaveBeenCalledTimes(1);
+
+    expect(
+      screen.getByRole("navigation", { name: "Personal settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Audio settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "AI settings" }),
+    ).toBeInTheDocument();
+
+    const billingButton = screen.getByRole("button", { name: "Billing" });
+    expect(billingButton).toHaveAttribute("data-active", "true");
+    expect(
+      screen.getByRole("button", { name: "Shortcuts" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Permissions" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Shortcuts" }));
+    expect(onSettingsTabChange).toHaveBeenCalledWith("shortcuts");
+
+    expect(
+      screen.getByRole("button", { name: /account menu/i }),
+    ).not.toHaveAttribute("data-active");
+  });
 });
 
 describe("FoldersWorkspace — list view", () => {
