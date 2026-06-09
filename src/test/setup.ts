@@ -23,7 +23,11 @@ if (!document.elementFromPoint) {
   document.elementFromPoint = () => document.body;
 }
 
-if (!("localStorage" in globalThis) || !globalThis.localStorage) {
+if (
+  !("localStorage" in globalThis) ||
+  !globalThis.localStorage ||
+  typeof globalThis.localStorage.clear !== "function"
+) {
   const values = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
