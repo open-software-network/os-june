@@ -73,6 +73,29 @@ fn elapsed_ms(started: Instant) -> i64 {
     started.elapsed().as_millis().min(i64::MAX as u128) as i64
 }
 
+fn session_temp_dir(prefix: &str, session_id: &str) -> PathBuf {
+    let safe_session_id = safe_temp_path_segment(session_id);
+    std::env::temp_dir().join(format!("{prefix}-{safe_session_id}"))
+}
+
+fn safe_temp_path_segment(value: &str) -> String {
+    let segment = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if segment.is_empty() {
+        "unknown".to_string()
+    } else {
+        segment
+    }
+}
+
 pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> String {
     let mut sources = sources
         .iter()
@@ -235,7 +258,7 @@ pub async fn process_saved_audio(
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
-    let temp_dir = std::env::temp_dir().join(format!("os-scribe-transcription-{session_id}"));
+    let temp_dir = session_temp_dir("os-scribe-transcription", session_id);
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir)
         .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
@@ -405,7 +428,7 @@ pub async fn process_saved_source_audio(
         )
         .await?;
 
-    let segment_dir = std::env::temp_dir().join(format!("os-scribe-turns-{session_id}"));
+    let segment_dir = session_temp_dir("os-scribe-turns", session_id);
     let _ = std::fs::remove_dir_all(&segment_dir);
     std::fs::create_dir_all(&segment_dir)
         .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
@@ -1493,6 +1516,20 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[test]
+    fn session_temp_dir_sanitizes_untrusted_session_ids() {
+        let temp_dir = session_temp_dir("os-scribe-turns", "../../outside/session");
+        let file_name = temp_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("temp dir file name");
+
+        assert_eq!(file_name, "os-scribe-turns-______outside_session");
+        assert!(!temp_dir
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)));
+    }
 
     #[tokio::test]
     async fn transcribes_source_lanes_concurrently_and_keeps_turn_order() {
