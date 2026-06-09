@@ -407,6 +407,55 @@ describe("NoteEditor", () => {
     // It fades out via AnimatePresence, so it lingers for the exit animation
     // before unmounting — advance past it.
     await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+
+    expect(
+      screen.queryByRole("status", { name: "Recording consent reminder" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("auto-hides the consent reminder after five seconds", async () => {
+    vi.useFakeTimers();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        recordingStatus={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 1000,
+          level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+          silenceWarning: false,
+          bytesWritten: 2048,
+        }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(420);
+    });
+
+    expect(
+      screen.getByRole("status", { name: "Recording consent reminder" }),
+    ).toBeInTheDocument();
+
+    // Just shy of the auto-hide window the reminder is still up.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999);
+    });
+
+    expect(
+      screen.getByRole("status", { name: "Recording consent reminder" }),
+    ).toBeInTheDocument();
+
+    // Cross the 5s mark so the auto-hide fires...
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    // ...then advance past the AnimatePresence exit fade.
+    await act(async () => {
       await vi.advanceTimersByTimeAsync(400);
     });
 

@@ -184,20 +184,29 @@ export function NoteEditor({
         : recordingActive && !prev.recording;
 
     consentEdgeRef.current = { noteId: note.id, recording: recordingActive };
+    // Undo the ref mutation on cleanup so StrictMode's double-invoke replays
+    // the same edge — otherwise the second invoke sees its own write and the
+    // reminder never appears in development.
+    const restoreEdge = () => {
+      consentEdgeRef.current = prev;
+    };
 
     if (!recordingActive) {
       setConsentReminderVisible(false);
-      return;
+      return restoreEdge;
     }
 
-    if (!shouldReveal) return;
+    if (!shouldReveal) return restoreEdge;
 
     setConsentReminderVisible(false);
     const timer = window.setTimeout(
       () => setConsentReminderVisible(true),
       RECORD_CONSENT_REVEAL_DELAY_MS,
     );
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      restoreEdge();
+    };
   }, [note.id, recordingActive]);
 
   useEffect(() => {

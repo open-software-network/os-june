@@ -32,7 +32,7 @@ export function InlineNotice({
       aria-label={ariaLabel}
     >
       <p className="inline-notice-message">
-        {eyebrow ? (
+        {eyebrow || icon ? (
           <span className="inline-notice-eyebrow">
             {icon}
             {eyebrow}
