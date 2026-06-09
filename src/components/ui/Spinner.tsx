@@ -1,22 +1,30 @@
-import { LoaderIcon } from "lucide-react";
-import type { ComponentProps } from "react";
+import { PangolinSpinner } from "../PangolinSpinner";
 
-type SpinnerProps = ComponentProps<typeof LoaderIcon>;
+// The app-wide loading indicator: the rolling pangolin (see PangolinSpinner).
+// This wrapper owns the accessibility contract — the glyph itself is decorative.
+type SpinnerProps = {
+  className?: string;
+  size?: number;
+  "aria-hidden"?: boolean;
+  "aria-label"?: string;
+};
 
 export function Spinner({
   className,
+  size = 16,
   "aria-hidden": ariaHidden,
   "aria-label": ariaLabel,
-  ...props
 }: SpinnerProps) {
   const classes = ["spinner", className].filter(Boolean).join(" ");
   return (
-    <LoaderIcon
+    <span
       role={ariaHidden ? undefined : "status"}
       aria-hidden={ariaHidden}
       aria-label={ariaHidden ? undefined : (ariaLabel ?? "Loading")}
       className={classes}
-      {...props}
-    />
+      style={{ fontSize: size }}
+    >
+      <PangolinSpinner />
+    </span>
   );
 }

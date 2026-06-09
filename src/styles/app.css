@@ -1605,23 +1605,16 @@ input:focus-visible,
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling pangolin. */
+/* Running rows trade the status word for the rolling pangolin (the widening
+ * and mono font live on .pangolin-spinner itself). */
 .agent-tool-spinner {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   color: var(--warm-strong);
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: var(--fs-sm);
   line-height: 1;
-}
-
-/* Braille cells are 2×4 (tall); widen so the curl reads as a circle. */
-.agent-tool-spinner > span {
-  display: inline-block;
-  transform: scaleX(1.35);
-  transform-origin: center;
 }
 
 /* Name inherits the row's muted color (the whole line darkens on hover). */
@@ -3002,31 +2995,27 @@ input:focus-visible,
   grid-row: 1;
 }
 
-/* Running agent sessions show a braille spinner; idle rows show nothing. The
- * glyph is decorative (aria-hidden inside BrailleSpinner) — the wrapping
+/* Running agent sessions show the rolling pangolin; idle rows show nothing.
+ * The glyph is decorative (aria-hidden inside PangolinSpinner) — the wrapping
  * status span carries "Working" for assistive tech. */
 .agent-sidebar-spinner {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: var(--fs-sm);
-  line-height: 1;
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
-/* Braille cells are 2×4 (tall); widen the glyph so the loader reads as a
- * circle/square rather than an oval. */
-.agent-sidebar-spinner > span {
+/* Needs-you dot beside the session title: terracotta, matching the live-status
+ * accent used across the agent surfaces. */
+.agent-sidebar-working {
   display: inline-block;
-  transform: scaleX(1.35);
-  transform-origin: center;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
 }
 
 .agent-sidebar-working[data-status="waitingForUser"] {
-  background: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 18%, transparent);
+  background: var(--warm-strong);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 18%, transparent);
 }
 
 /* A session awaiting your input reads a touch heavier so it stands out in the
@@ -5240,20 +5229,30 @@ input:focus-visible,
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
+/* App-wide loading indicator: the rolling pangolin braille glyph. Size comes
+ * from font-size (set inline by <Spinner size>); color inherits. */
 .spinner {
-  width: 16px;
-  height: 16px;
+  display: inline-flex;
   flex-shrink: 0;
-  animation: spinner-spin 0.9s linear infinite;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
-@keyframes spinner-spin {
-  to {
-    transform: rotate(360deg);
-  }
+/* The pangolin glyph itself (frames stepped in JS, not CSS animation). Braille
+ * cells are 2×4 (tall); the widening makes the curled ball read as a circle
+ * rather than an oval. */
+.pangolin-spinner {
+  display: inline-block;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  line-height: 1;
+  transform: scaleX(1.35);
+  transform-origin: center;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Frame-stepping already stops via matchMedia in PangolinSpinner; just dim
+   * the resting glyph. */
   .sign-in-prompt-spinner,
   .spinner {
     animation: none;
@@ -8160,8 +8159,7 @@ input:focus-visible,
 }
 
 .welcome-spinner {
-  width: 15px;
-  height: 15px;
+  font-size: 15px;
   color: var(--foreground);
 }
 
