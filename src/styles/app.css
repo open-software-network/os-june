@@ -4007,14 +4007,17 @@ input:focus-visible,
 }
 
 /* Dismiss reads as a quiet text link, not a button — no underline, just a
- * medium-weight label that darkens to full foreground on hover. */
+ * medium-weight label in the app's link color (matching .agent-markdown a)
+ * that deepens to foreground on hover. line-height matches the message so the
+ * two text runs share a baseline. */
 .record-dock .record-consent-note-surface .inline-notice-actions .btn {
   height: auto;
   padding: 0;
   border: 0;
   background: none;
-  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
+  color: var(--primary);
   font-weight: 500;
+  line-height: 1;
 }
 
 .record-dock .record-consent-note-surface .inline-notice-actions .btn:hover {
