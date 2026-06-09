@@ -99,7 +99,9 @@ body {
    * so the dot stays calm — no expanding ring. */
   box-shadow: 0 0 5px color-mix(in oklch, var(--rec) 45%, transparent);
   animation: mhud-breathe 3.2s ease-in-out infinite;
-  transition: background-color 160ms var(--ease-out);
+  transition:
+    background-color 160ms var(--ease-out),
+    opacity 120ms var(--ease-out);
 }
 
 .mhud[data-state="paused"] .mhud-dot {
@@ -118,6 +120,18 @@ body {
   }
 }
 
+/* Orientation morph: while the glass eases between frames the contents sit
+ * at opacity 0, then fade back in laid out for the new orientation. The
+ * breathe animation must yield — an animated property ignores transitions. */
+.mhud.is-morphing .mhud-dot {
+  animation: none;
+  opacity: 0;
+}
+
+.mhud.is-morphing .mhud-bars {
+  opacity: 0;
+}
+
 /* Waveform — mirrors the dictation HUD bars (.hud-bar). */
 .mhud-bars {
   display: flex;
@@ -125,6 +139,7 @@ body {
   align-items: center;
   justify-content: center;
   height: 22px;
+  transition: opacity 120ms var(--ease-out);
 }
 
 .mhud-bar {
@@ -164,6 +179,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .mhud-bar,
   .mhud-bar::before,
+  .mhud-bars,
   .mhud-dot {
     transition: none;
   }

@@ -68,6 +68,7 @@ describe("meeting detection HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_size", {
       width: 0,
       height: 0,
+      animate: true,
     });
   });
 

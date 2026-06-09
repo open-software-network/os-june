@@ -554,6 +554,7 @@ pub fn setup(app: &mut tauri::App) {
         stop_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
     });
+    app.manage(HudFrameLock::default());
     spawn_hud_hover_thread(app.handle().clone());
     if let Err(error) = configure_hud_window(app.handle()) {
         tracing::warn!(%error, "failed to configure dictation HUD");
@@ -774,31 +775,70 @@ pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Opti
     }
 }
 
+/// Serializes window-frame motion (resize morphs, the error shake) so two
+/// concurrent commands never fight over the window's position.
+pub struct HudFrameLock(Mutex<()>);
+
+impl Default for HudFrameLock {
+    fn default() -> Self {
+        Self(Mutex::new(()))
+    }
+}
+
 /// Resize the HUD window to the pill's measured CSS size. The pill's width
 /// varies by state (error text, meeting prompt), and with the frosted surface
 /// being a window-filling NSVisualEffectView the window must track the pill
-/// exactly. Re-anchors horizontally so the pill's center stays put.
+/// exactly. Re-anchors horizontally so the pill's center stays put; when the
+/// window is visible the frame eases over rather than popping (the webview
+/// crossfades the pill content around the same beat). Blocks until the motion
+/// finishes so the webview can sequence its fade-in off the resolved invoke.
 #[tauri::command]
-pub fn dictation_hud_set_size(app: AppHandle, width: f64, height: f64) {
+pub fn dictation_hud_set_size(app: AppHandle, width: f64, height: f64, animate: bool) {
     let Some(hud) = app.get_webview_window("hud") else {
         return;
     };
-    let (Ok(position), Ok(old_size), Ok(scale)) =
-        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
-    else {
+    let lock = app.try_state::<HudFrameLock>();
+    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
+    let Ok(scale) = hud.scale_factor() else {
         return;
     };
     let new_size = PhysicalSize::new(
         (width * scale).round() as u32,
         (height * scale).round() as u32,
     );
+    animate_frame_to(&hud, new_size, animate);
+}
+
+/// Ease the window to `new_size`, keeping its center anchored. Skips the
+/// animation (snaps) when the window is hidden or `animate` is false.
+fn animate_frame_to(hud: &WebviewWindow, new_size: PhysicalSize<u32>, animate: bool) {
+    let (Ok(position), Ok(old_size)) = (hud.outer_position(), hud.outer_size()) else {
+        return;
+    };
     if new_size == old_size {
         return;
     }
-    let x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
-    let y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
+    let target_x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
+    let target_y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
+
+    if animate && hud.is_visible().unwrap_or(false) {
+        const STEPS: u32 = 12;
+        const STEP_MS: u64 = 12;
+        for step in 1..STEPS {
+            let t = f64::from(step) / f64::from(STEPS);
+            // ease-out cubic — fast start, soft landing.
+            let e = 1.0 - (1.0 - t).powi(3);
+            let w = f64::from(old_size.width) + f64::from(new_size.width as i32 - old_size.width as i32) * e;
+            let h = f64::from(old_size.height) + f64::from(new_size.height as i32 - old_size.height as i32) * e;
+            let x = f64::from(position.x) + f64::from(target_x - position.x) * e;
+            let y = f64::from(position.y) + f64::from(target_y - position.y) * e;
+            let _ = hud.set_size(PhysicalSize::new(w.round() as u32, h.round() as u32));
+            let _ = hud.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+            thread::sleep(Duration::from_millis(STEP_MS));
+        }
+    }
     let _ = hud.set_size(new_size);
-    let _ = hud.set_position(PhysicalPosition::new(x, y));
+    let _ = hud.set_position(PhysicalPosition::new(target_x, target_y));
 }
 
 /// Set the native window alpha. The exit dissolve is driven from the webview
@@ -843,6 +883,10 @@ pub fn dictation_hud_shake(app: AppHandle) {
         return;
     };
     thread::spawn(move || {
+        // Hold the frame lock so a concurrent resize morph can't capture a
+        // mid-wobble position as its anchor (and vice versa).
+        let lock = app.try_state::<HudFrameLock>();
+        let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
         const DURATION_MS: f64 = 380.0;
         const FRAME_MS: u64 = 16;
         // (progress, logical x offset) — the old CSS keyframes.

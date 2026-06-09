@@ -89,6 +89,7 @@ const HUD_WHISPER_FLOOR = 0.06;
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
   const previous = hud.dataset.state;
+  const widthBefore = hud.getBoundingClientRect().width;
   hud.dataset.state = state;
   statusText.textContent = status;
   if (agentLabel) {
@@ -112,10 +113,16 @@ function setHud(state: string, status: string) {
     clearStopHover();
   }
   // Pill width varies by state and the window must track it exactly (the
-  // frosted surface is a window-filling native vibrancy view).
+  // frosted surface is a window-filling native vibrancy view). When the width
+  // actually changes, morph: contents crossfade while the glass eases over —
+  // also what keeps the wider pill from painting clipped before the resize.
   if (state !== previous && hud) {
     if (state === "meeting") clearStopHover();
-    void syncWindowToPill();
+    hud.offsetWidth;
+    const widthAfter = hud.getBoundingClientRect().width;
+    void syncWindowToPill({
+      morph: Math.ceil(widthAfter) !== Math.ceil(widthBefore),
+    });
   }
 }
 
@@ -259,17 +266,24 @@ function pushStopBoundsToNative() {
 // Resize the native window to the pill's measured size (Rust re-anchors so
 // the pill center stays put), then refresh the stop-button rect once layout
 // has settled at the new size — the pill's client position shifts when the
-// window around it changes.
-async function syncWindowToPill() {
+// window around it changes. With `morph` the contents fade out while the
+// glass eases to its new frame, then fade back in (the invoke resolves when
+// the native motion finishes).
+async function syncWindowToPill(options?: { morph?: boolean }) {
   if (!hud) return;
   hud.offsetWidth;
   const { width, height } = hud.getBoundingClientRect();
+  if (options?.morph) hud.classList.add("is-morphing");
   await invoke("dictation_hud_set_size", {
     width: Math.ceil(width),
     height: Math.ceil(height),
+    animate: !prefersReducedMotion(),
   }).catch(() => {});
   window.requestAnimationFrame(() => {
-    window.requestAnimationFrame(() => pushStopBoundsToNative());
+    window.requestAnimationFrame(() => {
+      hud?.classList.remove("is-morphing");
+      pushStopBoundsToNative();
+    });
   });
 }
 
@@ -299,11 +313,19 @@ function fadeWindowAlpha(requestId: number) {
   });
 }
 
+// matchMedia is absent in the jsdom test environment.
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
 // The macOS "not allowed" wobble, done natively — the window jiggles, the
 // frost moves with it (a CSS translateX would slide the tint off the
 // stationary vibrancy view).
 function triggerShake() {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (prefersReducedMotion()) return;
   void invoke("dictation_hud_shake").catch(() => {});
 }
 

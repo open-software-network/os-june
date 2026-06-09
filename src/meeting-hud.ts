@@ -59,11 +59,14 @@ function applyStatus(status: RecordingStatusDto) {
 
 // Orientation triad: parked in the left or right third of the screen the pill
 // stands vertical (dot above a short waveform); the middle third lies flat.
-// Rust owns the zone math + window resize; we just mirror the layout.
+// Rust owns the zone math + window resize; we just mirror the layout. A flip
+// is choreographed as a crossfade: `meeting-hud-zone-prepare` fades the
+// contents out, the glass eases to its new frame, then the zone event re-lays
+// the pill out and fades it back in.
 function applyZone(zone: string) {
-  if (pill) {
-    pill.dataset.orient = zone === "center" ? "horizontal" : "vertical";
-  }
+  if (!pill) return;
+  pill.dataset.orient = zone === "center" ? "horizontal" : "vertical";
+  window.requestAnimationFrame(() => pill.classList.remove("is-morphing"));
 }
 
 function startBarLoop() {
@@ -138,6 +141,10 @@ pill?.addEventListener("keydown", (event) => {
 
 void listen<RecordingStatusDto>("meeting-hud-status", (event) => {
   if (event.payload) applyStatus(event.payload);
+});
+
+void listen("meeting-hud-zone-prepare", () => {
+  pill?.classList.add("is-morphing");
 });
 
 void listen<string>("meeting-hud-zone", (event) => {

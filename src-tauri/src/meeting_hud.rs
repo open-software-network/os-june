@@ -295,8 +295,11 @@ fn left_mouse_button_down() -> bool {
     false
 }
 
-/// Recompute the zone and, if it changed, resize around the pill's center and
-/// tell the webview to re-lay itself out.
+/// Recompute the zone and, if it changed, morph to the new orientation: the
+/// webview fades the pill contents out (`meeting-hud-zone-prepare`), the glass
+/// eases to its new frame around the pill's center, then the webview re-lays
+/// itself out for the new orientation and fades back in (`meeting-hud-zone`).
+/// Runs on the supervisor thread, so the brief sleeps cost nothing.
 fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
     let Some(zone) = zone_for(hud) else {
         return;
@@ -311,12 +314,21 @@ fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
     }
 
     if previous.size() != zone.size() {
-        resize_preserving_center(hud, zone.size());
+        let visible = hud.is_visible().unwrap_or(false);
+        if visible {
+            let _ = hud.emit_to(WINDOW_LABEL, "meeting-hud-zone-prepare", ());
+            // Give the content fade-out (120ms CSS) most of its run before
+            // the glass starts moving.
+            thread::sleep(Duration::from_millis(100));
+        }
+        animate_frame_to(hud, zone.size(), visible);
     }
     let _ = hud.emit_to(WINDOW_LABEL, "meeting-hud-zone", zone.as_str());
 }
 
-fn resize_preserving_center(hud: &WebviewWindow, size: LogicalSize<f64>) {
+/// Ease the window to `size`, keeping its center anchored. Snaps when the
+/// window is hidden. Mirrors `dictation.rs::animate_frame_to`.
+fn animate_frame_to(hud: &WebviewWindow, size: LogicalSize<f64>, animate: bool) {
     let (Ok(position), Ok(old_size), Ok(scale)) =
         (hud.outer_position(), hud.outer_size(), hud.scale_factor())
     else {
@@ -326,10 +338,32 @@ fn resize_preserving_center(hud: &WebviewWindow, size: LogicalSize<f64>) {
         (size.width * scale).round() as u32,
         (size.height * scale).round() as u32,
     );
-    let x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
-    let y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
+    if new_size == old_size {
+        return;
+    }
+    let target_x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
+    let target_y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
+
+    if animate {
+        const STEPS: u32 = 12;
+        const STEP_MS: u64 = 12;
+        for step in 1..STEPS {
+            let t = f64::from(step) / f64::from(STEPS);
+            // ease-out cubic — fast start, soft landing.
+            let e = 1.0 - (1.0 - t).powi(3);
+            let w = f64::from(old_size.width)
+                + f64::from(new_size.width as i32 - old_size.width as i32) * e;
+            let h = f64::from(old_size.height)
+                + f64::from(new_size.height as i32 - old_size.height as i32) * e;
+            let x = f64::from(position.x) + f64::from(target_x - position.x) * e;
+            let y = f64::from(position.y) + f64::from(target_y - position.y) * e;
+            let _ = hud.set_size(PhysicalSize::new(w.round() as u32, h.round() as u32));
+            let _ = hud.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+            thread::sleep(Duration::from_millis(STEP_MS));
+        }
+    }
     let _ = hud.set_size(new_size);
-    let _ = hud.set_position(PhysicalPosition::new(x, y));
+    let _ = hud.set_position(PhysicalPosition::new(target_x, target_y));
 }
 
 fn configure_window(app: &AppHandle) -> Result<(), String> {
