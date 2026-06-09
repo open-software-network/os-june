@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -301,26 +301,60 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
+    let resolveEnsureSession: (value: unknown) => void = () => {};
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveEnsureSession = resolve;
+        }),
+    );
 
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("previous answer")).toBeInTheDocument();
+    const initialSessionListCalls = mocks.listHermesSessions.mock.calls.length;
 
     await user.type(screen.getByRole("textbox"), "follow up while pending");
     await user.click(screen.getByRole("button", { name: "Send" }));
-
     await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+        }),
+      ),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveEnsureSession({});
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
         text: "follow up while pending",
-      }),
-    );
-    expect(await screen.findByText("Working now.")).toBeInTheDocument();
+      });
+      expect(screen.getByText("Working now.")).toBeInTheDocument();
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
+        initialSessionListCalls + 1,
+      );
+      const sessionListCallsAfterSubmit =
+        mocks.listHermesSessions.mock.calls.length;
 
-    await new Promise((resolve) => window.setTimeout(resolve, 2700));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
 
-    expect(screen.getByText("follow up while pending")).toBeInTheDocument();
-    expect(screen.getByText("Working now.")).toBeInTheDocument();
+      expect(screen.getByText("follow up while pending")).toBeInTheDocument();
+      expect(screen.getByText("Working now.")).toBeInTheDocument();
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
+        sessionListCallsAfterSubmit + 1,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {

@@ -546,7 +546,10 @@ pub async fn ensure_hermes_bridge_session(
     }
     match hermes_api_json(&bridge, reqwest::Method::POST, "/api/sessions", Some(body)).await {
         Ok(value) => Ok(value),
-        Err(error) if error.code == "hermes_bridge_api_failed" && error.message.contains("409") => {
+        Err(error)
+            if error.code == "hermes_bridge_api_failed"
+                && error.message.starts_with("Hermes API returned 409") =>
+        {
             Ok(serde_json::json!({
                 "object": "hermes.session.ensure",
                 "id": session_id,
