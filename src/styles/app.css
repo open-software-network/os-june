@@ -4006,16 +4006,15 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-/* Dismiss reads as a quiet text link, not a button. */
+/* Dismiss reads as a quiet text link, not a button — no underline, just a
+ * medium-weight label that darkens to full foreground on hover. */
 .record-dock .record-consent-note-surface .inline-notice-actions .btn {
   height: auto;
   padding: 0;
   border: 0;
   background: none;
-  color: var(--muted-foreground);
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
   font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 .record-dock .record-consent-note-surface .inline-notice-actions .btn:hover {
