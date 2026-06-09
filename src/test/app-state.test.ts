@@ -132,6 +132,56 @@ describe("notesReducer", () => {
     expect(state.selectedNote?.lastError).toBe("Transcription failed");
   });
 
+  it("lets an authoritative command restart processing on a failed note", () => {
+    // Retry returns the note in an active status; without the bypass the
+    // terminal guard would swallow it and the failure banner would never
+    // clear even though the backend is reprocessing.
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "failed",
+        lastError: "Transcription failed",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteProcessingUpdated",
+      note: note({
+        id: "note-1",
+        processingStatus: "transcribing",
+      }),
+    });
+
+    expect(state.selectedNote?.processingStatus).toBe("transcribing");
+    expect(state.notes[0].processingStatus).toBe("transcribing");
+  });
+
+  it("lets a new take restart processing on a ready note", () => {
+    // Stacking another recording on an already-ready note: the finish flow
+    // marks it transcribing again so the shimmer shows and polling resumes.
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "ready",
+        generatedContent: "Finished notes",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteProcessingUpdated",
+      note: note({
+        id: "note-1",
+        processingStatus: "transcribing",
+        generatedContent: "Finished notes",
+      }),
+    });
+
+    expect(state.selectedNote?.processingStatus).toBe("transcribing");
+    expect(state.notes[0].processingStatus).toBe("transcribing");
+  });
+
   it("does not move a terminal note backward after stale active polling", () => {
     const initial = notesReducer(createInitialState(), {
       type: "noteLoaded",
@@ -246,5 +296,51 @@ describe("notesReducer", () => {
     const cleared = notesReducer(recording, { type: "recordingStatusCleared" });
 
     expect(cleared.recordingStatus).toBeUndefined();
+  });
+
+  it("clears the recorder when the backend lost the polled session", () => {
+    const status: RecordingStatusDto = {
+      sessionId: "session-1",
+      state: "recording",
+      elapsedMs: 1250,
+      level: { peak: 0.4, rms: 0.2, recentPeaks: [0.1, 0.4] },
+      silenceWarning: false,
+      bytesWritten: 4096,
+    };
+    const recording = notesReducer(createInitialState(), {
+      type: "recordingStatusChanged",
+      status,
+    });
+
+    const lost = notesReducer(recording, {
+      type: "recordingSessionLost",
+      sessionId: "session-1",
+    });
+
+    expect(lost.recordingStatus).toBeUndefined();
+  });
+
+  it("ignores a lost-session signal for a superseded recording", () => {
+    const status: RecordingStatusDto = {
+      sessionId: "session-2",
+      state: "recording",
+      elapsedMs: 200,
+      level: { peak: 0.4, rms: 0.2, recentPeaks: [0.1, 0.4] },
+      silenceWarning: false,
+      bytesWritten: 1024,
+    };
+    const recording = notesReducer(createInitialState(), {
+      type: "recordingStatusChanged",
+      status,
+    });
+
+    // A stale poll for the previous session must not tear down the bar for
+    // the recording that replaced it.
+    const state = notesReducer(recording, {
+      type: "recordingSessionLost",
+      sessionId: "session-1",
+    });
+
+    expect(state.recordingStatus).toEqual(status);
   });
 });

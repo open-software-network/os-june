@@ -197,6 +197,13 @@ export function App() {
     setAccount,
   } = useAccountStatus();
   const startOnFreshNoteRef = useRef(false);
+  // The note the active recording session belongs to. recordingStatus carries
+  // no noteId, so without this the finish flow could only guess from the
+  // currently selected note — wrong whenever the user browsed away while
+  // recording.
+  const recordingNoteIdRef = useRef<string | undefined>(undefined);
+  // Sessions with a finishRecording call in flight; guards stop double-clicks.
+  const finishingSessionsRef = useRef<Set<string>>(new Set());
   const signInRequired = shouldBlockOnSignIn(account);
   const appBlocked = accountLoading || signInRequired;
   const publishAgentMenuBarState = useCallback(() => {
@@ -235,7 +242,7 @@ export function App() {
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
     void recoverRecording(sessionId, action)
       .then((note) => {
-        dispatch({ type: "noteUpdated", note });
+        dispatch({ type: "noteProcessingUpdated", note });
         dispatch({ type: "recoveryRemoved", sessionId });
       })
       .catch((err: unknown) => setError(messageFromError(err)));
@@ -740,6 +747,12 @@ export function App() {
       return;
     }
     const sessionId = state.recordingStatus.sessionId;
+    // Drops in-flight responses once this effect is torn down. Without it, a
+    // poll that was already in flight when the user hit stop resolves after
+    // recordingStatusCleared and resurrects the recorder bar with a stale
+    // status — and since polling for that state never restarts, the bar would
+    // be stuck on screen indefinitely.
+    let cancelled = false;
     // ~20Hz so the waveform tracks speech as snappily as the dictation HUD
     // (which is event-driven at ~25Hz). The polled equivalent for the recorder;
     // each poll coalesces the peaks since the last one (see Waveform.tsx). Audio
@@ -747,14 +760,25 @@ export function App() {
     // 100ms left the bars a beat behind the voice.
     const interval = window.setInterval(() => {
       getRecordingStatus(sessionId)
-        .then((status) => dispatch({ type: "recordingStatusChanged", status }))
+        .then((status) => {
+          if (!cancelled) dispatch({ type: "recordingStatusChanged", status });
+        })
         .catch((err: unknown) => {
-          if (!isAppErrorCode(err, "recording_not_found")) {
-            setError(messageFromError(err));
+          if (cancelled) return;
+          if (isAppErrorCode(err, "recording_not_found")) {
+            // The backend no longer tracks this session — clear the bar
+            // instead of polling a dead session forever. The reducer ignores
+            // this if a newer session already replaced it.
+            dispatch({ type: "recordingSessionLost", sessionId });
+            return;
           }
+          setError(messageFromError(err));
         });
     }, 50);
-    return () => window.clearInterval(interval);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
 
   useEffect(() => {
@@ -766,9 +790,14 @@ export function App() {
     }
     const noteId = selectedNote.id;
     const startedAt = performance.now();
+    // Drops in-flight responses once this effect is torn down (note switched,
+    // status moved on, note deleted) so a late resolution can't apply a stale
+    // snapshot — or surface a spurious "note not found" error after a delete.
+    let cancelled = false;
     const interval = window.setInterval(() => {
       getNote(noteId)
         .then((note) => {
+          if (cancelled) return;
           if (
             import.meta.env.DEV &&
             !shouldPollProcessingStatus(note.processingStatus)
@@ -781,9 +810,14 @@ export function App() {
           }
           dispatch({ type: "noteUpdated", note });
         })
-        .catch((err: unknown) => setError(messageFromError(err)));
+        .catch((err: unknown) => {
+          if (!cancelled) setError(messageFromError(err));
+        });
     }, 1000);
-    return () => window.clearInterval(interval);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [selectedNote?.id, selectedNote?.processingStatus]);
 
   const handleCreateNote = useCallback(
@@ -1007,6 +1041,7 @@ export function App() {
 
   const handleStartRecording = useCallback(async () => {
     if (!selectedNoteId) return;
+    recordingNoteIdRef.current = selectedNoteId;
     dispatch({
       type: "recordingStatusChanged",
       status: startingRecordingStatus(sourceMode),
@@ -1069,6 +1104,12 @@ export function App() {
   }, [appBlocked, bootstrapped, handleStartRecording]);
 
   async function handleFinishRecording(sessionId: string) {
+    // The recorder bar stays mounted (and clickable) for the duration of its
+    // exit animation after the first stop click, so a fast double-click would
+    // fire finishRecording twice — the second call fails with a scary
+    // "recording not found" error. Gate per session until the call settles.
+    if (finishingSessionsRef.current.has(sessionId)) return;
+    finishingSessionsRef.current.add(sessionId);
     // Collapse the shell back to idle the instant stop is pressed so it
     // never lingers wide while the (potentially long) transcribe +
     // generate pipeline runs. Processing is queued per note, so the record
@@ -1077,17 +1118,23 @@ export function App() {
     // notes…") plus a queued count tell the user work is still in flight.
     dispatch({ type: "recordingStatusCleared" });
     playRecordingSound("stop");
-    if (selectedNote) {
+    // Optimistically flip the note that owns this recording to transcribing.
+    // The selected note isn't necessarily that note — the user may have
+    // browsed elsewhere while recording — and stamping the wrong note as
+    // transcribing would lock its record button and shimmer forever.
+    if (selectedNote && selectedNote.id === recordingNoteIdRef.current) {
       dispatch({
-        type: "noteUpdated",
+        type: "noteProcessingUpdated",
         note: { ...selectedNote, processingStatus: "transcribing" },
       });
     }
     try {
       const result = await finishRecording(sessionId);
-      dispatch({ type: "noteUpdated", note: result.note });
+      dispatch({ type: "noteProcessingUpdated", note: result.note });
     } catch (err) {
       setError(messageFromError(err));
+    } finally {
+      finishingSessionsRef.current.delete(sessionId);
     }
   }
 
@@ -1442,8 +1489,15 @@ export function App() {
                   }
                   onRetry={async () => {
                     if (!selectedNote) return;
-                    const note = await retryProcessing(selectedNote.id);
-                    dispatch({ type: "noteUpdated", note });
+                    try {
+                      const note = await retryProcessing(selectedNote.id);
+                      dispatch({ type: "noteProcessingUpdated", note });
+                    } catch (err) {
+                      // Surface the failure (the banner only releases its
+                      // busy gate on rejection — it expects us to report).
+                      setError(messageFromError(err));
+                      throw err;
+                    }
                   }}
                   onTopUp={() =>
                     void osAccountsTopUp().catch((err: unknown) =>
