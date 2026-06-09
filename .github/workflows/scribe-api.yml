@@ -15,6 +15,9 @@ on:
       - ".github/actions/setup-rust/**"
       - ".github/actions/changed-paths/**"
 
+permissions:
+  contents: read
+
 concurrency:
   group: scribe-api-${{ github.ref }}
   cancel-in-progress: true
