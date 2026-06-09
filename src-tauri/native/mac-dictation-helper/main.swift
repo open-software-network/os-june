@@ -1244,19 +1244,19 @@ final class AutoDetectInputMeter: NSObject, AVCaptureAudioDataOutputSampleBuffer
         }
         let input = try AVCaptureDeviceInput(device: device)
         session.beginConfiguration()
-        defer {
-            session.commitConfiguration()
-        }
         guard session.canAddInput(input) else {
+            session.commitConfiguration()
             throw AutoDetectInputMeterError.cannotAddInput
         }
         session.addInput(input)
         guard session.canAddOutput(output) else {
             session.removeInput(input)
+            session.commitConfiguration()
             throw AutoDetectInputMeterError.cannotAddOutput
         }
         output.setSampleBufferDelegate(self, queue: queue)
         session.addOutput(output)
+        session.commitConfiguration()
         queue.sync {
             pendingLevel = 0
             lastLevelEmit = 0
