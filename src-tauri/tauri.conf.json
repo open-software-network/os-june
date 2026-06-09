@@ -62,8 +62,8 @@
         "label": "meeting-hud",
         "url": "/meeting-hud.html",
         "title": "OS Scribe Recording",
-        "width": 240,
-        "height": 96,
+        "width": 76,
+        "height": 32,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -72,7 +72,7 @@
         "visibleOnAllWorkspaces": true,
         "focusable": false,
         "skipTaskbar": true,
-        "shadow": false,
+        "shadow": true,
         "visible": false
       }
     ],

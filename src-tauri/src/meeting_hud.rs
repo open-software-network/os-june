@@ -12,23 +12,27 @@
 //! audio capture layer, drives the HUD's visibility against the main window's
 //! state, and pumps status to the webview.
 //!
-//! The macOS panel plumbing (non-activating NSPanel, cursor-driven click
-//! pass-through) mirrors `dictation.rs`; the two HUDs keep independent copies so
-//! the dictation overlay stays untouched.
+//! The window is sized exactly to the pill — no transparent gutter — so the
+//! whole window is the click/drag target, depth comes from the native NSWindow
+//! shadow, and the frosted surface is a real NSVisualEffectView behind the
+//! webview (CSS `backdrop-filter` can't sample other apps' pixels).
+//!
+//! The pill is orientation-aware: parked in the left or right third of the
+//! screen it flips to a vertical layout (dot above a short waveform); in the
+//! middle third it lies horizontal. The supervisor watches the drag position
+//! and applies the flip once the window settles, resizing around the pill's
+//! center.
 
 use crate::audio::capture;
 use crate::domain::types::{RecordingState, RecordingStatusDto};
-use serde::Deserialize;
 use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
+    sync::Mutex,
     thread,
     time::Duration,
 };
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State,
+    WebviewWindow, WindowEvent,
 };
 
 const WINDOW_LABEL: &str = "meeting-hud";
@@ -38,30 +42,54 @@ const WINDOW_LABEL: &str = "meeting-hud";
 const ACTIVE_TICK: Duration = Duration::from_millis(40);
 const IDLE_TICK: Duration = Duration::from_millis(220);
 
-/// Drag position remembered between appearances in the same process. Like the
-/// dictation HUD this is intentionally not persisted to disk — every launch
-/// resets the pill to its default anchor so it can never get stranded on a
-/// monitor that's no longer connected.
+/// Logical pill sizes per orientation. Must agree with the layout math in
+/// meeting-hud.css (dot 9 + gap 10 + bars, centered with 14px margins).
+const HORIZONTAL_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 32.0);
+const VERTICAL_SIZE: LogicalSize<f64> = LogicalSize::new(32.0, 64.0);
+
+/// How many supervisor ticks the window must hold still before an orientation
+/// flip is applied — resizing mid-native-drag is what we're avoiding.
+const SETTLE_TICKS: u32 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone {
+    Left,
+    Center,
+    Right,
+}
+
+impl Zone {
+    fn as_str(self) -> &'static str {
+        match self {
+            Zone::Left => "left",
+            Zone::Center => "center",
+            Zone::Right => "right",
+        }
+    }
+
+    fn size(self) -> LogicalSize<f64> {
+        match self {
+            Zone::Center => HORIZONTAL_SIZE,
+            Zone::Left | Zone::Right => VERTICAL_SIZE,
+        }
+    }
+}
+
 pub struct MeetingHudPosition {
+    /// Drag position remembered between appearances in the same process. Like
+    /// the dictation HUD this is intentionally not persisted to disk — every
+    /// launch resets the pill to its default anchor so it can never get
+    /// stranded on a monitor that's no longer connected.
     inner: Mutex<Option<(i32, i32)>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct MeetingHudRect {
-    left: f64,
-    right: f64,
-    top: f64,
-    bottom: f64,
-}
-
 pub struct MeetingHudState {
-    /// Client-space pill rect pushed from the webview; the supervisor uses it to
-    /// pass clicks through the transparent gutter to the app underneath.
-    pill_bounds: Mutex<Option<MeetingHudRect>>,
-    last_passthrough: AtomicBool,
     /// Freshest status, so a HUD webview that loads mid-recording can paint
     /// immediately instead of waiting for the next pump.
     latest_status: Mutex<Option<RecordingStatusDto>>,
+    /// Which screen third the pill currently occupies; the webview mirrors this
+    /// as its layout orientation.
+    zone: Mutex<Zone>,
 }
 
 pub fn setup(app: &mut tauri::App) {
@@ -69,9 +97,8 @@ pub fn setup(app: &mut tauri::App) {
         inner: Mutex::new(None),
     });
     app.manage(MeetingHudState {
-        pill_bounds: Mutex::new(None),
-        last_passthrough: AtomicBool::new(true),
         latest_status: Mutex::new(None),
+        zone: Mutex::new(Zone::Center),
     });
     if let Err(error) = configure_window(app.handle()) {
         tracing::warn!(%error, "failed to configure meeting HUD");
@@ -80,18 +107,19 @@ pub fn setup(app: &mut tauri::App) {
 }
 
 #[tauri::command]
-pub fn meeting_hud_set_pill_bounds(
-    state: State<'_, MeetingHudState>,
-    rect: Option<MeetingHudRect>,
-) {
-    if let Ok(mut guard) = state.pill_bounds.lock() {
-        *guard = rect;
-    }
-}
-
-#[tauri::command]
 pub fn meeting_hud_latest_status(state: State<'_, MeetingHudState>) -> Option<RecordingStatusDto> {
     state.latest_status.lock().ok().and_then(|g| g.clone())
+}
+
+/// The webview fetches this once on load so a HUD that boots while parked in a
+/// side zone starts vertical instead of waiting for the next flip.
+#[tauri::command]
+pub fn meeting_hud_current_zone(state: State<'_, MeetingHudState>) -> String {
+    state
+        .zone
+        .lock()
+        .map(|zone| zone.as_str().to_string())
+        .unwrap_or_else(|_| "center".to_string())
 }
 
 /// Clicking the HUD reopens the app on the meeting being recorded. Activation is
@@ -129,14 +157,26 @@ fn main_window_dismissed(app: &AppHandle) -> bool {
     hidden || minimized
 }
 
+/// Per-thread drag-settle tracker for the orientation flip.
+struct ZoneTracker {
+    last_position: Option<PhysicalPosition<i32>>,
+    stable_ticks: u32,
+}
+
 fn spawn_supervisor(app: AppHandle) {
-    thread::spawn(move || loop {
-        let tick = supervise(&app);
-        thread::sleep(tick);
+    thread::spawn(move || {
+        let mut tracker = ZoneTracker {
+            last_position: None,
+            stable_ticks: 0,
+        };
+        loop {
+            let tick = supervise(&app, &mut tracker);
+            thread::sleep(tick);
+        }
     });
 }
 
-fn supervise(app: &AppHandle) -> Duration {
+fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
     let Some(hud) = app.get_webview_window(WINDOW_LABEL) else {
         return IDLE_TICK;
     };
@@ -152,10 +192,10 @@ fn supervise(app: &AppHandle) -> Duration {
         if hud.is_visible().unwrap_or(false) {
             let _ = hud.hide();
         }
-        force_passthrough(&hud, &state);
         if let Ok(mut guard) = state.latest_status.lock() {
             *guard = None;
         }
+        tracker.last_position = None;
         return IDLE_TICK;
     };
 
@@ -167,6 +207,9 @@ fn supervise(app: &AppHandle) -> Duration {
     let visible = hud.is_visible().unwrap_or(false);
     if should_show && !visible {
         position_window(app, &hud);
+        // Apply the zone for wherever the pill landed before it appears, so it
+        // never flashes the wrong orientation.
+        apply_zone_now(&hud, &state);
         let _ = hud.show();
     } else if !should_show && visible {
         let _ = hud.hide();
@@ -175,59 +218,88 @@ fn supervise(app: &AppHandle) -> Duration {
     if hud.is_visible().unwrap_or(false) {
         // emit_to keeps the 25Hz status stream off the main window's bus.
         let _ = app.emit_to(WINDOW_LABEL, "meeting-hud-status", &status);
-        update_passthrough(&hud, &state);
-    } else {
-        force_passthrough(&hud, &state);
+        track_zone(&hud, &state, tracker);
     }
     ACTIVE_TICK
 }
 
-fn force_passthrough(hud: &WebviewWindow, state: &MeetingHudState) {
-    if !state.last_passthrough.swap(true, Ordering::Relaxed) {
-        let _ = hud.set_ignore_cursor_events(true);
+/// Which third of the monitor's work area the pill center sits in.
+fn zone_for(hud: &WebviewWindow) -> Option<Zone> {
+    let position = hud.outer_position().ok()?;
+    let size = hud.outer_size().ok()?;
+    let center_x = position.x + size.width as i32 / 2;
+    let center_y = position.y + size.height as i32 / 2;
+    let monitor = hud
+        .monitor_from_point(center_x as f64, center_y as f64)
+        .ok()
+        .flatten()
+        .or_else(|| hud.current_monitor().ok().flatten())?;
+    let work = monitor.work_area();
+    let third = work.size.width as i32 / 3;
+    let offset = center_x - work.position.x;
+    Some(if offset < third {
+        Zone::Left
+    } else if offset > 2 * third {
+        Zone::Right
+    } else {
+        Zone::Center
+    })
+}
+
+/// Watch the drag position; once the window has held still for a few ticks,
+/// flip orientation if it crossed into a different third. Waiting for the
+/// settle keeps us from resizing in the middle of a native drag session.
+fn track_zone(hud: &WebviewWindow, state: &MeetingHudState, tracker: &mut ZoneTracker) {
+    let Ok(position) = hud.outer_position() else {
+        return;
+    };
+    if tracker.last_position == Some(position) {
+        tracker.stable_ticks = tracker.stable_ticks.saturating_add(1);
+    } else {
+        tracker.last_position = Some(position);
+        tracker.stable_ticks = 0;
+        return;
+    }
+    if tracker.stable_ticks == SETTLE_TICKS {
+        apply_zone_now(hud, state);
     }
 }
 
-/// Pass clicks through to the app underneath unless the cursor is over the pill.
-fn update_passthrough(hud: &WebviewWindow, state: &MeetingHudState) {
-    let pill = state.pill_bounds.lock().ok().and_then(|g| g.clone());
-    let Some(pill) = pill else {
-        // Don't know where the pill is yet — keep clicks flowing through.
-        force_passthrough(hud, state);
+/// Recompute the zone and, if it changed, resize around the pill's center and
+/// tell the webview to re-lay itself out.
+fn apply_zone_now(hud: &WebviewWindow, state: &MeetingHudState) {
+    let Some(zone) = zone_for(hud) else {
         return;
     };
-    let (Ok(position), Ok(scale_factor)) = (hud.outer_position(), hud.scale_factor()) else {
+    let previous = state
+        .zone
+        .lock()
+        .map(|mut guard| std::mem::replace(&mut *guard, zone))
+        .unwrap_or(Zone::Center);
+    if previous == zone {
         return;
-    };
-
-    #[cfg(target_os = "macos")]
-    let cursor = cursor_position_via_cg().map(|(x, y)| (x * scale_factor, y * scale_factor));
-    #[cfg(not(target_os = "macos"))]
-    let cursor = hud.cursor_position().ok().map(|p| (p.x, p.y));
-
-    let Some((cx, cy)) = cursor else { return };
-    let over_pill = rect_contains(&pill, position, scale_factor, cx, cy);
-    let should_passthrough = !over_pill;
-    if should_passthrough != state.last_passthrough.load(Ordering::Relaxed) {
-        state
-            .last_passthrough
-            .store(should_passthrough, Ordering::Relaxed);
-        let _ = hud.set_ignore_cursor_events(should_passthrough);
     }
+
+    if previous.size() != zone.size() {
+        resize_preserving_center(hud, zone.size());
+    }
+    let _ = hud.emit_to(WINDOW_LABEL, "meeting-hud-zone", zone.as_str());
 }
 
-fn rect_contains(
-    rect: &MeetingHudRect,
-    position: PhysicalPosition<i32>,
-    scale_factor: f64,
-    cx: f64,
-    cy: f64,
-) -> bool {
-    let left = position.x as f64 + rect.left * scale_factor;
-    let right = position.x as f64 + rect.right * scale_factor;
-    let top = position.y as f64 + rect.top * scale_factor;
-    let bottom = position.y as f64 + rect.bottom * scale_factor;
-    cx >= left && cx <= right && cy >= top && cy <= bottom
+fn resize_preserving_center(hud: &WebviewWindow, size: LogicalSize<f64>) {
+    let (Ok(position), Ok(old_size), Ok(scale)) =
+        (hud.outer_position(), hud.outer_size(), hud.scale_factor())
+    else {
+        return;
+    };
+    let new_size = PhysicalSize::new(
+        (size.width * scale).round() as u32,
+        (size.height * scale).round() as u32,
+    );
+    let x = position.x + (old_size.width as i32 - new_size.width as i32) / 2;
+    let y = position.y + (old_size.height as i32 - new_size.height as i32) / 2;
+    let _ = hud.set_size(new_size);
+    let _ = hud.set_position(PhysicalPosition::new(x, y));
 }
 
 fn configure_window(app: &AppHandle) -> Result<(), String> {
@@ -240,14 +312,26 @@ fn configure_window(app: &AppHandle) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         hud.set_skip_taskbar(true)
             .map_err(|error| error.to_string())?;
-        hud.set_shadow(false).map_err(|error| error.to_string())?;
-        // Start in pass-through to match `last_passthrough = true`: until the
-        // cursor is over the pill, the transparent gutter must not eat clicks
-        // meant for the app underneath.
-        let _ = hud.set_ignore_cursor_events(true);
+        // The window is exactly the pill, so depth comes from the native
+        // window shadow instead of a CSS one painted into a gutter.
+        hud.set_shadow(true).map_err(|error| error.to_string())?;
 
         #[cfg(target_os = "macos")]
-        make_nonactivating(&hud);
+        {
+            make_nonactivating(&hud);
+            // Real behind-window blur. The radius must match the pill's CSS
+            // border-radius (--r-lg, 10px) so the frosted layer and the
+            // painted border trace the same curve.
+            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+            if let Err(error) = apply_vibrancy(
+                &hud,
+                NSVisualEffectMaterial::HudWindow,
+                Some(NSVisualEffectState::Active),
+                Some(10.0),
+            ) {
+                tracing::warn!(%error, "failed to apply meeting HUD vibrancy");
+            }
+        }
 
         let app_for_events = app.clone();
         hud.on_window_event(move |event| {
@@ -285,9 +369,6 @@ fn position_window(app: &AppHandle, hud: &WebviewWindow) {
 
 fn default_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
     const BOTTOM_MARGIN: i32 = 16;
-    // The window is padded with transparent space for the shadow; anchor the
-    // *pill* near the bottom, accounting for the slack below it.
-    const PILL_HEIGHT: i32 = 32;
 
     let monitor = hud
         .cursor_position()
@@ -300,9 +381,8 @@ fn default_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Opti
     let work_bottom = work_area.position.y + work_area.size.height as i32;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
-    let pill_center_y = work_bottom - BOTTOM_MARGIN - PILL_HEIGHT / 2;
     let x = work_center_x - window_size.width as i32 / 2;
-    let y = pill_center_y - window_size.height as i32 / 2;
+    let y = work_bottom - BOTTOM_MARGIN - window_size.height as i32;
     Some((x, y))
 }
 
@@ -328,40 +408,6 @@ fn position_is_visible(
         let overlap_y = (y + pill_h).min(my + mh) - y.max(my);
         overlap_x >= MIN_OVERLAP_PX && overlap_y >= MIN_OVERLAP_PX
     })
-}
-
-/// Cursor position in logical points from the window server. Mirrors the
-/// dictation HUD: `WebviewWindow::cursor_position()` only refreshes while the
-/// window is key, and this HUD is a non-activating NSPanel.
-#[cfg(target_os = "macos")]
-fn cursor_position_via_cg() -> Option<(f64, f64)> {
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
-        fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFRelease(cf: *const std::ffi::c_void);
-    }
-
-    unsafe {
-        let event = CGEventCreate(std::ptr::null());
-        if event.is_null() {
-            return None;
-        }
-        let point = CGEventGetLocation(event);
-        CFRelease(event);
-        Some((point.x, point.y))
-    }
 }
 
 /// macOS: reclass the HUD's NSWindow to a non-activating NSPanel so clicking the

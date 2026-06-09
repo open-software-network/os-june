@@ -55,11 +55,15 @@ function applyStatus(status: RecordingStatusDto) {
       ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS))
       : level.peak;
   meter.pushLevel(visualPeakScale(raw));
+}
 
-  // The first status arrives once the window is actually shown; if the initial
-  // (hidden-window) bounds came back degenerate, re-push now — otherwise the
-  // pill never becomes interactive and clicks pass straight through it.
-  if (!boundsValid) pushPillBounds();
+// Orientation triad: parked in the left or right third of the screen the pill
+// stands vertical (dot above a short waveform); the middle third lies flat.
+// Rust owns the zone math + window resize; we just mirror the layout.
+function applyZone(zone: string) {
+  if (pill) {
+    pill.dataset.orient = zone === "center" ? "horizontal" : "vertical";
+  }
 }
 
 function startBarLoop() {
@@ -85,20 +89,6 @@ function resetBars() {
   for (const bar of bars) {
     bar.style.setProperty("--level", IDLE_LEVEL.toFixed(3));
   }
-}
-
-// The pill rect drives native click pass-through (Rust polls the cursor against
-// it). The pill is a fixed size, so once we get a real (non-degenerate) rect it
-// holds — `boundsValid` guards the re-push in applyStatus.
-let boundsValid = false;
-
-function pushPillBounds() {
-  if (!pill) return;
-  const { left, right, top, bottom } = pill.getBoundingClientRect();
-  boundsValid = right > left;
-  void invoke("meeting_hud_set_pill_bounds", {
-    rect: { left, right, top, bottom },
-  }).catch(() => {});
 }
 
 // Focus the main window from Rust (reliable app activation — clicking a
@@ -150,14 +140,20 @@ void listen<RecordingStatusDto>("meeting-hud-status", (event) => {
   if (event.payload) applyStatus(event.payload);
 });
 
+void listen<string>("meeting-hud-zone", (event) => {
+  applyZone(event.payload);
+});
+
 resetBars();
 startBarLoop();
-pushPillBounds();
-window.addEventListener("resize", pushPillBounds);
 
-// Paint immediately if a recording is already live when this view appears.
+// Paint immediately if a recording is already live when this view appears, and
+// start in the right orientation if it boots while parked in a side zone.
 void invoke<RecordingStatusDto | null>("meeting_hud_latest_status")
   .then((status) => {
     if (status) applyStatus(status);
   })
+  .catch(() => {});
+void invoke<string>("meeting_hud_current_zone")
+  .then(applyZone)
   .catch(() => {});

@@ -1,11 +1,21 @@
 @import "./tokens.css";
 
 /*
- * Meeting recording HUD — a small, blurred presence indicator (sibling to the
+ * Meeting recording HUD — a small frosted presence indicator (sibling to the
  * dictation HUD, hud.css). When the main window is closed/minimized mid-meeting
  * this floats as a record dot + live waveform: a calm "still recording" signal.
  * Click it to bring Scribe back to the meeting; drag to move. No controls — all
  * recording controls live in-app, one click away.
+ *
+ * The window is sized exactly to the pill: the frosted surface is a native
+ * NSVisualEffectView behind the webview (CSS backdrop-filter can't sample
+ * other apps' pixels) and depth comes from the native NSWindow shadow, so
+ * there's no CSS shadow or blur here — just a translucent tint over vibrancy.
+ *
+ * Orientation triad: Rust resizes the window per screen third and emits
+ * `meeting-hud-zone`; data-orient flips the layout. Horizontal (center third):
+ * dot + 7 bars in a row. Vertical (left/right thirds): dot above 4 stacked
+ * ticks.
  */
 
 :root {
@@ -35,39 +45,34 @@
 }
 
 body {
-  display: grid;
-  place-items: center;
   width: 100vw;
   height: 100vh;
   margin: 0;
   overflow: hidden;
   background: transparent;
-  /* Only the pill is interactive; the transparent gutter is click-through
-   * (native set_ignore_cursor_events, driven from Rust against pill bounds). */
-  pointer-events: none;
   user-select: none;
 }
 
-/* Pill — mirrors .hud (hud.css): same surface, border, radius, shadow + blur,
- * with roomy padding so the dot + waveform aren't cramped. */
+/* Pill — fills the window; the 10px radius must match the vibrancy view's
+ * corner radius set in meeting_hud.rs so tint and frost trace the same curve. */
 .mhud {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
-  height: 32px;
-  padding: 0 14px;
+  width: 100%;
+  height: 100%;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--popover) 82%, transparent);
+  /* A light tint only — the frosted body is the native vibrancy layer. */
+  background: color-mix(in oklch, var(--popover) 50%, transparent);
   color: var(--foreground);
   /* The whole pill is the click/drag target. */
   cursor: pointer;
-  box-shadow:
-    0 10px 28px oklch(0% 0 none / 38%),
-    0 2px 6px oklch(0% 0 none / 26%),
-    0 0 0 0.5px oklch(0% 0 none / 28%);
-  backdrop-filter: blur(14px) saturate(1.4);
-  pointer-events: auto;
+}
+
+.mhud[data-orient="vertical"] {
+  flex-direction: column;
 }
 
 .mhud:active {
@@ -76,7 +81,8 @@ body {
 
 .mhud:focus-visible {
   outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
-  outline-offset: 2px;
+  /* Inset — the window edge is the pill edge, so an outer ring would clip. */
+  outline-offset: -3px;
 }
 
 /* Recording dot ------------------------------------------------------- */
@@ -140,6 +146,33 @@ body {
   /* 22ms linear height tween — same as the dictation HUD (.hud-bar), which
    * matches the playground's CSS_MS, so both waveforms smooth identically. */
   transition: height 22ms linear;
+}
+
+/* Vertical: a short stack of 4 horizontal ticks under the dot; the same meter
+ * drives them, the wave just travels downward instead of across. */
+.mhud[data-orient="vertical"] .mhud-bars {
+  flex-direction: column;
+  width: 22px;
+  height: auto;
+}
+
+.mhud[data-orient="vertical"] .mhud-bar:nth-child(n + 5) {
+  display: none;
+}
+
+.mhud[data-orient="vertical"] .mhud-bar {
+  width: 22px;
+  height: 2px;
+}
+
+.mhud[data-orient="vertical"] .mhud-bar::before {
+  left: 50%;
+  top: 0;
+  bottom: auto;
+  width: calc(3px + var(--level, 0) * 15px);
+  height: 100%;
+  transform: translateX(-50%);
+  transition: width 22ms linear;
 }
 
 /* Paused: bars settle and dim (the meter also stops the carrier shimmer). */
