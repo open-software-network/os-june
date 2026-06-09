@@ -16,6 +16,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
+import { IconExpandSimple } from "central-icons/IconExpandSimple";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
@@ -103,6 +104,10 @@ import {
   type AgentChatTurn,
   type LiveHermesEvent,
 } from "../../lib/agent-chat-runtime";
+import {
+  buildAgentChatGallery,
+  type AgentChatGallerySection,
+} from "../../lib/agent-chat-gallery";
 
 const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "queued",
@@ -238,6 +243,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [clarifySubmitting, setClarifySubmitting] = useState<
     Record<string, string>
   >({});
+  // Dev-tools response gallery: when set, the timeline is replaced by a labeled
+  // catalog of every agent response part type. Toggled from the console via
+  // window.__agentGallery() — see the effect below.
+  const [gallerySections, setGallerySections] = useState<
+    AgentChatGallerySection[] | null
+  >(null);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   // One live gateway subscription per Hermes session. A follow-up send while
   // the previous turn is still streaming must replace the old handler, not
@@ -1443,6 +1454,22 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
   }
 
+  // Expose a dev-tools handle so the response gallery can be toggled from the
+  // browser console:  __agentGallery()  shows it,  __agentGallery(false)  hides
+  // it. Lets us audit/tune the styling of every response part type in one place.
+  useEffect(() => {
+    const handle = window as unknown as Record<string, unknown>;
+    handle.__agentGallery = (show: boolean = true) => {
+      setGallerySections(show ? buildAgentChatGallery() : null);
+      return show
+        ? "Agent response gallery shown. Run __agentGallery(false) to hide."
+        : "Agent response gallery hidden.";
+    };
+    return () => {
+      delete handle.__agentGallery;
+    };
+  }, []);
+
   // Hoisted so the trailing "Thinking…" indicator only shows in the gap after a
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
@@ -1475,8 +1502,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
           }
           onRename={
             !newSessionMode && selectedHermesSessionId
-              ? (title) =>
-                  renameHermesSession(selectedHermesSessionId, title)
+              ? (title) => renameHermesSession(selectedHermesSessionId, title)
               : undefined
           }
           onDelete={
@@ -1488,7 +1514,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       )}
       <section className="agent-main" aria-label="Agent task details">
         {error ? <p className="error-banner">{error}</p> : null}
-        {!newSessionMode && selectedHermesSessionId ? (
+        {gallerySections ? (
+          <AgentResponseGallery
+            sections={gallerySections}
+            onClose={() => setGallerySections(null)}
+          />
+        ) : !newSessionMode && selectedHermesSessionId ? (
           <>
             <div ref={listRef} className="agent-timeline">
               {hermesTurns.map((turn) => (
@@ -1628,9 +1659,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
           >
             <div
               className="agent-composer-box"
-              data-dirty={
-                draft.trim() || attachments.length ? "true" : "false"
-              }
+              data-dirty={draft.trim() || attachments.length ? "true" : "false"}
               data-multiline={composerMultiline ? "true" : "false"}
             >
               {attachments.length ? (
@@ -2095,7 +2124,10 @@ function AgentSessionBar({
               <IconDotGrid1x3Horizontal size={16} />
             </button>
             {menuOpen ? (
-              <div className="sidebar-identity-menu agent-session-menu" role="menu">
+              <div
+                className="sidebar-identity-menu agent-session-menu"
+                role="menu"
+              >
                 {onRename ? (
                   <button
                     type="button"
@@ -2833,6 +2865,59 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
   return out;
 }
 
+// Dev-only catalog of every agent response part type, rendered through the real
+// <AgentChatTurnRow> so the styling shown is exactly what ships. Toggled from the
+// console via window.__agentGallery(). Handlers are no-ops — it's a static
+// styling reference, not a live conversation.
+function AgentResponseGallery({
+  sections,
+  onClose,
+}: {
+  sections: AgentChatGallerySection[];
+  onClose: () => void;
+}) {
+  const noop = () => {};
+  return (
+    <div className="agent-timeline agent-gallery">
+      <div className="agent-gallery-banner">
+        <div>
+          <strong>Agent response gallery</strong>
+          <p>
+            Every response part type and status, for styling. Close from the
+            console with <code>__agentGallery(false)</code>.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="agent-icon-button"
+          aria-label="Close gallery"
+          onClick={onClose}
+        >
+          <XIcon size={15} />
+        </button>
+      </div>
+      {sections.map((section) => (
+        <section key={section.label} className="agent-gallery-section">
+          <header className="agent-gallery-section-header">
+            <h3>{section.label}</h3>
+            {section.description ? <p>{section.description}</p> : null}
+          </header>
+          {section.turns.map((turn) => (
+            <AgentChatTurnRow
+              key={turn.id}
+              turn={turn}
+              approvalSubmitting={{}}
+              clarifySubmitting={{}}
+              onApproval={noop}
+              onClarify={noop}
+            />
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
@@ -3259,12 +3344,16 @@ function AgentToolDisclosure({
   redacted?: boolean;
 }) {
   const body = text && text.trim() ? text : null;
-  const summary = (
+  const summary = (expandable: boolean) => (
     <>
       <span className="agent-tool-icon">
         <IconConsoleSimple size={15} />
       </span>
       <span className="agent-tool-name">{name}</span>
+      {expandable ? (
+        // Expand affordance — hidden until hover so the row stays quiet.
+        <IconExpandSimple size={13} className="agent-tool-expand" />
+      ) : null}
       {statusNode}
       {redacted ? <span className="agent-redacted">Redacted</span> : null}
     </>
@@ -3275,13 +3364,13 @@ function AgentToolDisclosure({
         className="agent-tool-disclosure agent-tool-disclosure-static"
         data-status={status}
       >
-        {summary}
+        {summary(false)}
       </div>
     );
   }
   return (
     <details className="agent-tool-disclosure" data-status={status}>
-      <summary>{summary}</summary>
+      <summary>{summary(true)}</summary>
       <div className="agent-tool-output">{body}</div>
     </details>
   );
@@ -3507,6 +3596,71 @@ function renderMarkdownBlocks(markdown: string) {
       continue;
     }
 
+    // Blockquote: strip the > prefix and re-render the inner lines, so quotes
+    // can hold paragraphs, lists, or code like any other block.
+    if (trimmed.startsWith(">")) {
+      flushParagraph();
+      const quoted: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith(">")) {
+        quoted.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push(
+        <blockquote key={`quote-${key++}`}>
+          {renderMarkdownBlocks(quoted.join("\n"))}
+        </blockquote>,
+      );
+      continue;
+    }
+
+    // Pipe table: a |…| row followed by a |---|---| separator.
+    const isTableRow = (value: string) =>
+      value.startsWith("|") && value.endsWith("|") && value.length > 1;
+    if (
+      isTableRow(trimmed) &&
+      index + 1 < lines.length &&
+      /^\|(\s*:?-+:?\s*\|)+$/.test(lines[index + 1].trim())
+    ) {
+      flushParagraph();
+      const splitRow = (value: string) =>
+        value
+          .slice(1, -1)
+          .split("|")
+          .map((cell) => cell.trim());
+      const header = splitRow(trimmed);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && isTableRow(lines[index].trim())) {
+        rows.push(splitRow(lines[index].trim()));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push(
+        <div key={`table-${key++}`} className="agent-md-table">
+          <table>
+            <thead>
+              <tr>
+                {header.map((cell, cellIndex) => (
+                  <th key={cellIndex}>{renderInlineMarkdown(cell, key)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={cellIndex}>{renderInlineMarkdown(cell, key)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
     const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
     if (heading) {
       flushParagraph();
@@ -3563,7 +3717,7 @@ function renderMarkdownBlocks(markdown: string) {
 function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern =
-    /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+    /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let index = 0;
@@ -3576,16 +3730,20 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
         <strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>,
       );
     } else if (match[3]) {
-      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[3]}</code>);
-    } else if (match[4] && match[5]) {
+      nodes.push(<em key={`em-${keySeed}-${index}`}>{match[3]}</em>);
+    } else if (match[4]) {
+      nodes.push(<del key={`del-${keySeed}-${index}`}>{match[4]}</del>);
+    } else if (match[5]) {
+      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[5]}</code>);
+    } else if (match[6] && match[7]) {
       nodes.push(
         <a
           key={`link-${keySeed}-${index}`}
-          href={match[5]}
+          href={match[7]}
           rel="noreferrer"
           target="_blank"
         >
-          {match[4]}
+          {match[6]}
         </a>,
       );
     }

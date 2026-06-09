@@ -537,6 +537,63 @@ input:focus-visible,
   padding: var(--sp-2) 0 148px;
 }
 
+/* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
+ * agent response part type, rendered through the real turn components. */
+.agent-gallery {
+  overflow-y: auto;
+}
+
+.agent-gallery-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.agent-gallery-banner strong {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-gallery-banner p {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.agent-gallery-banner code,
+.agent-gallery-section-header code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+}
+
+.agent-gallery-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-gallery-section-header h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-gallery-section-header p {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  line-height: 1.35;
+}
+
 .agent-management-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1276,7 +1333,7 @@ input:focus-visible,
 .agent-markdown h3 {
   margin: var(--sp-5) 0 var(--sp-2);
   color: var(--foreground);
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   font-weight: 600;
   line-height: 1.35;
 }
@@ -1296,8 +1353,19 @@ input:focus-visible,
   padding-left: var(--sp-7);
 }
 
+/* Numeric markers are wider than bullets ("1." vs "•") and hang outside the
+ * content edge, so ordered lists need extra room or the digits get clipped at
+ * the column boundary. */
+.agent-markdown ol {
+  padding-left: var(--sp-10);
+}
+
 .agent-markdown li {
   margin: var(--sp-1) 0;
+}
+
+.agent-markdown li::marker {
+  color: var(--muted-foreground);
 }
 
 .agent-markdown strong {
@@ -1333,6 +1401,42 @@ input:focus-visible,
 .agent-markdown a {
   color: var(--primary);
   text-decoration: none;
+}
+
+/* Quotes read as an aside: a quiet rule down the left, muted text. */
+.agent-markdown blockquote {
+  margin: 0 0 var(--sp-4);
+  border-left: 2px solid var(--border);
+  padding-left: var(--sp-4);
+  color: var(--muted-foreground);
+}
+
+.agent-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* Tables stay airy — horizontal rules only, no grid boxing or zebra fill. */
+.agent-md-table {
+  overflow-x: auto;
+  margin: 0 0 var(--sp-4);
+}
+
+.agent-md-table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.agent-md-table th,
+.agent-md-table td {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) 0;
+}
+
+.agent-md-table th {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
 }
 
 .agent-context-summary {
@@ -1458,8 +1562,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-sm);
+  padding: var(--sp-1) 0;
   color: var(--muted-foreground);
   list-style: none;
 }
@@ -1482,10 +1585,29 @@ input:focus-visible,
   display: none;
 }
 
+/* Inside disclosures the icon drops its boxed treatment — just the glyph — so
+ * the row reads as one quiet line of text rather than a chip. */
 .agent-tool-disclosure .agent-tool-icon {
   display: inline-flex;
   flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted-foreground);
+}
+
+/* Expand hint surfaces on hover (and stays while open, as the collapse hint). */
+.agent-tool-expand {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+
+.agent-tool-disclosure > summary:hover .agent-tool-expand,
+.agent-tool-disclosure[open] > summary .agent-tool-expand {
+  opacity: 1;
 }
 
 .agent-tool-name {
@@ -1501,11 +1623,20 @@ input:focus-visible,
   margin-left: auto;
 }
 
+/* StatusPill rows (hermes/tool events) flatten to the same quiet-word
+ * treatment inside disclosures. */
+.agent-tool-disclosure .agent-status-pill {
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
 .agent-tool-output {
   overflow: auto;
   max-height: 220px;
-  margin: var(--sp-1) 0 0 var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-3);
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--muted) 45%, transparent);
   color: var(--body-copy);
@@ -1641,14 +1772,16 @@ input:focus-visible,
   margin: var(--sp-3) 0 0;
 }
 
-/* The reasoning prose: readable but capped + scrollable so a long chain of
- * thought never balloons the conversation. */
+/* The reasoning prose: body-sized so the expanded thought reads in the same
+ * rhythm as the answer (the muted color alone carries the hierarchy), but
+ * capped + scrollable so a long chain of thought never balloons the
+ * conversation. */
 .agent-reasoning-text {
   overflow: auto;
   max-height: 260px;
   color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.55;
+  font-size: var(--fs-lg);
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
@@ -1669,10 +1802,10 @@ input:focus-visible,
   }
 }
 
+/* Status reads as a quiet word, not a badge — hierarchy comes from color
+ * alone (terracotta while live, red on failure). */
 .agent-tool-live-status {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 var(--sp-2);
+  flex: 0 0 auto;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   line-height: 1.4;
@@ -1683,15 +1816,16 @@ input:focus-visible,
 }
 
 .agent-tool-live-status[data-status="failed"] {
-  color: var(--danger);
+  color: var(--destructive);
 }
 
+/* Sentence case per UI conventions — labels arrive already cased, so no
+ * transform (capitalize would retitle "Approval required" → "Approval Required"). */
 .agent-tool-title {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   font-weight: 600;
-  text-transform: capitalize;
 }
 
 .agent-tool-icon {
