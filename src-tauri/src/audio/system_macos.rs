@@ -71,14 +71,21 @@ impl SystemAudioCapture {
         dev_log(format!("open returned status={open_status}"));
 
         let stats = Arc::new(Mutex::new(SystemAudioStats::default()));
-        let ready = wait_for_status(
+        let ready = match wait_for_status(
             &status_path,
             Some(&log_path),
             Duration::from_secs(30),
             &["ready", "level", "error"],
             "System audio helper did not become ready. See the terminal helper log for the last CoreAudio step.",
-        )?;
+        ) {
+            Ok(ready) => ready,
+            Err(error) => {
+                abort_failed_helper_start(&partial_path, &status_path, &pid_path);
+                return Err(error);
+            }
+        };
         if ready.event == "error" {
+            abort_failed_helper_start(&partial_path, &status_path, &pid_path);
             return Err(AppError::new(
                 "system_audio_permission_denied",
                 ready
@@ -86,12 +93,13 @@ impl SystemAudioCapture {
                     .unwrap_or_else(|| "System audio capture failed.".to_string()),
             ));
         }
-        let pid = read_pid(&pid_path).ok_or_else(|| {
-            AppError::new(
+        let Some(pid) = read_pid(&pid_path) else {
+            abort_failed_helper_start(&partial_path, &status_path, &pid_path);
+            return Err(AppError::new(
                 "system_audio_unavailable",
                 "System audio helper PID was not written.",
-            )
-        })?;
+            ));
+        };
         dev_log(format!("helper ready event={} pid={pid}", ready.event));
         Ok(Self {
             pid,
@@ -355,6 +363,21 @@ pub fn helper_app_path() -> PathBuf {
         }
     }
     dev_path
+}
+
+/// Kill a helper that launched but never became usable, so a failed start
+/// doesn't leave a stray process recording in the background. The probe in
+/// `helper_permission_check` already does this; `start` must too.
+fn abort_failed_helper_start(partial_path: &Path, status_path: &Path, pid_path: &Path) {
+    if let Some(pid) = read_pid(pid_path) {
+        send_signal(pid, "-TERM");
+        if wait_for_stopped(status_path, Duration::from_secs(2)).is_err() {
+            send_signal(pid, "-KILL");
+        }
+    }
+    let _ = std::fs::remove_file(partial_path);
+    let _ = std::fs::remove_file(status_path);
+    let _ = std::fs::remove_file(pid_path);
 }
 
 fn send_signal(pid: u32, signal: &str) {
