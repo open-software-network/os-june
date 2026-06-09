@@ -1141,11 +1141,10 @@ export function AgentWorkspace({
       await Promise.all(
         Array.from(activeSessionIds).map(async (sessionId) => {
           try {
-            const resumed =
-              await gateway.request<HermesRuntimeSessionResponse>(
-                "session.resume",
-                { session_id: sessionId, cols: 96 },
-              );
+            const resumed = await gateway.request<HermesRuntimeSessionResponse>(
+              "session.resume",
+              { session_id: sessionId, cols: 96 },
+            );
             const runtimeSessionId = resumed.session_id;
             if (runtimeSessionId) {
               setRuntimeSessionIds((current) => ({
