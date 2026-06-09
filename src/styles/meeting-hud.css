@@ -64,8 +64,10 @@ body {
   height: 100%;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  /* A light tint only — the frosted body is the native vibrancy layer. */
-  background: color-mix(in oklch, var(--popover) 50%, transparent);
+  /* A dark tint over the native vibrancy layer — heavy enough to read as
+   * dark glass against bright content, translucent enough that the frost
+   * still shows. Matches the dictation HUD's surface (--hud-bg). */
+  background: color-mix(in oklch, var(--popover) 72%, transparent);
   color: var(--foreground);
   /* The whole pill is the click/drag target. */
   cursor: pointer;

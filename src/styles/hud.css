@@ -53,9 +53,10 @@ body {
 }
 
 .hud {
-  /* A light tint only — the frosted body is the native vibrancy layer.
-   * Matches the meeting HUD's surface. */
-  --hud-bg: color-mix(in oklch, var(--popover) 50%, transparent);
+  /* A dark tint over the native vibrancy layer — heavy enough to read as
+   * dark glass against bright content, translucent enough that the frost
+   * still shows. Matches the meeting HUD's surface. */
+  --hud-bg: color-mix(in oklch, var(--popover) 72%, transparent);
   --hud-border: var(--border);
   --hud-bar: var(--foreground);
   --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
@@ -410,7 +411,7 @@ body {
   gap: var(--sp-2);
   padding-inline: var(--sp-3) var(--sp-4);
   border-color: color-mix(in oklch, var(--hud-danger) 28%, var(--border));
-  background: color-mix(in oklch, var(--popover) 60%, var(--hud-danger) 22%);
+  background: color-mix(in oklch, var(--popover) 72%, var(--hud-danger) 22%);
 }
 
 .hud[data-state="silent-error"] {
