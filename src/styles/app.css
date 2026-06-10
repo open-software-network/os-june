@@ -3045,7 +3045,7 @@ input:focus-visible,
 }
 
 .agent-session-time {
-  color: color-mix(in oklch, var(--muted-foreground) 65%, transparent);
+  color: var(--muted-foreground);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
