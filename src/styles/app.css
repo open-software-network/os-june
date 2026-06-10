@@ -303,6 +303,13 @@ input:focus-visible,
     transparent 30%,
     color-mix(in oklch, var(--brand) 11%, transparent) 100%
   );
+  /* Hairline of card-white inset around the wash: keeps a crisp rim where the
+   * terracotta meets the card edge instead of smearing into the grey shell
+   * (and the card's faint dark inset ring) behind it. Card-derived rather
+   * than literal white so it stays a quiet inner highlight in dark mode.
+   * Rides this layer so it shares the fade's radius, bounds, and opacity. */
+  border-radius: var(--r-window);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--card) 70%, transparent);
   transition: opacity 280ms var(--ease-out);
 }
 
@@ -4323,6 +4330,14 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
+  /* Keep the hero handoff smooth in the no-scroll-timeline fallback: without
+   * this, the overlay snaps to full opacity the frame the hero's :has() rule
+   * below stops matching, flashing white over the warm wash mid-fade. Matches
+   * the wash's 280ms fade; lives here (not on the :has() rule) because the
+   * exit transition must survive the rule un-matching. In the @supports path
+   * the scroll-driven animation overrides this, as animations beat
+   * transitions. */
+  transition: opacity 280ms var(--ease-out);
 }
 
 /* New-session hero: no scrolling content to dissolve, and the scroll timeline
@@ -4331,6 +4346,12 @@ input:focus-visible,
  * white. Hide it for the hero; it returns with the conversation scroller. */
 .main-panel:has(.agent-workspace[data-hero="true"])::after {
   opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main-panel::after {
+    transition: none;
+  }
 }
 
 @supports (animation-timeline: scroll()) {
