@@ -844,12 +844,9 @@ describe("AgentWorkspace", () => {
     ).toHaveLength(1);
   });
 
-  it("renders generated workspace images as thumbnails", async () => {
+  it("renders generated workspace images as file cards without previews", async () => {
     const screenshotPath =
       "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/screenshot.png";
-    mocks.hermesBridgeFilePreview.mockResolvedValue(
-      "data:image/png;base64,generated-preview",
-    );
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -880,10 +877,17 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
+    // Images get the same icon · name · size card as every other file type —
+    // no thumbnail, so no preview round-trip to the bridge.
     expect(
-      await screen.findByRole("img", { name: "screenshot.png" }),
-    ).toHaveAttribute("src", "data:image/png;base64,generated-preview");
-    expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(screenshotPath);
+      await screen.findByRole("button", { name: "Download screenshot.png" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: "screenshot.png" }),
+    ).not.toBeInTheDocument();
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalledWith(
+      screenshotPath,
+    );
   });
 
   it("imports dropped files into the Hermes workspace before submitting", async () => {
