@@ -186,6 +186,7 @@ export function App() {
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
   const mainPanelBodyRef = useRef<HTMLDivElement | null>(null);
+  const noteDetailScrollRef = useRef<HTMLDivElement | null>(null);
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] =
@@ -273,6 +274,10 @@ export function App() {
   const selectedRecovery = selectedNote
     ? recoveriesByNote.get(selectedNote.id)
     : undefined;
+  const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
+  const noteHasBreadcrumb = !!(originFolder || originAllNotes);
+  const detailScrollerActive =
+    activeView === "folders" && !!state.selectedFolderId;
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
     void recoverRecording(sessionId, action)
@@ -308,14 +313,20 @@ export function App() {
     preloadRecordingSounds();
   }, []);
 
-  // The card scroller's thumb fades in with scroll activity and back out when
-  // idle (native-overlay feel; the CSS only listens on breadcrumb views —
-  // see scroll-thumb-fade.ts).
+  // The card scroller's thumb fades in with scroll/pointer activity and back
+  // out when idle (native-overlay feel; see scroll-thumb-fade.ts).
   useEffect(() => {
     const el = mainPanelBodyRef.current;
     if (!el) return;
     return attachScrollThumbFade(el);
   }, []);
+
+  useEffect(() => {
+    if (!noteDetailScrollerActive) return;
+    const el = noteDetailScrollRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, [noteDetailScrollerActive, selectedNoteId]);
 
   // installingUpdate is read through a ref so runUpdateCheck keeps a stable
   // identity across installs. Otherwise the launch effect and the manual-check
@@ -1560,6 +1571,10 @@ export function App() {
           ref={mainPanelBodyRef}
           className="main-panel-body"
           data-active-view={activeView}
+          data-detail-scroller={detailScrollerActive ? "true" : undefined}
+          data-note-detail-scroller={
+            noteDetailScrollerActive ? "true" : undefined
+          }
         >
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
@@ -1790,88 +1805,94 @@ export function App() {
                     ]}
                   />
                 ) : null}
-                <NoteEditor
-                  note={selectedNote}
-                  folders={state.folders}
-                  recordingStatus={state.recordingStatus}
-                  sourceMode={sourceMode}
-                  sourceReadiness={sourceReadiness}
-                  recovery={selectedRecovery}
-                  onRecoverRecording={(sessionId) =>
-                    handleRecovery(sessionId, "validate")
-                  }
-                  onDiscardRecording={(sessionId) =>
-                    handleRecovery(sessionId, "discard")
-                  }
-                  onTitleChange={(title) => void handleUpdateNote({ title })}
-                  onContentChange={(sourceNoteId, editedContent) => {
-                    // Blur fired by an editor that was already torn
-                    // down on note-switch — ignore so we don't write
-                    // the old note's content into the new selectedNote.
-                    if (sourceNoteId !== selectedNote.id) return;
-                    void handleUpdateNote({ editedContent });
-                  }}
-                  onSourceModeChange={handleSourceModeChange}
-                  onEnableSystemAudio={handleEnableSystemAudio}
-                  onEnableMicrophone={handleEnableMicrophone}
-                  microphoneBlocked={microphoneBlocked}
-                  onTabChange={(activeTab) =>
-                    void updateNote({
-                      noteId: selectedNote.id,
-                      activeTab,
-                    }).then((note) => dispatch({ type: "noteUpdated", note }))
-                  }
-                  onStartRecording={() => void handleStartRecording()}
-                  onPauseRecording={(sessionId) =>
-                    void handlePauseRecording(sessionId)
-                  }
-                  onResumeRecording={(sessionId) =>
-                    void handleResumeRecording(sessionId)
-                  }
-                  onFinishRecording={(sessionId) =>
-                    void handleFinishRecording(sessionId)
-                  }
-                  onRetry={async () => {
-                    if (!selectedNote) return;
-                    try {
-                      const note = await retryProcessing(selectedNote.id);
-                      dispatch({ type: "noteProcessingUpdated", note });
-                    } catch (err) {
-                      // Surface the failure (the banner only releases its
-                      // busy gate on rejection — it expects us to report).
-                      setError(messageFromError(err));
-                      throw err;
+                <div
+                  ref={noteDetailScrollRef}
+                  className="note-detail-scroll"
+                  data-has-detail-bar={noteHasBreadcrumb ? "true" : undefined}
+                >
+                  <NoteEditor
+                    note={selectedNote}
+                    folders={state.folders}
+                    recordingStatus={state.recordingStatus}
+                    sourceMode={sourceMode}
+                    sourceReadiness={sourceReadiness}
+                    recovery={selectedRecovery}
+                    onRecoverRecording={(sessionId) =>
+                      handleRecovery(sessionId, "validate")
                     }
-                  }}
-                  onTopUp={() =>
-                    void osAccountsTopUp().catch((err: unknown) =>
-                      setError(messageFromError(err)),
-                    )
-                  }
-                  onAssignFolder={(folderId) =>
-                    void handleSetNoteFolder(selectedNote.id, folderId)
-                  }
-                  onRemoveFolder={(folderId) =>
-                    void handleRemoveNoteFromFolder(selectedNote.id, folderId)
-                  }
-                  onNavigateToFolder={(folderId) => {
-                    setActiveView("folders");
-                    dispatch({ type: "folderSelected", folderId });
-                    setFolderReturnTarget({
-                      noteId: selectedNote.id,
-                      label: selectedNote.title.trim() || "New meeting",
-                    });
-                    setOriginFolderId(undefined);
-                  }}
-                  onCreateAndAssignFolder={(name) => {
-                    void (async () => {
-                      const folder = await handleCreateFolder(name);
-                      if (folder) {
-                        await handleSetNoteFolder(selectedNote.id, folder.id);
+                    onDiscardRecording={(sessionId) =>
+                      handleRecovery(sessionId, "discard")
+                    }
+                    onTitleChange={(title) => void handleUpdateNote({ title })}
+                    onContentChange={(sourceNoteId, editedContent) => {
+                      // Blur fired by an editor that was already torn
+                      // down on note-switch — ignore so we don't write
+                      // the old note's content into the new selectedNote.
+                      if (sourceNoteId !== selectedNote.id) return;
+                      void handleUpdateNote({ editedContent });
+                    }}
+                    onSourceModeChange={handleSourceModeChange}
+                    onEnableSystemAudio={handleEnableSystemAudio}
+                    onEnableMicrophone={handleEnableMicrophone}
+                    microphoneBlocked={microphoneBlocked}
+                    onTabChange={(activeTab) =>
+                      void updateNote({
+                        noteId: selectedNote.id,
+                        activeTab,
+                      }).then((note) => dispatch({ type: "noteUpdated", note }))
+                    }
+                    onStartRecording={() => void handleStartRecording()}
+                    onPauseRecording={(sessionId) =>
+                      void handlePauseRecording(sessionId)
+                    }
+                    onResumeRecording={(sessionId) =>
+                      void handleResumeRecording(sessionId)
+                    }
+                    onFinishRecording={(sessionId) =>
+                      void handleFinishRecording(sessionId)
+                    }
+                    onRetry={async () => {
+                      if (!selectedNote) return;
+                      try {
+                        const note = await retryProcessing(selectedNote.id);
+                        dispatch({ type: "noteProcessingUpdated", note });
+                      } catch (err) {
+                        // Surface the failure (the banner only releases its
+                        // busy gate on rejection — it expects us to report).
+                        setError(messageFromError(err));
+                        throw err;
                       }
-                    })();
-                  }}
-                />
+                    }}
+                    onTopUp={() =>
+                      void osAccountsTopUp().catch((err: unknown) =>
+                        setError(messageFromError(err)),
+                      )
+                    }
+                    onAssignFolder={(folderId) =>
+                      void handleSetNoteFolder(selectedNote.id, folderId)
+                    }
+                    onRemoveFolder={(folderId) =>
+                      void handleRemoveNoteFromFolder(selectedNote.id, folderId)
+                    }
+                    onNavigateToFolder={(folderId) => {
+                      setActiveView("folders");
+                      dispatch({ type: "folderSelected", folderId });
+                      setFolderReturnTarget({
+                        noteId: selectedNote.id,
+                        label: selectedNote.title.trim() || "New meeting",
+                      });
+                      setOriginFolderId(undefined);
+                    }}
+                    onCreateAndAssignFolder={(name) => {
+                      void (async () => {
+                        const folder = await handleCreateFolder(name);
+                        if (folder) {
+                          await handleSetNoteFolder(selectedNote.id, folder.id);
+                        }
+                      })();
+                    }}
+                  />
+                </div>
               </div>
             ) : (
               <section className="editor-empty" aria-label="Opening note" />

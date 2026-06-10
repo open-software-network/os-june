@@ -180,6 +180,14 @@ type AgentShortcut = {
   action: "run" | "prefill" | "attach";
 };
 
+/**
+ * Suggestion pool for the new-session hero. Shown HERO_SHORTCUT_COUNT at a
+ * time and reshuffled on each visit, so the entry point stays a handful of
+ * fresh ideas instead of a wall of ten cards. Pool order matters: the leading
+ * window is the curated first-impression mix (an instant run, a prefill, an
+ * attach flow, and a health check) that shows when the shuffle is identity
+ * (e.g. in tests with Math.random mocked to 0).
+ */
 const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
     key: "tidy-downloads",
@@ -191,31 +199,22 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "run",
   },
   {
-    key: "disk-space",
-    icon: <IconPieChart1 size={18} />,
-    title: "Free up disk space",
-    description: "Find what's eating your storage and what can go.",
+    key: "research",
+    icon: <IconDeepSearch size={18} />,
+    title: "Research a topic",
+    description: "Get a short, sourced write-up on anything.",
     prompt:
-      "Work out what's taking up the most disk space in my home folder, summarize the biggest culprits, and suggest what's safe to clean up. Don't delete anything without checking with me first.",
-    action: "run",
+      "Research <topic> and write a short summary of what you find, with sources.",
+    action: "prefill",
   },
   {
-    key: "rename-screenshots",
-    icon: <IconCameraSparkle size={18} />,
-    title: "Rename my screenshots",
-    description: "Turn screenshot gibberish into names that mean something.",
+    key: "summarize-file",
+    icon: <IconFileSparkle size={18} />,
+    title: "Summarize a file",
+    description: "Pick a document and get the key points out of it.",
     prompt:
-      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
-    action: "run",
-  },
-  {
-    key: "find-duplicates",
-    icon: <IconFiles size={18} />,
-    title: "Find duplicate files",
-    description: "Spot copies wasting space across your folders.",
-    prompt:
-      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
-    action: "run",
+      "Summarize the key points of the attached file and pull out any action items.",
+    action: "attach",
   },
   {
     key: "health-check",
@@ -235,13 +234,13 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
-    key: "research",
-    icon: <IconDeepSearch size={18} />,
-    title: "Research a topic",
-    description: "Get a short, sourced write-up on anything.",
+    key: "rename-screenshots",
+    icon: <IconCameraSparkle size={18} />,
+    title: "Rename my screenshots",
+    description: "Turn screenshot gibberish into names that mean something.",
     prompt:
-      "Research <topic> and write a short summary of what you find, with sources.",
-    action: "prefill",
+      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
+    action: "run",
   },
   {
     key: "draft-document",
@@ -253,13 +252,13 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
-    key: "summarize-file",
-    icon: <IconFileSparkle size={18} />,
-    title: "Summarize a file",
-    description: "Pick a document and get the key points out of it.",
+    key: "disk-space",
+    icon: <IconPieChart1 size={18} />,
+    title: "Free up disk space",
+    description: "Find what's eating your storage and what can go.",
     prompt:
-      "Summarize the key points of the attached file and pull out any action items.",
-    action: "attach",
+      "Work out what's taking up the most disk space in my home folder, summarize the biggest culprits, and suggest what's safe to clean up. Don't delete anything without checking with me first.",
+    action: "run",
   },
   {
     key: "extract-text",
@@ -270,7 +269,36 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
       "Extract all the text from the attached file and clean it up into tidy Markdown.",
     action: "attach",
   },
+  {
+    key: "find-duplicates",
+    icon: <IconFiles size={18} />,
+    title: "Find duplicate files",
+    description: "Spot copies wasting space across your folders.",
+    prompt:
+      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
+    action: "run",
+  },
 ];
+
+// Three per hand so the row never wraps — a row-count jump mid-rotation would
+// shove the footnote around every cycle.
+const HERO_SHORTCUT_COUNT = 3;
+// Idle cadence for cycling the hand, and how long the cascade-out runs before
+// the deck advances (300ms fade + 2 × 90ms stagger, see .agent-hero-chip).
+const HERO_ROTATE_MS = 8000;
+const HERO_CHIP_SWAP_MS = 500;
+
+// Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
+// is the identity permutation: tests that mock Math.random get the curated
+// leading window, real sessions get a fresh shuffle every visit.
+function shuffleAgentShortcuts(): AgentShortcut[] {
+  const pool = [...AGENT_SHORTCUTS];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = i - Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool;
+}
 
 export {
   AGENT_DELETE_SESSION_EVENT,
@@ -359,6 +387,14 @@ export function AgentWorkspace({
     initialSessionId,
   );
   const [newSessionMode, setNewSessionMode] = useState(false);
+  const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
+  const [heroDeckStart, setHeroDeckStart] = useState(0);
+  const [heroChipPhase, setHeroChipPhase] = useState<"in" | "out">("in");
+  const heroChipsHoverRef = useRef(false);
+  // True while a shortcut/submit is tearing the hero down — drives the exit
+  // transition (greeting drifts up, chips drift down) during session-create
+  // latency, before the conversation view takes over.
+  const [heroLeaving, setHeroLeaving] = useState(false);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
@@ -434,14 +470,6 @@ export function AgentWorkspace({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
-
-  // The conversation scroller's thumb fades in with scroll activity and back
-  // out when idle (native-overlay feel; see scroll-thumb-fade.ts).
-  useEffect(() => {
-    const el = agentScrollRef.current;
-    if (!el) return;
-    return attachScrollThumbFade(el);
-  }, []);
 
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
@@ -546,6 +574,24 @@ export function AgentWorkspace({
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
   );
+
+  // New-session hero: greeting + centered composer + suggestion chips, shown
+  // whenever nothing is selected — the same condition as the conversation
+  // fall-through in the render, minus the dev gallery. Computed up here
+  // because the composer auto-grow effect below needs it as a dependency.
+  const heroMode =
+    !gallerySections &&
+    (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+
+  // The conversation scroller's thumb fades in with scroll activity and back
+  // out when idle (native-overlay feel; see scroll-thumb-fade.ts). The hero
+  // intentionally does not mount .agent-scroll, so attach after hero handoff.
+  useEffect(() => {
+    if (heroMode) return;
+    const el = agentScrollRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, [heroMode]);
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
@@ -943,7 +989,11 @@ export function AgentWorkspace({
         grow,
       );
     }
-  }, [draft, attachments.length]);
+    // heroMode is a dependency because the hero composer is a different shape
+    // (full-width textarea, taller min-height): leaving the hero must re-probe
+    // the line count and clear the stale inline height, or the docked
+    // composer keeps the hero's 76px textarea and multiline toolbar.
+  }, [draft, attachments.length, heroMode]);
 
   useEffect(() => {
     let disposed = false;
@@ -1595,9 +1645,42 @@ export function AgentWorkspace({
     }
   }
 
+  // Run shortcuts fire the session directly — the prompt never touches the
+  // composer, so there's no flash of text + send button before the submit.
+  // The hero plays its exit transition during the session-create latency.
+  async function launchShortcutSession(prompt: string) {
+    if (submitting || importingFiles) return;
+    setHeroLeaving(true);
+    dispatchAgentSessionStatus({
+      prompt,
+      title: titleFromPrompt(prompt),
+      status: "starting",
+      summary: "Starting June.",
+    });
+    setSubmitting(true);
+    try {
+      await submitHermesSession(prompt);
+      setError(null);
+    } catch (err) {
+      // Bring the hero back and park the prompt in the composer so the user
+      // can see what would have run and retry it.
+      setDraft((current) => (current.trim() ? current : prompt));
+      setError(messageFromError(err));
+      dispatchAgentSessionStatus({
+        prompt,
+        title: titleFromPrompt(prompt),
+        status: "failed",
+        summary: messageFromError(err),
+      });
+    } finally {
+      setSubmitting(false);
+      setHeroLeaving(false);
+    }
+  }
+
   function runShortcut(shortcut: AgentShortcut) {
     if (shortcut.action === "run") {
-      void startNewTask(shortcut.prompt);
+      void launchShortcutSession(shortcut.prompt);
       return;
     }
     setDraft(shortcut.prompt);
@@ -1913,6 +1996,336 @@ export function AgentWorkspace({
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
   }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
 
+  // Reshuffle the deck each time the hero comes back, so repeat visits start
+  // from a fresh hand instead of wherever the last rotation left off.
+  useEffect(() => {
+    if (!heroMode) return;
+    setHeroDeck(shuffleAgentShortcuts());
+    setHeroDeckStart(0);
+    setHeroChipPhase("in");
+  }, [heroMode]);
+
+  // While the hero idles, cascade the hand through the deck: fade the chips
+  // out left-to-right, advance the window, fade the next hand in with the
+  // same wave. Skips a beat instead of yanking targets while the user is
+  // hovering the chips, has started typing, or has the window backgrounded;
+  // never cycles under reduced motion.
+  useEffect(() => {
+    if (!heroMode) return;
+    // matchMedia is feature-checked for jsdom, which doesn't implement it.
+    if (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+    let swapTimeout: number | undefined;
+    const interval = window.setInterval(() => {
+      if (document.hidden || heroChipsHoverRef.current) return;
+      if (composerRef.current?.value.trim()) return;
+      setHeroChipPhase("out");
+      swapTimeout = window.setTimeout(() => {
+        setHeroDeckStart(
+          (start) => (start + HERO_SHORTCUT_COUNT) % AGENT_SHORTCUTS.length,
+        );
+        // Two frames so the incoming chips paint hidden (phase still "out")
+        // before the fade-in transition has a start state to run from.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setHeroChipPhase("in"));
+        });
+      }, HERO_CHIP_SWAP_MS);
+    }, HERO_ROTATE_MS);
+    return () => {
+      window.clearInterval(interval);
+      if (swapTimeout !== undefined) window.clearTimeout(swapTimeout);
+    };
+  }, [heroMode]);
+
+  const heroShortcuts = useMemo(
+    () =>
+      Array.from(
+        { length: HERO_SHORTCUT_COUNT },
+        (_, index) => heroDeck[(heroDeckStart + index) % heroDeck.length],
+      ),
+    [heroDeck, heroDeckStart],
+  );
+
+  // FLIP the composer from its hero spot (centered, big) down to the bottom
+  // dock when the hero hands over to a conversation — the same form stays
+  // mounted, so this glide is what sells the transition instead of a teleport.
+  // While the hero is up, every render snapshots the box; the first render
+  // after leaving measures the docked position and animates the delta.
+  const heroExitRectRef = useRef<DOMRect | null>(null);
+  const prevHeroModeRef = useRef(heroMode);
+  useLayoutEffect(() => {
+    const wasHero = prevHeroModeRef.current;
+    prevHeroModeRef.current = heroMode;
+    const box = composerBoxRef.current;
+    if (!box) return;
+    if (heroMode) {
+      heroExitRectRef.current = box.getBoundingClientRect();
+      return;
+    }
+    const prev = heroExitRectRef.current;
+    heroExitRectRef.current = null;
+    if (!wasHero || !prev) return;
+    if (
+      typeof box.animate !== "function" ||
+      (typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+    ) {
+      return;
+    }
+    const next = box.getBoundingClientRect();
+    const dx = prev.left - next.left;
+    const dy = prev.top - next.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    box.animate(
+      [
+        {
+          transform: `translate(${dx}px, ${dy}px)`,
+          width: `${prev.width}px`,
+          height: `${prev.height}px`,
+        },
+        {
+          transform: "translate(0, 0)",
+          width: `${next.width}px`,
+          height: `${next.height}px`,
+        },
+      ],
+      { duration: 360, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }, // --ease-spring
+    );
+  });
+
+  const composer =
+    activePanel === "chat" ? (
+      <form
+        className="agent-composer"
+        data-hero={heroMode ? "true" : undefined}
+        data-drop-active={dropActive ? "true" : undefined}
+        onSubmit={(event) => void submit(event)}
+        onDragOver={handleComposerDragOver}
+        onDragEnter={() => setDropActive(true)}
+        onDragLeave={() => setDropActive(false)}
+        onDrop={handleComposerDrop}
+      >
+        <div
+          ref={composerBoxRef}
+          className="agent-composer-box"
+          data-dirty={draft.trim() || attachments.length ? "true" : "false"}
+          data-multiline={composerMultiline ? "true" : "false"}
+        >
+          {attachments.length ? (
+            <div className="agent-composer-attachments">
+              {attachments.map((attachment) => (
+                <span
+                  key={attachment.id}
+                  className="agent-attachment-chip"
+                  title={attachment.name}
+                >
+                  {attachment.previewDataUrl ? (
+                    <img
+                      src={attachment.previewDataUrl}
+                      alt=""
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <FileIcon size={14} />
+                  )}
+                  <span className="agent-attachment-name">
+                    {attachment.name}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() => removeAttachment(attachment.id)}
+                  >
+                    <XIcon size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div className="agent-composer-row">
+            <button
+              type="button"
+              className="agent-composer-attach"
+              aria-label="Attach files"
+              title="Attach files"
+              onClick={() => void pickAttachments()}
+            >
+              <IconPlusMedium size={18} />
+            </button>
+            <textarea
+              ref={composerRef}
+              value={draft}
+              onChange={(event) => setDraft(event.currentTarget.value)}
+              placeholder={
+                importingFiles
+                  ? "Attaching file…"
+                  : heroMode
+                    ? "Describe a task for June…"
+                    : "Send a message"
+              }
+              rows={1}
+              onKeyDown={(event) => {
+                // Ignore the Enter that commits an IME composition
+                // (Japanese/Chinese/Korean input) — only a real Enter
+                // press should send the message.
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+            />
+            <div className="agent-composer-actions">
+              <button
+                type="button"
+                className="agent-composer-mic"
+                aria-label="Dictate"
+                title="Start dictation"
+                onClick={() => void startDictation()}
+              >
+                <IconMicrophone size={18} />
+              </button>
+              <button
+                type="submit"
+                className="agent-composer-send"
+                disabled={
+                  submitting ||
+                  importingFiles ||
+                  (!draft.trim() && !attachments.length)
+                }
+                tabIndex={draft.trim() || attachments.length ? 0 : -1}
+                aria-hidden={
+                  draft.trim() || attachments.length ? undefined : true
+                }
+                aria-label={
+                  selectedHermesSessionId || selectedTask
+                    ? "Send message"
+                    : "Start session"
+                }
+              >
+                {submitting ? <Spinner /> : <IconArrowUp size={16} />}
+              </button>
+            </div>
+          </div>
+        </div>
+      </form>
+    ) : null;
+
+  const detailContent = gallerySections ? (
+    <AgentResponseGallery
+      sections={gallerySections}
+      onClose={() => setGalleryDesired(false)}
+    />
+  ) : !newSessionMode && selectedHermesSessionId ? (
+    <div ref={listRef} className="agent-timeline">
+      {hermesTurns.map((turn) => (
+        <AgentChatTurnRow
+          key={turn.id}
+          turn={turn}
+          artifacts={chatArtifacts}
+          approvalSubmitting={approvalSubmitting}
+          clarifySubmitting={clarifySubmitting}
+          onDownloadArtifact={(artifact) =>
+            void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
+              setError(messageFromError(err)),
+            )
+          }
+          onApproval={(part, choice) =>
+            void respondToApproval(
+              selectedHermesSessionId,
+              part.sessionId ?? selectedHermesSessionId,
+              part.id,
+              choice,
+            )
+          }
+          onClarify={(part, answer) =>
+            void respondToClarify(selectedHermesSessionId, part.id, answer)
+          }
+        />
+      ))}
+      {workingSessionIds.has(selectedHermesSessionId) &&
+      hermesTurns.at(-1)?.role === "user" ? (
+        <AgentThinking />
+      ) : null}
+    </div>
+  ) : !newSessionMode && selectedTask ? (
+    <>
+      <header className="agent-detail-header">
+        <div className="agent-detail-title">
+          <ActivityIndicator
+            active={workingTaskIds.has(selectedTask.id)}
+            large
+          />
+          <div className="agent-detail-heading">
+            <h2>{selectedTask.title}</h2>
+            <SafetyBadge />
+          </div>
+        </div>
+        <div className="agent-actions">
+          {selectedTask.status !== "cancelled" &&
+          selectedTask.status !== "completed" ? (
+            <button
+              type="button"
+              className="agent-icon-button"
+              aria-label="Cancel task"
+              onClick={() => void cancelTask(selectedTask.id)}
+            >
+              <CircleStopIcon size={15} />
+            </button>
+          ) : null}
+          {selectedTask.status === "failed" ||
+          selectedTask.status === "paused" ? (
+            <button
+              type="button"
+              className="agent-icon-button"
+              aria-label="Retry task"
+              onClick={() => void retryTask(selectedTask.id)}
+            >
+              <RotateCwIcon size={15} />
+            </button>
+          ) : null}
+        </div>
+      </header>
+      <div ref={listRef} className="agent-timeline">
+        {taskTurns.map((turn) => (
+          <AgentChatTurnRow
+            key={turn.id}
+            turn={turn}
+            artifacts={chatArtifacts}
+            approvalSubmitting={approvalSubmitting}
+            clarifySubmitting={clarifySubmitting}
+            onDownloadArtifact={(artifact) =>
+              void downloadHermesBridgeFile(artifact.path).catch(
+                (err: unknown) => setError(messageFromError(err)),
+              )
+            }
+            onApproval={(part, choice) => {
+              const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
+              if (!sessionId) return;
+              void respondToApproval(
+                selectedTask.id,
+                sessionId,
+                part.id,
+                choice,
+              );
+            }}
+            onClarify={(part, answer) =>
+              void respondToClarify(selectedTask.id, part.id, answer)
+            }
+          />
+        ))}
+        {workingTaskIds.has(selectedTask.id) &&
+        taskTurns.at(-1)?.role === "user" ? (
+          <AgentThinking />
+        ) : null}
+      </div>
+    </>
+  ) : null;
+
   return (
     <section className="agent-workspace" aria-label="Agent">
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
@@ -1935,280 +2348,64 @@ export function AgentWorkspace({
           }
         />
       )}
-      <div ref={agentScrollRef} className="agent-scroll">
-        <section className="agent-main" aria-label="Agent task details">
+      {heroMode ? (
+        <section
+          className="agent-main"
+          aria-label="Agent task details"
+          data-hero="true"
+          data-hero-leaving={heroLeaving ? "true" : undefined}
+        >
           {error ? <p className="error-banner">{error}</p> : null}
-          {gallerySections ? (
-            <AgentResponseGallery
-              sections={gallerySections}
-              onClose={() => setGalleryDesired(false)}
-            />
-          ) : !newSessionMode && selectedHermesSessionId ? (
-            <>
-              <div ref={listRef} className="agent-timeline">
-                {hermesTurns.map((turn) => (
-                  <AgentChatTurnRow
-                    key={turn.id}
-                    turn={turn}
-                    artifacts={chatArtifacts}
-                    approvalSubmitting={approvalSubmitting}
-                    clarifySubmitting={clarifySubmitting}
-                    onDownloadArtifact={(artifact) =>
-                      void downloadHermesBridgeFile(artifact.path).catch(
-                        (err: unknown) => setError(messageFromError(err)),
-                      )
-                    }
-                    onApproval={(part, choice) =>
-                      void respondToApproval(
-                        selectedHermesSessionId,
-                        part.sessionId ?? selectedHermesSessionId,
-                        part.id,
-                        choice,
-                      )
-                    }
-                    onClarify={(part, answer) =>
-                      void respondToClarify(
-                        selectedHermesSessionId,
-                        part.id,
-                        answer,
-                      )
-                    }
-                  />
-                ))}
-                {workingSessionIds.has(selectedHermesSessionId) &&
-                hermesTurns.at(-1)?.role === "user" ? (
-                  <AgentThinking />
-                ) : null}
-              </div>
-            </>
-          ) : !newSessionMode && selectedTask ? (
-            <>
-              <header className="agent-detail-header">
-                <div className="agent-detail-title">
-                  <ActivityIndicator
-                    active={workingTaskIds.has(selectedTask.id)}
-                    large
-                  />
-                  <div className="agent-detail-heading">
-                    <h2>{selectedTask.title}</h2>
-                    <SafetyBadge />
-                  </div>
-                </div>
-                <div className="agent-actions">
-                  {selectedTask.status !== "cancelled" &&
-                  selectedTask.status !== "completed" ? (
-                    <button
-                      type="button"
-                      className="agent-icon-button"
-                      aria-label="Cancel task"
-                      onClick={() => void cancelTask(selectedTask.id)}
-                    >
-                      <CircleStopIcon size={15} />
-                    </button>
-                  ) : null}
-                  {selectedTask.status === "failed" ||
-                  selectedTask.status === "paused" ? (
-                    <button
-                      type="button"
-                      className="agent-icon-button"
-                      aria-label="Retry task"
-                      onClick={() => void retryTask(selectedTask.id)}
-                    >
-                      <RotateCwIcon size={15} />
-                    </button>
-                  ) : null}
-                </div>
-              </header>
-              <div ref={listRef} className="agent-timeline">
-                {taskTurns.map((turn) => (
-                  <AgentChatTurnRow
-                    key={turn.id}
-                    turn={turn}
-                    artifacts={chatArtifacts}
-                    approvalSubmitting={approvalSubmitting}
-                    clarifySubmitting={clarifySubmitting}
-                    onDownloadArtifact={(artifact) =>
-                      void downloadHermesBridgeFile(artifact.path).catch(
-                        (err: unknown) => setError(messageFromError(err)),
-                      )
-                    }
-                    onApproval={(part, choice) => {
-                      const sessionId =
-                        part.sessionId ?? selectedTask.hermesSessionId;
-                      if (!sessionId) return;
-                      void respondToApproval(
-                        selectedTask.id,
-                        sessionId,
-                        part.id,
-                        choice,
-                      );
-                    }}
-                    onClarify={(part, answer) =>
-                      void respondToClarify(selectedTask.id, part.id, answer)
-                    }
-                  />
-                ))}
-                {workingTaskIds.has(selectedTask.id) &&
-                taskTurns.at(-1)?.role === "user" ? (
-                  <AgentThinking />
-                ) : null}
-              </div>
-            </>
-          ) : (
-            <div className="agent-empty-view">
-              <EmptyState
-                icon={<IconPangolin size={24} />}
-                title="Start an agent session"
-                description={
-                  bridgeStarting
-                    ? "Getting the agent ready…"
-                    : "Pick a shortcut, or describe any desktop task in the box below. It runs privately on your machine."
-                }
-                label="Start an agent session"
-                footer={
-                  <div className="agent-shortcut-grid">
-                    {AGENT_SHORTCUTS.map((shortcut) => (
-                      <button
-                        key={shortcut.key}
-                        type="button"
-                        className="agent-shortcut"
-                        disabled={submitting}
-                        onClick={() => runShortcut(shortcut)}
-                      >
-                        <span className="agent-shortcut-icon" aria-hidden>
-                          {shortcut.icon}
-                        </span>
-                        <span className="agent-shortcut-text">
-                          <span className="agent-shortcut-title">
-                            {shortcut.title}
-                          </span>
-                          <span className="agent-shortcut-description">
-                            {shortcut.description}
-                          </span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                }
-              />
-            </div>
-          )}
-
+          <div className="agent-hero-heading">
+            <h2 className="agent-hero-title">What can June do for you?</h2>
+          </div>
+          {composer}
           {activePanel === "chat" ? (
-            <form
-              className="agent-composer"
-              data-drop-active={dropActive ? "true" : undefined}
-              onSubmit={(event) => void submit(event)}
-              onDragOver={handleComposerDragOver}
-              onDragEnter={() => setDropActive(true)}
-              onDragLeave={() => setDropActive(false)}
-              onDrop={handleComposerDrop}
-            >
+            <div className="agent-hero-suggestions">
               <div
-                ref={composerBoxRef}
-                className="agent-composer-box"
-                data-dirty={
-                  draft.trim() || attachments.length ? "true" : "false"
-                }
-                data-multiline={composerMultiline ? "true" : "false"}
+                className="agent-hero-chips"
+                data-phase={heroChipPhase}
+                onMouseEnter={() => {
+                  heroChipsHoverRef.current = true;
+                }}
+                onMouseLeave={() => {
+                  heroChipsHoverRef.current = false;
+                }}
               >
-                {attachments.length ? (
-                  <div className="agent-composer-attachments">
-                    {attachments.map((attachment) => (
-                      <span
-                        key={attachment.id}
-                        className="agent-attachment-chip"
-                        title={attachment.name}
-                      >
-                        {attachment.previewDataUrl ? (
-                          <img
-                            src={attachment.previewDataUrl}
-                            alt=""
-                            aria-hidden="true"
-                          />
-                        ) : (
-                          <FileIcon size={14} />
-                        )}
-                        <span className="agent-attachment-name">
-                          {attachment.name}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label={`Remove ${attachment.name}`}
-                          onClick={() => removeAttachment(attachment.id)}
-                        >
-                          <XIcon size={12} />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="agent-composer-row">
+                {heroShortcuts.map((shortcut, index) => (
                   <button
+                    key={shortcut.key}
                     type="button"
-                    className="agent-composer-attach"
-                    aria-label="Attach files"
-                    title="Attach files"
-                    onClick={() => void pickAttachments()}
+                    className="agent-hero-chip"
+                    style={{ "--chip-i": index } as CSSProperties}
+                    title={shortcut.description}
+                    disabled={submitting}
+                    onClick={() => runShortcut(shortcut)}
                   >
-                    <IconPlusMedium size={18} />
+                    <span className="agent-hero-chip-icon" aria-hidden>
+                      {shortcut.icon}
+                    </span>
+                    {shortcut.title}
                   </button>
-                  <textarea
-                    ref={composerRef}
-                    value={draft}
-                    onChange={(event) => setDraft(event.currentTarget.value)}
-                    placeholder={
-                      importingFiles ? "Attaching file…" : "Send a message"
-                    }
-                    rows={1}
-                    onKeyDown={(event) => {
-                      // Ignore the Enter that commits an IME composition
-                      // (Japanese/Chinese/Korean input) — only a real Enter
-                      // press should send the message.
-                      if (event.nativeEvent.isComposing) return;
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        event.currentTarget.form?.requestSubmit();
-                      }
-                    }}
-                  />
-                  <div className="agent-composer-actions">
-                    <button
-                      type="button"
-                      className="agent-composer-mic"
-                      aria-label="Dictate"
-                      title="Start dictation"
-                      onClick={() => void startDictation()}
-                    >
-                      <IconMicrophone size={18} />
-                    </button>
-                    <button
-                      type="submit"
-                      className="agent-composer-send"
-                      disabled={
-                        submitting ||
-                        importingFiles ||
-                        (!draft.trim() && !attachments.length)
-                      }
-                      tabIndex={draft.trim() || attachments.length ? 0 : -1}
-                      aria-hidden={
-                        draft.trim() || attachments.length ? undefined : true
-                      }
-                      aria-label={
-                        selectedHermesSessionId || selectedTask
-                          ? "Send message"
-                          : "Start session"
-                      }
-                    >
-                      {submitting ? <Spinner /> : <IconArrowUp size={16} />}
-                    </button>
-                  </div>
-                </div>
+                ))}
               </div>
-            </form>
+              <p className="agent-hero-footnote">
+                {bridgeStarting
+                  ? "Getting June ready…"
+                  : "June runs privately on your Mac."}
+              </p>
+            </div>
           ) : null}
         </section>
-      </div>
+      ) : (
+        <div ref={agentScrollRef} className="agent-scroll">
+          <section className="agent-main" aria-label="Agent task details">
+            {error ? <p className="error-banner">{error}</p> : null}
+            {detailContent}
+            {composer}
+          </section>
+        </div>
+      )}
     </section>
   );
 }
