@@ -2274,78 +2274,169 @@ input:focus-visible,
   padding: var(--sp-6);
 }
 
-/* New-session empty state: span the header + body rows so the prompt centres
- * in the open space with the composer pinned below — a blank page with the
- * input ready, the way a new note opens. */
-.agent-empty-view {
-  display: grid;
-  flex: 1;
-  place-items: center;
-  min-height: 0;
-  padding: var(--sp-6) var(--sp-6) 148px;
-  /* The shortcut grid can outgrow short windows; scroll rather than clip. */
-  overflow-y: auto;
+/* New-session hero: the chat itself is the empty state. Greeting, composer,
+ * and a rotating row of suggestion chips stack in a vertically-centered
+ * column (the way Claude/ChatGPT/Codex open), instead of an empty-state card
+ * with the input exiled to the bottom edge. */
+.agent-main[data-hero="true"] {
+  justify-content: center;
+  /* Optical center: bias the cluster a touch above true middle. */
+  padding-bottom: clamp(0px, 12vh, 132px);
 }
 
-/* Starter shortcuts in the agent empty-state footer: a two-up grid of quiet
- * buttons that either launch a session outright or prefill the composer. */
-.agent-shortcut-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-1);
-  width: 100%;
-}
-
-.agent-shortcut {
+.agent-hero-heading {
   display: flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  border: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-8);
+}
+
+/* Brand terracotta pangolin beside the serif greeting — the one warm accent
+ * on an otherwise quiet page. */
+.agent-hero-mark {
+  display: inline-grid;
+  place-items: center;
+  color: var(--brand);
+}
+
+.agent-hero-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-display);
+  letter-spacing: 0;
+}
+
+/* In the hero the composer leaves its fixed bottom dock and sits inline at
+ * the column's center — taller at rest and a touch narrower than the reading
+ * column, so it reads as "start here" rather than "reply here". */
+.agent-composer[data-hero="true"] {
+  position: static;
+  pointer-events: auto;
+}
+
+.agent-composer[data-hero="true"] .agent-composer-box {
+  max-width: 640px;
+  box-shadow: var(--shadow-md);
+}
+
+/* Big-box at rest: the textarea owns the full top rows and the +/mic/send
+ * toolbar always sits beneath it, regardless of the JS multiline probe. */
+.agent-composer[data-hero="true"] .agent-composer-row > textarea {
+  order: 0;
+  flex: 1 1 100%;
+  min-height: 76px;
+}
+
+/* Rotating suggestion chips under the hero composer. Four at a time from the
+ * pool (see AGENT_SHORTCUTS); the description lives in the tooltip. */
+.agent-hero-suggestions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-top: var(--sp-6);
+}
+
+.agent-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+  max-width: 640px;
+}
+
+.agent-hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-lg);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  /* Squircle, not a pill — consistent with the composer it sits under. */
   border-radius: var(--r-lg);
   background: none;
+  color: var(--foreground);
   font: inherit;
-  text-align: left;
-  transition: background-color var(--t-fast) var(--ease-out);
+  font-size: var(--fs-md);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
 }
 
-.agent-shortcut:hover:not(:disabled) {
+.agent-hero-chip:hover:not(:disabled) {
   background: var(--surface-subtle);
+  border-color: var(--border);
 }
 
-.agent-shortcut:disabled {
+.agent-hero-chip:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.agent-shortcut-icon {
+.agent-hero-chip-icon {
   display: inline-grid;
   place-items: center;
-  margin-top: 1px;
   color: var(--muted-foreground);
 }
 
-.agent-shortcut-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.agent-shortcut-title {
-  font-size: var(--fs-md);
-  color: var(--foreground);
-}
-
-.agent-shortcut-description {
+.agent-hero-footnote {
+  margin: 0;
+  color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  line-height: 1.4;
-  color: var(--muted-foreground);
 }
 
-@media (max-width: 720px) {
-  .agent-shortcut-grid {
-    grid-template-columns: 1fr;
+/* First-run border beam: a soft terracotta glint orbiting the hero composer's
+ * border until the first session is ever started. A conic gradient masked to
+ * the 1px border ring; the @property registration is what lets the angle
+ * itself animate. */
+@property --agent-beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.agent-composer-box[data-beam="true"] {
+  position: relative;
+}
+
+.agent-composer-box[data-beam="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--agent-beam-angle),
+    transparent 0turn,
+    transparent 0.72turn,
+    color-mix(in oklch, var(--brand) 45%, transparent) 0.92turn,
+    var(--brand) 0.97turn,
+    transparent 1turn
+  );
+  /* Punch out the middle so only the ring remains. */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: agent-beam-spin 5200ms linear infinite;
+}
+
+@keyframes agent-beam-spin {
+  to {
+    --agent-beam-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-box[data-beam="true"]::after {
+    content: none;
   }
 }
 

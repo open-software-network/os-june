@@ -179,6 +179,14 @@ type AgentShortcut = {
   action: "run" | "prefill" | "attach";
 };
 
+/**
+ * Suggestion pool for the new-session hero. Shown HERO_SHORTCUT_COUNT at a
+ * time and reshuffled on each visit, so the entry point stays a handful of
+ * fresh ideas instead of a wall of ten cards. Pool order matters: the leading
+ * window is the curated first-impression mix (an instant run, a prefill, an
+ * attach flow, and a health check) that shows when the shuffle is identity
+ * (e.g. in tests with Math.random mocked to 0).
+ */
 const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
     key: "tidy-downloads",
@@ -190,31 +198,22 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "run",
   },
   {
-    key: "disk-space",
-    icon: <IconPieChart1 size={18} />,
-    title: "Free up disk space",
-    description: "Find what's eating your storage and what can go.",
+    key: "research",
+    icon: <IconDeepSearch size={18} />,
+    title: "Research a topic",
+    description: "Get a short, sourced write-up on anything.",
     prompt:
-      "Work out what's taking up the most disk space in my home folder, summarize the biggest culprits, and suggest what's safe to clean up. Don't delete anything without checking with me first.",
-    action: "run",
+      "Research <topic> and write a short summary of what you find, with sources.",
+    action: "prefill",
   },
   {
-    key: "rename-screenshots",
-    icon: <IconCameraSparkle size={18} />,
-    title: "Rename my screenshots",
-    description: "Turn screenshot gibberish into names that mean something.",
+    key: "summarize-file",
+    icon: <IconFileSparkle size={18} />,
+    title: "Summarize a file",
+    description: "Pick a document and get the key points out of it.",
     prompt:
-      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
-    action: "run",
-  },
-  {
-    key: "find-duplicates",
-    icon: <IconFiles size={18} />,
-    title: "Find duplicate files",
-    description: "Spot copies wasting space across your folders.",
-    prompt:
-      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
-    action: "run",
+      "Summarize the key points of the attached file and pull out any action items.",
+    action: "attach",
   },
   {
     key: "health-check",
@@ -234,13 +233,13 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
-    key: "research",
-    icon: <IconDeepSearch size={18} />,
-    title: "Research a topic",
-    description: "Get a short, sourced write-up on anything.",
+    key: "rename-screenshots",
+    icon: <IconCameraSparkle size={18} />,
+    title: "Rename my screenshots",
+    description: "Turn screenshot gibberish into names that mean something.",
     prompt:
-      "Research <topic> and write a short summary of what you find, with sources.",
-    action: "prefill",
+      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
+    action: "run",
   },
   {
     key: "draft-document",
@@ -252,13 +251,13 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
-    key: "summarize-file",
-    icon: <IconFileSparkle size={18} />,
-    title: "Summarize a file",
-    description: "Pick a document and get the key points out of it.",
+    key: "disk-space",
+    icon: <IconPieChart1 size={18} />,
+    title: "Free up disk space",
+    description: "Find what's eating your storage and what can go.",
     prompt:
-      "Summarize the key points of the attached file and pull out any action items.",
-    action: "attach",
+      "Work out what's taking up the most disk space in my home folder, summarize the biggest culprits, and suggest what's safe to clean up. Don't delete anything without checking with me first.",
+    action: "run",
   },
   {
     key: "extract-text",
@@ -269,7 +268,51 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
       "Extract all the text from the attached file and clean it up into tidy Markdown.",
     action: "attach",
   },
+  {
+    key: "find-duplicates",
+    icon: <IconFiles size={18} />,
+    title: "Find duplicate files",
+    description: "Spot copies wasting space across your folders.",
+    prompt:
+      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
+    action: "run",
+  },
 ];
+
+const HERO_SHORTCUT_COUNT = 4;
+
+// Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
+// is the identity permutation: tests that mock Math.random get the curated
+// leading window, real sessions get a fresh shuffle every visit.
+function pickHeroShortcuts(): AgentShortcut[] {
+  const pool = [...AGENT_SHORTCUTS];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = i - Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, HERO_SHORTCUT_COUNT);
+}
+
+// First-run border beam: the hero composer wears an animated glint until the
+// user has ever started a session, then never again (persisted, not per-run).
+const AGENT_FIRST_SESSION_KEY = "scribe:agent:first-session-done";
+
+function isFirstAgentSession(): boolean {
+  try {
+    return localStorage.getItem(AGENT_FIRST_SESSION_KEY) === null;
+  } catch {
+    // localStorage can throw in sandboxed contexts — skip the flourish.
+    return false;
+  }
+}
+
+function markAgentSessionStarted() {
+  try {
+    localStorage.setItem(AGENT_FIRST_SESSION_KEY, "1");
+  } catch {
+    // Worst case the beam shows again next launch.
+  }
+}
 
 export {
   AGENT_DELETE_SESSION_EVENT,
@@ -358,6 +401,8 @@ export function AgentWorkspace({
     initialSessionId,
   );
   const [newSessionMode, setNewSessionMode] = useState(false);
+  const [heroShortcuts, setHeroShortcuts] = useState(pickHeroShortcuts);
+  const [firstRunBeam, setFirstRunBeam] = useState(isFirstAgentSession);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
@@ -1314,6 +1359,9 @@ export function AgentWorkspace({
         session_id: runtimeSessionId,
         text: content,
       });
+      // A session has been started at least once — retire the first-run beam.
+      markAgentSessionStarted();
+      setFirstRunBeam(false);
       await loadHermesSessions();
     } catch (err) {
       unlisten();
@@ -1901,6 +1949,19 @@ export function AgentWorkspace({
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
   }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
 
+  // New-session hero: greeting + centered composer + suggestion chips, shown
+  // whenever nothing is selected — the same condition as the conversation
+  // fall-through below, minus the dev gallery.
+  const heroMode =
+    !gallerySections &&
+    (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+
+  // Deal a fresh hand of suggestions each time the hero comes back, so repeat
+  // visits alternate through the pool instead of pinning the same four.
+  useEffect(() => {
+    if (heroMode) setHeroShortcuts(pickHeroShortcuts());
+  }, [heroMode]);
+
   return (
     <section className="agent-workspace" aria-label="Agent">
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
@@ -1923,7 +1984,11 @@ export function AgentWorkspace({
           }
         />
       )}
-      <section className="agent-main" aria-label="Agent task details">
+      <section
+        className="agent-main"
+        aria-label="Agent task details"
+        data-hero={heroMode ? "true" : undefined}
+      >
         {error ? <p className="error-banner">{error}</p> : null}
         {gallerySections ? (
           <AgentResponseGallery
@@ -2042,48 +2107,18 @@ export function AgentWorkspace({
             </div>
           </>
         ) : (
-          <div className="agent-empty-view">
-            <EmptyState
-              icon={<IconPangolin size={24} />}
-              title="Start an agent session"
-              description={
-                bridgeStarting
-                  ? "Getting the agent ready…"
-                  : "Pick a shortcut, or describe any desktop task in the box below. It runs privately on your machine."
-              }
-              label="Start an agent session"
-              footer={
-                <div className="agent-shortcut-grid">
-                  {AGENT_SHORTCUTS.map((shortcut) => (
-                    <button
-                      key={shortcut.key}
-                      type="button"
-                      className="agent-shortcut"
-                      disabled={submitting}
-                      onClick={() => runShortcut(shortcut)}
-                    >
-                      <span className="agent-shortcut-icon" aria-hidden>
-                        {shortcut.icon}
-                      </span>
-                      <span className="agent-shortcut-text">
-                        <span className="agent-shortcut-title">
-                          {shortcut.title}
-                        </span>
-                        <span className="agent-shortcut-description">
-                          {shortcut.description}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              }
-            />
+          <div className="agent-hero-heading">
+            <span className="agent-hero-mark" aria-hidden>
+              <IconPangolin size={26} />
+            </span>
+            <h2 className="agent-hero-title">What can June do for you?</h2>
           </div>
         )}
 
         {activePanel === "chat" ? (
           <form
             className="agent-composer"
+            data-hero={heroMode ? "true" : undefined}
             data-drop-active={dropActive ? "true" : undefined}
             onSubmit={(event) => void submit(event)}
             onDragOver={handleComposerDragOver}
@@ -2096,6 +2131,7 @@ export function AgentWorkspace({
               className="agent-composer-box"
               data-dirty={draft.trim() || attachments.length ? "true" : "false"}
               data-multiline={composerMultiline ? "true" : "false"}
+              data-beam={heroMode && firstRunBeam ? "true" : undefined}
             >
               {attachments.length ? (
                 <div className="agent-composer-attachments">
@@ -2143,7 +2179,11 @@ export function AgentWorkspace({
                   value={draft}
                   onChange={(event) => setDraft(event.currentTarget.value)}
                   placeholder={
-                    importingFiles ? "Attaching file…" : "Send a message"
+                    importingFiles
+                      ? "Attaching file…"
+                      : heroMode
+                        ? "Describe a task for June…"
+                        : "Send a message"
                   }
                   rows={1}
                   onKeyDown={(event) => {
@@ -2191,6 +2231,32 @@ export function AgentWorkspace({
               </div>
             </div>
           </form>
+        ) : null}
+        {activePanel === "chat" && heroMode ? (
+          <div className="agent-hero-suggestions">
+            <div className="agent-hero-chips">
+              {heroShortcuts.map((shortcut) => (
+                <button
+                  key={shortcut.key}
+                  type="button"
+                  className="agent-hero-chip"
+                  title={shortcut.description}
+                  disabled={submitting}
+                  onClick={() => runShortcut(shortcut)}
+                >
+                  <span className="agent-hero-chip-icon" aria-hidden>
+                    {shortcut.icon}
+                  </span>
+                  {shortcut.title}
+                </button>
+              ))}
+            </div>
+            <p className="agent-hero-footnote">
+              {bridgeStarting
+                ? "Getting June ready…"
+                : "June runs privately on your Mac."}
+            </p>
+          </div>
         ) : null}
       </section>
     </section>

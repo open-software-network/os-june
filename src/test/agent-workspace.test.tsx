@@ -191,7 +191,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(
-      await screen.findByText("Start an agent session"),
+      await screen.findByText("What can June do for you?"),
     ).toBeInTheDocument();
     await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
     expect(screen.queryByText("Existing session")).toBeNull();
@@ -209,7 +209,7 @@ describe("AgentWorkspace", () => {
     window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
 
     expect(
-      await screen.findByText("Start an agent session"),
+      await screen.findByText("What can June do for you?"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Existing session")).toBeNull();
   });
@@ -695,40 +695,54 @@ describe("AgentWorkspace", () => {
 
   it("launches a session immediately from a run shortcut", async () => {
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
-    render(<AgentWorkspace />);
-    const user = userEvent.setup();
+    // rand() of 0 keeps the rotating hero suggestions in curated pool order,
+    // so the leading window (incl. "Tidy my Downloads") is what renders.
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      render(<AgentWorkspace />);
+      const user = userEvent.setup();
 
-    await user.click(
-      await screen.findByRole("button", { name: /Tidy my Downloads/ }),
-    );
+      await user.click(
+        await screen.findByRole("button", { name: /Tidy my Downloads/ }),
+      );
 
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
-        "prompt.submit",
-        expect.objectContaining({
-          text: expect.stringContaining("Downloads folder"),
-        }),
-      ),
-    );
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "prompt.submit",
+          expect.objectContaining({
+            text: expect.stringContaining("Downloads folder"),
+          }),
+        ),
+      );
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 
   it("prefills the composer from a prefill shortcut without submitting", async () => {
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
-    render(<AgentWorkspace />);
-    const user = userEvent.setup();
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      render(<AgentWorkspace />);
+      const user = userEvent.setup();
 
-    await user.click(
-      await screen.findByRole("button", { name: /Research a topic/ }),
-    );
+      await user.click(
+        await screen.findByRole("button", { name: /Research a topic/ }),
+      );
 
-    const composer = screen.getByPlaceholderText(
-      "Send a message",
-    ) as HTMLTextAreaElement;
-    await waitFor(() => expect(composer.value).toContain("Research <topic>"));
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
-      "prompt.submit",
-      expect.anything(),
-    );
+      const composer = screen.getByPlaceholderText(
+        "Describe a task for June…",
+      ) as HTMLTextAreaElement;
+      await waitFor(() =>
+        expect(composer.value).toContain("Research <topic>"),
+      );
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.anything(),
+      );
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 
   // Last in the suite: mounting the workspace kicks off bridge/session
@@ -752,7 +766,7 @@ describe("AgentWorkspace", () => {
     );
 
     expect(
-      await screen.findByText("Start an agent session"),
+      await screen.findByText("What can June do for you?"),
     ).toBeInTheDocument();
     expect(screen.getByText("Projects")).toBeInTheDocument();
     expect(screen.getByText("Scribe")).toBeInTheDocument();
