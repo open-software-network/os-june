@@ -4569,11 +4569,16 @@ function renderMarkdownBlocks(markdown: string) {
         code.push(lines[index]);
         index += 1;
       }
-      blocks.push(
-        <pre key={`code-${key++}`}>
-          <code>{code.join("\n")}</code>
-        </pre>,
-      );
+      // Skip empty fences — including a stray trailing ``` while streaming —
+      // so we don't flash an empty code block (a bare padded gray bar).
+      const body = code.join("\n");
+      if (body.trim()) {
+        blocks.push(
+          <pre key={`code-${key++}`}>
+            <code>{body}</code>
+          </pre>,
+        );
+      }
       continue;
     }
 
