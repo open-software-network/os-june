@@ -98,6 +98,19 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   mascotShow: mocks.mascotShow,
   mascotHide: mocks.mascotHide,
+  // The agent workspace mounts at launch; a quiet, not-running bridge keeps
+  // these tests focused on the meetings surfaces.
+  hermesBridgeStatus: vi.fn(async () => ({ running: false })),
+  listAgentTasks: vi.fn(async () => ({ items: [] })),
+  providerModelSettings: vi.fn(async () => ({
+    settings: { generationModel: "" },
+  })),
+  listVeniceModels: vi.fn(async () => ({
+    mode: "generation",
+    modelType: "text",
+    selectedModel: "",
+    models: [],
+  })),
 }));
 
 const now = "2026-05-19T10:00:00Z";
@@ -308,8 +321,11 @@ describe("notes recording reliability", () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    // Open the note from the All notes list so the editor (and its failure
-    // banner) is on screen.
+    // The app launches on the agent view; open the note from the Meetings
+    // list so the editor (and its failure banner) is on screen.
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Meetings" }),
+    );
     await userEvent.click(
       screen.getByRole("button", { name: /First note Preview/ }),
     );
