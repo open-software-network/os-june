@@ -427,6 +427,10 @@ export function AgentWorkspace({
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
   >({});
+  const runtimeSessionIdsRef = useRef(runtimeSessionIds);
+  // Consecutive runtime-reconcile polls in which a locally-working session was
+  // absent from the gateway's live list. Cleared the moment it's seen live.
+  const workingReconcileMissesRef = useRef(new Map<string, number>());
   const [stoppingSessionIds, setStoppingSessionIds] = useState<
     ReadonlySet<string>
   >(new Set());
@@ -478,6 +482,10 @@ export function AgentWorkspace({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
+
+  useEffect(() => {
+    runtimeSessionIdsRef.current = runtimeSessionIds;
+  }, [runtimeSessionIds]);
 
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
@@ -927,6 +935,7 @@ export function AgentWorkspace({
       for (const sessionId of sessionIds) {
         void refreshHermesSession(sessionId);
       }
+      void reconcileWorkingSessionsAgainstRuntime();
     }, 2500);
     return () => window.clearInterval(interval);
   }, [bridge.running, workingSessionIds]);
@@ -1483,6 +1492,75 @@ export function AgentWorkspace({
       throw err;
     } finally {
       setBridgeStarting(false);
+    }
+  }
+
+  // Message-based reconciliation above can only END a run when an assistant
+  // reply eventually persists. A run that died without one (provider failure,
+  // gateway drop, app quit mid-turn) — or a session wrongly resumed as
+  // working from a trailing user message — would otherwise stay "working"
+  // forever, leaving the menu bar stuck on "Working…". The gateway's
+  // session.active_list is ground truth for what is actually running, so any
+  // locally-working session absent from it (or sitting idle) for two
+  // consecutive polls gets its activity cleared. Two misses, not one: a
+  // just-submitted prompt can race the runtime session registering.
+  async function reconcileWorkingSessionsAgainstRuntime() {
+    const working = Array.from(workingSessionIdsRef.current);
+    const misses = workingReconcileMissesRef.current;
+    for (const sessionId of misses.keys()) {
+      if (!working.includes(sessionId)) misses.delete(sessionId);
+    }
+    if (working.length === 0) return;
+    let rows: Array<{ id?: string; session_key?: string; status?: string }>;
+    try {
+      const gateway = await ensureHermesGateway();
+      const response = await gateway.request<{
+        sessions?: Array<{
+          id?: string;
+          session_key?: string;
+          status?: string;
+        }>;
+      }>("session.active_list", {});
+      rows = Array.isArray(response?.sessions) ? response.sessions : [];
+    } catch {
+      // Can't reach the runtime — keep the current state rather than guess.
+      return;
+    }
+    const live = new Set<string>();
+    for (const row of rows) {
+      // "idle" means the runtime session exists but isn't processing a turn.
+      if (!row || row.status === "idle") continue;
+      if (row.session_key) live.add(String(row.session_key));
+      if (row.id) live.add(String(row.id));
+    }
+    for (const sessionId of working) {
+      const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
+      if (
+        live.has(sessionId) ||
+        (runtimeSessionId && live.has(runtimeSessionId))
+      ) {
+        misses.delete(sessionId);
+        continue;
+      }
+      const seen = (misses.get(sessionId) ?? 0) + 1;
+      if (seen < 2) {
+        misses.set(sessionId, seen);
+        continue;
+      }
+      misses.delete(sessionId);
+      const activityCounts = clearSessionActivity(sessionId);
+      // "completed" (not "failed") keeps the tray quiet: its title falls back
+      // to lastStatus when nothing is active, and a stale "running" there
+      // would still render "Working…".
+      dispatchAgentSessionStatus({
+        sessionId,
+        title:
+          hermesSessionItems.find((session) => session.id === sessionId)
+            ?.title ?? "Agent session",
+        status: "completed",
+        summary: "June stopped.",
+        ...activityCounts,
+      });
     }
   }
 
