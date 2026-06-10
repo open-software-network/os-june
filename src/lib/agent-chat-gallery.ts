@@ -418,3 +418,15 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     },
   ];
 }
+
+// The error-focused gallery (window.__agentErrors) is the full catalog
+// filtered to its failure surfaces — one source of truth for the samples. The
+// chrome-level error states (the error banner and the composer busy notice)
+// aren't turns, so the workspace forces those alongside these sections.
+const ERROR_SECTION_LABELS = new Set(["Error", "Out of credits"]);
+
+export function buildAgentErrorGallery(): AgentChatGallerySection[] {
+  return buildAgentChatGallery().filter((section) =>
+    ERROR_SECTION_LABELS.has(section.label),
+  );
+}

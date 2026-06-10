@@ -144,6 +144,7 @@ import {
 } from "../../lib/agent-chat-runtime";
 import {
   buildAgentChatGallery,
+  buildAgentErrorGallery,
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
@@ -166,13 +167,13 @@ const SESSION_BUSY_NOTICE =
 // the desired state and broadcasts it; App switches to the Agent view on show,
 // and the workspace applies the state on mount or live via the event.
 // Dev builds only — the handle never exists in production bundles.
-let galleryDesired = false;
+let galleryDesired: "all" | "errors" | false = false;
 
-function setGalleryDesired(show: boolean) {
-  galleryDesired = show;
+function setGalleryDesired(show: boolean, errors = false) {
+  galleryDesired = show ? (errors ? "errors" : "all") : false;
   window.dispatchEvent(
     new CustomEvent<AgentGalleryDetail>(AGENT_GALLERY_EVENT, {
-      detail: { show },
+      detail: { show, errors },
     }),
   );
 }
@@ -185,6 +186,17 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
     return show
       ? "Agent response gallery shown. Run __agentGallery(false) to hide."
       : "Agent response gallery hidden.";
+  };
+  // Error-focused variant: just the failure sections, plus the chrome-level
+  // error surfaces (error banner, composer busy notice) the turn-based
+  // gallery can't represent.
+  (window as unknown as Record<string, unknown>).__agentErrors = (
+    show: boolean = true,
+  ) => {
+    setGalleryDesired(show, true);
+    return show
+      ? "Agent error gallery shown. Run __agentErrors(false) to hide."
+      : "Agent error gallery hidden.";
   };
 }
 
@@ -486,10 +498,13 @@ export function AgentWorkspace({
   >({});
   // Dev-tools response gallery: when set, the timeline is replaced by a labeled
   // catalog of every agent response part type. Toggled from the console via
-  // window.__agentGallery() — see the effect below.
+  // window.__agentGallery() — see the effect below. The errors flag marks the
+  // __agentErrors() variant, which additionally forces the chrome-level error
+  // surfaces (error banner, composer busy notice) for styling.
   const [gallerySections, setGallerySections] = useState<
     AgentChatGallerySection[] | null
   >(null);
+  const [galleryErrors, setGalleryErrors] = useState(false);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
@@ -2227,10 +2242,20 @@ export function AgentWorkspace({
   // follow live toggles via the window event.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    setGallerySections(galleryDesired ? buildAgentChatGallery() : null);
+    const apply = (show: boolean, errors: boolean) => {
+      setGallerySections(
+        show
+          ? errors
+            ? buildAgentErrorGallery()
+            : buildAgentChatGallery()
+          : null,
+      );
+      setGalleryErrors(show && errors);
+    };
+    apply(Boolean(galleryDesired), galleryDesired === "errors");
     const onGallery = (event: Event) => {
       const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
-      setGallerySections(detail?.show ? buildAgentChatGallery() : null);
+      apply(Boolean(detail?.show), Boolean(detail?.errors));
     };
     window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
     return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
@@ -2391,9 +2416,9 @@ export function AgentWorkspace({
         onDragLeave={() => setDropActive(false)}
         onDrop={handleComposerDrop}
       >
-        {busyNotice ? (
+        {busyNotice || galleryErrors ? (
           <p className="agent-composer-notice" role="status">
-            {busyNotice}
+            {busyNotice ?? SESSION_BUSY_NOTICE}
           </p>
         ) : null}
         <div
@@ -2520,6 +2545,7 @@ export function AgentWorkspace({
   const detailContent = gallerySections ? (
     <AgentResponseGallery
       sections={gallerySections}
+      errors={galleryErrors}
       onClose={() => setGalleryDesired(false)}
     />
   ) : !newSessionMode && selectedHermesSessionId ? (
@@ -2713,7 +2739,13 @@ export function AgentWorkspace({
       ) : (
         <div ref={agentScrollRef} className="agent-scroll">
           <section className="agent-main" aria-label="Agent task details">
-            {error ? <p className="error-banner">{error}</p> : null}
+            {galleryErrors ? (
+              <p className="error-banner">
+                Could not connect to Hermes gateway.
+              </p>
+            ) : error ? (
+              <p className="error-banner">{error}</p>
+            ) : null}
             {detailContent}
             {composer}
           </section>
@@ -3891,19 +3923,26 @@ const galleryNoop = () => {};
 
 function AgentResponseGallery({
   sections,
+  errors,
   onClose,
 }: {
   sections: AgentChatGallerySection[];
+  errors?: boolean;
   onClose: () => void;
 }) {
   return (
     <div className="agent-timeline agent-gallery">
       <div className="agent-gallery-banner">
         <div>
-          <strong>Agent response gallery</strong>
+          <strong>
+            {errors ? "Agent error gallery" : "Agent response gallery"}
+          </strong>
           <p>
-            Every response part type and status, for styling. Close from the
-            console with <code>__agentGallery(false)</code>.
+            {errors
+              ? "Every error surface in agent chat — the banner above and the composer notice below are forced samples too."
+              : "Every response part type and status, for styling."}{" "}
+            Close from the console with{" "}
+            <code>{errors ? "__agentErrors" : "__agentGallery"}(false)</code>.
           </p>
         </div>
         <button
@@ -3931,6 +3970,7 @@ function AgentResponseGallery({
               onApproval={galleryNoop}
               onClarify={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onTopUp={galleryNoop}
             />
           ))}
         </section>

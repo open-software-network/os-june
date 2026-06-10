@@ -1454,6 +1454,41 @@ describe("AgentWorkspace", () => {
     expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
   });
 
+  it("shows every error surface via the __agentErrors() dev handle", async () => {
+    const agentErrors = (
+      window as unknown as { __agentErrors: (show?: boolean) => string }
+    ).__agentErrors;
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => void agentErrors());
+
+    try {
+      expect(
+        await screen.findByText("Agent error gallery"),
+      ).toBeInTheDocument();
+      // Turn-level samples from the catalog (section label + the card itself)…
+      expect(screen.getAllByText("Out of credits").length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole("button", { name: "Add funds" }),
+      ).toBeInTheDocument();
+      // …plus the forced chrome samples the turn gallery can't represent.
+      expect(
+        screen.getByText("Could not connect to Hermes gateway."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/June is still working on the previous message/),
+      ).toBeInTheDocument();
+    } finally {
+      // Always reset the module-level desired state — a failure here must not
+      // leave the gallery on and cascade into later workspace mounts.
+      act(() => void agentErrors(false));
+    }
+    await waitFor(() =>
+      expect(screen.queryByText("Agent error gallery")).toBeNull(),
+    );
+  });
+
   // Last in the suite: mounting the workspace kicks off bridge/session
   // bootstrap promises that can leak into a later test's pending-session
   // flow, so nothing runs after this one.

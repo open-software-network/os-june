@@ -7,10 +7,11 @@ export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
 export const AGENT_SESSION_STATUS_EVENT = "scribe:agent:session-status";
 export const AGENT_OPEN_EVENT = "scribe:agent:open";
 export const AGENT_REPLY_EVENT = "scribe:agent:reply";
-// Dev-only: toggles the agent response gallery (window.__agentGallery).
+// Dev-only: toggles the agent response gallery (window.__agentGallery) or its
+// error-focused variant (window.__agentErrors).
 export const AGENT_GALLERY_EVENT = "scribe:agent:gallery";
 
-export type AgentGalleryDetail = { show: boolean };
+export type AgentGalleryDetail = { show: boolean; errors?: boolean };
 
 export type AgentSessionStatusKind =
   | "received"
