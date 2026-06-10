@@ -8,6 +8,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
@@ -131,6 +132,7 @@ describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.sessionStorage.clear();
+    window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.getAgentTask.mockResolvedValue(existingTask);
     mocks.hermesBridgeStatus.mockResolvedValue({
@@ -186,7 +188,10 @@ describe("AgentWorkspace", () => {
   });
 
   it("honors a pending New Session request instead of selecting existing work", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
 
     render(<AgentWorkspace />);
 
@@ -199,6 +204,114 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("ignores a stale pending New Session marker left over from a reload", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now() - 60_000,
+        prompt: "stale prompt from before the reload",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(
+      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
+    ).toBeNull();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: "stale prompt from before the reload" }),
+    );
+  });
+
+  it("submits a double-delivered New Session prompt only once", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "audit the repo" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "audit the repo",
+      }),
+    );
+
+    // App.tsx marks the pending marker AND fires the window event in a
+    // setTimeout — the event lands after the mount already consumed the
+    // marker. The echo must not create a second session.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: "audit the repo" },
+        }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const sessionCreates = mocks.gatewayRequest.mock.calls.filter(
+      ([method]) => method === "session.create",
+    );
+    expect(sessionCreates).toHaveLength(1);
+  });
+
+  it("restores the last open session after a reload", async () => {
+    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Newer session",
+        preview: "More recent work",
+        last_active: "2026-06-05T12:00:00Z",
+      },
+      existingSession,
+    ]);
+
+    render(<AgentWorkspace />);
+
+    // Without the restore, the workspace would select the newest session
+    // (session-2); the persisted id must win — the restored session's title
+    // is the one in the session bar and its messages are the ones fetched.
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"),
+    );
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+      "session-2",
+    );
+    expect(screen.queryByText("Newer session")).toBeNull();
+  });
+
+  it("forgets the persisted session when it is deleted", async () => {
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("scribe:agent:last-open-session"),
+      ).toBe("session-1"),
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("scribe:agent:last-open-session"),
+      ).toBeNull(),
+    );
   });
 
   it("keeps the blank composer after a New Session event during refresh", async () => {
@@ -217,7 +330,10 @@ describe("AgentWorkspace", () => {
   it("submits a pending New Session prompt as a fresh Hermes session", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ prompt: "summarize the current page" }),
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
     );
     mocks.listHermesSessions.mockResolvedValue([
       {
@@ -283,7 +399,10 @@ describe("AgentWorkspace", () => {
   it("keeps an optimistic Hermes session visible while the persisted list lags", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ prompt: "open the release notes" }),
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "open the release notes",
+      }),
     );
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
 
@@ -694,7 +813,10 @@ describe("AgentWorkspace", () => {
   });
 
   it("launches a session immediately from a run shortcut", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
     // rand() of 0 keeps the rotating hero suggestions in curated pool order,
     // so the leading window (incl. "Tidy my Downloads") is what renders.
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
@@ -720,7 +842,10 @@ describe("AgentWorkspace", () => {
   });
 
   it("prefills the composer from a prefill shortcut without submitting", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
     try {
       render(<AgentWorkspace />);
@@ -747,7 +872,10 @@ describe("AgentWorkspace", () => {
   // bootstrap promises that can leak into a later test's pending-session
   // flow, so nothing runs after this one.
   it("renders origin crumbs and back arrow in the sticky session bar", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
     const onBack = vi.fn();
     const onOpenProjects = vi.fn();
     render(

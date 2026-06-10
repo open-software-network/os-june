@@ -380,12 +380,16 @@ export function AgentWorkspace({
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
+  // Mounting without an explicit target restores the last open conversation,
+  // so app restarts and dev reloads land the user back in the session they
+  // were working in instead of bouncing them to the newest one.
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
     string | undefined
-  >(initialSessionId);
+  >(() => initialSessionId ?? readLastOpenSessionId());
   const selectedHermesSessionIdRef = useRef<string | undefined>(
-    initialSessionId,
+    selectedHermesSessionId,
   );
+  const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
   const [heroDeckStart, setHeroDeckStart] = useState(0);
@@ -548,6 +552,8 @@ export function AgentWorkspace({
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
+      // A deleted session must not be the restore target on the next mount.
+      forgetLastOpenSessionId(sessionId);
     },
     [clearSessionActivity],
   );
@@ -702,6 +708,16 @@ export function AgentWorkspace({
       );
     }
   }, [initialSession, initialSessionId]);
+
+  // Remember the open conversation for the restore-on-mount above. Entering
+  // new-session mode leaves the last real session in place — if the new
+  // session never materializes (crash, reload), restoring the previous one
+  // beats landing on the hero screen.
+  useEffect(() => {
+    if (selectedHermesSessionId) {
+      writeLastOpenSessionId(selectedHermesSessionId);
+    }
+  }, [selectedHermesSessionId]);
 
   useEffect(() => {
     if (!pendingReply?.text.trim()) return;
@@ -1611,13 +1627,29 @@ export function AgentWorkspace({
 
   async function startNewTask(prompt?: string) {
     clearPendingNewSessionRequest();
+    const initialPrompt = prompt?.trim() ?? "";
+    // The pending-marker mount path and the AGENT_NEW_SESSION_EVENT dispatch
+    // can deliver the same request twice (App marks the marker, then fires
+    // the event in a setTimeout for already-mounted workspaces). Submitting
+    // both would put two copies of the prompt in the transcript — drop the
+    // echo instead.
+    if (initialPrompt) {
+      const last = lastAutoSubmittedRef.current;
+      if (
+        last &&
+        last.prompt === initialPrompt &&
+        Date.now() - last.at < AUTO_SUBMIT_ECHO_WINDOW_MS
+      ) {
+        return;
+      }
+      lastAutoSubmittedRef.current = { prompt: initialPrompt, at: Date.now() };
+    }
     newSessionModeRef.current = true;
     setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     selectedHermesSessionIdRef.current = undefined;
     setSelectedHermesSessionId(undefined);
-    const initialPrompt = prompt?.trim() ?? "";
     setDraft(initialPrompt);
     if (!initialPrompt) return;
     dispatchAgentSessionStatus({
@@ -5114,6 +5146,51 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
   return next;
 }
 
+// Survives app restarts (localStorage, not sessionStorage): restoring an
+// existing conversation after a relaunch is always safe, unlike the pending
+// new-session marker, which must NOT outlive its navigation.
+const AGENT_LAST_OPEN_SESSION_KEY = "scribe:agent:last-open-session";
+
+// How long a second startNewTask call with the same prompt counts as an echo
+// of the first (marker + window event double-delivery) rather than a new ask.
+// The echo lands a setTimeout(0) after the mount — milliseconds — so 1s is
+// already generous. It must stay time-bounded rather than clear when the
+// submission settles: a fast settle would otherwise reopen the window before
+// the echo arrives. User retries are unaffected either way — a failed
+// auto-submit restores the draft and re-sends go through submit(), which
+// never routes through this guard.
+const AUTO_SUBMIT_ECHO_WINDOW_MS = 1_000;
+
+function readLastOpenSessionId(): string | undefined {
+  try {
+    return (
+      window.localStorage.getItem(AGENT_LAST_OPEN_SESSION_KEY) ?? undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Drops the stored id only when it points at the given session, so deleting
+ * a background session doesn't forget the one actually open. */
+function forgetLastOpenSessionId(sessionId: string) {
+  try {
+    if (readLastOpenSessionId() === sessionId) {
+      window.localStorage.removeItem(AGENT_LAST_OPEN_SESSION_KEY);
+    }
+  } catch {
+    // Storage can be unavailable in restricted webviews; restore is best-effort.
+  }
+}
+
+function writeLastOpenSessionId(sessionId: string) {
+  try {
+    window.localStorage.setItem(AGENT_LAST_OPEN_SESSION_KEY, sessionId);
+  } catch {
+    // Storage can be unavailable in restricted webviews; restore is best-effort.
+  }
+}
+
 export function markAgentNewSessionPending(prompt?: string) {
   try {
     const payload = JSON.stringify({
@@ -5127,15 +5204,34 @@ export function markAgentNewSessionPending(prompt?: string) {
   }
 }
 
+// A pending marker is a navigation hint, not a durable command: it's written
+// just before switching to the Agent view and consumed by the very next
+// mount. Anything older is a leftover from a reload or crash — acting on it
+// would hijack whatever the user had open into a new session (and re-submit
+// the stale prompt).
+const AGENT_NEW_SESSION_PENDING_TTL_MS = 15_000;
+
 function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {
     const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
     if (value == null) return undefined;
+    // Consume on read so a remount (HMR, rapid view switches) can't re-fire
+    // the same request.
+    clearPendingNewSessionRequest();
     try {
-      const parsed = JSON.parse(value) as AgentNewSessionDetail;
+      const parsed = JSON.parse(value) as {
+        createdAt?: number;
+        prompt?: string;
+      };
+      if (
+        typeof parsed.createdAt !== "number" ||
+        Date.now() - parsed.createdAt > AGENT_NEW_SESSION_PENDING_TTL_MS
+      ) {
+        return undefined;
+      }
       return typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {};
     } catch {
-      return {};
+      return undefined;
     }
   } catch {
     return undefined;
