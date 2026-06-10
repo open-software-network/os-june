@@ -4762,10 +4762,21 @@ function AgentArtifactPanel({
     };
   }, [artifactPath]);
 
+  useEffect(() => {
+    setQuery("");
+    setFilterOpen(false);
+  }, [artifactPath, state.view]);
+
   const markdown =
     artifact !== null &&
     isMarkdownPath(artifact.path) &&
     preview.kind === "text";
+
+  // In the list the magnifier filters file names; on a text preview it finds
+  // within the document. Images and binaries have nothing to search.
+  const searchable = !artifact || preview.kind === "text";
+  const filterLabel = artifact ? "Find in file" : "Filter files";
+  const docHighlight = artifact ? query.trim() || undefined : undefined;
 
   // Position-aware scroll fades on the document body (same recipe as the
   // dictation history dialog): the header has no divider, so the top fade is
@@ -4821,14 +4832,14 @@ function AgentArtifactPanel({
               <IconChevronLeftSmall size={16} />
             </button>
           ) : null}
-          {!artifact && filterOpen ? (
+          {searchable && filterOpen ? (
             <label className="folders-search agent-artifact-filter">
               <IconMagnifyingGlass size={14} />
               <input
                 type="search"
                 value={query}
-                placeholder="Filter files"
-                aria-label="Filter files"
+                placeholder={filterLabel}
+                aria-label={filterLabel}
                 autoFocus
                 onChange={(event) => setQuery(event.currentTarget.value)}
                 onBlur={() => {
@@ -4861,12 +4872,12 @@ function AgentArtifactPanel({
               {artifact ? artifact.name : "Files"}
             </h2>
           )}
-          {!artifact && !filterOpen ? (
+          {searchable && !filterOpen ? (
             <button
               type="button"
               className="icon-button"
-              aria-label="Filter files"
-              title="Filter files"
+              aria-label={filterLabel}
+              title={filterLabel}
               onClick={() => setFilterOpen(true)}
             >
               <IconMagnifyingGlass size={15} />
@@ -4924,9 +4935,16 @@ function AgentArtifactPanel({
                 alt={artifact.name}
               />
             ) : preview.kind === "text" && markdown && !showSource ? (
-              <MarkdownContent markdown={preview.text} />
+              <MarkdownContent
+                markdown={preview.text}
+                highlight={docHighlight}
+              />
             ) : preview.kind === "text" ? (
-              <pre className="agent-artifact-source">{preview.text}</pre>
+              <pre className="agent-artifact-source">
+                {docHighlight
+                  ? highlightText(preview.text, docHighlight, "source")
+                  : preview.text}
+              </pre>
             ) : (
               <div className="agent-artifact-panel-empty">
                 <p>No preview for this file.</p>
@@ -4995,8 +5013,48 @@ function isMarkdownPath(path: string) {
   return /\.(md|markdown|mdx)$/i.test(path);
 }
 
-function MarkdownContent({ markdown }: { markdown: string }) {
-  return <div className="agent-markdown">{renderMarkdownBlocks(markdown)}</div>;
+function MarkdownContent({
+  markdown,
+  highlight,
+}: {
+  markdown: string;
+  highlight?: string;
+}) {
+  return (
+    <div className="agent-markdown">
+      {renderMarkdownBlocks(markdown, highlight)}
+    </div>
+  );
+}
+
+/** Wraps case-insensitive matches of `highlight` in <mark>, leaving the text
+ * untouched when there's nothing to find. Every text emission point in the
+ * markdown renderer funnels through here so find-in-file can light up
+ * rendered documents, not just raw source. */
+function highlightText(
+  text: string,
+  highlight: string | undefined,
+  keySeed: string,
+): ReactNode[] {
+  const needle = highlight?.toLowerCase();
+  if (!needle) return [text];
+  const lower = text.toLowerCase();
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let count = 0;
+  for (;;) {
+    const at = lower.indexOf(needle, cursor);
+    if (at < 0) break;
+    if (at > cursor) nodes.push(text.slice(cursor, at));
+    nodes.push(
+      <mark key={`hl-${keySeed}-${count++}`}>
+        {text.slice(at, at + needle.length)}
+      </mark>,
+    );
+    cursor = at + needle.length;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
 }
 
 function ToolEventRow({ event }: { event: AgentToolEventDto }) {
@@ -5064,7 +5122,7 @@ function HermesNoteRow({ item }: { item: HermesNoteItem }) {
   );
 }
 
-function renderMarkdownBlocks(markdown: string) {
+function renderMarkdownBlocks(markdown: string, highlight?: string) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -5074,7 +5132,9 @@ function renderMarkdownBlocks(markdown: string) {
     const text = paragraph.join("\n").trim();
     paragraph = [];
     if (!text) return;
-    blocks.push(<p key={`p-${key++}`}>{renderInlineMarkdown(text, key)}</p>);
+    blocks.push(
+      <p key={`p-${key++}`}>{renderInlineMarkdown(text, key, highlight)}</p>,
+    );
   };
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -5095,7 +5155,9 @@ function renderMarkdownBlocks(markdown: string) {
       }
       blocks.push(
         <pre key={`code-${key++}`}>
-          <code>{code.join("\n")}</code>
+          <code>
+            {highlightText(code.join("\n"), highlight, `code-${key}`)}
+          </code>
         </pre>,
       );
       continue;
@@ -5120,7 +5182,7 @@ function renderMarkdownBlocks(markdown: string) {
       index -= 1;
       blocks.push(
         <blockquote key={`quote-${key++}`}>
-          {renderMarkdownBlocks(quoted.join("\n"))}
+          {renderMarkdownBlocks(quoted.join("\n"), highlight)}
         </blockquote>,
       );
       continue;
@@ -5154,7 +5216,9 @@ function renderMarkdownBlocks(markdown: string) {
             <thead>
               <tr>
                 {header.map((cell, cellIndex) => (
-                  <th key={cellIndex}>{renderInlineMarkdown(cell, key)}</th>
+                  <th key={cellIndex}>
+                    {renderInlineMarkdown(cell, key, highlight)}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -5162,7 +5226,9 @@ function renderMarkdownBlocks(markdown: string) {
               {rows.map((row, rowIndex) => (
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
-                    <td key={cellIndex}>{renderInlineMarkdown(cell, key)}</td>
+                    <td key={cellIndex}>
+                      {renderInlineMarkdown(cell, key, highlight)}
+                    </td>
                   ))}
                 </tr>
               ))}
@@ -5177,7 +5243,7 @@ function renderMarkdownBlocks(markdown: string) {
     if (heading) {
       flushParagraph();
       const level = Math.min(heading[1].length, 3);
-      const content = renderInlineMarkdown(heading[2], key);
+      const content = renderInlineMarkdown(heading[2], key, highlight);
       blocks.push(
         level === 1 ? (
           <h2 key={`h-${key++}`}>{content}</h2>
@@ -5206,7 +5272,7 @@ function renderMarkdownBlocks(markdown: string) {
       index -= 1;
       const listItems = items.map((item, itemIndex) => (
         <li key={`li-${key}-${itemIndex}`}>
-          {renderInlineMarkdown(item, key + itemIndex)}
+          {renderInlineMarkdown(item, key + itemIndex, highlight)}
         </li>
       ));
       blocks.push(
@@ -5226,8 +5292,14 @@ function renderMarkdownBlocks(markdown: string) {
   return blocks;
 }
 
-function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
+function renderInlineMarkdown(
+  text: string,
+  keySeed: number,
+  highlight?: string,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
+  const mark = (value: string, slot: string) =>
+    highlightText(value, highlight, `${keySeed}-${slot}`);
   const pattern =
     /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
@@ -5235,18 +5307,30 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
   let index = 0;
   while ((match = pattern.exec(text))) {
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+      nodes.push(...mark(text.slice(lastIndex, match.index), `g${index}`));
     }
     if (match[2]) {
       nodes.push(
-        <strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>,
+        <strong key={`strong-${keySeed}-${index}`}>
+          {mark(match[2], `s${index}`)}
+        </strong>,
       );
     } else if (match[3]) {
-      nodes.push(<em key={`em-${keySeed}-${index}`}>{match[3]}</em>);
+      nodes.push(
+        <em key={`em-${keySeed}-${index}`}>{mark(match[3], `e${index}`)}</em>,
+      );
     } else if (match[4]) {
-      nodes.push(<del key={`del-${keySeed}-${index}`}>{match[4]}</del>);
+      nodes.push(
+        <del key={`del-${keySeed}-${index}`}>
+          {mark(match[4], `d${index}`)}
+        </del>,
+      );
     } else if (match[5]) {
-      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[5]}</code>);
+      nodes.push(
+        <code key={`code-${keySeed}-${index}`}>
+          {mark(match[5], `c${index}`)}
+        </code>,
+      );
     } else if (match[6] && match[7]) {
       nodes.push(
         <a
@@ -5255,7 +5339,7 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
           rel="noreferrer"
           target="_blank"
         >
-          {match[6]}
+          {mark(match[6], `a${index}`)}
         </a>,
       );
     }
@@ -5263,7 +5347,7 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
     index += 1;
   }
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+    nodes.push(...mark(text.slice(lastIndex), "t"));
   }
   return nodes;
 }

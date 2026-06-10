@@ -2107,6 +2107,8 @@ input:focus-visible,
   max-width: none;
   height: var(--control-md);
   margin: 0;
+  border-color: transparent;
+  background: var(--surface-subtle);
   animation: agent-artifact-filter-in var(--t-med) var(--ease-spring);
 }
 
@@ -2121,6 +2123,12 @@ input:focus-visible,
   .agent-artifact-panel .agent-artifact-filter {
     animation: none;
   }
+}
+
+.agent-artifact-panel-body mark {
+  border-radius: var(--sp-px);
+  background: var(--warm-soft);
+  color: inherit;
 }
 
 .agent-artifact-filter-clear {
