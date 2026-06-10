@@ -2097,12 +2097,47 @@ input:focus-visible,
   margin: 0;
 }
 
-/* The shared .folders-search pill, stretched to the panel's reading column.
+/* The header filter takes the title's slot while open — the shared
+ * .folders-search pill at control height, with room for its clear button.
  * (Scoped under the panel so it outranks .folders-search's fixed width.) */
-.agent-artifact-panel .agent-artifact-search {
+.agent-artifact-panel .agent-artifact-filter {
+  flex: 1;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
   width: auto;
   max-width: none;
-  margin: var(--sp-1) var(--sp-6) var(--sp-2);
+  height: var(--control-md);
+  margin: 0;
+  animation: agent-artifact-filter-in var(--t-med) var(--ease-spring);
+}
+
+@keyframes agent-artifact-filter-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--sp-3));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-artifact-panel .agent-artifact-filter {
+    animation: none;
+  }
+}
+
+.agent-artifact-filter-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--r-pill);
+  padding: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.agent-artifact-filter-clear:hover {
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .agent-artifact-search-empty {
@@ -7593,6 +7628,11 @@ input:focus-visible,
 
 .folders-search input::placeholder {
   color: var(--muted-foreground);
+}
+
+.folders-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 /* The magnifier reads a step lighter than the placeholder — it's decoration,

@@ -4685,6 +4685,7 @@ function AgentArtifactPanel({
   });
   const [showSource, setShowSource] = useState(false);
   const [query, setQuery] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
 
   // Restore the remembered width once per panel mount. The property lives on
@@ -4820,9 +4821,57 @@ function AgentArtifactPanel({
               <IconChevronLeftSmall size={16} />
             </button>
           ) : null}
-          <h2 className="agent-artifact-panel-title">
-            {artifact ? artifact.name : "Files"}
-          </h2>
+          {!artifact && filterOpen ? (
+            <label className="folders-search agent-artifact-filter">
+              <IconMagnifyingGlass size={14} />
+              <input
+                type="search"
+                value={query}
+                placeholder="Filter files"
+                aria-label="Filter files"
+                autoFocus
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                onBlur={() => {
+                  if (!query.trim()) setFilterOpen(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  // Esc walks back one step at a time — clear the query,
+                  // collapse the filter — before a final Esc (bubbling to
+                  // the workspace listener) closes the panel.
+                  event.stopPropagation();
+                  if (query) setQuery("");
+                  else setFilterOpen(false);
+                }}
+              />
+              {query ? (
+                <button
+                  type="button"
+                  className="agent-artifact-filter-clear"
+                  aria-label="Clear filter"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setQuery("")}
+                >
+                  <IconCrossSmall size={12} />
+                </button>
+              ) : null}
+            </label>
+          ) : (
+            <h2 className="agent-artifact-panel-title">
+              {artifact ? artifact.name : "Files"}
+            </h2>
+          )}
+          {!artifact && !filterOpen ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Filter files"
+              title="Filter files"
+              onClick={() => setFilterOpen(true)}
+            >
+              <IconMagnifyingGlass size={15} />
+            </button>
+          ) : null}
           {artifact ? (
             <button
               type="button"
@@ -4894,25 +4943,6 @@ function AgentArtifactPanel({
           </div>
         ) : (
           <>
-            <label className="folders-search agent-artifact-search">
-              <IconMagnifyingGlass size={14} />
-              <input
-                type="search"
-                value={query}
-                placeholder="Filter files"
-                aria-label="Filter files"
-                autoFocus
-                onChange={(event) => setQuery(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  // First Esc clears the filter; a second one bubbles up to
-                  // the workspace listener and closes the panel.
-                  if (event.key === "Escape" && query) {
-                    event.stopPropagation();
-                    setQuery("");
-                  }
-                }}
-              />
-            </label>
             <div
               ref={bodyRef}
               className="agent-artifact-panel-body"

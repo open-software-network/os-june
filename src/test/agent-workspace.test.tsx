@@ -871,15 +871,20 @@ describe("AgentWorkspace", () => {
     await user.click(within(panel).getByRole("button", { name: "All files" }));
     expect(within(panel).getByText("report.md")).toBeInTheDocument();
 
-    // Filtering narrows the list; the first Esc clears the filter and the
-    // second closes the panel.
+    // The header magnifier expands into the filter; typing narrows the list.
+    await user.click(
+      within(panel).getByRole("button", { name: "Filter files" }),
+    );
     const filter = within(panel).getByLabelText("Filter files");
     await user.type(filter, "notes");
     expect(within(panel).queryByText("report.md")).not.toBeInTheDocument();
     expect(within(panel).getByText("notes.txt")).toBeInTheDocument();
 
+    // Esc walks back one step at a time: clear, collapse, close.
     await user.keyboard("{Escape}");
     expect(within(panel).getByText("report.md")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(within(panel).queryByRole("searchbox")).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(
       screen.queryByRole("complementary", { name: "Files" }),
