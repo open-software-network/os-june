@@ -94,7 +94,6 @@ export function FoldersWorkspace(props: FoldersWorkspaceProps) {
 /* List view -------------------------------------------------------- */
 
 type SortKey = "updated" | "created" | "name" | "nameDesc";
-type VirtualFolderId = "meetings";
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "updated", label: "Recent" },
@@ -108,7 +107,6 @@ function FolderList({
   notes,
   sessions,
   sessionFolderIds,
-  onSelectNote,
   onSelectFolder,
   onCreateFolder,
   onRenameFolder,
@@ -121,8 +119,6 @@ function FolderList({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
-  const [selectedVirtualFolder, setSelectedVirtualFolder] =
-    useState<VirtualFolderId | null>(null);
   const deleteFolderTarget = folders.find((f) => f.id === deleteId);
   const editFolderTarget = folders.find((f) => f.id === editId);
 
@@ -171,49 +167,9 @@ function FolderList({
     });
   }, [folders, normalizedQuery, sort]);
 
-  const filteredMeetingNotes = useMemo(() => {
-    const filtered = normalizedQuery
-      ? notes.filter((note) =>
-          `${note.title} ${note.preview}`
-            .toLowerCase()
-            .includes(normalizedQuery),
-        )
-      : notes;
-    return [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [notes, normalizedQuery]);
-
-  const showNotesFolder =
-    !normalizedQuery ||
-    "notes saved notes recording editing".includes(normalizedQuery) ||
-    filteredMeetingNotes.length > 0;
-
-  const hasTopLevelMatches = showNotesFolder || sortedAndFiltered.length > 0;
-
-  const closeVirtualFolder = () => setSelectedVirtualFolder(null);
-
-  let content: ReactNode;
-  if (selectedVirtualFolder === "meetings") {
-    content = (
-      <NotesFolderDetail
-        notes={filteredMeetingNotes}
-        totalNotes={notes.length}
-        query={query}
-        onBack={closeVirtualFolder}
-        onSelectNote={onSelectNote}
-      />
-    );
-  } else {
-    content = hasTopLevelMatches ? (
+  const content: ReactNode =
+    sortedAndFiltered.length > 0 ? (
       <div className="folders-grid" role="list">
-        {showNotesFolder ? (
-          <VirtualFolderCard
-            name="Notes"
-            description="Saved notes from recording and editing."
-            meta={`${notes.length} ${notes.length === 1 ? "note" : "notes"}`}
-            icon={<IconNoteText size={18} />}
-            onOpen={() => setSelectedVirtualFolder("meetings")}
-          />
-        ) : null}
         {sortedAndFiltered.map((folder) => (
           <FolderCard
             key={folder.id}
@@ -248,12 +204,23 @@ function FolderList({
           />
         ))}
       </div>
+    ) : folders.length === 0 ? (
+      <div className="folders-empty">
+        <p>No projects yet.</p>
+        <button
+          type="button"
+          className="primary-action primary-solid"
+          onClick={() => setCreateOpen(true)}
+        >
+          <IconFolderAddRight size={14} />
+          Create your first project
+        </button>
+      </div>
     ) : (
       <div className="folders-empty">
         <p>No projects match “{query.trim()}”.</p>
       </div>
     );
-  }
 
   return (
     <section className="folders-workspace" aria-label="Projects">
@@ -412,111 +379,6 @@ function SortDropdown({
 }
 
 type MenuState = { folderId: string; right: number; top: number };
-
-function VirtualFolderCard({
-  name,
-  meta,
-  description,
-  icon,
-  badge,
-  onOpen,
-}: {
-  name: string;
-  meta: string;
-  description: string;
-  icon: ReactNode;
-  badge?: ReactNode;
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="folder-card folders-virtual-folder-card"
-      onClick={onOpen}
-    >
-      <span className="folder-card-icon folders-virtual-folder-icon">
-        {icon}
-        {badge ? (
-          <span
-            className="folders-agent-folder-badge"
-            aria-label="Agent folder"
-          >
-            {badge}
-          </span>
-        ) : null}
-      </span>
-      <span className="folder-card-name">{name}</span>
-      <span className="folder-card-meta">{meta}</span>
-      <span className="folder-card-description">{description}</span>
-    </button>
-  );
-}
-
-function NotesFolderDetail({
-  notes,
-  totalNotes,
-  query,
-  onBack,
-  onSelectNote,
-}: {
-  notes: NoteListItemDto[];
-  totalNotes: number;
-  query: string;
-  onBack: () => void;
-  onSelectNote: (noteId: string) => void;
-}) {
-  return (
-    <section className="folders-virtual-detail" aria-label="Notes">
-      <BreadcrumbBar
-        backLabel="Back to projects"
-        onBack={onBack}
-        items={[{ label: "Projects", onClick: onBack }, { label: "Notes" }]}
-      />
-      <section className="folders-meetings-files">
-        <header className="folders-hermes-header">
-          <div>
-            <h2>Notes</h2>
-            <p>Saved notes from recording and editing.</p>
-          </div>
-          <span className="folders-section-count">
-            {totalNotes} {totalNotes === 1 ? "note" : "notes"}
-          </span>
-        </header>
-        {notes.length ? (
-          <div className="folders-meetings-list">
-            {notes.map((note) => (
-              <button
-                key={note.id}
-                type="button"
-                className="folders-meeting-row"
-                onClick={() => onSelectNote(note.id)}
-              >
-                <span className="folders-meeting-icon">
-                  <IconNoteText size={14} />
-                </span>
-                <span className="folders-meeting-body">
-                  <span className="folders-meeting-title">
-                    {note.title.trim() || "New note"}
-                  </span>
-                  <span className="folders-meeting-preview">
-                    {note.preview.trim() || "No preview yet"}
-                  </span>
-                </span>
-                <span className="folders-meeting-time">
-                  {formatNoteTime(note.updatedAt)}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="folders-empty">
-            {query.trim() ? "No notes match." : "No notes yet."}
-          </p>
-        )}
-      </section>
-    </section>
-  );
-}
 
 function FolderCard({
   folder,
@@ -909,28 +771,40 @@ function FolderDetail({
 
         {folderNotes.length > 0 || folderSessions.length > 0 ? (
           <>
-            <FolderNotesPanel
-              folder={folder}
-              notes={folderNotes}
+            {/* Agents lead the project; the add popover rides the first
+                section's heading either way. */}
+            <FolderActions
+              title={folderSessions.length > 0 ? "Agents" : "Notes"}
+              onCreateNote={() => onCreateNote(folder.id)}
+              onAddExisting={() => setAddOpen(true)}
+              onAddSessions={() => setAddSessionsOpen(true)}
               hasNotesElsewhere={notes.some(
                 (note) => !note.folderIds.includes(folder.id),
               )}
               hasSessionsElsewhere={hasSessionsElsewhere}
-              onSelectNote={onSelectNote}
-              onCreateNote={() => onCreateNote(folder.id)}
-              onAddExisting={() => setAddOpen(true)}
-              onAddSessions={() => setAddSessionsOpen(true)}
-              onOpenMoveDialog={onOpenMoveDialog}
-              onRemoveNoteFromFolder={onRemoveNoteFromFolder}
-              onDeleteNote={onDeleteNote}
             />
             {folderSessions.length > 0 ? (
-              <FolderSessionsPanel
+              <FolderSessionList
                 folder={folder}
                 sessions={folderSessions}
                 onSelectSession={onSelectSession}
                 onOpenSessionMoveDialog={onOpenSessionMoveDialog}
                 onRemoveSessionFromFolder={onRemoveSessionFromFolder}
+              />
+            ) : null}
+            {folderSessions.length > 0 && folderNotes.length > 0 ? (
+              <div className="folder-actions-row">
+                <h2 className="folder-notes-title">Notes</h2>
+              </div>
+            ) : null}
+            {folderNotes.length > 0 ? (
+              <FolderNoteList
+                folder={folder}
+                notes={folderNotes}
+                onSelectNote={onSelectNote}
+                onOpenMoveDialog={onOpenMoveDialog}
+                onRemoveNoteFromFolder={onRemoveNoteFromFolder}
+                onDeleteNote={onDeleteNote}
               />
             ) : null}
           </>
@@ -1020,62 +894,39 @@ function FolderDetail({
   );
 }
 
-function FolderNotesPanel({
+function FolderNoteList({
   folder,
   notes,
-  hasNotesElsewhere,
-  hasSessionsElsewhere,
   onSelectNote,
-  onCreateNote,
-  onAddExisting,
-  onAddSessions,
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
   onDeleteNote,
 }: {
   folder: FolderDto;
   notes: NoteListItemDto[];
-  hasNotesElsewhere: boolean;
-  hasSessionsElsewhere: boolean;
   onSelectNote: (noteId: string) => void;
-  onCreateNote: () => void;
-  onAddExisting: () => void;
-  onAddSessions: () => void;
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   onDeleteNote: (noteId: string) => void;
 }) {
   return (
-    <>
-      <FolderActions
-        onCreateNote={onCreateNote}
-        onAddExisting={onAddExisting}
-        onAddSessions={onAddSessions}
-        hasNotesElsewhere={hasNotesElsewhere}
-        hasSessionsElsewhere={hasSessionsElsewhere}
-      />
-      {notes.length > 0 ? (
-        <ul className="folder-notes" role="list">
-          {notes.map((note) => (
-            <FolderNoteRow
-              key={note.id}
-              note={note}
-              folder={folder}
-              onSelect={() => onSelectNote(note.id)}
-              onOpenMove={() => onOpenMoveDialog(note.id)}
-              onRemoveFromFolder={() =>
-                onRemoveNoteFromFolder(note.id, folder.id)
-              }
-              onDelete={() => onDeleteNote(note.id)}
-            />
-          ))}
-        </ul>
-      ) : null}
-    </>
+    <ul className="folder-notes" role="list">
+      {notes.map((note) => (
+        <FolderNoteRow
+          key={note.id}
+          note={note}
+          folder={folder}
+          onSelect={() => onSelectNote(note.id)}
+          onOpenMove={() => onOpenMoveDialog(note.id)}
+          onRemoveFromFolder={() => onRemoveNoteFromFolder(note.id, folder.id)}
+          onDelete={() => onDeleteNote(note.id)}
+        />
+      ))}
+    </ul>
   );
 }
 
-function FolderSessionsPanel({
+function FolderSessionList({
   folder,
   sessions,
   onSelectSession,
@@ -1089,24 +940,19 @@ function FolderSessionsPanel({
   onRemoveSessionFromFolder: (sessionId: string, folderId: string) => void;
 }) {
   return (
-    <>
-      <div className="folder-actions-row">
-        <h2 className="folder-notes-title">Agent sessions</h2>
-      </div>
-      <ul className="folder-notes" role="list">
-        {sessions.map((session) => (
-          <FolderSessionRow
-            key={session.id}
-            session={session}
-            onSelect={() => onSelectSession(session)}
-            onOpenMove={() => onOpenSessionMoveDialog(session.id)}
-            onRemoveFromFolder={() =>
-              onRemoveSessionFromFolder(session.id, folder.id)
-            }
-          />
-        ))}
-      </ul>
-    </>
+    <ul className="folder-notes" role="list">
+      {sessions.map((session) => (
+        <FolderSessionRow
+          key={session.id}
+          session={session}
+          onSelect={() => onSelectSession(session)}
+          onOpenMove={() => onOpenSessionMoveDialog(session.id)}
+          onRemoveFromFolder={() =>
+            onRemoveSessionFromFolder(session.id, folder.id)
+          }
+        />
+      ))}
+    </ul>
   );
 }
 
@@ -1223,12 +1069,14 @@ function FolderSessionRow({
 }
 
 function FolderActions({
+  title,
   onCreateNote,
   onAddExisting,
   onAddSessions,
   hasNotesElsewhere,
   hasSessionsElsewhere,
 }: {
+  title: string;
   onCreateNote: () => void;
   onAddExisting: () => void;
   onAddSessions: () => void;
@@ -1255,7 +1103,7 @@ function FolderActions({
 
   return (
     <div className="folder-actions-row">
-      <h2 className="folder-notes-title">Notes</h2>
+      <h2 className="folder-notes-title">{title}</h2>
       <button
         type="button"
         className="folder-add-trigger"

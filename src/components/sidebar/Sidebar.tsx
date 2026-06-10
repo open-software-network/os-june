@@ -549,10 +549,16 @@ export function Sidebar({
               <button
                 type="button"
                 className="section-title-label section-title-open"
-                title="View all sessions"
-                onClick={() => onChangeView("agent-sessions")}
+                onClick={() => onChangeView("agent")}
               >
                 Agent
+              </button>
+              <button
+                type="button"
+                className="section-view-all"
+                onClick={() => onChangeView("agent-sessions")}
+              >
+                View all
               </button>
             </div>
             <div className="notes-nav-wrap">

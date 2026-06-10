@@ -93,6 +93,9 @@ describe("Sidebar primary navigation", () => {
     expect(onChangeView).toHaveBeenCalledWith("notes");
     await user.click(screen.getByRole("button", { name: "Projects" }));
     expect(onChangeView).toHaveBeenCalledWith("folders");
+    // Hover-revealed view-all next to the Agent section title.
+    await user.click(screen.getByRole("button", { name: "View all" }));
+    expect(onChangeView).toHaveBeenCalledWith("agent-sessions");
   });
 
   it("renders settings as a sidebar footer action", async () => {
@@ -197,14 +200,15 @@ describe("Sidebar primary navigation", () => {
 });
 
 describe("FoldersWorkspace — list view", () => {
-  it("renders folder cards with descriptions or note counts and no All notes", () => {
+  it("renders folder cards without a virtual all-notes folder", () => {
     render(<FoldersWorkspace {...baseProps()} />);
 
     expect(
       screen.getByRole("heading", { name: "Projects" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("All notes")).toBeNull();
-    expect(screen.getByRole("button", { name: /Notes/ })).toBeInTheDocument();
+    // No virtual "Notes" card — the side nav already lists all notes.
+    expect(screen.queryByRole("button", { name: /^Notes/ })).toBeNull();
     expect(screen.queryByText("Roadmap")).toBeNull();
     expect(screen.getByText("Ideas")).toBeInTheDocument();
     expect(screen.getByText("Work")).toBeInTheDocument();
@@ -218,19 +222,6 @@ describe("FoldersWorkspace — list view", () => {
     expect(
       within(ideasCard as HTMLElement).getByText(/0 notes/),
     ).toBeInTheDocument();
-  });
-
-  it("opens the notes folder before showing saved notes", async () => {
-    const user = userEvent.setup();
-    const props = baseProps();
-    render(<FoldersWorkspace {...props} />);
-
-    await user.click(screen.getByRole("button", { name: /Notes/ }));
-
-    expect(screen.getByRole("heading", { name: "Notes" })).toBeInTheDocument();
-    expect(screen.getByText("Roadmap")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Roadmap/ }));
-    expect(props.onSelectNote).toHaveBeenCalledWith("note-1");
   });
 
   it("opens the create dialog and submits name + description", async () => {

@@ -52,12 +52,12 @@ export function AgentSessionsList({
   return (
     <section
       className="all-notes-workspace agent-sessions-workspace"
-      aria-label="Agent sessions"
+      aria-label="Agents"
     >
       <header className="folders-header">
         <div className="folders-heading">
           <h1>
-            Agent sessions
+            Agents
             {sessions.length > 0 ? (
               <span className="folders-count">{sessions.length}</span>
             ) : null}

@@ -2855,10 +2855,6 @@ input:focus-visible,
   opacity: 1;
 }
 
-.sidebar-agent-section .section-view-all {
-  opacity: 1;
-}
-
 .section-title-with-action:hover .section-view-all:hover {
   background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
