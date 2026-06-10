@@ -22,6 +22,7 @@ import {
 } from "../components/agent/AgentWorkspace";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
+import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { NotesList } from "../components/notes-list/NotesList";
@@ -1339,6 +1340,17 @@ export function App() {
                       .getElementById(headingId)
                       ?.scrollIntoView({ behavior: "smooth", block: "start" });
                   }, 80);
+                }}
+              />
+            ) : activeView === "routines" ? (
+              <RoutinesView
+                onCreateRoutine={(prompt) => {
+                  // The agent workspace is unmounted while Routines is shown,
+                  // so the pending marker alone is consumed on mount — no
+                  // window event needed (it could double-submit the session).
+                  markAgentNewSessionPending(prompt);
+                  setActiveAgentSession(undefined);
+                  setActiveView("agent");
                 }}
               />
             ) : activeView === "agent" ? (

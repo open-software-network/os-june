@@ -5883,6 +5883,192 @@ input:focus-visible,
   margin-bottom: var(--sp-3);
 }
 
+/* Routines — Hermes scheduled automations. Shares the Dictation page chrome
+ * (.folders-* header/search) and the dictation row action buttons. */
+.routines-workspace {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--sp-10) 0 var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.routines-workspace .folders-controls {
+  margin-top: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.routines-refresh {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.routines-refresh:hover {
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--foreground);
+}
+
+.routines-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routines-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  margin: 0 calc(-1 * var(--sp-4));
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.routines-item:hover,
+.routines-item:focus-within {
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.routines-item-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+
+.routines-item[data-state="paused"] .routines-item-name,
+.routines-item[data-state="completed"] .routines-item-name {
+  color: var(--muted-foreground);
+}
+
+.routines-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.routines-item-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.routines-item-name {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routines-item-badge {
+  flex-shrink: 0;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.routines-item-badge-error {
+  background: color-mix(in oklch, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+
+.routines-item-prompt {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.routines-item-meta {
+  padding-top: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.routines-item:hover .routines-item-meta,
+.routines-item:focus-within .routines-item-meta {
+  opacity: 0;
+}
+
+.routines-item-actions {
+  position: absolute;
+  z-index: 2;
+  top: var(--sp-3);
+  right: var(--sp-4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-height: 28px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.routines-item:hover .routines-item-actions,
+.routines-item:focus-within .routines-item-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.routines-create-input {
+  width: 100%;
+  min-height: 96px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.routines-create-input:focus {
+  outline: none;
+  border-color: var(--ring);
+}
+
 .folders-header {
   display: flex;
   align-items: flex-start;
