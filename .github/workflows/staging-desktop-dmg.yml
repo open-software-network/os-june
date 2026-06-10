@@ -7,6 +7,8 @@ on:
       - ".github/workflows/staging-desktop-dmg.yml"
       - "hud.html"
       - "index.html"
+      - "mascot.html"
+      - "meeting-hud.html"
       - "package.json"
       - "pnpm-lock.yaml"
       - "public/**"
