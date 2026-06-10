@@ -4855,17 +4855,23 @@ function AgentArtifactPanel({
                   else setFilterOpen(false);
                 }}
               />
-              {query ? (
-                <button
-                  type="button"
-                  className="agent-artifact-filter-clear"
-                  aria-label="Clear filter"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setQuery("")}
-                >
-                  <IconCrossSmall size={12} />
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="agent-artifact-filter-clear"
+                aria-label={query ? "Clear filter" : "Close filter"}
+                title={query ? "Clear" : "Close"}
+                // Mirrors the Esc ladder for the mouse: clear the query
+                // first, then collapse back to the magnifier. mousedown is
+                // suppressed so clearing doesn't blur (and collapse) the
+                // field.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  if (query) setQuery("");
+                  else setFilterOpen(false);
+                }}
+              >
+                <IconCrossSmall size={12} />
+              </button>
             </label>
           ) : (
             <h2 className="agent-artifact-panel-title">
