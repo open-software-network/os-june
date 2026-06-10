@@ -16,8 +16,8 @@ const HIDE_MS = 450;
 const IDLE_MS = 800;
 
 /**
- * Fade `el`'s scrollbar thumb in on scroll activity and back out after a beat
- * of idleness. Returns a cleanup function.
+ * Fade `el`'s scrollbar thumb in on scroll or pointer activity and back out
+ * after a beat of idleness. Returns a cleanup function.
  */
 export function attachScrollThumbFade(el: HTMLElement): () => void {
   let alpha = 0;
@@ -48,15 +48,30 @@ export function attachScrollThumbFade(el: HTMLElement): () => void {
     }
   };
 
-  const onScroll = () => {
+  const show = () => {
     animateTo(VISIBLE_ALPHA, SHOW_MS);
     window.clearTimeout(idleTimer);
     idleTimer = window.setTimeout(() => animateTo(0, HIDE_MS), IDLE_MS);
   };
 
-  el.addEventListener("scroll", onScroll, { passive: true });
+  const hide = () => {
+    window.clearTimeout(idleTimer);
+    animateTo(0, HIDE_MS);
+  };
+
+  el.addEventListener("scroll", show, { passive: true });
+  el.addEventListener("pointerenter", show, { passive: true });
+  el.addEventListener("pointermove", show, { passive: true });
+  el.addEventListener("pointerleave", hide, { passive: true });
+  el.addEventListener("focusin", show);
+  el.addEventListener("focusout", hide);
   return () => {
-    el.removeEventListener("scroll", onScroll);
+    el.removeEventListener("scroll", show);
+    el.removeEventListener("pointerenter", show);
+    el.removeEventListener("pointermove", show);
+    el.removeEventListener("pointerleave", hide);
+    el.removeEventListener("focusin", show);
+    el.removeEventListener("focusout", hide);
     window.clearTimeout(idleTimer);
     if (frame) cancelAnimationFrame(frame);
     el.style.removeProperty("--thumb-alpha");

@@ -74,6 +74,21 @@ describe("attachScrollThumbFade", () => {
     expect(alpha()).toBe(0);
   });
 
+  it("fades the thumb in on pointer movement and back out after idle", () => {
+    detach = attachScrollThumbFade(el);
+
+    el.dispatchEvent(new Event("pointermove"));
+    frame(50);
+    expect(alpha()).toBeGreaterThan(0);
+    expect(alpha()).toBeLessThan(30);
+    while (frame(200));
+    expect(alpha()).toBe(30);
+
+    vi.advanceTimersByTime(800);
+    while (frame(2000));
+    expect(alpha()).toBe(0);
+  });
+
   it("cleans up the listener, timers, and property on detach", () => {
     const cleanup = attachScrollThumbFade(el);
 

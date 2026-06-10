@@ -6223,14 +6223,6 @@ input:focus-visible,
   background-clip: padding-box;
 }
 
-.agent-scroll:hover::-webkit-scrollbar-thumb,
-.agent-scroll:focus-within::-webkit-scrollbar-thumb,
-.main-panel-body[data-detail-scroller="true"]:hover::-webkit-scrollbar-thumb,
-.main-panel-body[data-detail-scroller="true"]:focus-within::-webkit-scrollbar-thumb {
-  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
-  background-clip: padding-box;
-}
-
 .agent-scroll::-webkit-scrollbar-thumb:hover,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
