@@ -99,8 +99,11 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
 
         <p className="welcome-terms">
           By continuing, you agree to the{" "}
+          {/* opensoftware.network serves nothing; the accounts portal is the
+              live domain we control, so legal pages can be published there
+              without shipping a new desktop build. */}
           <a
-            href="https://opensoftware.network/terms"
+            href="https://accounts.opensoftware.co/terms"
             target="_blank"
             rel="noreferrer"
           >
@@ -108,7 +111,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
           </a>{" "}
           and{" "}
           <a
-            href="https://opensoftware.network/privacy"
+            href="https://accounts.opensoftware.co/privacy"
             target="_blank"
             rel="noreferrer"
           >
