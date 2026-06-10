@@ -379,6 +379,12 @@ async function hideHud() {
   if (requestId !== hideRequestId) return;
   await appWindow.hide();
   setWindowAlpha(1);
+  // Don't park on "exiting" (opacity 0, pointer-events none): if the native
+  // window is ever shown again without new content, a pill stuck in that
+  // state renders as a bare, undraggable gray bar.
+  if (hud?.dataset.state === "exiting" && requestId === hideRequestId) {
+    hud.dataset.state = "idle";
+  }
 }
 
 async function showHud() {
@@ -494,8 +500,16 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   if (!meetingEvent) return;
 
   if (meetingEvent.type === "meeting_detected") {
-    if (meetingPromptSuppressed) return;
-    if (!canShowMeetingPrompt(hud?.dataset.state)) return;
+    if (meetingPromptSuppressed || !canShowMeetingPrompt(hud?.dataset.state)) {
+      // Rust may have shown the native window before emitting this event.
+      // When the prompt won't render and the pill has no other content, put
+      // the window back down — otherwise only the frosted surface shows: a
+      // gray bar that can't be dragged or dismissed.
+      if (pillIsBlank(hud?.dataset.state)) {
+        void appWindow.hide().catch(() => {});
+      }
+      return;
+    }
     setHud("meeting", "Meeting detected");
     await showHud();
     startMeetingPromptTimer();
@@ -507,8 +521,15 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
     clearMeetingPromptTimer();
     if (hud?.dataset.state === "meeting") {
       void hideHud();
+    } else if (pillIsBlank(hud?.dataset.state)) {
+      // Heal a contentless window left visible by an earlier show.
+      void appWindow.hide().catch(() => {});
     }
   }
+}
+
+function pillIsBlank(state: string | undefined) {
+  return state === undefined || state === "idle" || state === "exiting";
 }
 
 function canShowMeetingPrompt(state: string | undefined) {

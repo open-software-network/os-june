@@ -26,6 +26,9 @@ pub fn setup(app: &mut tauri::App) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MeetingDetectionEvent {
     Detected,
+    /// Periodic re-emit while a meeting stays active, so a HUD webview that
+    /// missed the initial event (e.g. after a reload) can still catch up.
+    Heartbeat,
     Cleared,
 }
 
@@ -59,7 +62,7 @@ impl MeetingDetectionState {
             self.active_polls_since_emit = self.active_polls_since_emit.saturating_add(1);
             if self.active_polls_since_emit >= HEARTBEAT_EVERY_ACTIVE_POLLS {
                 self.active_polls_since_emit = 0;
-                return Some(MeetingDetectionEvent::Detected);
+                return Some(MeetingDetectionEvent::Heartbeat);
             }
             return None;
         }
@@ -235,6 +238,11 @@ fn emit_detection_event(
             crate::dictation::show_hud_window(app);
             "meeting_detected"
         }
+        // Heartbeats must NOT re-show the native window: after the prompt
+        // auto-suppresses, the webview renders nothing, and a re-shown window
+        // is just the bare vibrancy frost — a stuck gray bar the user can't
+        // drag or dismiss. The HUD shows itself when it decides to render.
+        MeetingDetectionEvent::Heartbeat => "meeting_detected",
         MeetingDetectionEvent::Cleared => "meeting_cleared",
     };
     let payload = MeetingDetectionEnvelope {
@@ -776,7 +784,7 @@ mod tests {
         }
         assert_eq!(
             state.update(true, true, false),
-            Some(MeetingDetectionEvent::Detected)
+            Some(MeetingDetectionEvent::Heartbeat)
         );
     }
 

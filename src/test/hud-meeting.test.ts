@@ -122,6 +122,45 @@ describe("meeting detection HUD", () => {
     expect(mocks.show).not.toHaveBeenCalled();
   });
 
+  it("puts a re-shown window back down when a heartbeat arrives while suppressed", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+    await vi.advanceTimersByTimeAsync(30_220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+
+    // While the prompt is suppressed, Rust may have re-shown the native
+    // window before this event arrives. The pill renders nothing, so the HUD
+    // must answer by hiding the window — a bare frosted window is otherwise
+    // stuck on screen as an undraggable gray bar.
+    mocks.show.mockClear();
+    mocks.hide.mockClear();
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+
+    expect(mocks.show).not.toHaveBeenCalled();
+    expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(hudElement().dataset.state).not.toBe("meeting");
+  });
+
+  it("returns the pill to idle once the exit transition completes", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+    await emit("meeting-detection-event", { type: "meeting_cleared" });
+
+    expect(hudElement().dataset.state).toBe("exiting");
+    await vi.advanceTimersByTimeAsync(220);
+    expect(hudElement().dataset.state).toBe("idle");
+  });
+
+  it("hides a contentless window when the meeting clears", async () => {
+    await loadHud();
+
+    await emit("meeting-detection-event", { type: "meeting_cleared" });
+
+    expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
   it("allows the prompt again after a timed-out meeting clears", async () => {
     vi.useFakeTimers();
     await loadHud();
