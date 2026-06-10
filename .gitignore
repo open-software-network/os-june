@@ -26,3 +26,4 @@ Thumbs.db
 .pre-flight-reviews/
 keys/
 .tmp/
+coverage

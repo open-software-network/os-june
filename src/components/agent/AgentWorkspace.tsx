@@ -3,6 +3,7 @@ import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
@@ -11,6 +12,7 @@ import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStopCircle } from "central-icons/IconStopCircle";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
@@ -48,6 +50,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -72,8 +75,10 @@ import {
   hermesBridgeToolsets,
   importHermesBridgeFile,
   importHermesBridgeFileBytes,
+  listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
+  providerModelSettings,
   retryAgentTask,
   sendAgentMessage,
   startHermesBridge,
@@ -81,10 +86,8 @@ import {
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
-  type AgentMessageDto,
   type AgentTaskDto,
   type AgentTaskStatus,
-  type AgentToolEventDto,
   type HermesBridgeStatus,
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
@@ -120,11 +123,16 @@ import {
   HermesGatewayClient,
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
+import {
+  PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+  modelPrivacyBadge,
+  type ModelPrivacyBadge,
+  type ProviderModelSettingsChangedDetail,
+} from "../../lib/model-privacy";
 import { messageFromError } from "../../lib/errors";
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
-  toolEventKey,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -584,6 +592,8 @@ export function AgentWorkspace({
   const [messagingPlatforms, setMessagingPlatforms] = useState<
     HermesMessagingPlatformInfo[] | null
   >(null);
+  const [generationPrivacyBadge, setGenerationPrivacyBadge] =
+    useState<ModelPrivacyBadge>();
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
@@ -897,6 +907,56 @@ export function AgentWorkspace({
   useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let requestSequence = 0;
+    async function loadGenerationPrivacyBadge() {
+      const requestId = ++requestSequence;
+      try {
+        const [settingsResponse, modelsResponse] = await Promise.all([
+          providerModelSettings(),
+          listVeniceModels("generation"),
+        ]);
+        const selectedModelId =
+          settingsResponse.settings.generationModel ||
+          modelsResponse.selectedModel;
+        const selectedModel = modelsResponse.models.find(
+          (model) => model.id === selectedModelId,
+        );
+        if (!cancelled && requestId === requestSequence) {
+          setGenerationPrivacyBadge(
+            selectedModel ? modelPrivacyBadge(selectedModel) : undefined,
+          );
+        }
+      } catch {
+        if (!cancelled && requestId === requestSequence) {
+          setGenerationPrivacyBadge(undefined);
+        }
+      }
+    }
+    function handleProviderModelSettingsChanged(event: Event) {
+      const { mode } = (
+        event as CustomEvent<ProviderModelSettingsChangedDetail>
+      ).detail;
+      if (mode === "generation") {
+        void loadGenerationPrivacyBadge();
+      }
+    }
+
+    void loadGenerationPrivacyBadge();
+    window.addEventListener(
+      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+      handleProviderModelSettingsChanged,
+    );
+    return () => {
+      cancelled = true;
+      window.removeEventListener(
+        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+        handleProviderModelSettingsChanged,
+      );
+    };
+  }, []);
 
   useEffect(() => {
     if (!bridge.running) return;
@@ -2646,7 +2706,7 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <SafetyBadge />
+            <SafetyBadge privacyBadge={generationPrivacyBadge} />
           </div>
         </div>
         <div className="agent-actions">
@@ -2721,6 +2781,7 @@ export function AgentWorkspace({
           onToggleArtifacts={() =>
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
+          privacyBadge={generationPrivacyBadge}
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -2812,261 +2873,21 @@ export function AgentWorkspace({
   );
 }
 
-type TimelineItem =
-  | { kind: "message"; createdAt: string; message: AgentMessageDto }
-  | { kind: "tool"; createdAt: string; event: AgentToolEventDto }
-  | { kind: "hermes-message"; createdAt: string; item: HermesMessageItem }
-  | { kind: "hermes-note"; createdAt: string; item: HermesNoteItem }
-  | { kind: "hermes-tool"; createdAt: string; item: HermesToolItem };
-
-type HermesMessageItem = {
-  id: string;
-  text: string;
-  status: "running" | "completed";
-};
-
-type HermesNoteItem = {
-  id: string;
-  label: string;
-  text: string;
-  status: "running" | "completed";
-};
-
-type HermesToolItem = {
-  id: string;
-  name: string;
-  text: string;
-  status: "running" | "completed" | "failed";
-};
-
-function mergeTimeline(
-  messages: AgentMessageDto[],
-  toolEvents: AgentToolEventDto[],
-  hermesEvents: LiveHermesEvent[] = [],
-): TimelineItem[] {
-  return [
-    ...messages.map((message) => ({
-      kind: "message" as const,
-      createdAt: message.createdAt,
-      message,
-    })),
-    ...toolEvents.map((event) => ({
-      kind: "tool" as const,
-      createdAt: event.createdAt,
-      event,
-    })),
-    ...normalizeHermesEvents(hermesEvents),
-  ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-}
-
-function normalizeHermesEvents(events: LiveHermesEvent[]): TimelineItem[] {
-  const items: TimelineItem[] = [];
-  let currentMessage:
-    | (HermesMessageItem & { createdAt: string; lastText?: string })
-    | null = null;
-  let currentNote:
-    | (HermesNoteItem & { createdAt: string; lastText?: string })
-    | null = null;
-  const tools = new Map<
-    string,
-    HermesToolItem & { createdAt: string; lastText?: string }
-  >();
-
-  const flushMessage = () => {
-    const message = currentMessage;
-    if (!message) return;
-    const text = collapseRepeatedMessageText(message.text);
-    if (!text.trim()) {
-      currentMessage = null;
-      return;
-    }
-    const previous = items.at(-1);
-    if (
-      previous?.kind === "hermes-message" &&
-      sameMessageText(previous.item.text, text)
-    ) {
-      previous.item.status = message.status;
-      currentMessage = null;
-      return;
-    }
-    items.push({
-      kind: "hermes-message",
-      createdAt: message.createdAt,
-      item: {
-        id: message.id,
-        text,
-        status: message.status,
-      },
-    });
-    currentMessage = null;
-  };
-
-  const flushNote = () => {
-    if (!currentNote?.text.trim()) {
-      currentNote = null;
-      return;
-    }
-    items.push({
-      kind: "hermes-note",
-      createdAt: currentNote.createdAt,
-      item: {
-        id: currentNote.id,
-        label: currentNote.label,
-        text: currentNote.text.trim(),
-        status: currentNote.status,
-      },
-    });
-    currentNote = null;
-  };
-
-  for (const event of events) {
-    const text = eventText(event);
-    if (event.type === "message.start") {
-      flushMessage();
-      currentMessage = {
-        id: `message:${event.receivedAt}`,
-        createdAt: event.receivedAt,
-        text: "",
-        status: "running",
-      };
-      continue;
-    }
-    if (event.type === "message.delta") {
-      flushNote();
-      if (!currentMessage) {
-        currentMessage = {
-          id: `message:${event.receivedAt}`,
-          createdAt: event.receivedAt,
-          text: "",
-          status: "running",
-        };
-      }
-      currentMessage.text = appendMessageText(currentMessage.text, text);
-      currentMessage.lastText = text;
-      continue;
-    }
-    if (event.type === "message.complete") {
-      flushNote();
-      if (!currentMessage) {
-        currentMessage = {
-          id: `message:${event.receivedAt}`,
-          createdAt: event.receivedAt,
-          text: "",
-          status: "completed",
-        };
-      }
-      if (text) {
-        currentMessage.text = completeMessageText(currentMessage.text, text);
-      }
-      currentMessage.status = "completed";
-      flushMessage();
-      continue;
-    }
-    if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
-      flushMessage();
-      if (!text || text === event.type) continue;
-      const label = event.type === "thinking.delta" ? "Thinking" : "Reasoning";
-      if (!currentNote || currentNote.label !== label) {
-        flushNote();
-        currentNote = {
-          id: `${event.type}:${event.receivedAt}`,
-          createdAt: event.receivedAt,
-          label,
-          text: "",
-          status: "running",
-        };
-      }
-      currentNote.text = appendLogText(currentNote.text, text);
-      currentNote.lastText = text;
-      continue;
-    }
-    if (event.type.startsWith("tool.")) {
-      flushMessage();
-      flushNote();
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const key = toolEventKey(event);
-      const status = event.type.includes("complete")
-        ? "completed"
-        : event.type.includes("error") || event.type.includes("fail")
-          ? "failed"
-          : "running";
-      const name =
-        stringValue(payload?.name) ??
-        stringValue(payload?.tool_name) ??
-        stringValue(payload?.tool) ??
-        "Tool";
-      const item =
-        tools.get(key) ??
-        ({
-          id: key,
-          createdAt: event.receivedAt,
-          name: humanizeToolName(name),
-          text: "",
-          status,
-        } satisfies HermesToolItem & { createdAt: string });
-      item.status = status;
-      item.name = humanizeToolName(name);
-      if (text && text !== item.lastText) {
-        item.text = appendLogText(item.text, text);
-        item.lastText = text;
-      }
-      tools.set(key, item);
-      continue;
-    }
-    if (event.type === "error" && text) {
-      flushMessage();
-      flushNote();
-      items.push({
-        kind: "hermes-note",
-        createdAt: event.receivedAt,
-        item: {
-          id: `error:${event.receivedAt}`,
-          label: "Error",
-          text,
-          status: "completed",
-        },
-      });
-    }
-  }
-
-  flushMessage();
-  flushNote();
-  for (const tool of tools.values()) {
-    if (!tool.text.trim()) continue;
-    items.push({
-      kind: "hermes-tool",
-      createdAt: tool.createdAt,
-      item: {
-        id: tool.id,
-        name: tool.name,
-        text: tool.text.trim(),
-        status: tool.status,
-      },
-    });
-  }
-  return items;
-}
-
-function completedHermesMessageText(events: LiveHermesEvent[]) {
-  const message = normalizeHermesEvents(events)
-    .filter(
-      (item): item is Extract<TimelineItem, { kind: "hermes-message" }> =>
-        item.kind === "hermes-message",
-    )
-    .at(-1);
-  if (!message || message.item.status !== "completed") return "";
-  return message.item.text.trim();
-}
-
-function SafetyBadge() {
+function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
+  if (!privacyBadge) return null;
   return (
     <span
       className="agent-safety-badge"
-      title="Sensitive desktop, credential, payment, and destructive actions are blocked or escalated."
-      aria-label="Private mode — sensitive desktop, credential, payment, and destructive actions are blocked or escalated."
+      data-mode={privacyBadge.mode}
+      title={privacyBadge.description}
+      aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
     >
-      <IconShieldAi size={13} aria-hidden />
-      <span className="agent-safety-badge-label">Private mode</span>
+      {privacyBadge.mode === "private" ? (
+        <IconShieldAi size={13} aria-hidden />
+      ) : (
+        <IconAnonymous size={13} aria-hidden />
+      )}
+      <span className="agent-safety-badge-label">{privacyBadge.label}</span>
     </span>
   );
 }
@@ -3078,6 +2899,7 @@ function SafetyBadge() {
 // conversation keeps the focus (no separate title heading).
 function AgentSessionBar({
   origin,
+  privacyBadge,
   title,
   artifactCount = 0,
   artifactsOpen = false,
@@ -3086,6 +2908,7 @@ function AgentSessionBar({
   onDelete,
 }: {
   origin?: AgentWorkspaceOrigin;
+  privacyBadge?: ModelPrivacyBadge;
   title?: string;
   artifactCount?: number;
   artifactsOpen?: boolean;
@@ -3207,7 +3030,7 @@ function AgentSessionBar({
             <span aria-hidden>{artifactCount}</span>
           </button>
         ) : null}
-        <SafetyBadge />
+        <SafetyBadge privacyBadge={privacyBadge} />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
             <button
@@ -3294,7 +3117,15 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
 
 function isReplaceableAgentSessionTitle(title: unknown) {
   const normalized = safeText(title).trim().toLowerCase();
-  return !normalized || normalized === "untitled session";
+  return (
+    !normalized ||
+    normalized === "untitled session" ||
+    normalized.endsWith("...") ||
+    normalized.length > 52 ||
+    /^(?:i'm\s+|i\s+(?:want|need)\s+|please\s+|can you\s+|could you\s+|would you\s+|help me\s+|who are you|what can you|what are you|what do you|summarize\s+|set up\s+|test$)/.test(
+      normalized,
+    )
+  );
 }
 
 function PanelTabs({
@@ -4330,6 +4161,8 @@ function ApprovalPart({
   const disabled = Boolean(submitting) || part.status !== "pending";
   const activeChoice = part.choice ?? submitting;
   const resolved = part.status !== "pending" || activeChoice !== undefined;
+  const [explainOpen, setExplainOpen] = useState(false);
+  const explanationId = useId();
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
@@ -4347,6 +4180,22 @@ function ApprovalPart({
         </div>
         <p>{part.description}</p>
         {part.command ? <pre>{part.command}</pre> : null}
+        {!resolved && explainOpen ? (
+          <div className="agent-approval-explanation" id={explanationId}>
+            <p>
+              June is paused because this request needs your explicit permission
+              before it can continue.
+            </p>
+            <p>
+              Approve once allows only this request. This session allows
+              matching requests until the session ends.{" "}
+              {part.allowPermanent
+                ? "Always allows matching requests in future sessions. "
+                : null}
+              Deny blocks the request.
+            </p>
+          </div>
+        ) : null}
         {resolved ? (
           <p className="agent-approval-result" data-choice={activeChoice}>
             {activeChoice === "deny" ? (
@@ -4363,6 +4212,17 @@ function ApprovalPart({
           // System buttons (.btn) — quiet soft-fill choices, ghost deny. The
           // repeated per-button icons read as noise, so labels stand alone.
           <div className="agent-approval-actions">
+            <button
+              type="button"
+              className="btn btn-secondary agent-approval-explain"
+              aria-expanded={explainOpen}
+              aria-controls={explanationId}
+              disabled={disabled}
+              onClick={() => setExplainOpen((value) => !value)}
+            >
+              <IconCircleQuestionmark size={14} />
+              {explainOpen ? "Hide explanation" : "Explain first"}
+            </button>
             <button
               type="button"
               className="btn btn-secondary"
@@ -5063,71 +4923,6 @@ function highlightText(
   return nodes;
 }
 
-function ToolEventRow({ event }: { event: AgentToolEventDto }) {
-  return (
-    <AgentToolDisclosure
-      name={event.toolName.replaceAll("_", " ")}
-      status={event.status}
-      text={event.summary}
-      redacted={event.redacted}
-      statusNode={
-        event.status === "completed" ? null : (
-          <StatusPill status={toolStatusToTaskStatus(event.status)} compact />
-        )
-      }
-    />
-  );
-}
-
-function HermesMessageRow({ item }: { item: HermesMessageItem }) {
-  return (
-    <article className="agent-hermes-message" data-status={item.status}>
-      <MarkdownContent markdown={item.text} />
-    </article>
-  );
-}
-
-function HermesToolRow({ item }: { item: HermesToolItem }) {
-  return (
-    <AgentToolDisclosure
-      name={item.name}
-      status={item.status}
-      text={item.text}
-      statusNode={
-        item.status === "completed" ? null : item.status === "failed" ? (
-          <span className="agent-tool-live-status" data-status="failed">
-            Failed
-          </span>
-        ) : (
-          <span
-            className="agent-tool-spinner"
-            role="status"
-            aria-label="Running"
-            title="Running"
-          >
-            <PangolinSpinner />
-          </span>
-        )
-      }
-    />
-  );
-}
-
-function HermesNoteRow({ item }: { item: HermesNoteItem }) {
-  const running = item.status === "running";
-  const preview = item.text.replace(/\s+/g, " ").trim();
-  const label = running ? item.label : preview || item.label;
-  return (
-    <details className="agent-hermes-note" data-status={item.status}>
-      <summary>
-        <span className={running ? "text-shimmer" : undefined}>{label}</span>
-        <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
-      </summary>
-      <MarkdownContent markdown={item.text} />
-    </details>
-  );
-}
-
 function renderMarkdownBlocks(markdown: string, highlight?: string) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
@@ -5159,13 +4954,16 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
         code.push(lines[index]);
         index += 1;
       }
-      blocks.push(
-        <pre key={`code-${key++}`}>
-          <code>
-            {highlightText(code.join("\n"), highlight, `code-${key}`)}
-          </code>
-        </pre>,
-      );
+      // Skip empty fences — including a stray trailing ``` while streaming —
+      // so we don't flash an empty code block (a bare padded gray bar).
+      const body = code.join("\n");
+      if (body.trim()) {
+        blocks.push(
+          <pre key={`code-${key++}`}>
+            <code>{highlightText(body, highlight, `code-${key}`)}</code>
+          </pre>,
+        );
+      }
       continue;
     }
 
@@ -5382,75 +5180,6 @@ function eventText(event: HermesGatewayEvent) {
     if (value) return value;
   }
   return "";
-}
-
-function appendMessageText(current: string, next: string) {
-  if (!next.trim()) return current;
-  if (!current) return next;
-  if (next.startsWith(current)) return next;
-  if (current.endsWith(next)) return current;
-  return `${current}${next}`;
-}
-
-function completeMessageText(current: string, complete: string) {
-  if (!complete.trim()) return current;
-  if (!current.trim()) return complete;
-  if (complete.trim() === current.trim()) return current;
-  if (complete.includes(current.trim()) || complete.length >= current.length) {
-    return complete;
-  }
-  return appendMessageText(current, complete);
-}
-
-function collapseRepeatedMessageText(value: string) {
-  let text = value.trim();
-  if (!text) return "";
-
-  for (;;) {
-    const match = text.match(/^([\s\S]+?)\s+\1$/);
-    if (!match?.[1]) break;
-    text = match[1].trim();
-  }
-
-  const paragraphs = text.split(/\n{2,}/);
-  const dedupedParagraphs = paragraphs.filter((paragraph, index) => {
-    if (index === 0) return true;
-    return !sameMessageText(paragraph, paragraphs[index - 1] ?? "");
-  });
-  text = dedupedParagraphs.join("\n\n").trim();
-
-  const lines = text.split("\n");
-  const dedupedLines = lines.filter((line, index) => {
-    if (index === 0) return true;
-    return !sameMessageText(line, lines[index - 1] ?? "");
-  });
-  text = dedupedLines.join("\n").trim();
-
-  const half = Math.floor(text.length / 2);
-  const left = text.slice(0, half).trim();
-  const right = text.slice(half).trim();
-  if (left && sameMessageText(left, right)) return left;
-
-  return text;
-}
-
-function sameMessageText(left: string, right: string) {
-  return normalizeMessageText(left) === normalizeMessageText(right);
-}
-
-function normalizeMessageText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function appendLogText(current: string, next: string) {
-  if (!next.trim()) return current;
-  if (!current) return next;
-  if (current.endsWith(next)) return current;
-  const separator =
-    /\n$/.test(current) || /^\s/.test(next) || /^[.,!?;:]/.test(next)
-      ? ""
-      : "\n";
-  return `${current}${separator}${next}`;
 }
 
 function stringValue(value: unknown, preserveWhitespace = false) {
@@ -5891,24 +5620,6 @@ function messagingTrimEdits(edits: Record<string, string>) {
   );
 }
 
-function StatusPill({
-  status,
-  compact = false,
-}: {
-  status: AgentTaskStatus;
-  compact?: boolean;
-}) {
-  return (
-    <span
-      className="agent-status-pill"
-      data-status={status}
-      data-compact={compact}
-    >
-      {statusLabel(status)}
-    </span>
-  );
-}
-
 function ActivityIndicator({
   active,
   large = false,
@@ -5941,28 +5652,6 @@ function AgentThinking() {
       <span className="text-shimmer agent-thinking-label">Thinking…</span>
     </div>
   );
-}
-
-function toolStatusToTaskStatus(
-  status: AgentToolEventDto["status"],
-): AgentTaskStatus {
-  if (status === "completed") return "completed";
-  if (status === "failed") return "failed";
-  if (status === "running" || status === "proposed") return "running";
-  return "waitingForUser";
-}
-
-function isTaskActive(status: AgentTaskStatus) {
-  return status === "queued" || status === "running";
-}
-
-function statusLabel(status: AgentTaskStatus) {
-  switch (status) {
-    case "waitingForUser":
-      return "Waiting";
-    default:
-      return status[0].toUpperCase() + status.slice(1);
-  }
 }
 
 function taskActivitySummary(task: AgentTaskDto) {

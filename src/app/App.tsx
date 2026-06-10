@@ -11,6 +11,7 @@ import {
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
+import { TrialGate } from "../components/account/TrialGate";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -101,7 +102,7 @@ import type {
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
-import { shouldBlockOnSignIn } from "../lib/account-gate";
+import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
 import {
   checkScribeUpdate,
   relaunchScribe,
@@ -164,6 +165,12 @@ export function App() {
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const [agentWaitingSessionIds, setAgentWaitingSessionIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   // sessionId -> project (folder) ids. Sessions live in Hermes, so their
   // project assignments are tracked separately from the notes state.
   const [sessionFolders, setSessionFolders] = useState<
@@ -238,7 +245,8 @@ export function App() {
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
   const finishingSessionsRef = useRef<Set<string>>(new Set());
   const signInRequired = shouldBlockOnSignIn(account);
-  const appBlocked = accountLoading || signInRequired;
+  const trialRequired = !signInRequired && shouldBlockOnTrial(account);
+  const appBlocked = accountLoading || signInRequired || trialRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -541,12 +549,12 @@ export function App() {
           setAgentOriginFolderId(undefined);
         }
       }
-      agentMenuBarWorkingSessionIdsRef.current = new Set(
-        detail.workingSessionIds,
-      );
-      agentMenuBarWaitingSessionIdsRef.current = new Set(
-        detail.waitingSessionIds ?? [],
-      );
+      const nextWorkingSessionIds = new Set(detail.workingSessionIds);
+      const nextWaitingSessionIds = new Set(detail.waitingSessionIds ?? []);
+      agentMenuBarWorkingSessionIdsRef.current = nextWorkingSessionIds;
+      agentMenuBarWaitingSessionIdsRef.current = nextWaitingSessionIds;
+      setAgentWorkingSessionIds(new Set(nextWorkingSessionIds));
+      setAgentWaitingSessionIds(new Set(nextWaitingSessionIds));
       publishAgentMenuBarState();
     }
 
@@ -559,6 +567,12 @@ export function App() {
           working: agentMenuBarWorkingSessionIdsRef.current,
           waiting: agentMenuBarWaitingSessionIdsRef.current,
         });
+        setAgentWorkingSessionIds(
+          new Set(agentMenuBarWorkingSessionIdsRef.current),
+        );
+        setAgentWaitingSessionIds(
+          new Set(agentMenuBarWaitingSessionIdsRef.current),
+        );
       }
       publishAgentMenuBarState();
     }
@@ -575,6 +589,12 @@ export function App() {
       );
       agentMenuBarWorkingSessionIdsRef.current.delete(sessionId);
       agentMenuBarWaitingSessionIdsRef.current.delete(sessionId);
+      setAgentWorkingSessionIds(
+        new Set(agentMenuBarWorkingSessionIdsRef.current),
+      );
+      setAgentWaitingSessionIds(
+        new Set(agentMenuBarWaitingSessionIdsRef.current),
+      );
       publishAgentMenuBarState();
     }
 
@@ -1450,6 +1470,24 @@ export function App() {
     );
   }
 
+  if (trialRequired) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <TrialGate
+          account={account}
+          onRefresh={refreshAccount}
+          onSignOut={() => void handleSignOut()}
+        />
+      </main>
+    );
+  }
+
   return (
     <main
       className="app-shell"
@@ -1674,6 +1712,8 @@ export function App() {
                 sessions={agentSessions}
                 folders={state.folders}
                 sessionFolderIds={sessionFolders}
+                workingSessionIds={agentWorkingSessionIds}
+                waitingSessionIds={agentWaitingSessionIds}
                 onSelectSession={(session) => {
                   setAgentOriginFolderId(undefined);
                   setActiveAgentSession(session);

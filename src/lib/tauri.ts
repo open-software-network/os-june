@@ -1005,7 +1005,17 @@ export type AccountUser = {
 };
 
 export type AccountBalance = {
+  /** Present whenever the backend snapshot succeeds; optional so older
+   * payload shapes (and test fixtures) without it don't lock the app. */
+  credits?: number;
   usdMillis: number;
+};
+
+export type AccountSubscription = {
+  subscribed: boolean;
+  status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
+  trialEnd?: string;
+  currentPeriodEnd?: string;
 };
 
 export type AccountStatus = {
@@ -1013,6 +1023,11 @@ export type AccountStatus = {
   configured: boolean;
   user?: AccountUser;
   balance?: AccountBalance;
+  /** Absent when the subscription state couldn't be determined — distinct
+   * from `{ subscribed: false }`. */
+  subscription?: AccountSubscription;
+  /** The accounts portal origin, where the free-trial flow lives. */
+  portalUrl?: string;
 };
 
 export async function osAccountsStatus() {
@@ -1033,6 +1048,12 @@ export async function osAccountsLogout() {
 
 export async function osAccountsTopUp() {
   return invoke<void>("os_accounts_top_up");
+}
+
+/** Opens the accounts portal in the default browser — the webview swallows
+ * target="_blank" anchors, so portal navigation must go through Rust. */
+export async function osAccountsOpenPortal() {
+  return invoke<void>("os_accounts_open_portal");
 }
 
 export async function dictationSettings() {

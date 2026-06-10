@@ -147,12 +147,14 @@ describe("App shortcuts", () => {
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
       balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
     });
     mocks.osAccountsLogin.mockResolvedValue({
       signedIn: true,
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
       balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
     });
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
@@ -271,6 +273,7 @@ describe("App shortcuts", () => {
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
       balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
     });
 
     expect(

@@ -56,6 +56,11 @@ import {
   type ThemePreference,
 } from "../../lib/theme";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
+import {
+  dispatchProviderModelSettingsChanged,
+  modelPrivacyBadge,
+  modelPrivacyFlags,
+} from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -626,6 +631,7 @@ export function AppSettings({
     try {
       const next = await setVeniceModel(mode, modelId);
       setProviderSettings(next);
+      dispatchProviderModelSettingsChanged({ mode, modelId });
       setStatus(
         mode === "transcription"
           ? "Transcription model updated."
@@ -1421,25 +1427,26 @@ function ModelRow({
 }
 
 function ModelMeta({ model }: { model: VeniceModelDto }) {
-  const flags = traitFlags(model);
+  const flags = modelPrivacyFlags(model);
+  const privacyBadge = modelPrivacyBadge(model, flags);
   const context = contextLabel(model);
   const price = pricingLabel(model);
   const items: ReactNode[] = [];
   if (price) items.push(<span className="model-meta-price">{price}</span>);
   if (context) items.push(<span>{context}</span>);
-  if (flags.private) {
+  if (privacyBadge) {
     items.push(
-      <span className="model-trait-icon" title="Private">
-        <IconGhost2 size={14} />
-        <span>Private</span>
-      </span>,
-    );
-  }
-  if (flags.anon) {
-    items.push(
-      <span className="model-trait-icon" title="Anonymous">
-        <IconAnonymous size={14} />
-        <span>Anon</span>
+      <span
+        className="model-trait-icon"
+        title={privacyBadge.description}
+        aria-label={privacyBadge.description}
+      >
+        {privacyBadge.mode === "private" ? (
+          <IconGhost2 size={14} />
+        ) : (
+          <IconAnonymous size={14} />
+        )}
+        <span>{privacyBadge.label}</span>
       </span>,
     );
   }
@@ -1468,21 +1475,6 @@ function ModelMeta({ model }: { model: VeniceModelDto }) {
       ))}
     </span>
   );
-}
-
-function traitFlags(model: VeniceModelDto) {
-  const privacy = (model.privacy ?? "").toLowerCase();
-  const traits = model.traits.map((trait) => trait.toLowerCase());
-  return {
-    private: privacy === "private",
-    anon:
-      privacy.includes("anonymous") ||
-      privacy.includes("anonymized") ||
-      traits.some(
-        (trait) => trait.includes("anonymous") || trait.includes("anonymized"),
-      ),
-    uncensored: traits.some((trait) => trait.includes("uncensored")),
-  };
 }
 
 function ShortcutRow({

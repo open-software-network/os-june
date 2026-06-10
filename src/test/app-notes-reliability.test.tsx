@@ -159,6 +159,7 @@ describe("notes recording reliability", () => {
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
       balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
     };
 
     mocks.getCurrentWindow.mockReturnValue({
@@ -206,17 +207,26 @@ describe("notes recording reliability", () => {
       expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
     );
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await act(async () => {
-      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-        payload: undefined,
-      });
-    });
-    await waitFor(() =>
+    // The meeting-start listener silently drops events until the effect
+    // re-subscribes with bootstrapped=true — and that happens in a passive
+    // effect of a commit made outside act (getNote's resolution), so on slow
+    // (coverage) runs the listener in the map can still be a stale closure
+    // when we fire. Re-fire until the live listener takes the event; the
+    // calls-length guard makes a successful start fire exactly once, so this
+    // can never double-start a recording.
+    await waitFor(async () => {
+      if (mocks.startRecording.mock.calls.length === 0) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
       expect(mocks.startRecording).toHaveBeenCalledWith(
         "note-1",
         "microphonePlusSystem",
-      ),
-    );
+      );
+    });
   }
 
   it("does not mark a different note transcribing when finishing a recording started elsewhere", async () => {
@@ -239,7 +249,9 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-2"));
 
     // The recorder bar is global, so Done is still reachable from note-2.
-    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    // findByRole: the bar re-renders while getNote("note-2") settles, so a
+    // sync query can race the view switch on slow runs.
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }));
     await waitFor(() =>
       expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"),
     );

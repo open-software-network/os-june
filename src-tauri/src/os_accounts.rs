@@ -81,6 +81,14 @@ struct BalanceWire {
     usd_millis: i64,
 }
 
+#[derive(Deserialize)]
+struct SubscriptionWire {
+    subscribed: bool,
+    status: Option<String>,
+    trial_end: Option<String>,
+    current_period_end: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUser {
@@ -101,6 +109,18 @@ pub struct AccountBalance {
     pub usd_millis: i64,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSubscription {
+    pub subscribed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trial_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_period_end: Option<String>,
+}
+
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountStatus {
@@ -110,6 +130,13 @@ pub struct AccountStatus {
     pub user: Option<AccountUser>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub balance: Option<AccountBalance>,
+    /// None when the subscription endpoint is unavailable (older accounts
+    /// API) or the fetch failed — distinct from "not subscribed".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<AccountSubscription>,
+    /// The accounts portal origin, where the free-trial flow lives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal_url: Option<String>,
 }
 
 impl From<MeWire> for AccountUser {
@@ -249,13 +276,15 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
         });
     }
     match fetch_snapshot(&cfg).await {
-        Ok((user, balance)) => {
+        Ok((user, balance, subscription)) => {
             set_cached_signed_in(true);
             Ok(AccountStatus {
                 signed_in: true,
                 configured: cfg.configured(),
                 user: Some(user),
                 balance: Some(balance),
+                subscription,
+                portal_url: portal_url(&cfg),
             })
         }
         Err(_) => {
@@ -311,13 +340,15 @@ pub async fn os_accounts_login(
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
     store_tokens(&pair).await?;
 
-    let (user, balance) = fetch_snapshot(&cfg).await?;
+    let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     set_cached_signed_in(true);
     Ok(AccountStatus {
         signed_in: true,
         configured: true,
         user: Some(user),
         balance: Some(balance),
+        subscription,
+        portal_url: portal_url(&cfg),
     })
 }
 
@@ -356,6 +387,22 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
 pub fn os_accounts_top_up() -> Result<(), AppError> {
     let cfg = Config::load();
     open_in_browser(cfg.accounts_url.trim_end_matches('/'))
+}
+
+/// Opens the accounts portal in the default browser. The webview swallows
+/// `target="_blank"` anchors, so any in-app "go to the portal" affordance
+/// (trial gate, billing) must route through this command.
+#[tauri::command]
+pub fn os_accounts_open_portal() -> Result<(), AppError> {
+    let cfg = Config::load();
+    let url = cfg.accounts_url.trim_end_matches('/');
+    if url.is_empty() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    open_in_browser(url)
 }
 
 /// Register the deep-link handler at app setup. Drains any in-flight
@@ -776,10 +823,28 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
     Err(AppError::new("unauthorized", "Not signed in."))
 }
 
-async fn fetch_snapshot(cfg: &Config) -> Result<(AccountUser, AccountBalance), AppError> {
+async fn fetch_snapshot(
+    cfg: &Config,
+) -> Result<(AccountUser, AccountBalance, Option<AccountSubscription>), AppError> {
     let me: MeWire = authed_get(cfg, "/me").await?;
     let balance: BalanceWire = authed_get(cfg, "/billing/balance").await?;
-    Ok((me.into(), balance.into()))
+    // Best-effort: an accounts API without the subscription endpoint must not
+    // break sign-in. None means "unknown", not "not subscribed".
+    let subscription = authed_get::<SubscriptionWire>(cfg, "/billing/subscription")
+        .await
+        .ok()
+        .map(|w| AccountSubscription {
+            subscribed: w.subscribed,
+            status: w.status,
+            trial_end: w.trial_end,
+            current_period_end: w.current_period_end,
+        });
+    Ok((me.into(), balance.into(), subscription))
+}
+
+fn portal_url(cfg: &Config) -> Option<String> {
+    let url = cfg.accounts_url.trim_end_matches('/');
+    (!url.is_empty()).then(|| url.to_string())
 }
 
 fn net_error(e: reqwest::Error) -> AppError {

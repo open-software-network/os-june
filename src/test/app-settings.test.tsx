@@ -5,6 +5,7 @@ import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { MASCOT_ENABLED_KEY } from "../lib/mascot-settings";
+import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -214,6 +215,18 @@ describe("AppSettings", () => {
                 pricing: { input: { usd: 0.2 }, output: { usd: 0.8 } },
                 contextTokens: 65536,
                 traits: ["anonymized", "uncensored"],
+                capabilities: [],
+              },
+              {
+                provider: "venice",
+                id: "anonymous-only",
+                name: "Anonymous Only",
+                modelType: "text",
+                description: "Anonymizes prompts before upstream inference.",
+                privacy: "anonymous",
+                pricing: { input: { usd: 0.1 }, output: { usd: 0.4 } },
+                contextTokens: 32768,
+                traits: [],
                 capabilities: [],
               },
             ],
@@ -987,59 +1000,90 @@ describe("AppSettings", () => {
 
   it("loads Venice model options and saves selected models", async () => {
     const user = userEvent.setup();
-    render(
-      <AppSettings
-        account={signedInAccount}
-        accountLoading={false}
-        sourceMode="microphoneOnly"
-        checkingSourceReadiness={false}
-        onAccountChanged={vi.fn()}
-        onAccountRefresh={vi.fn()}
-        onSourceModeChange={vi.fn()}
-        onEnableSystemAudio={vi.fn()}
-      />,
+    const modelChanged = vi.fn();
+    window.addEventListener(
+      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+      modelChanged,
     );
 
-    await waitFor(() =>
-      expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
-    );
-    await user.click(screen.getByRole("tab", { name: "Models" }));
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Change transcription model",
-      }),
-    );
-    expect(
-      await screen.findByRole("option", { name: /Parakeet/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getAllByText("$0.0001 per second audio").length,
-    ).toBeGreaterThan(0);
-    expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
-    await user.click(
-      await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),
-    );
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-      "transcription",
-      "gpt-4o-transcribe",
-    );
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
 
-    await user.click(
-      screen.getByRole("button", {
-        name: "Change text model",
-      }),
-    );
-    expect(
-      screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
-    ).toBeGreaterThan(0);
-    expect(screen.getAllByText("Anon").length).toBeGreaterThan(0);
-    await user.click(
-      await screen.findByRole("option", { name: /Venice Uncensored/ }),
-    );
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-      "generation",
-      "venice-uncensored",
-    );
+      await waitFor(() =>
+        expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
+      );
+      await user.click(screen.getByRole("tab", { name: "Models" }));
+      await user.click(
+        await screen.findByRole("button", {
+          name: "Change transcription model",
+        }),
+      );
+      expect(
+        await screen.findByRole("option", { name: /Parakeet/ }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getAllByText("$0.0001 per second audio").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
+      await user.click(
+        await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),
+      );
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "transcription",
+        "gpt-4o-transcribe",
+      );
+      expect(modelChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            mode: "transcription",
+            modelId: "gpt-4o-transcribe",
+          },
+        }),
+      );
+
+      await user.click(
+        screen.getByRole("button", {
+          name: "Change text model",
+        }),
+      );
+      expect(
+        screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("Private mode").length).toBeGreaterThan(0);
+      expect(screen.getByText("Anonymous mode")).toBeInTheDocument();
+      expect(screen.queryByText("Anon")).not.toBeInTheDocument();
+      await user.click(
+        await screen.findByRole("option", { name: /Venice Uncensored/ }),
+      );
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "venice-uncensored",
+      );
+      expect(modelChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            mode: "generation",
+            modelId: "venice-uncensored",
+          },
+        }),
+      );
+    } finally {
+      window.removeEventListener(
+        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+        modelChanged,
+      );
+    }
   });
 
   it("shows app build metadata", async () => {

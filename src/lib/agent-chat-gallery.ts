@@ -249,7 +249,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Approval — pending",
       description:
-        "Approval request awaiting a choice. Buttons: Approve once / This session / Always / Deny.",
+        "Approval request awaiting a choice. Buttons: Explain first / Approve once / This session / Always / Deny.",
       turns: [
         assistantTurn("approval-pending", [
           {

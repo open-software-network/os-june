@@ -62,9 +62,88 @@ export function sessionTimestamp(session: HermesSessionInfo) {
 }
 
 export function titleFromPrompt(prompt: string) {
-  const title = prompt.replace(/\s+/g, " ").trim();
+  const source = promptTitleSource(prompt);
+  if (!source) return "Untitled session";
+  const stripped = stripRequestPrefix(source) || source;
+  const firstClause = stripped
+    .split(/(?:[.!?;:]|\s+-\s+|\s+--\s+)/)
+    .at(0)
+    ?.trim();
+  const words = (firstClause || stripped)
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 6);
+  const title = titleCaseSessionTitle(words.join(" "));
   if (title.length <= 72) return title || "Untitled session";
   return `${title.slice(0, 69).trim()}...`;
+}
+
+function promptTitleSource(prompt: string) {
+  return prompt
+    .replace(/\n*--- Attached Context ---[\s\S]*$/m, "")
+    .replace(/\n*--- Context Warnings ---[\s\S]*$/m, "")
+    .replace(/\n+Attached files copied into[\s\S]*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "");
+}
+
+function stripRequestPrefix(value: string) {
+  let title = value.trim();
+  const prefixes = [
+    /^(?:hey\s+)?june,?\s+/i,
+    /^(?:please\s+)?(?:can|could|would)\s+you\s+/i,
+    /^(?:please\s+)?help\s+me(?:\s+to)?\s+/i,
+    /^(?:i\s+want\s+you\s+to|i\s+want\s+to|i\s+need\s+you\s+to|i\s+need\s+to|i'd\s+like\s+you\s+to|i'd\s+like\s+to)\s+/i,
+    /^(?:have|ask)\s+june\s+to\s+/i,
+    /^please\s+/i,
+  ];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const prefix of prefixes) {
+      const next = title.replace(prefix, "").trim();
+      if (next !== title) {
+        title = next;
+        changed = true;
+      }
+    }
+  }
+  return title;
+}
+
+function titleCaseSessionTitle(value: string) {
+  const smallWords = new Set([
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "but",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+  ]);
+  return value
+    .split(" ")
+    .map((word, index) => {
+      if (!word) return word;
+      if (/[A-Z]/.test(word) && word === word.toUpperCase()) return word;
+      const lower = word.toLowerCase();
+      if (index > 0 && smallWords.has(lower)) return lower;
+      return lower.replace(/^([a-z])/, (match) => match.toUpperCase());
+    })
+    .join(" ")
+    .trim();
 }
 
 function extractList(response: unknown, preferredKey: "sessions" | "messages") {

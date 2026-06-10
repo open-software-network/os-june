@@ -484,6 +484,20 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   const last = textParts[textParts.length - 1] as AgentChatTextPart;
   const earlier = textParts.slice(0, -1);
   const earlierText = earlier.map((part) => part.text).join("");
+  const streamed = earlierText + last.text;
+  // The gateway builds the authoritative complete text by concatenating its
+  // internal chunks, which can trim each chunk (dropping a boundary space the
+  // live stream delivered correctly — "explore it." -> "exploreit.") or lag
+  // behind the stream. The streamed deltas are appended verbatim, so when
+  // `text` equals the stream with whitespace *removed* — the signature of
+  // joining trimmed chunks — or is just a shorter prefix of it, keep the
+  // verbatim stream instead of overwriting it with the lossy/truncated
+  // payload. Whitespace that was *changed* (a streamed newline arriving as a
+  // space, say) is a genuine correction and falls through to reconciliation.
+  if (whitespaceLossyCopyOf(streamed, text) || streamed.startsWith(text)) {
+    for (const part of textParts) part.status = "complete";
+    return;
+  }
   if (!earlier.length) {
     last.text = text;
   } else if (text.startsWith(earlierText)) {
@@ -501,6 +515,23 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   for (const part of earlier) {
     part.status = "complete";
   }
+}
+
+// True when `complete` can be derived from `streamed` purely by deleting
+// whitespace characters. Deliberately rejects whitespace substitutions:
+// deletions are the only damage joining trimmed chunks can do, so anything
+// else is a real edit the caller should honor.
+function whitespaceLossyCopyOf(streamed: string, complete: string) {
+  let from = 0;
+  for (let to = 0; to < complete.length; to += 1) {
+    while (from < streamed.length && streamed[from] !== complete[to]) {
+      if (!/\s/.test(streamed[from] as string)) return false;
+      from += 1;
+    }
+    if (from >= streamed.length) return false;
+    from += 1;
+  }
+  return !streamed.slice(from).trim();
 }
 
 function appendReasoningPart(parts: AgentChatPart[], delta: string) {

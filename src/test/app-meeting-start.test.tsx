@@ -148,6 +148,7 @@ describe("meeting start transcription event", () => {
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
       balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
     };
 
     mocks.getCurrentWindow.mockReturnValue({
@@ -182,6 +183,29 @@ describe("meeting start transcription event", () => {
     }));
   });
 
+  // The meeting-start listener silently drops events until the effect
+  // re-subscribes with bootstrapped=true — and that happens in a passive
+  // effect of a commit made outside act (getNote's resolution), so on slow
+  // (coverage) runs the listener in the map can still be a stale closure
+  // when we fire. Re-fire until the live listener takes the event; the
+  // calls-length guard makes a successful start fire exactly once, so this
+  // can never double-start a recording.
+  async function fireMeetingStartUntilRecording() {
+    await waitFor(async () => {
+      if (mocks.startRecording.mock.calls.length === 0) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
+      expect(mocks.startRecording).toHaveBeenCalledWith(
+        "note-1",
+        "microphonePlusSystem",
+      );
+    });
+  }
+
   it("starts recording through the existing recorder flow", async () => {
     render(<App />);
 
@@ -190,18 +214,7 @@ describe("meeting start transcription event", () => {
     );
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await act(async () => {
-      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-        payload: undefined,
-      });
-    });
-
-    await waitFor(() =>
-      expect(mocks.startRecording).toHaveBeenCalledWith(
-        "note-1",
-        "microphonePlusSystem",
-      ),
-    );
+    await fireMeetingStartUntilRecording();
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
   });
 
@@ -213,13 +226,8 @@ describe("meeting start transcription event", () => {
     );
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await act(async () => {
-      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-        payload: undefined,
-      });
-    });
-
-    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledOnce());
+    await fireMeetingStartUntilRecording();
+    expect(mocks.startRecording).toHaveBeenCalledOnce();
     expect(screen.getByLabelText("Meeting title")).toHaveValue("First note");
 
     await act(async () => {

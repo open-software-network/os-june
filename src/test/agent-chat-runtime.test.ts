@@ -438,6 +438,81 @@ describe("Agent chat runtime", () => {
     ).toEqual(["tool", "The authoritative answer."]);
   });
 
+  it("keeps the verbatim stream when the complete text drops a boundary space", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "Let me explore it." },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: "Let me exploreit." },
+        },
+      ],
+    );
+
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["Let me explore it."]);
+  });
+
+  it("honors a complete payload that corrects streamed whitespace", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "return\nvalue" },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: "return value" },
+        },
+      ],
+    );
+
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["return value"]);
+  });
+
+  it("does not truncate streamed text when the complete payload lags behind", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "Here is the full answer." },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: "Here is the full" },
+        },
+      ],
+    );
+
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["Here is the full answer."]);
+  });
+
   it("assigns unique turn ids to turns created in the same millisecond", () => {
     const receivedAt = "2026-06-04T10:00:00.000Z";
     const turns = buildAgentChatTurns(

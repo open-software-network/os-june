@@ -16,6 +16,7 @@ import {
   AgentWorkspace,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
+import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -31,8 +32,10 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeToolsets: vi.fn(),
   importHermesBridgeFile: vi.fn(),
   importHermesBridgeFileBytes: vi.fn(),
+  listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
+  providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
   saveAgentHermesSession: vi.fn(),
@@ -76,8 +79,10 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   importHermesBridgeFile: mocks.importHermesBridgeFile,
   importHermesBridgeFileBytes: mocks.importHermesBridgeFileBytes,
+  listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
+  providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
@@ -142,6 +147,29 @@ describe("AgentWorkspace", () => {
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5",
+          name: "GLM 5",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
     mocks.getAgentTask.mockResolvedValue(existingTask);
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
@@ -213,6 +241,85 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("labels anonymous-only agent models as anonymous mode", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "anonymous-only",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "anonymous-only",
+      models: [
+        {
+          provider: "venice",
+          id: "anonymous-only",
+          name: "Anonymous Only",
+          modelType: "text",
+          privacy: "anonymous",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(
+        "Anonymous mode - You're using a model that is anonymizing your prompts but may still train on your data.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+  });
+
+  it("refreshes the model privacy label when generation model settings change", async () => {
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Private mode")).toBeInTheDocument();
+
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "anonymous-only",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "anonymous-only",
+      models: [
+        {
+          provider: "venice",
+          id: "anonymous-only",
+          name: "Anonymous Only",
+          modelType: "text",
+          privacy: "anonymous",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, {
+          detail: { mode: "generation", modelId: "anonymous-only" },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Private mode")).not.toBeInTheDocument(),
+    );
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {
@@ -296,6 +403,63 @@ describe("AgentWorkspace", () => {
       "session-2",
     );
     expect(screen.queryByText("Newer session")).toBeNull();
+  });
+
+  it("renames prompt-like existing session titles after messages load", async () => {
+    const rawTitle = "I want you to keep this running inside my CLI";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-raw",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: rawTitle,
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "CLI Run Tracking",
+    });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("CLI Run Tracking")).toBeInTheDocument();
+  });
+
+  it("keeps generated titles that begin with past-tense request words", async () => {
+    const generatedTitle = "I Wanted Outcomes";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-generated",
+        title: generatedTitle,
+        preview: "Finished planning outcomes",
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: "plan outcomes",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(generatedTitle)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith(
+        "session-generated",
+      ),
+    );
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
   });
 
   it("forgets the persisted session when it is deleted", async () => {
@@ -423,6 +587,109 @@ describe("AgentWorkspace", () => {
     // Stopping also tears down the per-session gateway listener, so a
     // straggler "running" event can't flip the session back to working.
     expect(mocks.gatewayEventHandlers.size).toBe(0);
+  });
+
+  it("explains a pending approval before the user chooses", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-1",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+
+    expect(
+      screen.getByText(
+        "June is paused because this request needs your explicit permission before it can continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve once allows only this request/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Always allows matching requests in future sessions/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Hide explanation" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve once" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Always" })).toBeEnabled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "approval.respond",
+      expect.anything(),
+    );
+  });
+
+  it("omits the permanent approval explanation when Always is unavailable", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "inspect the repo",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect the repo",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-2",
+            description: "Repository inspection requires approval.",
+            command: "git status",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+
+    expect(
+      screen.getByText(/Approve once allows only this request/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Always allows matching requests in future sessions/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Always" })).toBeNull();
   });
 
   it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
