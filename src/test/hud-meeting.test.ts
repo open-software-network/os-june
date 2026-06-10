@@ -64,8 +64,11 @@ describe("meeting detection HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
       rect: null,
     });
-    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_pill_bounds", {
-      rect: { bottom: 0, left: 0, right: 0, top: 0 },
+    // The window is resized to the measured pill (jsdom rects are zero).
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_size", {
+      width: 0,
+      height: 0,
+      animate: true,
     });
   });
 
@@ -108,7 +111,9 @@ describe("meeting detection HUD", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(hudElement().dataset.state).toBe("exiting");
-    await vi.advanceTimersByTimeAsync(160);
+    // Exit completes via the timeout fallback (EXIT_TRANSITION_MS + 60) —
+    // jsdom's rAF isn't driven by fake timers, so the alpha ramp never runs.
+    await vi.advanceTimersByTimeAsync(220);
     expect(mocks.hide).toHaveBeenCalledOnce();
 
     mocks.show.mockClear();
@@ -176,7 +181,7 @@ describe("meeting detection HUD", () => {
     });
 
     expect(hudElement().dataset.state).toBe("exiting");
-    await vi.advanceTimersByTimeAsync(160);
+    await vi.advanceTimersByTimeAsync(220);
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 

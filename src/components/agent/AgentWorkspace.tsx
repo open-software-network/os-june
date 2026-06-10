@@ -18,6 +18,7 @@ import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
+import { IconLayersTwo } from "central-icons/IconLayersTwo";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
@@ -33,6 +34,7 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
+import { PangolinSpinner } from "../PangolinSpinner";
 import {
   type CSSProperties,
   type FormEvent,
@@ -92,11 +94,13 @@ import {
 } from "../../lib/hermes-adapter";
 import {
   AGENT_DELETE_SESSION_EVENT,
+  AGENT_GALLERY_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
   dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
+  type AgentGalleryDetail,
   type AgentReplyDetail,
   type AgentSessionsChangedDetail,
   type AgentSessionStatusKind,
@@ -114,6 +118,10 @@ import {
   type AgentChatTurn,
   type LiveHermesEvent,
 } from "../../lib/agent-chat-runtime";
+import {
+  buildAgentChatGallery,
+  type AgentChatGallerySection,
+} from "../../lib/agent-chat-gallery";
 
 const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "queued",
@@ -121,6 +129,35 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "waitingForUser",
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
+
+// Dev-tools response gallery handle. Registered at module scope so
+// __agentGallery() exists from app launch — registering it inside the component
+// meant it was undefined unless the Agent view happened to be mounted, which is
+// why the command appeared "not to work" from other views. The handle records
+// the desired state and broadcasts it; App switches to the Agent view on show,
+// and the workspace applies the state on mount or live via the event.
+// Dev builds only — the handle never exists in production bundles.
+let galleryDesired = false;
+
+function setGalleryDesired(show: boolean) {
+  galleryDesired = show;
+  window.dispatchEvent(
+    new CustomEvent<AgentGalleryDetail>(AGENT_GALLERY_EVENT, {
+      detail: { show },
+    }),
+  );
+}
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__agentGallery = (
+    show: boolean = true,
+  ) => {
+    setGalleryDesired(show);
+    return show
+      ? "Agent response gallery shown. Run __agentGallery(false) to hide."
+      : "Agent response gallery hidden.";
+  };
+}
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
@@ -356,6 +393,12 @@ export function AgentWorkspace({
   const [clarifySubmitting, setClarifySubmitting] = useState<
     Record<string, string>
   >({});
+  // Dev-tools response gallery: when set, the timeline is replaced by a labeled
+  // catalog of every agent response part type. Toggled from the console via
+  // window.__agentGallery() — see the effect below.
+  const [gallerySections, setGallerySections] = useState<
+    AgentChatGallerySection[] | null
+  >(null);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
@@ -1700,6 +1743,21 @@ export function AgentWorkspace({
     }
   }
 
+  // Apply the dev-tools gallery toggle (window.__agentGallery, registered at
+  // module scope above): pick up the desired state on mount — the command may
+  // have been issued from another view before this workspace existed — and
+  // follow live toggles via the window event.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    setGallerySections(galleryDesired ? buildAgentChatGallery() : null);
+    const onGallery = (event: Event) => {
+      const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
+      setGallerySections(detail?.show ? buildAgentChatGallery() : null);
+    };
+    window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
+    return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
+  }, []);
+
   // Hoisted so the trailing "Thinking…" indicator only shows in the gap after a
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
@@ -1759,7 +1817,12 @@ export function AgentWorkspace({
       )}
       <section className="agent-main" aria-label="Agent task details">
         {error ? <p className="error-banner">{error}</p> : null}
-        {!newSessionMode && selectedHermesSessionId ? (
+        {gallerySections ? (
+          <AgentResponseGallery
+            sections={gallerySections}
+            onClose={() => setGalleryDesired(false)}
+          />
+        ) : !newSessionMode && selectedHermesSessionId ? (
           <>
             <div ref={listRef} className="agent-timeline">
               {hermesTurns.map((turn) => (
@@ -2013,11 +2076,7 @@ export function AgentWorkspace({
                         : "Start session"
                     }
                   >
-                    {submitting ? (
-                      <Spinner size={15} />
-                    ) : (
-                      <IconArrowUp size={16} />
-                    )}
+                    {submitting ? <Spinner /> : <IconArrowUp size={16} />}
                   </button>
                 </div>
               </div>
@@ -2541,7 +2600,7 @@ export function SkillsToolsPanel({
       />
       {loading && !skills && !toolsets ? (
         <div className="agent-loading">
-          <Spinner size={16} />
+          <Spinner />
         </div>
       ) : (
         <div className="agent-management-scroll">
@@ -2633,7 +2692,7 @@ export function MessagingPanel({
       />
       {loading && !platforms ? (
         <div className="agent-loading">
-          <Spinner size={16} />
+          <Spinner />
         </div>
       ) : (
         <div className="agent-messaging-layout">
@@ -2729,7 +2788,7 @@ export function FilesystemPanel({
       />
       {loading && !snapshot ? (
         <div className="agent-loading">
-          <Spinner size={16} />
+          <Spinner />
         </div>
       ) : roots.length ? (
         <div className="agent-management-scroll">
@@ -3148,6 +3207,61 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
   return out;
 }
 
+// Dev-only catalog of every agent response part type, rendered through the real
+// <AgentChatTurnRow> so the styling shown is exactly what ships. Toggled from the
+// console via window.__agentGallery(). Handlers are no-ops — it's a static
+// styling reference, not a live conversation. Module-level so the reference is
+// stable across renders.
+const galleryNoop = () => {};
+
+function AgentResponseGallery({
+  sections,
+  onClose,
+}: {
+  sections: AgentChatGallerySection[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="agent-timeline agent-gallery">
+      <div className="agent-gallery-banner">
+        <div>
+          <strong>Agent response gallery</strong>
+          <p>
+            Every response part type and status, for styling. Close from the
+            console with <code>__agentGallery(false)</code>.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="agent-icon-button"
+          aria-label="Close gallery"
+          onClick={onClose}
+        >
+          <XIcon size={15} />
+        </button>
+      </div>
+      {sections.map((section) => (
+        <section key={section.label} className="agent-gallery-section">
+          <header className="agent-gallery-section-header">
+            <h3>{section.label}</h3>
+            {section.description ? <p>{section.description}</p> : null}
+          </header>
+          {section.turns.map((turn) => (
+            <AgentChatTurnRow
+              key={turn.id}
+              turn={turn}
+              approvalSubmitting={{}}
+              clarifySubmitting={{}}
+              onApproval={galleryNoop}
+              onClarify={galleryNoop}
+            />
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
@@ -3296,7 +3410,9 @@ function ContextCompactionPart({
   return (
     <details className="agent-context-summary">
       <summary>
-        <IconPangolin size={14} />
+        {/* Layers, not the pangolin — the pangolin is the brand mark and the
+         * working loader, so it shouldn't also mark compaction. */}
+        <IconLayersTwo size={14} />
         <span>Context compacted</span>
         <p>{part.preview}</p>
         <time>{relativeDate(createdAt)}</time>
@@ -3388,6 +3504,7 @@ function ClarifyPart({
                   {part.choices.length ? (
                     <button
                       type="button"
+                      className="btn btn-ghost"
                       disabled={submitting !== undefined}
                       onClick={() => {
                         setDraft("");
@@ -3399,12 +3516,17 @@ function ClarifyPart({
                   ) : null}
                   <button
                     type="button"
+                    className="btn btn-ghost"
                     disabled={disabled}
                     onClick={() => onClarify(part, "")}
                   >
                     Skip
                   </button>
-                  <button type="submit" disabled={disabled || !draft.trim()}>
+                  <button
+                    type="submit"
+                    className="btn btn-secondary"
+                    disabled={disabled || !draft.trim()}
+                  >
                     {submitting !== undefined ? "Sending" : "Send"}
                   </button>
                 </div>
@@ -3462,39 +3584,41 @@ function ApprovalPart({
             )}
           </p>
         ) : (
+          // System buttons (.btn) — quiet soft-fill choices, ghost deny. The
+          // repeated per-button icons read as noise, so labels stand alone.
           <div className="agent-approval-actions">
             <button
               type="button"
+              className="btn btn-secondary"
               disabled={disabled}
               onClick={() => onApproval(part, "once")}
             >
-              <CheckIcon size={14} />
               Approve once
             </button>
             <button
               type="button"
+              className="btn btn-secondary"
               disabled={disabled}
               onClick={() => onApproval(part, "session")}
             >
-              <CheckIcon size={14} />
               This session
             </button>
             {part.allowPermanent ? (
               <button
                 type="button"
+                className="btn btn-secondary"
                 disabled={disabled}
                 onClick={() => onApproval(part, "always")}
               >
-                <CheckIcon size={14} />
                 Always
               </button>
             ) : null}
             <button
               type="button"
+              className="btn btn-ghost agent-approval-deny"
               disabled={disabled}
               onClick={() => onApproval(part, "deny")}
             >
-              <XIcon size={14} />
               Deny
             </button>
           </div>
@@ -3574,10 +3698,19 @@ function AgentToolDisclosure({
   redacted?: boolean;
 }) {
   const body = text && text.trim() ? text : null;
-  const summary = (
+  const summary = (expandable: boolean) => (
     <>
+      {/* On hover the tool glyph cross-fades to a plain-text affordance —
+       * "+" when closed, "−" when open. Text instead of svg icons: glyphs
+       * render on the text baseline grid, so the swap can't hitch a pixel. */}
       <span className="agent-tool-icon">
-        <IconConsoleSimple size={15} />
+        <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
+        {expandable ? (
+          <>
+            <span className="agent-tool-icon-expand">+</span>
+            <span className="agent-tool-icon-minimize">−</span>
+          </>
+        ) : null}
       </span>
       <span className="agent-tool-name">{name}</span>
       {statusNode}
@@ -3590,13 +3723,13 @@ function AgentToolDisclosure({
         className="agent-tool-disclosure agent-tool-disclosure-static"
         data-status={status}
       >
-        {summary}
+        {summary(false)}
       </div>
     );
   }
   return (
     <details className="agent-tool-disclosure" data-status={status}>
-      <summary>{summary}</summary>
+      <summary>{summary(true)}</summary>
       <div className="agent-tool-output">{body}</div>
     </details>
   );
@@ -3614,8 +3747,13 @@ function AgentToolPartRow({
       text={part.text}
       statusNode={
         part.status === "running" ? (
-          <span className="agent-tool-live-status" data-status="running">
-            Running
+          <span
+            className="agent-tool-spinner"
+            role="status"
+            aria-label="Running"
+            title="Running"
+          >
+            <PangolinSpinner />
           </span>
         ) : part.status === "failed" ? (
           <span className="agent-tool-live-status" data-status="failed">
@@ -3752,11 +3890,19 @@ function HermesToolRow({ item }: { item: HermesToolItem }) {
       status={item.status}
       text={item.text}
       statusNode={
-        item.status === "completed" ? null : (
-          <StatusPill
-            status={item.status === "failed" ? "failed" : "running"}
-            compact
-          />
+        item.status === "completed" ? null : item.status === "failed" ? (
+          <span className="agent-tool-live-status" data-status="failed">
+            Failed
+          </span>
+        ) : (
+          <span
+            className="agent-tool-spinner"
+            role="status"
+            aria-label="Running"
+            title="Running"
+          >
+            <PangolinSpinner />
+          </span>
         )
       }
     />
@@ -3822,6 +3968,71 @@ function renderMarkdownBlocks(markdown: string) {
       continue;
     }
 
+    // Blockquote: strip the > prefix and re-render the inner lines, so quotes
+    // can hold paragraphs, lists, or code like any other block.
+    if (trimmed.startsWith(">")) {
+      flushParagraph();
+      const quoted: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith(">")) {
+        quoted.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push(
+        <blockquote key={`quote-${key++}`}>
+          {renderMarkdownBlocks(quoted.join("\n"))}
+        </blockquote>,
+      );
+      continue;
+    }
+
+    // Pipe table: a |…| row followed by a |---|---| separator.
+    const isTableRow = (value: string) =>
+      value.startsWith("|") && value.endsWith("|") && value.length > 1;
+    if (
+      isTableRow(trimmed) &&
+      index + 1 < lines.length &&
+      /^\|(\s*:?-+:?\s*\|)+$/.test(lines[index + 1].trim())
+    ) {
+      flushParagraph();
+      const splitRow = (value: string) =>
+        value
+          .slice(1, -1)
+          .split("|")
+          .map((cell) => cell.trim());
+      const header = splitRow(trimmed);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && isTableRow(lines[index].trim())) {
+        rows.push(splitRow(lines[index].trim()));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push(
+        <div key={`table-${key++}`} className="agent-md-table">
+          <table>
+            <thead>
+              <tr>
+                {header.map((cell, cellIndex) => (
+                  <th key={cellIndex}>{renderInlineMarkdown(cell, key)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={cellIndex}>{renderInlineMarkdown(cell, key)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
     const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
     if (heading) {
       flushParagraph();
@@ -3878,7 +4089,7 @@ function renderMarkdownBlocks(markdown: string) {
 function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern =
-    /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+    /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   let index = 0;
@@ -3891,16 +4102,20 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
         <strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>,
       );
     } else if (match[3]) {
-      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[3]}</code>);
-    } else if (match[4] && match[5]) {
+      nodes.push(<em key={`em-${keySeed}-${index}`}>{match[3]}</em>);
+    } else if (match[4]) {
+      nodes.push(<del key={`del-${keySeed}-${index}`}>{match[4]}</del>);
+    } else if (match[5]) {
+      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[5]}</code>);
+    } else if (match[6] && match[7]) {
       nodes.push(
         <a
           key={`link-${keySeed}-${index}`}
-          href={match[5]}
+          href={match[7]}
           rel="noreferrer"
           target="_blank"
         >
-          {match[4]}
+          {match[6]}
         </a>,
       );
     }

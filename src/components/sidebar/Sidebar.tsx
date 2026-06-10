@@ -183,6 +183,41 @@ export function Sidebar({
   const [waitingAgentSessionIds, setWaitingAgentSessionIds] = useState<
     Set<string>
   >(() => new Set());
+  // Sessions that finished a turn while the user wasn't looking — shown as a
+  // terracotta dot in place of the timestamp until the session is opened.
+  const [unreadAgentSessionIds, setUnreadAgentSessionIds] = useState<
+    Set<string>
+  >(() => new Set());
+  // Refs for the mount-once sessions-changed listener: the previous working
+  // set (to spot sessions that just finished) and which session is open in
+  // front of the user (those never go unread).
+  const workingAgentSessionIdsRef = useRef<Set<string>>(new Set());
+  const openAgentSessionIdRef = useRef<string | undefined>(undefined);
+
+  // formatSessionTime reads the clock at render time, so re-render once a
+  // minute to keep the relative timestamps ("5m", "3h") advancing instead of
+  // waiting for an unrelated session event.
+  const [, bumpTimeClock] = useState(0);
+  useEffect(() => {
+    const interval = window.setInterval(
+      () => bumpTimeClock((tick) => tick + 1),
+      60_000,
+    );
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const openId = activeView === "agent" ? selectedAgentSessionId : undefined;
+    openAgentSessionIdRef.current = openId;
+    if (!openId) return;
+    // Opening a session reads it.
+    setUnreadAgentSessionIds((current) => {
+      if (!current.has(openId)) return current;
+      const next = new Set(current);
+      next.delete(openId);
+      return next;
+    });
+  }, [activeView, selectedAgentSessionId]);
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return notes;
@@ -276,8 +311,38 @@ export function Sidebar({
       if (!detail) return;
       setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_LIMIT));
       setSelectedAgentSessionId(detail.selectedSessionId);
-      setWorkingAgentSessionIds(new Set(detail.workingSessionIds));
-      setWaitingAgentSessionIds(new Set(detail.waitingSessionIds ?? []));
+      const nextWorking = new Set(detail.workingSessionIds);
+      const nextWaiting = new Set(detail.waitingSessionIds ?? []);
+      // A session that left the working set without pausing for input just
+      // finished a turn — mark it unread unless it's open in front of the
+      // user.
+      const openId = openAgentSessionIdRef.current;
+      const finished = Array.from(workingAgentSessionIdsRef.current).filter(
+        (id) => !nextWorking.has(id) && !nextWaiting.has(id) && id !== openId,
+      );
+      workingAgentSessionIdsRef.current = nextWorking;
+      setUnreadAgentSessionIds((current) => {
+        let changed = false;
+        const next = new Set(current);
+        for (const id of finished) {
+          if (!next.has(id)) {
+            next.add(id);
+            changed = true;
+          }
+        }
+        // A session that starts a new turn (or pauses for input) before the
+        // user opened it drops its unread mark — the spinner / needs-you dot
+        // is the fresher signal, and the dot would double-signal beside it.
+        for (const id of Array.from(next)) {
+          if (nextWorking.has(id) || nextWaiting.has(id)) {
+            next.delete(id);
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+      setWorkingAgentSessionIds(nextWorking);
+      setWaitingAgentSessionIds(nextWaiting);
     }
 
     window.addEventListener(
@@ -328,6 +393,11 @@ export function Sidebar({
         return next;
       });
       setWaitingAgentSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(session.id);
+        return next;
+      });
+      setUnreadAgentSessionIds((current) => {
         const next = new Set(current);
         next.delete(session.id);
         return next;
@@ -467,6 +537,7 @@ export function Sidebar({
                       }
                       working={workingAgentSessionIds.has(session.id)}
                       waiting={waitingAgentSessionIds.has(session.id)}
+                      unread={unreadAgentSessionIds.has(session.id)}
                       deleting={deletingAgentSessionIds.has(session.id)}
                       onSelect={() => {
                         setSelectedAgentSessionId(session.id);
@@ -781,6 +852,7 @@ function AgentSessionRow({
   selected,
   working,
   waiting,
+  unread,
   deleting,
   onSelect,
   onDelete,
@@ -789,12 +861,14 @@ function AgentSessionRow({
   selected: boolean;
   working: boolean;
   waiting: boolean;
+  unread: boolean;
   deleting: boolean;
   onSelect: () => void;
   onDelete: () => void;
 }) {
   const title = session.title || session.preview || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
+  const time = formatSessionTime(sessionTimestamp(session));
   return (
     <article
       className="note-row agent-sidebar-row"
@@ -824,16 +898,35 @@ function AgentSessionRow({
         </span>
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
-          {waiting ? (
-            <span
-              className="agent-sidebar-working"
-              data-status="waitingForUser"
-              aria-label="Needs you"
-              title="Needs you"
-            />
-          ) : null}
         </span>
       </div>
+      {waiting ? (
+        <span
+          className="agent-session-meta"
+          role="status"
+          aria-label="Needs you"
+        >
+          <span
+            className="agent-sidebar-working"
+            data-status="waitingForUser"
+            title="Needs you"
+          />
+        </span>
+      ) : unread ? (
+        <span
+          className="agent-session-meta"
+          role="status"
+          aria-label="New reply"
+        >
+          <span
+            className="agent-sidebar-working"
+            data-status="unread"
+            title="New reply"
+          />
+        </span>
+      ) : time ? (
+        <span className="agent-session-meta agent-session-time">{time}</span>
+      ) : null}
       <button
         type="button"
         className="note-row-menu agent-session-delete"
@@ -850,6 +943,26 @@ function AgentSessionRow({
       </button>
     </article>
   );
+}
+
+// Compact trailing timestamp for agent session rows: "now", "5m", "3h", "2d"
+// while recent, then "May 2". sessionTimestamp falls back to the epoch when a
+// session has no dates at all, which we render as nothing rather than 1970.
+function formatSessionTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime()) || date.getTime() === 0) return "";
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 60_000) return "now";
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function NoteContextMenu({

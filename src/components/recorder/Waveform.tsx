@@ -1,20 +1,27 @@
 import { useEffect, useRef } from "react";
-import type {
-  AudioLevelDto,
-  RecordingSource,
-  SourceStatusDto,
-} from "../../lib/tauri";
+import type { AudioLevelDto } from "../../lib/tauri";
 import {
-  clamp,
   createBarMeter,
   IDLE_LEVEL,
   LIVE_WAVE_OPTIONS,
   RECORDER_BAR_COUNT,
   RECORDER_BAR_HISTORY_OFFSETS,
   RECORDER_BAR_WEIGHTS,
-  scaleLiveInputPeak,
   withWaveLayers,
 } from "../../lib/audio-meter";
+import { visualPeakScale } from "../../lib/recorder-levels";
+
+// Shaping + source-mixing helpers moved to ../../lib/recorder-levels so the
+// vanilla-TS meeting HUD can share them; re-exported here for existing
+// importers (RecorderBar, tests).
+export {
+  combineAudioLevels,
+  combineSourceAudioLevels,
+  meterLevelForSources,
+  scaleAudioLevel,
+  SOURCE_VISUAL_GAIN,
+  visualPeakScale,
+} from "../../lib/recorder-levels";
 
 type WaveformProps = {
   level: AudioLevelDto;
@@ -107,67 +114,4 @@ export function Waveform({ level, active = true }: WaveformProps) {
       ))}
     </div>
   );
-}
-
-export function combineAudioLevels(
-  levels: Array<AudioLevelDto | undefined>,
-): AudioLevelDto {
-  const present = levels.filter((l): l is AudioLevelDto => !!l);
-  if (present.length === 0) {
-    return { peak: 0, rms: 0, recentPeaks: [] };
-  }
-  if (present.length === 1) {
-    return present[0];
-  }
-  const peak = Math.max(...present.map((l) => l.peak));
-  const rms = Math.max(...present.map((l) => l.rms));
-  // The meter reads the newest sample from the tail, so align histories there.
-  const maxLen = Math.max(...present.map((l) => l.recentPeaks.length));
-  const recentPeaks = new Array<number>(maxLen).fill(0);
-  for (const level of present) {
-    const offset = maxLen - level.recentPeaks.length;
-    for (let i = 0; i < level.recentPeaks.length; i++) {
-      recentPeaks[offset + i] = Math.max(
-        recentPeaks[offset + i],
-        level.recentPeaks[i],
-      );
-    }
-  }
-  return { peak, rms, recentPeaks };
-}
-
-export function combineSourceAudioLevels(
-  sources: SourceStatusDto[],
-): AudioLevelDto {
-  return combineAudioLevels(
-    sources.map((source) =>
-      scaleAudioLevel(source.level, SOURCE_VISUAL_GAIN[source.source]),
-    ),
-  );
-}
-
-// System audio arrives as boosted RMS from the macOS helper; keep this visual
-// only so capture, validation, and silence detection continue using raw levels.
-export const SOURCE_VISUAL_GAIN: Record<RecordingSource, number> = {
-  microphone: 1,
-  system: 0.15,
-};
-
-export function scaleAudioLevel(
-  level: AudioLevelDto,
-  gain: number,
-): AudioLevelDto {
-  if (gain === 1) {
-    return level;
-  }
-  const scale = (value: number) => clamp(value * gain, 0, 1);
-  return {
-    peak: scale(level.peak),
-    rms: scale(level.rms),
-    recentPeaks: level.recentPeaks.map(scale),
-  };
-}
-
-export function visualPeakScale(peak: number) {
-  return scaleLiveInputPeak(peak);
 }

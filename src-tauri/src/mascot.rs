@@ -14,6 +14,7 @@ pub struct MascotLayoutRequest {
     expanded: bool,
     card_count: Option<u32>,
     replying: Option<bool>,
+    context_menu_open: Option<bool>,
 }
 
 pub fn setup(app: &mut tauri::App) {
@@ -48,6 +49,7 @@ pub fn mascot_set_layout(app: AppHandle, request: MascotLayoutRequest) -> Result
         request.expanded,
         request.card_count.unwrap_or(0),
         request.replying.unwrap_or(false),
+        request.context_menu_open.unwrap_or(false),
     );
     window
         .set_size(Size::Logical(LogicalSize::new(width, height)))
@@ -70,18 +72,29 @@ pub fn mascot_open_agent(app: AppHandle, session: Option<serde_json::Value>) -> 
         .map_err(|error| error.to_string())
 }
 
-fn mascot_window_size(expanded: bool, card_count: u32, replying: bool) -> (f64, f64) {
-    if !expanded || card_count == 0 {
-        return (72.0, 72.0);
-    }
-
-    let base_height = match card_count.min(3) {
-        0 | 1 => 106.0,
-        2 => 158.0,
-        _ => 210.0,
+fn mascot_window_size(
+    expanded: bool,
+    card_count: u32,
+    replying: bool,
+    context_menu_open: bool,
+) -> (f64, f64) {
+    let (width, height): (f64, f64) = if !expanded || card_count == 0 {
+        (72.0, 72.0)
+    } else {
+        let base_height = match card_count.min(3) {
+            0 | 1 => 106.0,
+            2 => 158.0,
+            _ => 210.0,
+        };
+        let reply_height = if replying { 36.0 } else { 0.0 };
+        (328.0, base_height + reply_height)
     };
-    let reply_height = if replying { 36.0 } else { 0.0 };
-    (328.0, base_height + reply_height)
+
+    if context_menu_open {
+        (width.max(180.0), height.max(122.0))
+    } else {
+        (width, height)
+    }
 }
 
 fn configure_mascot_window(app: &AppHandle) -> Result<(), String> {

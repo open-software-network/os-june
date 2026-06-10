@@ -89,6 +89,7 @@ const HUD_WHISPER_FLOOR = 0.06;
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
   const previous = hud.dataset.state;
+  const widthBefore = hud.getBoundingClientRect().width;
   hud.dataset.state = state;
   statusText.textContent = status;
   if (agentLabel) {
@@ -111,12 +112,17 @@ function setHud(state: string, status: string) {
   } else if (previous === "listening") {
     clearStopHover();
   }
-  // Pill width varies by state, so refresh the cached pill rect for native
-  // click pass-through whenever the state changes.
+  // Pill width varies by state and the window must track it exactly (the
+  // frosted surface is a window-filling native vibrancy view). When the width
+  // actually changes, morph: contents crossfade while the glass eases over —
+  // also what keeps the wider pill from painting clipped before the resize.
   if (state !== previous && hud) {
-    hud.offsetWidth;
     if (state === "meeting") clearStopHover();
-    pushPillBoundsToNative();
+    hud.offsetWidth;
+    const widthAfter = hud.getBoundingClientRect().width;
+    void syncWindowToPill({
+      morph: Math.ceil(widthAfter) !== Math.ceil(widthBefore),
+    });
   }
 }
 
@@ -257,16 +263,70 @@ function pushStopBoundsToNative() {
   }).catch(() => {});
 }
 
-function pushPillBoundsToNative() {
+// Resize the native window to the pill's measured size (Rust re-anchors so
+// the pill center stays put), then refresh the stop-button rect once layout
+// has settled at the new size — the pill's client position shifts when the
+// window around it changes. With `morph` the contents fade out while the
+// glass eases to its new frame, then fade back in (the invoke resolves when
+// the native motion finishes).
+async function syncWindowToPill(options?: { morph?: boolean }) {
   if (!hud) return;
-  const { left, right, top, bottom } = hud.getBoundingClientRect();
-  void invoke("dictation_hud_set_pill_bounds", {
-    rect: { left, right, top, bottom },
+  hud.offsetWidth;
+  const { width, height } = hud.getBoundingClientRect();
+  if (options?.morph) hud.classList.add("is-morphing");
+  await invoke("dictation_hud_set_size", {
+    width: Math.ceil(width),
+    height: Math.ceil(height),
+    animate: !prefersReducedMotion(),
   }).catch(() => {});
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      hud?.classList.remove("is-morphing");
+      pushStopBoundsToNative();
+    });
+  });
 }
 
-function clearPillBounds() {
-  void invoke("dictation_hud_set_pill_bounds", { rect: null }).catch(() => {});
+// The native window alpha drives the exit dissolve — CSS opacity can't fade
+// the vibrancy frost or the native shadow behind the webview.
+function setWindowAlpha(alpha: number) {
+  void invoke("dictation_hud_set_alpha", { alpha }).catch(() => {});
+}
+
+function fadeWindowAlpha(requestId: number) {
+  return new Promise<void>((resolve) => {
+    const start = performance.now();
+    const step = (now: number) => {
+      if (requestId !== hideRequestId) {
+        resolve();
+        return;
+      }
+      const t = Math.min((now - start) / EXIT_TRANSITION_MS, 1);
+      setWindowAlpha(1 - t);
+      if (t < 1) {
+        window.requestAnimationFrame(step);
+      } else {
+        resolve();
+      }
+    };
+    window.requestAnimationFrame(step);
+  });
+}
+
+// matchMedia is absent in the jsdom test environment.
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+// The macOS "not allowed" wobble, done natively — the window jiggles, the
+// frost moves with it (a CSS translateX would slide the tint off the
+// stationary vibrancy view).
+function triggerShake() {
+  if (prefersReducedMotion()) return;
+  void invoke("dictation_hud_shake").catch(() => {});
 }
 
 function clearStopHover() {
@@ -303,29 +363,37 @@ async function hideHud() {
   clearHideTimer();
   clearMeetingPromptTimer();
   clearStopHover();
-  clearPillBounds();
   if (hud) {
     hud.dataset.state = "exiting";
     stopBraille();
-    await new Promise((resolve) =>
-      window.setTimeout(resolve, EXIT_TRANSITION_MS),
-    );
+    // CSS dissolves the content; the native alpha ramp fades the frost +
+    // shadow with it. The timeout race guards against rAF stalling if the
+    // window is already occluded/hidden.
+    await Promise.race([
+      fadeWindowAlpha(requestId),
+      new Promise((resolve) =>
+        window.setTimeout(resolve, EXIT_TRANSITION_MS + 60),
+      ),
+    ]);
   }
   if (requestId !== hideRequestId) return;
   await appWindow.hide();
+  setWindowAlpha(1);
 }
 
 async function showHud() {
   hideRequestId += 1;
   clearHideTimer();
+  // Size the window to the pill before it appears (an interrupted exit may
+  // also have left the native alpha low — restore it first).
+  setWindowAlpha(1);
+  await syncWindowToPill();
   await appWindow.show();
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
     clearStopHover();
-    pushPillBoundsToNative();
   } else {
-    pushPillBoundsToNative();
     pushStopBoundsToNative();
   }
 }
@@ -415,6 +483,7 @@ async function handleDictationEventPayload(payload: unknown) {
     ).trim();
     setHud("error", message || "Dictation failed.");
     await showHud();
+    triggerShake();
     // Hold long enough for the shake to finish and the message to read.
     hideSoon(1800);
   }

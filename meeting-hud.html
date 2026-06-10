@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OS Scribe Recording</title>
+  </head>
+  <body>
+    <div
+      id="mhud"
+      class="mhud"
+      data-state="recording"
+      role="button"
+      tabindex="0"
+      aria-label="Recording — click to open Scribe"
+    >
+      <div class="mhud-content" aria-hidden="true">
+        <span class="mhud-dot"></span>
+        <div class="mhud-bars">
+          <span class="mhud-bar"></span>
+          <span class="mhud-bar"></span>
+          <span class="mhud-bar"></span>
+          <span class="mhud-bar"></span>
+          <span class="mhud-bar"></span>
+          <span class="mhud-bar"></span>
+          <span class="mhud-bar"></span>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/meeting-hud.ts"></script>
+  </body>
+</html>

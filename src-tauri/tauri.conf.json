@@ -28,7 +28,7 @@
         "label": "hud",
         "url": "/hud.html",
         "title": "OS June Dictation",
-        "width": 340,
+        "width": 124,
         "height": 32,
         "resizable": false,
         "decorations": false,
@@ -38,7 +38,7 @@
         "visibleOnAllWorkspaces": true,
         "focusable": false,
         "skipTaskbar": true,
-        "shadow": false,
+        "shadow": true,
         "visible": false
       },
       {
@@ -57,11 +57,28 @@
         "skipTaskbar": true,
         "shadow": false,
         "visible": false
+      },
+      {
+        "label": "meeting-hud",
+        "url": "/meeting-hud.html",
+        "title": "OS Scribe Recording",
+        "width": 76,
+        "height": 76,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "focusable": false,
+        "skipTaskbar": true,
+        "shadow": true,
+        "visible": false
       }
     ],
     "security": {
       "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'sha256-5zseCXEQXMrhVnLDc5/8D6srY3KbB1TDtKXlkC9HSao='; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' asset: data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; media-src 'self' asset: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-      "capabilities": ["main", "hud", "mascot"]
+      "capabilities": ["main", "hud", "mascot", "meeting-hud"]
     }
   },
   "plugins": {

@@ -1,0 +1,222 @@
+@import "./tokens.css";
+
+/*
+ * Meeting recording HUD — a small frosted presence indicator (sibling to the
+ * dictation HUD, hud.css). When the main window is closed/minimized mid-meeting
+ * this floats as a record dot + live waveform: a calm "still recording" signal.
+ * Click it to bring Scribe back to the meeting; drag to move. No controls — all
+ * recording controls live in-app, one click away.
+ *
+ * The window is a fixed square that fits the pill in both orientations: the
+ * frosted surface is a native NSVisualEffectView framed to the pill behind the
+ * webview (CSS backdrop-filter can't sample other apps' pixels) and depth
+ * comes from the native NSWindow shadow, so there's no CSS shadow or blur
+ * here — just a translucent tint over vibrancy. As in hud.css, that native
+ * path is macOS-only by design (the app ships macOS-only); other platforms
+ * would need a backdrop-filter fallback reintroduced.
+ *
+ * Orientation triad: parked in the left/right screen thirds the pill stands
+ * upright; the middle third lies flat. The quarter turn happens in Rust
+ * (meeting_hud.rs) as ONE Core Animation transform on the native contentView,
+ * carrying frost, tint, dot, and waveform together — so this stylesheet lays
+ * the pill out horizontally, always. The one counter-move: data-orient spins
+ * the bars back the other way so the waveform still reads left-to-right.
+ */
+
+:root {
+  /* Force dark surface tokens, ignoring prefers-color-scheme. */
+  --background: oklch(0.165 0.0015 84.59);
+  --foreground: oklch(0.985 0.0015 84.59);
+  --popover: oklch(0.195 0.0015 84.59);
+  --muted-foreground: oklch(0.709 0.0015 84.59);
+  --border: oklch(1 0 0 / 12%);
+  /* A lighter, clearer "recording" orange than --record (which reads red at
+   * this size). Paused goes a touch softer and stops moving. */
+  --rec: oklch(0.72 0.175 52);
+  --rec-paused: oklch(0.78 0.1 65);
+
+  color: var(--foreground);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  /* The whole window is the click/drag target — the native turn rotates
+   * pixels but not DOM hit-testing, so the pill element can't be trusted to
+   * sit under the pointer when upright. */
+  cursor: pointer;
+}
+
+body:active {
+  cursor: grabbing;
+}
+
+/* Pill — laid out horizontally, always, centered in the square window. The
+ * native quarter turn (meeting_hud.rs) presents it upright in side zones. The
+ * 10px radius must match the vibrancy view's corner radius set in
+ * meeting_hud.rs so tint and frost trace the same curve. */
+.mhud {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  /* A dark tint over the native vibrancy layer — heavy enough to read as
+   * dark glass against bright content, translucent enough that the frost
+   * still shows. Matches the dictation HUD's surface (--hud-bg). */
+  background: color-mix(in oklch, var(--popover) 72%, transparent);
+  color: var(--foreground);
+  overflow: hidden;
+  /* Length changes ride the same clock as the native turn (TURN_SECS +
+   * --ease-out control points in meeting_hud.rs), which resizes the frost
+   * view to match. */
+  transition: width 320ms var(--ease-out);
+}
+
+/* Upright the pill carries a shorter 4-bar run, so it runs shorter too —
+ * width here is the pill's length, which reads as height once the native
+ * turn stands it up. Must match VERTICAL_PILL_LENGTH in meeting_hud.rs. */
+.mhud[data-orient="vertical"] {
+  width: 62px;
+}
+
+/* Wrapper keeps the dot + waveform together as one considered group. */
+.mhud-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.mhud:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
+  /* Inset — the window edge is the pill edge, so an outer ring would clip. */
+  outline-offset: -3px;
+}
+
+/* Recording dot ------------------------------------------------------- */
+.mhud-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--rec);
+  /* Read like a hardware record LED: a steady tight glow plus a slow,
+   * symmetric breath. The live waveform next door already signals activity,
+   * so the dot stays calm — no expanding ring. */
+  box-shadow: 0 0 5px color-mix(in oklch, var(--rec) 45%, transparent);
+  animation: mhud-breathe 3.2s ease-in-out infinite;
+  transition:
+    background-color 160ms var(--ease-out),
+    opacity 120ms var(--ease-out);
+}
+
+.mhud[data-state="paused"] .mhud-dot {
+  background: var(--rec-paused);
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes mhud-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* Waveform — mirrors the dictation HUD bars (.hud-bar). */
+.mhud-bars {
+  display: flex;
+  gap: 2.5px;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  transform: rotate(0deg);
+  /* Counter-turn: must match the native turn (TURN_SECS + --ease-out control
+   * points in meeting_hud.rs) so the bars appear to hold still while the
+   * pill rotates around them. */
+  transition: transform 320ms var(--ease-out);
+}
+
+/* The native contentView turn is visually clockwise; spin the bars back the
+ * other way so the waveform still reads left-to-right in the upright pill. */
+.mhud[data-orient="vertical"] .mhud-bars {
+  transform: rotate(-90deg);
+}
+
+/* Upright, the full 7-bar run crowds the 32px cross axis — keep a shorter
+ * 4-bar run of the same waveform (the meter still drives all seven; the
+ * hidden ones just don't paint). */
+.mhud[data-orient="vertical"] .mhud-bar:nth-child(n + 5) {
+  display: none;
+}
+
+/* Orientation applied while the HUD is hidden snaps (the native side snaps
+ * too); meeting-hud.ts removes the class once the snapped state painted. */
+.mhud.mhud-snap,
+.mhud.mhud-snap .mhud-bars {
+  transition: none;
+}
+
+.mhud-bar {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2px;
+  height: 22px;
+  transition: opacity 200ms var(--ease-out);
+}
+
+.mhud-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 50%;
+  width: 100%;
+  height: calc(3px + var(--level, 0) * 15px);
+  border-radius: 999px;
+  background: var(--foreground);
+  transform: translateY(50%);
+  /* 22ms linear height tween — same as the dictation HUD (.hud-bar), which
+   * matches the playground's CSS_MS, so both waveforms smooth identically. */
+  transition: height 22ms linear;
+}
+
+/* Paused: bars settle and dim (the meter also stops the carrier shimmer). */
+.mhud[data-state="paused"] .mhud-bar {
+  opacity: 0.32;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mhud,
+  .mhud-bar,
+  .mhud-bar::before,
+  .mhud-bars,
+  .mhud-dot {
+    transition: none;
+  }
+  .mhud-dot {
+    animation: none;
+  }
+}

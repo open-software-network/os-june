@@ -24,6 +24,9 @@ export default defineConfig({
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         hud: fileURLToPath(new URL("./hud.html", import.meta.url)),
         mascot: fileURLToPath(new URL("./mascot.html", import.meta.url)),
+        "meeting-hud": fileURLToPath(
+          new URL("./meeting-hud.html", import.meta.url),
+        ),
       },
     },
   },

@@ -64,10 +64,12 @@ import {
 } from "../lib/recording-sounds";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
+  AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
   AGENT_REPLY_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
+  type AgentGalleryDetail,
   type AgentReplyDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
@@ -566,6 +568,18 @@ export function App() {
     };
   }, [publishAgentMenuBarState]);
 
+  // Dev-tools response gallery (window.__agentGallery): showing it jumps to the
+  // Agent view so the command works no matter which view is active.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const onGallery = (event: Event) => {
+      const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
+      if (detail?.show) setActiveView("agent");
+    };
+    window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
+    return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
+  }, []);
+
   useEffect(() => {
     let aborted = false;
     let unlisten: (() => void) | undefined;
@@ -604,6 +618,35 @@ export function App() {
       if (microphone) setMicrophoneStatus(microphone);
       if (accessibility) setAccessibilityStatus(accessibility);
     }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // The detached meeting HUD (shown when the main window is closed/minimized
+  // mid-recording) is a presence indicator, not a control surface: clicking it
+  // emits "reopen", and we bring the window forward and land back on the meeting
+  // being recorded. All recording controls stay in-app.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let aborted = false;
+    void listen<{ action: "reopen" }>("meeting-hud-action", (event) => {
+      if (event.payload?.action !== "reopen") return;
+      const main = getCurrentWindow();
+      void main.show();
+      void main.unminimize();
+      void main.setFocus();
+      const noteId = recordingNoteIdRef.current;
+      if (noteId) {
+        setActiveView("meetings");
+        void handleSelectNote(noteId);
+      }
+    }).then((cleanup) => {
+      // If the listener resolves after unmount, tear it down immediately.
       if (aborted) cleanup();
       else unlisten = cleanup;
     });
@@ -1055,6 +1098,7 @@ export function App() {
         (source) => source.source === "microphone",
       );
       if (!micSource?.ready) {
+        recordingNoteIdRef.current = undefined;
         dispatch({ type: "recordingStatusCleared" });
         setError(micSource?.message ?? "Microphone is not ready.");
         return;
@@ -1073,12 +1117,16 @@ export function App() {
           : sourceMode;
 
       const recording = await startRecording(selectedNoteId, effectiveMode);
+      recordingNoteIdRef.current = selectedNoteId;
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
       });
       playRecordingSound("start");
     } catch (err) {
+      // The ref was set optimistically above; a failed start must not leave
+      // the meeting HUD's reopen path pointing at a note with no recording.
+      recordingNoteIdRef.current = undefined;
       dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     } finally {
@@ -1117,6 +1165,7 @@ export function App() {
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
     dispatch({ type: "recordingStatusCleared" });
+    recordingNoteIdRef.current = undefined;
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
     // The selected note isn't necessarily that note — the user may have

@@ -5,7 +5,19 @@
  *
  * Forced dark regardless of system theme — the HUD is a transient overlay
  * that needs to read consistently against any wallpaper or app behind it.
- * Layout: [drag handle] [audio viz] [stop button], inside a blurred pill.
+ * Layout: [drag handle] [audio viz] [stop button], inside a frosted pill.
+ *
+ * The window is sized exactly to the pill (dictation.rs resizes it to the
+ * rect hud.ts measures per state): the frosted surface is a native
+ * NSVisualEffectView behind the webview (CSS backdrop-filter can't sample
+ * other apps' pixels) and depth comes from the native NSWindow shadow, so
+ * there's no CSS shadow or blur here — just a translucent tint over vibrancy.
+ * Mirrors the meeting HUD (meeting-hud.css).
+ *
+ * Platform note: the vibrancy/shadow path is macOS-only (cfg-gated in
+ * dictation.rs) and there's deliberately no CSS blur fallback — the app
+ * ships macOS-only, so on other platforms the pill would render as a solid
+ * tint. If that ever changes, reintroduce a backdrop-filter fallback here.
  */
 
 :root {
@@ -46,7 +58,10 @@ body {
 }
 
 .hud {
-  --hud-bg: color-mix(in oklch, var(--popover) 82%, transparent);
+  /* A dark tint over the native vibrancy layer — heavy enough to read as
+   * dark glass against bright content, translucent enough that the frost
+   * still shows. Matches the meeting HUD's surface. */
+  --hud-bg: color-mix(in oklch, var(--popover) 72%, transparent);
   --hud-border: var(--border);
   --hud-bar: var(--foreground);
   --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
@@ -66,21 +81,27 @@ body {
    * concentric inside the 10px outer radius. */
   padding: 3px;
   border: 1px solid var(--hud-border);
+  /* Must match the vibrancy view's corner radius set in dictation.rs so
+   * tint and frost trace the same curve. */
   border-radius: var(--r-lg);
   background: var(--hud-bg);
   color: var(--foreground);
-  /* Custom shadow tuned for a dark pill floating over arbitrary content —
-   * shadow-md is too light to read against bright wallpapers. */
-  box-shadow:
-    0 10px 28px oklch(0% 0 none / 38%),
-    0 2px 6px oklch(0% 0 none / 26%),
-    0 0 0 0.5px oklch(0% 0 none / 28%);
-  backdrop-filter: blur(14px) saturate(1.4);
   pointer-events: auto;
   transition:
     opacity 120ms var(--ease-out),
-    transform 160ms var(--ease-out),
-    filter 140ms var(--ease-out);
+    transform 160ms var(--ease-out);
+}
+
+/* Resize morph: while the glass eases to a new frame the contents sit at
+ * opacity 0, then fade back in laid out for the new size. Also prevents the
+ * one-frame clip where a wider state paints before the window has grown. */
+.hud > * {
+  transition: opacity 100ms var(--ease-out);
+}
+
+.hud.is-morphing > * {
+  opacity: 0;
+  transition-duration: 60ms;
 }
 
 /* Push the drag handle hard left so the audio viz + stop button cluster
@@ -221,7 +242,9 @@ body {
   font-size: var(--fs-sm);
   font-weight: 500;
   line-height: 1;
-  max-width: min(460px, calc(100vw - 96px));
+  /* Fixed cap, not vw-relative: the window is resized to fit the measured
+   * pill, so a vw clamp would be circular (pill fits whatever it last was). */
+  max-width: 460px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -234,7 +257,8 @@ body {
   font-size: var(--fs-sm);
   font-weight: 600;
   line-height: 1;
-  max-width: min(240px, calc(100vw - 100px));
+  /* Fixed cap — see .hud-error-text. */
+  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -395,14 +419,15 @@ body {
   display: none;
 }
 
-/* Text-only shaking pill for hard errors. */
+/* Text-only pill for hard errors. The "not allowed" wobble is native now —
+ * dictation_hud_shake jiggles the window itself, because a CSS translateX
+ * would slide the tint off the stationary vibrancy frost. */
 .hud[data-state="error"] {
   --hud-alert: var(--hud-danger);
   gap: var(--sp-2);
   padding-inline: var(--sp-3) var(--sp-4);
   border-color: color-mix(in oklch, var(--hud-danger) 28%, var(--border));
-  background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
-  animation: hud-shake 380ms var(--ease-out);
+  background: color-mix(in oklch, var(--popover) 72%, var(--hud-danger) 22%);
 }
 
 .hud[data-state="silent-error"] {
@@ -447,62 +472,22 @@ body {
   display: none;
 }
 
-/* Rapid blur-fade exit. Triggered by setting data-state="exiting" before
- * the window hides — gives the pill a moment to dissolve instead of just
- * snapping away. */
+/* Rapid fade exit. Triggered by setting data-state="exiting" before the
+ * window hides — the content dissolves while the native window alpha ramps
+ * down with it. No blur: the window edge is the pill edge now, so the bleed
+ * would clip (softness comes from the native alpha fade instead). */
 .hud[data-state="exiting"] {
   opacity: 0;
   transform: scale(0.94);
-  filter: blur(6px);
   pointer-events: none;
-}
-
-/* Decaying horizontal oscillation modeled on the macOS "not allowed" wobble.
- * Multiple stops keep the curve smooth instead of notchy; amplitude shrinks
- * each pass so the pill settles instead of stopping cold. */
-@keyframes hud-shake {
-  0% {
-    transform: translateX(0);
-  }
-
-  12% {
-    transform: translateX(-3px);
-  }
-
-  28% {
-    transform: translateX(3px);
-  }
-
-  44% {
-    transform: translateX(-2px);
-  }
-
-  60% {
-    transform: translateX(2px);
-  }
-
-  76% {
-    transform: translateX(-1px);
-  }
-
-  90% {
-    transform: translateX(1px);
-  }
-
-  100% {
-    transform: translateX(0);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .hud,
+  .hud > *,
   .hud-stop,
   .hud-stop::before,
   .hud-bar::before {
     transition: none;
-  }
-
-  .hud[data-state="error"] {
-    animation: none;
   }
 }
