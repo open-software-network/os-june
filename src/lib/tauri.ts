@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export type ProcessingStatus =
   | "draft"
@@ -138,10 +138,15 @@ export type DictationHelperEvent = {
   type: string;
   payload?: {
     devices?: DictationMicrophoneDeviceDto[];
+    defaultDevice?: DictationMicrophoneDeviceDto;
     selectedID?: string;
     shortcut?: DictationShortcutSetting;
     message?: string;
     code?: string;
+    path?: string;
+    durationMs?: number | string;
+    observedAudioLevel?: number | string;
+    level?: number | string;
     [key: string]: unknown;
   };
 };
@@ -1078,6 +1083,10 @@ export async function setDictationLanguage(language?: string) {
 
 export async function dictationHelperCommand(command: Record<string, unknown>) {
   return invoke<void>("dictation_helper_command", { command });
+}
+
+export function localAudioFileSrc(path: string) {
+  return convertFileSrc(path);
 }
 
 export async function dictationHotkeyStatus() {

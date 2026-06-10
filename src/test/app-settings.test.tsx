@@ -9,6 +9,7 @@ import { MASCOT_ENABLED_KEY } from "../lib/mascot-settings";
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
   dictationHelperCommand: vi.fn(),
+  localAudioFileSrc: vi.fn(),
   providerModelSettings: vi.fn(),
   listVeniceModels: vi.fn(),
   setVeniceModel: vi.fn(),
@@ -40,6 +41,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri", () => ({
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
+  localAudioFileSrc: mocks.localAudioFileSrc,
   providerModelSettings: mocks.providerModelSettings,
   listVeniceModels: mocks.listVeniceModels,
   setVeniceModel: mocks.setVeniceModel,
@@ -119,6 +121,7 @@ describe("AppSettings", () => {
     localStorage.clear();
     mocks.eventHandler = undefined;
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
+    mocks.localAudioFileSrc.mockImplementation((path) => `asset://${path}`);
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
       ...baseSettings,
       language,
@@ -325,22 +328,254 @@ describe("AppSettings", () => {
     mocks.eventHandler?.({
       payload: JSON.stringify({
         type: "microphone_devices",
-        payload: { devices: [{ id: "usb", name: "USB Mic" }] },
+        payload: {
+          devices: [{ id: "usb", name: "USB Mic" }],
+          defaultDevice: { id: "built-in", name: "MacBook Pro Microphone" },
+        },
       }),
     });
 
     await user.click(screen.getByRole("tab", { name: "Audio" }));
+    expect(
+      screen.getByText("Auto-detect uses MacBook Pro Microphone."),
+    ).toBeInTheDocument();
     await user.click(
       screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
     );
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
     expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
+    await waitFor(() =>
+      expect(
+        screen.getByText("Input device used for dictation."),
+      ).toBeInTheDocument(),
+    );
 
     await user.click(
       screen.getByRole("switch", { name: "Capture system audio for notes" }),
     );
     expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
+  });
+
+  it("records a local microphone test sample and renders playback", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    await user.click(screen.getByRole("button", { name: "Start test" }));
+
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "start_mic_test",
+      durationSeconds: 5,
+    });
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "mic_test_level",
+        payload: { level: "0.72" },
+      }),
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("progressbar", { name: "Microphone test level" }),
+      ).toHaveAttribute("aria-valuenow", "72"),
+    );
+
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "mic_test_ready",
+        payload: {
+          path: "/tmp/os-scribe-mic-test.m4a",
+          durationMs: 5000,
+          observedAudioLevel: "0.72",
+        },
+      }),
+    });
+
+    expect(
+      await screen.findByText("Sample ready. Check volume."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Play microphone test sample" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Start over" }),
+    ).toBeInTheDocument();
+
+    const play = vi
+      .spyOn(window.HTMLMediaElement.prototype, "play")
+      .mockImplementation(function (this: HTMLMediaElement) {
+        this.dispatchEvent(new Event("play"));
+        return Promise.resolve();
+      });
+    await user.click(
+      screen.getByRole("button", { name: "Play microphone test sample" }),
+    );
+
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByRole("slider", {
+        name: "Microphone test playback progress",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start over" })).toBeDisabled();
+
+    play.mockRestore();
+  });
+
+  it("starts a new microphone test from an existing sample", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    await user.click(screen.getByRole("button", { name: "Start test" }));
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "mic_test_ready",
+        payload: {
+          path: "/tmp/os-scribe-mic-test.m4a",
+          durationMs: 5000,
+          observedAudioLevel: "0.72",
+        },
+      }),
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Start over" }));
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "discard_mic_test",
+    });
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "start_mic_test",
+      durationSeconds: 5,
+    });
+  });
+
+  it("resets microphone test state when microphone selection changes", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "microphone_devices",
+        payload: { devices: [{ id: "usb", name: "USB Mic" }] },
+      }),
+    });
+    await user.click(screen.getByRole("button", { name: "Start test" }));
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "mic_test_ready",
+        payload: {
+          path: "/tmp/os-scribe-mic-test.m4a",
+          durationMs: 5000,
+          observedAudioLevel: "0.72",
+        },
+      }),
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: "Play microphone test sample",
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
+    );
+    await user.click(await screen.findByRole("option", { name: "USB Mic" }));
+
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "discard_mic_test",
+    });
+    expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
+    expect(
+      screen.getByRole("button", { name: "Start test" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Play microphone test sample" }),
+    ).toBeNull();
+  });
+
+  it("resets microphone test state when leaving audio settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    await user.click(screen.getByRole("button", { name: "Start test" }));
+    mocks.eventHandler?.({
+      payload: JSON.stringify({
+        type: "mic_test_ready",
+        payload: {
+          path: "/tmp/os-scribe-mic-test.m4a",
+          durationMs: 5000,
+          observedAudioLevel: "0.72",
+        },
+      }),
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: "Play microphone test sample",
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Dictation" }));
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "discard_mic_test",
+      }),
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    expect(
+      screen.getByRole("button", { name: "Start test" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Play microphone test sample" }),
+    ).toBeNull();
   });
 
   it("saves the default transcription language", async () => {

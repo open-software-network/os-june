@@ -139,6 +139,16 @@ func audioInputDevices() -> [AVCaptureDevice] {
     ).devices
 }
 
+func defaultMicrophoneDevice() -> [String: String]? {
+    guard let device = AVCaptureDevice.default(for: .audio) ?? audioInputDevices().first else {
+        return nil
+    }
+    return [
+        "id": device.uniqueID,
+        "name": device.localizedName,
+    ]
+}
+
 func microphoneDevice(for id: String?) -> AVCaptureDevice? {
     guard let id, !id.isEmpty else {
         return nil
@@ -149,10 +159,14 @@ func microphoneDevice(for id: String?) -> AVCaptureDevice? {
 }
 
 func emitMicrophoneDevices(selectedID: String?) {
-    emitJSON("microphone_devices", [
+    var payload: [String: Any] = [
         "devices": microphoneDevices(),
         "selectedID": selectedID ?? "",
-    ])
+    ]
+    if let defaultDevice = defaultMicrophoneDevice() {
+        payload["defaultDevice"] = defaultDevice
+    }
+    emitJSON("microphone_devices", payload)
 }
 
 func runOnMain(_ work: @escaping () -> Void) {
@@ -1333,11 +1347,22 @@ enum DictationError: LocalizedError {
     }
 }
 
+enum RecordingPurpose {
+    case dictation
+    case micTest
+}
+
+let micTestCapturePaddingSeconds: Double = 0.35
+
 final class DictationController {
     private var audioRecorder: AVAudioRecorder?
     private var selectedDeviceRecorder: SelectedDeviceRecorder?
     private var autoDetectInputMeter: AutoDetectInputMeter?
     private var recordingURL: URL?
+    private var micTestSampleURL: URL?
+    private var micTestStopWorkItem: DispatchWorkItem?
+    private var recordingPurpose: RecordingPurpose = .dictation
+    private var recordingStartedAt: TimeInterval = 0
     private var meteringTimer: DispatchSourceTimer?
     private var preferredMicrophoneID: String?
     private var preferredMicrophoneName: String?
@@ -1384,38 +1409,43 @@ final class DictationController {
                 emit("permission_status", permissionPayload())
                 return
             }
-            self?.startRecording()
+            self?.startRecording(purpose: .dictation, durationSeconds: nil)
         }
     }
 
     func stop() {
-        guard isListening else {
+        guard isListening, recordingPurpose == .dictation else {
             emit("error", ["code": "not_listening", "message": "Dictation is not listening."])
             return
         }
 
-        isListening = false
-        isFinalizing = true
-        stopMetering()
-        RecordingCuePlayer.play(.stop)
-        emit("finalizing_transcript")
+        stopActiveRecording()
+    }
 
-        if let selectedDeviceRecorder {
-            selectedDeviceRecorder.stop { [weak self] error in
-                runOnMain {
-                    self?.selectedDeviceRecorder = nil
-                    if let error {
-                        self?.fail(error)
-                        return
-                    }
-                    self?.emitRecordingReady()
-                }
-            }
+    func startMicTest(durationSeconds: Double) {
+        guard !listening else {
+            emit("mic_test_error", ["code": "already_listening", "message": "Audio capture is already running."])
             return
         }
 
-        audioRecorder?.stop()
-        emitRecordingReady()
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
+            guard microphoneAllowed else {
+                emit("mic_test_error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
+                emit("permission_status", permissionPayload())
+                return
+            }
+            self?.startRecording(
+                purpose: .micTest,
+                durationSeconds: max(1, min(15, durationSeconds))
+            )
+        }
+    }
+
+    func discardMicTest() {
+        if isListening, recordingPurpose == .micTest {
+            resetRecordingState()
+        }
+        cleanupMicTestSample()
     }
 
     func paste(text: String) {
@@ -1440,8 +1470,11 @@ final class DictationController {
         exit(0)
     }
 
-    private func startRecording() {
+    private func startRecording(purpose: RecordingPurpose, durationSeconds: Double?) {
         resetRecordingState()
+        cleanupMicTestSample()
+        recordingPurpose = purpose
+        recordingStartedAt = ProcessInfo.processInfo.systemUptime
 
         let nextRecordingURL = temporaryRecordingURL()
         // Preserve the legacy Auto-detect behavior: AVAudioRecorder delegates
@@ -1450,7 +1483,12 @@ final class DictationController {
         // (Routing Auto-detect through the capture path was reverted in #86 — it
         // caused low recorded levels / no_speech for some default-mic users.)
         if let selectedDevice = microphoneDevice(for: preferredMicrophoneID) {
-            startSelectedDeviceRecording(device: selectedDevice, url: nextRecordingURL)
+            startSelectedDeviceRecording(
+                device: selectedDevice,
+                url: nextRecordingURL,
+                purpose: purpose,
+                durationSeconds: durationSeconds
+            )
             return
         }
 
@@ -1474,20 +1512,28 @@ final class DictationController {
 
             audioRecorder = recorder
             recordingURL = nextRecordingURL
-            isListening = true
             startAutoDetectMetering()
-            RecordingCuePlayer.play(.start)
-            emit("listening_started", [
-                "recognitionMode": "venice_recording",
-                "microphone": preferredMicrophoneName ?? "Auto-detect",
-            ])
+            markRecordingStarted(
+                microphone: preferredMicrophoneName ?? "Auto-detect",
+                purpose: purpose,
+                durationSeconds: durationSeconds
+            )
         } catch {
             resetRecordingState()
-            emit("error", ["code": "audio_start_failed", "message": error.localizedDescription])
+            emitRecordingError(
+                purpose: purpose,
+                code: "audio_start_failed",
+                message: error.localizedDescription
+            )
         }
     }
 
-    private func startSelectedDeviceRecording(device: AVCaptureDevice, url: URL) {
+    private func startSelectedDeviceRecording(
+        device: AVCaptureDevice,
+        url: URL,
+        purpose: RecordingPurpose,
+        durationSeconds: Double?
+    ) {
         do {
             let recorder = try SelectedDeviceRecorder(
                 device: device,
@@ -1505,16 +1551,19 @@ final class DictationController {
             )
             selectedDeviceRecorder = recorder
             recordingURL = url
-            isListening = true
             recorder.start()
-            RecordingCuePlayer.play(.start)
-            emit("listening_started", [
-                "recognitionMode": "venice_recording",
-                "microphone": device.localizedName,
-            ])
+            markRecordingStarted(
+                microphone: device.localizedName,
+                purpose: purpose,
+                durationSeconds: durationSeconds
+            )
         } catch {
             resetRecordingState()
-            emit("error", ["code": "audio_start_failed", "message": error.localizedDescription])
+            emitRecordingError(
+                purpose: purpose,
+                code: "audio_start_failed",
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -1538,10 +1587,93 @@ final class DictationController {
             return
         }
 
+        if recordingPurpose == .micTest {
+            emitMicTestReady(url: recordingURL)
+            return
+        }
+
         emit("recording_ready", [
             "path": recordingURL.path,
             "observedAudioLevel": String(format: "%.4f", maxObservedAudioLevel),
         ])
+    }
+
+    private func emitMicTestReady(url: URL) {
+        let observedAudioLevel = maxObservedAudioLevel
+        let durationMs = Int(max(0, ProcessInfo.processInfo.systemUptime - recordingStartedAt) * 1000)
+        micTestSampleURL = url
+        resetRecordingState(keepRecordingFile: true)
+        emitJSON("mic_test_ready", [
+            "path": url.path,
+            "durationMs": durationMs,
+            "observedAudioLevel": String(format: "%.4f", observedAudioLevel),
+        ])
+    }
+
+    private func markRecordingStarted(
+        microphone: String,
+        purpose: RecordingPurpose,
+        durationSeconds: Double?
+    ) {
+        isListening = true
+        RecordingCuePlayer.play(.start)
+        if purpose == .micTest {
+            scheduleMicTestStop(after: durationSeconds ?? 5)
+            emitJSON("mic_test_started", [
+                "durationMs": Int((durationSeconds ?? 5) * 1000),
+                "microphone": microphone,
+            ])
+        } else {
+            emit("listening_started", [
+                "recognitionMode": "venice_recording",
+                "microphone": microphone,
+            ])
+        }
+    }
+
+    private func stopActiveRecording() {
+        let purpose = recordingPurpose
+        isListening = false
+        isFinalizing = true
+        micTestStopWorkItem?.cancel()
+        micTestStopWorkItem = nil
+        stopMetering()
+        RecordingCuePlayer.play(.stop)
+        if purpose == .dictation {
+            emit("finalizing_transcript")
+        }
+
+        if let selectedDeviceRecorder {
+            selectedDeviceRecorder.stop { [weak self] error in
+                runOnMain {
+                    self?.selectedDeviceRecorder = nil
+                    if let error {
+                        self?.fail(error)
+                        return
+                    }
+                    self?.emitRecordingReady()
+                }
+            }
+            return
+        }
+
+        audioRecorder?.stop()
+        emitRecordingReady()
+    }
+
+    private func scheduleMicTestStop(after seconds: Double) {
+        micTestStopWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.isListening, self.recordingPurpose == .micTest else {
+                return
+            }
+            self.stopActiveRecording()
+        }
+        micTestStopWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + seconds + micTestCapturePaddingSeconds,
+            execute: workItem
+        )
     }
 
     private func temporaryRecordingURL() -> URL {
@@ -1608,7 +1740,11 @@ final class DictationController {
 
     private func observeAudioLevel(_ level: Float) {
         maxObservedAudioLevel = max(maxObservedAudioLevel, level)
-        emit("audio_level", ["level": String(format: "%.4f", level)])
+        if recordingPurpose == .micTest {
+            emit("mic_test_level", ["level": String(format: "%.4f", level)])
+        } else {
+            emit("audio_level", ["level": String(format: "%.4f", level)])
+        }
     }
 
     private func stopMetering() {
@@ -1624,11 +1760,20 @@ final class DictationController {
 
     private func fail(_ error: Error) {
         let code = (error as? DictationError)?.code ?? "dictation_failed"
-        emit("error", [
-            "code": code,
-            "message": error.localizedDescription,
-        ])
+        emitRecordingError(
+            purpose: recordingPurpose,
+            code: code,
+            message: error.localizedDescription
+        )
         resetRecordingState()
+    }
+
+    private func emitRecordingError(purpose: RecordingPurpose, code: String, message: String) {
+        if purpose == .micTest {
+            emit("mic_test_error", ["code": code, "message": message])
+        } else {
+            emit("error", ["code": code, "message": message])
+        }
     }
 
     private func cleanupRecordingFile() {
@@ -1638,17 +1783,31 @@ final class DictationController {
         try? FileManager.default.removeItem(at: recordingURL)
     }
 
-    private func resetRecordingState() {
+    private func cleanupMicTestSample() {
+        guard let micTestSampleURL else {
+            return
+        }
+        try? FileManager.default.removeItem(at: micTestSampleURL)
+        self.micTestSampleURL = nil
+    }
+
+    private func resetRecordingState(keepRecordingFile: Bool = false) {
         isListening = false
         isFinalizing = false
         maxObservedAudioLevel = 0
+        recordingStartedAt = 0
+        micTestStopWorkItem?.cancel()
+        micTestStopWorkItem = nil
         stopMetering()
         audioRecorder?.stop()
         audioRecorder = nil
         selectedDeviceRecorder?.cancel()
         selectedDeviceRecorder = nil
-        cleanupRecordingFile()
+        if !keepRecordingFile {
+            cleanupRecordingFile()
+        }
         recordingURL = nil
+        recordingPurpose = .dictation
     }
 }
 
@@ -1766,6 +1925,17 @@ func handleCommandLine(_ line: String) {
     case "stop_and_paste":
         runOnMain {
             dictation.stop()
+        }
+    case "start_mic_test":
+        let durationSeconds = command?["durationSeconds"] as? Double
+            ?? (command?["durationSeconds"] as? Int).map(Double.init)
+            ?? 5
+        runOnMain {
+            dictation.startMicTest(durationSeconds: durationSeconds)
+        }
+    case "discard_mic_test":
+        runOnMain {
+            dictation.discardMicTest()
         }
     case "set_microphone":
         let id = command?["id"] as? String

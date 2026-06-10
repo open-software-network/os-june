@@ -5450,6 +5450,50 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
+.settings-row-mic-test {
+  align-items: start;
+}
+
+.settings-mic-test-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  width: min(420px, 48vw);
+}
+
+.settings-mic-test-meter {
+  width: 150px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+}
+
+.settings-mic-test-meter-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--foreground);
+  transform-origin: left center;
+  transition: transform 90ms ease-out;
+}
+
+.settings-mic-test-time {
+  min-width: 76px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  text-align: right;
+}
+
+.settings-mic-test-hidden-audio {
+  display: none;
+}
+
+.settings-mic-test-mini-scrubber {
+  width: 150px;
+  accent-color: var(--foreground);
+}
+
 .settings-version-text {
   color: var(--muted-foreground);
   font-family: var(--font-mono);

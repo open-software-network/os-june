@@ -19,6 +19,7 @@ import {
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
+  localAudioFileSrc,
   providerModelSettings,
   setDictationLanguage,
   setDictationMicrophone,
@@ -57,6 +58,7 @@ import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
+import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 
 const THEME_OPTIONS: readonly {
@@ -161,6 +163,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   generationModel: "zai-org-glm-5",
 };
 
+const MIC_TEST_DURATION_SECONDS = 5;
+
 export type SettingsTab =
   | "general"
   | "billing"
@@ -236,6 +240,8 @@ export function AppSettings({
   const [microphones, setMicrophones] = useState<
     DictationMicrophoneDeviceDto[]
   >([]);
+  const [defaultMicrophone, setDefaultMicrophone] =
+    useState<DictationMicrophoneDeviceDto>();
   const [capturingShortcut, setCapturingShortcut] =
     useState<DictationShortcutKind>();
   const capturingShortcutRef = useRef<DictationShortcutKind>();
@@ -251,6 +257,13 @@ export function AppSettings({
   const [languageOpen, setLanguageOpen] = useState(false);
   const [languagePopoverPlacement, setLanguagePopoverPlacement] =
     useState<SelectPopoverPlacement>("align-selected");
+  const [micTestState, setMicTestState] = useState<MicTestState>("idle");
+  const [micTestLevel, setMicTestLevel] = useState(0);
+  const [micTestStartedAt, setMicTestStartedAt] = useState<number>();
+  const [micTestElapsedMs, setMicTestElapsedMs] = useState(0);
+  const [micTestSampleSrc, setMicTestSampleSrc] = useState<string>();
+  const [micTestError, setMicTestError] = useState<string>();
+  const [micTestPlaying, setMicTestPlaying] = useState(false);
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
   const activeTab = controlled ? controlledTab : internalTab;
   const setActiveTab = (tab: SettingsTab) => {
@@ -280,6 +293,9 @@ export function AppSettings({
   useEffect(() => {
     setMicOpen(false);
     setLanguageOpen(false);
+    if (activeTab !== "audio" && micTestState !== "idle") {
+      void resetMicTestState(true);
+    }
   }, [activeTab]);
 
   useEffect(() => {
@@ -392,6 +408,47 @@ export function AppSettings({
   function handleHelperEvent(helperEvent: DictationHelperEvent) {
     if (helperEvent.type === "microphone_devices") {
       setMicrophones(helperEvent.payload?.devices ?? []);
+      setDefaultMicrophone(helperEvent.payload?.defaultDevice);
+      return;
+    }
+    if (helperEvent.type === "mic_test_started") {
+      setMicTestState("recording");
+      setMicTestError(undefined);
+      setMicTestSampleSrc(undefined);
+      setMicTestLevel(0);
+      setMicTestStartedAt(Date.now());
+      setMicTestElapsedMs(0);
+      setMicTestPlaying(false);
+      return;
+    }
+    if (helperEvent.type === "mic_test_level") {
+      setMicTestLevel(numericPayload(helperEvent.payload?.level));
+      return;
+    }
+    if (helperEvent.type === "mic_test_ready") {
+      const path = stringPayload(helperEvent.payload?.path);
+      if (!path) {
+        setMicTestState("error");
+        setMicTestError("Microphone test did not return a playable sample.");
+        return;
+      }
+      setMicTestState("ready");
+      setMicTestStartedAt(undefined);
+      setMicTestElapsedMs(0);
+      setMicTestLevel(numericPayload(helperEvent.payload?.observedAudioLevel));
+      setMicTestError(undefined);
+      setMicTestPlaying(false);
+      setMicTestSampleSrc(localAudioFileSrc(path));
+      return;
+    }
+    if (helperEvent.type === "mic_test_error") {
+      const message =
+        helperEvent.payload?.message ?? "Microphone test could not record.";
+      setMicTestState("error");
+      setMicTestStartedAt(undefined);
+      setMicTestError(message);
+      setMicTestPlaying(false);
+      setStatus(message);
       return;
     }
     if (helperEvent.type === "fn_monitor_unavailable") {
@@ -439,6 +496,9 @@ export function AppSettings({
 
   async function selectMicrophone(id?: string, name?: string) {
     try {
+      if (micTestState !== "idle") {
+        await resetMicTestState(true);
+      }
       const next = await setDictationMicrophone(id, name);
       setSettings(next);
       setMicOpen(false);
@@ -495,6 +555,49 @@ export function AppSettings({
     }
   }
 
+  async function startMicTest() {
+    setMicTestState("recording");
+    setMicTestError(undefined);
+    setMicTestSampleSrc(undefined);
+    setMicTestLevel(0);
+    setMicTestStartedAt(Date.now());
+    setMicTestElapsedMs(0);
+    setMicTestPlaying(false);
+    try {
+      await dictationHelperCommand({
+        type: "start_mic_test",
+        durationSeconds: MIC_TEST_DURATION_SECONDS,
+      });
+    } catch (error) {
+      const message = messageFromError(error);
+      setMicTestState("error");
+      setMicTestStartedAt(undefined);
+      setMicTestError(message);
+      setStatus(message);
+    }
+  }
+
+  async function startOverMicTest() {
+    await resetMicTestState(true);
+    await startMicTest();
+  }
+
+  async function resetMicTestState(discardHelper = false) {
+    setMicTestState("idle");
+    setMicTestLevel(0);
+    setMicTestStartedAt(undefined);
+    setMicTestElapsedMs(0);
+    setMicTestSampleSrc(undefined);
+    setMicTestError(undefined);
+    setMicTestPlaying(false);
+    if (!discardHelper) return;
+    try {
+      await dictationHelperCommand({ type: "discard_mic_test" });
+    } catch {
+      // Resetting the settings UI should not surface stale helper cleanup errors.
+    }
+  }
+
   async function selectVeniceModel(mode: ProviderModelMode, modelId: string) {
     try {
       const next = await setVeniceModel(mode, modelId);
@@ -525,6 +628,11 @@ export function AppSettings({
   }
 
   const microphoneName = settings.microphone.name ?? "Auto-detect";
+  const microphoneDescription = settings.microphone.id
+    ? "Input device used for dictation."
+    : defaultMicrophone?.name
+      ? `Auto-detect uses ${defaultMicrophone.name}.`
+      : "Auto-detect uses the current macOS input.";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
     ...microphones,
@@ -559,6 +667,14 @@ export function AppSettings({
   useEffect(() => {
     if (languageOpen) updateLanguagePopoverPlacement();
   }, [languageOpen, selectedLanguageIndex]);
+
+  useEffect(() => {
+    if (micTestState !== "recording" || !micTestStartedAt) return;
+    const interval = window.setInterval(() => {
+      setMicTestElapsedMs(Date.now() - micTestStartedAt);
+    }, 100);
+    return () => window.clearInterval(interval);
+  }, [micTestState, micTestStartedAt]);
 
   function updateMicrophonePopoverPlacement() {
     setMicPopoverPlacement(
@@ -836,7 +952,7 @@ export function AppSettings({
                   <div className="settings-row-info">
                     <h3 className="settings-row-title">Microphone</h3>
                     <p className="settings-row-description">
-                      Input device used for dictation.
+                      {microphoneDescription}
                     </p>
                   </div>
                   <div className="settings-row-control" ref={micWrapRef}>
@@ -894,6 +1010,24 @@ export function AppSettings({
                     ) : null}
                   </div>
                 </div>
+
+                <MicTestControl
+                  state={micTestState}
+                  level={micTestLevel}
+                  elapsedMs={micTestElapsedMs}
+                  sampleSrc={micTestSampleSrc}
+                  error={micTestError}
+                  playing={micTestPlaying}
+                  durationSeconds={MIC_TEST_DURATION_SECONDS}
+                  onStart={() => void startMicTest()}
+                  onStartOver={() => void startOverMicTest()}
+                  onPlaybackError={() => {
+                    setMicTestError(
+                      "Microphone test recorded, but playback is unavailable.",
+                    );
+                  }}
+                  onPlayingChange={setMicTestPlaying}
+                />
 
                 {systemUnsupported ? null : (
                   <div className="settings-row">
@@ -1164,6 +1298,21 @@ function sourcePermissionStatus(
   if (!source) return { label: "Checking", tone: "unknown" };
   if (source.ready) return { label: "Allowed", tone: "allowed" };
   return permissionStatus(source.permissionState);
+}
+
+function stringPayload(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numericPayload(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.min(1, value));
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.min(1, parsed));
+  }
+  return 0;
 }
 
 function ModelRow({
