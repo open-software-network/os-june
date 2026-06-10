@@ -20,10 +20,11 @@ type Props = {
 // checkout hook layers a faster poll on top while a checkout is in flight.
 const POLL_INTERVAL_MS = 10_000;
 
-// Must match trial_period_days on the Stripe price in the OS Accounts
-// dashboard — the trial is configured there, not in code, and the client
-// can't read it before a subscription exists, so it's pinned here.
-const TRIAL_LENGTH_DAYS = 14;
+// Fallback when the accounts API doesn't report `trialPeriodDays` yet. Must
+// match trial_period_days on the Stripe price in the OS Accounts dashboard —
+// the trial is configured there, not in code. Once the API ships the field,
+// the live value always wins and this constant is dead weight.
+const FALLBACK_TRIAL_LENGTH_DAYS = 14;
 
 const TRIAL_STEPS = [
   {
@@ -46,11 +47,15 @@ const TRIAL_STEPS = [
 
 /** The end date assuming the trial starts now — accurate at the moment the
  * screen is read, which is the only moment it's shown. */
-function trialEndDate() {
-  const end = new Date(Date.now() + TRIAL_LENGTH_DAYS * 24 * 60 * 60 * 1000);
+function trialEndDate(trialDays: number) {
+  const end = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+  // A trial started in late December ends next year; include the year so
+  // the date can't read as eleven months past.
+  const showYear = end.getFullYear() !== new Date().getFullYear();
   return new Intl.DateTimeFormat(undefined, {
     month: "long",
     day: "numeric",
+    ...(showYear ? { year: "numeric" } : {}),
   }).format(end);
 }
 
@@ -64,6 +69,8 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
   const [checking, setChecking] = useState(false);
   const handle = account.user?.handle;
   const status = account.subscription?.status;
+  const trialDays =
+    account.subscription?.trialPeriodDays ?? FALLBACK_TRIAL_LENGTH_DAYS;
   const pastDue = status === "past_due";
   // A returning canceled subscriber likely gets no second trial (that's up to
   // the Stripe checkout config), so don't promise "free" or "$0 due today".
@@ -160,7 +167,7 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
                       <>
                         {", "}
                         <span className="trial-timeline-date">
-                          {trialEndDate()}
+                          {trialEndDate(trialDays)}
                         </span>
                       </>
                     ) : null}

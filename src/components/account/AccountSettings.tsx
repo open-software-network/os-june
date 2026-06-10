@@ -299,9 +299,14 @@ function describeEnd(verb: string, timestamp?: string) {
   if (!timestamp) return undefined;
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return undefined;
+  // Annual plans renew up to a year out: include the year whenever the date
+  // isn't in the current calendar year, so "Renews March 15" can't mean
+  // either 3 or 15 months away.
+  const showYear = date.getFullYear() !== new Date().getFullYear();
   const formatted = new Intl.DateTimeFormat(undefined, {
     month: "long",
     day: "numeric",
+    ...(showYear ? { year: "numeric" } : {}),
   }).format(date);
   return `${verb} ${formatted}`;
 }
