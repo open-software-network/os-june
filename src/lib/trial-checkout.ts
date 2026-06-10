@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   focusMainWindow,
@@ -5,6 +6,11 @@ import {
   osAccountsStartTrialCheckout,
 } from "./tauri";
 import type { AccountStatus } from "./tauri";
+
+/** Fired by the Rust core when the `osscribe://billing/callback` deep link
+ * lands — the user finished (or canceled) checkout in the browser. Payload is
+ * "success" or "cancel". */
+const BILLING_CALLBACK_EVENT = "os-accounts-billing-callback";
 
 /** Phases of the one-click trial flow. `waiting` = Stripe Checkout is open in
  * the browser and we're polling for the subscription to appear. */
@@ -21,6 +27,8 @@ export type UseTrialCheckout = {
    * the portal — the user finishes the trial there instead. */
   usedPortalFallback: boolean;
   error?: string;
+  /** Friendly non-error status, e.g. after the user cancels checkout. */
+  notice?: string;
   /** Open Stripe Checkout (or the portal as fallback) in the browser. */
   start: () => Promise<void>;
   /** Manual "check again" affordance while waiting. */
@@ -55,9 +63,27 @@ export function useTrialCheckout({
   const [phase, setPhase] = useState<TrialCheckoutPhase>("idle");
   const [usedPortalFallback, setUsedPortalFallback] = useState(false);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const activatedRef = useRef(false);
 
   const subscribed = isSubscriptionActive(account);
+
+  // The post-checkout deep link (Stripe → portal /return → osscribe://)
+  // already foregrounded the app; react immediately instead of waiting out
+  // the poll interval. A cancel returns the UI to the pitch, not an error.
+  useEffect(() => {
+    const unlisten = listen<string>(BILLING_CALLBACK_EVENT, (event) => {
+      if (event.payload === "cancel") {
+        setPhase("idle");
+        setNotice("Checkout canceled — ready when you are.");
+        return;
+      }
+      void onRefresh();
+    });
+    return () => {
+      void unlisten.then((dispose) => dispose());
+    };
+  }, [onRefresh]);
 
   // Activation watcher. Covers every path to a live subscription — direct
   // checkout, portal fallback, even a second device — because it keys off
@@ -84,6 +110,7 @@ export function useTrialCheckout({
 
   const start = useCallback(async () => {
     setError(undefined);
+    setNotice(undefined);
     setPhase("opening");
     try {
       const result = await osAccountsStartTrialCheckout();
@@ -113,7 +140,7 @@ export function useTrialCheckout({
     await onRefresh();
   }, [onRefresh]);
 
-  return { phase, usedPortalFallback, error, start, checkNow };
+  return { phase, usedPortalFallback, error, notice, start, checkNow };
 }
 
 function messageFromError(error: unknown) {

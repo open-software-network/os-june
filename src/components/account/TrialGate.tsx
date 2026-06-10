@@ -134,6 +134,10 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
 
         {checkout.error ? (
           <p className="welcome-status">{checkout.error}</p>
+        ) : checkout.notice ? (
+          <p className="welcome-status welcome-status-info">
+            {checkout.notice}
+          </p>
         ) : null}
         {portalError ? <p className="welcome-status">{portalError}</p> : null}
 

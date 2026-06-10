@@ -79,14 +79,19 @@ function shortcut(label: string) {
 
 describe("OnboardingFlow", () => {
   let emitDictationEvent: ListenHandler | undefined;
+  let emitBillingCallback: ListenHandler | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     emitDictationEvent = undefined;
+    emitBillingCallback = undefined;
     mocks.listen.mockImplementation(
       (eventName: string, handler: ListenHandler) => {
         if (eventName === "dictation-event") emitDictationEvent = handler;
+        if (eventName === "os-accounts-billing-callback") {
+          emitBillingCallback = handler;
+        }
         return Promise.resolve(vi.fn());
       },
     );
@@ -279,6 +284,40 @@ describe("OnboardingFlow", () => {
       screen.getByRole("button", { name: "Try your first dictation" }),
     );
     await screen.findByPlaceholderText(/Hold fn/i);
+  });
+
+  it("reacts to the post-checkout deep link without waiting out the poll", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStartTrialCheckout.mockResolvedValue({
+      outcome: "checkoutOpened",
+    });
+    const onRefreshAccount = vi.fn(async () => undefined);
+    render(
+      <OnboardingFlow
+        {...flowProps({ account: unsubscribedAccount, onRefreshAccount })}
+      />,
+    );
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+    await screen.findByRole("heading", {
+      name: "Finish checkout in your browser",
+    });
+
+    // Cancel: back to the pitch with a friendly note, not an error.
+    emitBillingCallback?.({ payload: "cancel" });
+    await screen.findByRole("heading", { name: "Start your free trial" });
+    await screen.findByText(/Checkout canceled/);
+
+    // Success: the deep link triggers an immediate status refresh.
+    onRefreshAccount.mockClear();
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+    await screen.findByRole("heading", {
+      name: "Finish checkout in your browser",
+    });
+    emitBillingCallback?.({ payload: "success" });
+    await waitFor(() => expect(onRefreshAccount).toHaveBeenCalled());
   });
 
   it("falls back to the portal when direct checkout is unavailable", async () => {

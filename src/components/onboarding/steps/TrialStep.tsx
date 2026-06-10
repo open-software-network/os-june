@@ -130,6 +130,8 @@ export function TrialStep({
       />
       {checkout.error ? (
         <p className="welcome-status">{checkout.error}</p>
+      ) : checkout.notice ? (
+        <p className="welcome-status welcome-status-info">{checkout.notice}</p>
       ) : null}
     </section>
   );

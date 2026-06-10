@@ -204,11 +204,16 @@ Progress bar: **Welcome → Privacy → Permissions → Set up → Free trial �
    directly. The portal's "Start free trial" page is gone from the path. If
    the direct mint fails (older token without the scope, subscriptions
    disabled), the app falls back to opening the portal — nobody is stranded.
-4. **The return trip is automatic.** While checkout is open the app polls the
-   subscription status every 2.5s; the instant it flips to `trialing` the app
-   pulls itself back to the foreground (`focus_main_window`) and shows
-   "You're in" — the user never hunts for the window or clicks
-   "check again" (both still exist as quiet escape hatches).
+4. **The return trip is automatic — twice over.** Release builds ask the
+   accounts API for a `return_url` of `osscribe://billing/callback`, so
+   Stripe's success page (via the portal's `/return` bounce) deep-links
+   straight back into June, which refreshes the subscription on the spot; a
+   checkout cancel returns to the trial pitch with a friendly note, not an
+   error. Independently, while checkout is open the app polls the
+   subscription status every 2.5s and pulls itself to the foreground
+   (`focus_main_window`) the instant it flips to `trialing` — so the loop
+   closes even on deployments without the return-url allowlist, where the
+   API 422s the `return_url` and the app retries without it.
 5. **Resume on relaunch.** The wizard persists the current step
    (`june.onboarding.resumeStep`), so quitting mid-checkout doesn't replay
    the whole flow. Steps re-verify their own state: the sign-in step skips
@@ -223,9 +228,14 @@ users who finished onboarding. TrialGate now uses the same one-click
 checkout + auto-detect machinery (`src/lib/trial-checkout.ts`); past-due
 still routes to the portal's billing management.
 
-### Server dependency
+### Server dependencies
 
-The June OAuth client's `allowed_scopes` in the OS Accounts admin console
-must include `billing:write`, or every direct checkout falls back to the
-portal flow. Tokens issued before this change lack the scope until the next
-sign-in; the fallback covers them.
+- The June OAuth client's `allowed_scopes` in the OS Accounts admin console
+  must include `billing:write`, or every direct checkout falls back to the
+  portal flow. Tokens issued before this change lack the scope until the
+  next sign-in; the fallback covers them.
+- The accounts deployment needs `osscribe://` in its
+  `server.allowed_return_url_prefixes` (os-accounts PR adding `return_url`
+  support to the checkout endpoints) for the deep-link return; without it
+  the app silently retries checkout creation without a `return_url` and the
+  poll-based return takes over.
