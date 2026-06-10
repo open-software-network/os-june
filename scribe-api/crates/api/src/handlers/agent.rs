@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use scribe_domain::ModelId;
+use scribe_domain::{ModelId, ModelKind};
 use scribe_services::AgentChatParams;
 
 pub(crate) async fn chat_completions(
@@ -26,7 +26,7 @@ pub(crate) async fn chat_completions(
         .to_string();
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     validation::validate_agent_chat_body(&body)?;
-    require_priced_model(&state, &model_id)?;
+    require_priced_model(&state, &model_id, ModelKind::Text)?;
     if let Some(object) = body.as_object_mut() {
         object.insert(
             "model".to_string(),

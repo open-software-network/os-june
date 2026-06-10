@@ -13,7 +13,7 @@ use axum::{
     extract::{Multipart, State},
     http::HeaderMap,
 };
-use scribe_domain::ModelId;
+use scribe_domain::{ModelId, ModelKind};
 use scribe_services::{
     DictateCleanupOutput, DictateCleanupParams, DictateTranscribeOutput, DictateTranscribeParams,
 };
@@ -31,7 +31,7 @@ pub(crate) async fn transcribe(
     validate_audio(&audio)?;
     let model_id = form.required_text("model")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    require_priced_model(&state, &model_id)?;
+    require_priced_model(&state, &model_id, ModelKind::Asr)?;
     let session_id = form.required_text("sessionId")?;
     validation::validate_text_len("session_id", &session_id, validation::MAX_ID_CHARS)?;
     let utterance_id = form.required_text("utteranceId")?;
@@ -78,7 +78,7 @@ pub(crate) async fn cleanup(
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    require_priced_model(&state, &model_id)?;
+    require_priced_model(&state, &model_id, ModelKind::Text)?;
     let output = state
         .dictate()
         .cleanup(DictateCleanupParams {

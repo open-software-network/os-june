@@ -229,6 +229,68 @@ mod tests {
         assert!(prompt.contains("Do not add wrapper headings"));
     }
 
+    #[tokio::test]
+    async fn note_generate_rejects_asr_model_before_authorize() {
+        // Regression: generation accepted any priced model id. Passing an ASR
+        // model could take a wallet hold and call the text upstream before the
+        // token-pricing unit mismatch was discovered.
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteGenerateService::new(NoteGenerateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            generator: Arc::new(FixedGenerator),
+            hold_ttl_seconds: 300,
+            flat_estimate_credits: 1024,
+        });
+        let mut params = note_generate_params();
+        params.model_id = ModelId("audio-model".to_string());
+
+        let result = service.generate(params).await;
+
+        assert_eq!(result.map(|_| ()), Err(ServiceError::ModelNotPriced));
+        assert_eq!(os_accounts.events(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn dictate_cleanup_rejects_asr_model_before_authorize() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = DictateService::new(DictateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            cleaner: Arc::new(FixedCleaner),
+            duration_probe: Arc::new(FixedDurationProbe),
+            transcribe_hold_ttl_seconds: 30,
+            cleanup_hold_ttl_seconds: 30,
+            flat_estimate_credits: 1024,
+        });
+
+        let result = service
+            .cleanup(DictateCleanupParams {
+                user_id: UserId("usr_123".to_string()),
+                session_id: "session_1".to_string(),
+                utterance_id: "utt_2".to_string(),
+                text: "hello".to_string(),
+                dictionary_context: None,
+                style: "plain".to_string(),
+                model_id: ModelId("audio-model".to_string()),
+            })
+            .await;
+
+        assert_eq!(result.map(|_| ()), Err(ServiceError::ModelNotPriced));
+        assert_eq!(os_accounts.events(), Vec::new());
+    }
+
     fn note_generate_service(os_accounts: Arc<RecordingOsAccounts>) -> NoteGenerateService {
         NoteGenerateService::new(NoteGenerateServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(

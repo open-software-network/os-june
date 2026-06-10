@@ -9,7 +9,7 @@ use crate::{
 };
 use scribe_domain::{
     ActionSlug, AudioDurationProbe, CleanedText, Cleaner, CleanupRequest, Credits, ModelId,
-    OsAccountsClient, Receipt, Transcriber, Transcript, TranscriptionRequest, UserId,
+    ModelKind, OsAccountsClient, Receipt, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use std::sync::Arc;
 
@@ -106,6 +106,8 @@ impl DictateService {
         &self,
         params: DictateCleanupParams,
     ) -> Result<DictateCleanupOutput, ServiceError> {
+        self.pricing
+            .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),

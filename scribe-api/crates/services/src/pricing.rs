@@ -55,6 +55,35 @@ impl PricingTable {
         self.models.contains_key(model_id)
     }
 
+    pub fn ensure_model_kind(&self, model_id: &str, kind: ModelKind) -> Result<(), PricingError> {
+        let model = self.models.get(model_id).ok_or(PricingError::NotPriced)?;
+        if !model_type_matches_kind(model.model_type, kind) {
+            return Err(PricingError::WrongUnit);
+        }
+        match kind {
+            ModelKind::Asr => {
+                if model.unit != PriceUnit::Seconds {
+                    return Err(PricingError::WrongUnit);
+                }
+                model
+                    .credits_per_million_seconds
+                    .ok_or(PricingError::MissingRate)?;
+            }
+            ModelKind::Text => {
+                if model.unit != PriceUnit::Tokens {
+                    return Err(PricingError::WrongUnit);
+                }
+                model
+                    .input_credits_per_million_tokens
+                    .ok_or(PricingError::MissingRate)?;
+                model
+                    .output_credits_per_million_tokens
+                    .ok_or(PricingError::MissingRate)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&String, &ModelPriceConfig)> {
         self.models.iter()
     }
@@ -111,7 +140,7 @@ mod tests {
     use super::{PricingError, PricingTable};
     use pretty_assertions::assert_eq;
     use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
-    use scribe_domain::TokenUsage;
+    use scribe_domain::{ModelKind, TokenUsage};
     use std::collections::BTreeMap;
 
     fn models<const N: usize>(
@@ -235,6 +264,28 @@ mod tests {
                 },
             ),
             Err(PricingError::WrongUnit)
+        );
+    }
+
+    #[test]
+    fn ensures_model_kind_matches_pricing_metadata() {
+        let table = PricingTable::new(models([
+            ("asr-model", PriceUnit::Seconds, 1, 0, ModelType::Asr),
+            ("text-model", PriceUnit::Tokens, 1, 1, ModelType::Text),
+        ]));
+
+        assert_eq!(table.ensure_model_kind("asr-model", ModelKind::Asr), Ok(()));
+        assert_eq!(
+            table.ensure_model_kind("text-model", ModelKind::Text),
+            Ok(())
+        );
+        assert_eq!(
+            table.ensure_model_kind("asr-model", ModelKind::Text),
+            Err(PricingError::WrongUnit)
+        );
+        assert_eq!(
+            table.ensure_model_kind("missing", ModelKind::Text),
+            Err(PricingError::NotPriced)
         );
     }
 

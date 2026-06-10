@@ -7,9 +7,10 @@ use axum::{
     extract::{Multipart, State},
     http::HeaderMap,
 };
-use scribe_domain::ModelId;
+use scribe_domain::{ModelId, ModelKind};
 use scribe_services::{
     NoteGenerateOutput, NoteGenerateParams, NoteTranscribeOutput, NoteTranscribeParams,
+    PricingError, PricingTable,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +26,7 @@ pub(crate) async fn transcribe(
     validate_audio(&audio)?;
     let model_id = form.required_text("model")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    require_priced_model(&state, &model_id)?;
+    require_priced_model(&state, &model_id, ModelKind::Asr)?;
     let title = form.required_text("title")?;
     validation::validate_text_len("title", &title, validation::MAX_TITLE_CHARS)?;
     let context = form.optional_text("context");
@@ -70,7 +71,7 @@ pub(crate) async fn generate(
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    require_priced_model(&state, &model_id)?;
+    require_priced_model(&state, &model_id, ModelKind::Text)?;
     let output = state
         .note_generate()
         .generate(NoteGenerateParams {
@@ -193,10 +194,110 @@ pub(crate) fn required(value: Option<String>, message: &str) -> Result<String, A
         .ok_or_else(|| ApiError::bad_request(message))
 }
 
-pub(crate) fn require_priced_model(state: &ApiState, model_id: &str) -> Result<(), ApiError> {
-    if state.pricing().has_model(model_id) {
-        Ok(())
-    } else {
-        Err(ApiError::unprocessable("model_not_priced"))
+pub(crate) fn require_priced_model(
+    state: &ApiState,
+    model_id: &str,
+    kind: ModelKind,
+) -> Result<(), ApiError> {
+    require_priced_model_kind(state.pricing(), model_id, kind)
+}
+
+fn require_priced_model_kind(
+    pricing: &PricingTable,
+    model_id: &str,
+    kind: ModelKind,
+) -> Result<(), ApiError> {
+    match pricing.ensure_model_kind(model_id, kind) {
+        Ok(()) => Ok(()),
+        Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
+        Err(PricingError::NotPriced | PricingError::MissingRate) => {
+            Err(ApiError::unprocessable("model_not_priced"))
+        }
+        Err(PricingError::Overflow) => Err(ApiError::unprocessable("price_overflow")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_priced_model_kind;
+    use crate::ApiError;
+    use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
+    use scribe_domain::ModelKind;
+    use scribe_services::PricingTable;
+    use std::collections::BTreeMap;
+
+    fn pricing_table() -> PricingTable {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "asr-model".to_string(),
+            ModelPriceConfig {
+                unit: PriceUnit::Seconds,
+                credits_per_million_seconds: Some(1),
+                input_credits_per_million_tokens: None,
+                output_credits_per_million_tokens: None,
+                provider: ModelProvider::Openai,
+                model_type: ModelType::Asr,
+                display_name: "ASR".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        );
+        models.insert(
+            "text-model".to_string(),
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(1),
+                output_credits_per_million_tokens: Some(1),
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Text,
+                display_name: "Text".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        );
+        PricingTable::new(models)
+    }
+
+    #[test]
+    fn require_priced_model_kind_accepts_matching_model_type() {
+        let pricing = pricing_table();
+
+        assert!(require_priced_model_kind(&pricing, "asr-model", ModelKind::Asr).is_ok());
+        assert!(require_priced_model_kind(&pricing, "text-model", ModelKind::Text).is_ok());
+    }
+
+    #[test]
+    fn require_priced_model_kind_rejects_wrong_endpoint_model_type() {
+        let pricing = pricing_table();
+
+        let error = require_priced_model_kind(&pricing, "asr-model", ModelKind::Text)
+            .expect_err("ASR model must not be accepted for text generation");
+
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. } if message == "model_type_invalid"
+        ));
+    }
+
+    #[test]
+    fn require_priced_model_kind_keeps_missing_model_error() {
+        let pricing = pricing_table();
+
+        let error = require_priced_model_kind(&pricing, "missing", ModelKind::Text)
+            .expect_err("missing model should be rejected");
+
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. } if message == "model_not_priced"
+        ));
     }
 }

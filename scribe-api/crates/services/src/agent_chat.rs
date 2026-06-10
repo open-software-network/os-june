@@ -7,7 +7,7 @@ use crate::{
 };
 use scribe_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
-    OsAccountsClient, Receipt, UserId,
+    ModelKind, OsAccountsClient, Receipt, UserId,
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -40,6 +40,8 @@ impl AgentChatService {
     }
 
     pub async fn complete(&self, params: AgentChatParams) -> Result<AgentChatOutput, ServiceError> {
+        self.pricing
+            .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
         let estimate = Credits(self.flat_estimate_credits);
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),

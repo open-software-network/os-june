@@ -7,8 +7,8 @@ use crate::{
     prompts,
 };
 use scribe_domain::{
-    ActionSlug, Credits, GeneratedNote, GenerationRequest, Generator, ModelId, OsAccountsClient,
-    Receipt, UserId,
+    ActionSlug, Credits, GeneratedNote, GenerationRequest, Generator, ModelId, ModelKind,
+    OsAccountsClient, Receipt, UserId,
 };
 use std::sync::Arc;
 
@@ -43,6 +43,8 @@ impl NoteGenerateService {
         &self,
         params: NoteGenerateParams,
     ) -> Result<NoteGenerateOutput, ServiceError> {
+        self.pricing
+            .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
         // Flat-estimate mode — see note_transcribe.rs. The actual charge below
         // is still computed from real token usage; only the Hold size changes.
         let estimate = Credits(self.flat_estimate_credits);
