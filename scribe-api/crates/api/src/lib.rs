@@ -29,7 +29,7 @@ pub use handlers::dictate::{
 pub use handlers::health::HealthDto;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
-pub use state::{ApiLimits, ApiState, ApiStateParams};
+pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
 pub fn router(state: ApiState) -> Router {
     let limits = state.limits();
@@ -41,6 +41,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/livez", get(handlers::health::livez))
         .route("/readyz", get(handlers::health::readyz))
         .route("/healthz", get(handlers::health::healthz))
+        .route("/verify", get(handlers::verify::verify))
         .route("/v1/models", get(handlers::models::list_models))
         .route(
             "/v1/notes/transcribe",

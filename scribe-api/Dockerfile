@@ -26,6 +26,12 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifi
 WORKDIR /app
 COPY --from=builder /app/target/release/scribe /usr/local/bin/scribe
 COPY config.toml /app/config.toml
+# Source commit stamped into the runtime env so /verify can report which
+# public commit this image was built from. Build-arg only: the same commit
+# always passes the same value, so the image digest stays reproducible, and
+# the binary itself is unaffected.
+ARG GIT_SHA=""
+ENV SCRIBE__ATTESTATION__SOURCE_COMMIT=${GIT_SHA}
 USER scribe
 EXPOSE 8080
 ENV RUST_LOG=scribe=info,scribe_api=info,scribe_services=info,scribe_providers=info,tower_http=info

@@ -14,6 +14,8 @@ The `scribe-api` backend runs in an Intel TDX confidential VM on Phala Cloud. Be
 
 Together these bind the running image to a public commit: you can confirm the attested digest is the one our CI built and recorded for that commit. (Bit-for-bit _rebuild-from-source_ reproducibility — so you can regenerate the digest yourself instead of trusting our CI — is in progress.)
 
+Every deployment also serves its own walkthrough of this chain at [`/verify`](https://scribe-api.opensoftware.co/verify) — served from inside the TEE, it reports the exact commit and image the running server was built from, with step-by-step instructions for checking each link.
+
 Audio still leaves the TEE when forwarded to OpenAI or Venice for transcription, under those providers' own privacy policies. This chain verifies the **code** running in the confidential VM, not what upstream providers do with audio. End-to-end private STT is a separate workstream.
 
 ## Development

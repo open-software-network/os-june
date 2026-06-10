@@ -190,6 +190,7 @@ Usage: verify-reproducible.sh <git-ref>
      trap 'git worktree remove /tmp/verify --force' EXIT   # always clean up
   2. SOURCE_DATE_EPOCH=$(git -C /tmp/verify log -1 --pretty=%ct) \
        docker buildx build --provenance=false --sbom=false \
+       --build-arg GIT_SHA=$(git -C /tmp/verify rev-parse HEAD) \   # match CI: /verify stamps the commit into the runtime env
        --output type=image,rewrite-timestamp=true,push=false \
        --metadata-file /tmp/meta.json /tmp/verify/scribe-api   # build the worktree, NOT cwd
   3. local=$(jq -r '.["containerimage.digest"]' /tmp/meta.json)

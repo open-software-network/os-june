@@ -5,6 +5,13 @@ request_timeout_secs = 600
 max_audio_bytes = 26214400
 max_json_bytes = 524288
 
+# Public facts shown on the /verify attestation page. source_commit is not
+# set here — the Docker build stamps it via SCRIBE__ATTESTATION__SOURCE_COMMIT.
+[attestation]
+source_repo_url = "https://github.com/open-software-network/os-scribe"
+image_repo = "ghcr.io/open-software-network/scribe-api"
+trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+
 [os_accounts]
 # api_url has no default — must come from SCRIBE__OS_ACCOUNTS__API_URL
 # per environment so a missing override fails loud against the dev
