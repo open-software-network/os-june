@@ -537,6 +537,63 @@ input:focus-visible,
   padding: var(--sp-2) 0 148px;
 }
 
+/* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
+ * agent response part type, rendered through the real turn components. */
+.agent-gallery {
+  overflow-y: auto;
+}
+
+.agent-gallery-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.agent-gallery-banner strong {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-gallery-banner p {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.agent-gallery-banner code,
+.agent-gallery-section-header code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+}
+
+.agent-gallery-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-gallery-section-header h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-gallery-section-header p {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  line-height: 1.35;
+}
+
 .agent-management-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1057,41 +1114,34 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-.agent-clarify-choices button,
-.agent-clarify-form button {
-  display: inline-flex;
+/* Choice rows stay quiet: hairline outline, transparent fill, soft tint on
+ * hover. The numeral is a bare muted digit — no keycap chip. */
+.agent-clarify-choices button {
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: var(--sp-3);
   min-height: var(--control-sm);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   padding: 0 var(--sp-3);
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: transparent;
+  color: var(--foreground);
   font: inherit;
-}
-
-.agent-clarify-choices button {
-  justify-content: flex-start;
-  gap: var(--sp-3);
   text-align: left;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-clarify-choices button span {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-xs);
-  background: var(--surface-subtle);
+  flex: 0 0 auto;
+  min-width: 14px;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+  text-align: center;
 }
 
-.agent-clarify-choices button:hover:not(:disabled),
-.agent-clarify-form button:hover:not(:disabled) {
-  background: var(--tertiary);
+.agent-clarify-choices button:hover:not(:disabled) {
+  background: var(--surface-subtle);
 }
 
 .agent-clarify-choices button:disabled,
@@ -1145,6 +1195,8 @@ input:focus-visible,
   white-space: pre-wrap;
 }
 
+/* Buttons come from the .btn system (secondary fills, ghost deny) — this
+ * block only lays them out and adds the deny accent. */
 .agent-approval-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1152,41 +1204,26 @@ input:focus-visible,
   margin-top: var(--sp-4);
 }
 
-.agent-approval-actions button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: var(--card);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
-}
-
-.agent-approval-actions button:hover:not(:disabled) {
-  background: var(--surface-subtle);
-  border-color: var(--ring);
-}
-
 .agent-approval-actions button:disabled {
   opacity: 0.55;
 }
 
+.agent-approval-deny {
+  color: var(--muted-foreground);
+}
+
+.agent-approval-deny:hover:not(:disabled) {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+/* The resolved record is a quiet line of text, not a chip. */
 .agent-approval-result {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   width: fit-content;
   margin-top: var(--sp-3) !important;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-2) var(--sp-3);
-  background: var(--surface);
   color: var(--foreground) !important;
   font-size: var(--fs-sm) !important;
 }
@@ -1276,7 +1313,7 @@ input:focus-visible,
 .agent-markdown h3 {
   margin: var(--sp-5) 0 var(--sp-2);
   color: var(--foreground);
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   font-weight: 600;
   line-height: 1.35;
 }
@@ -1296,8 +1333,19 @@ input:focus-visible,
   padding-left: var(--sp-7);
 }
 
+/* Numeric markers are wider than bullets ("1." vs "•") and hang outside the
+ * content edge, so ordered lists need extra room or the digits get clipped at
+ * the column boundary. */
+.agent-markdown ol {
+  padding-left: var(--sp-10);
+}
+
 .agent-markdown li {
   margin: var(--sp-1) 0;
+}
+
+.agent-markdown li::marker {
+  color: var(--muted-foreground);
 }
 
 .agent-markdown strong {
@@ -1335,11 +1383,47 @@ input:focus-visible,
   text-decoration: none;
 }
 
+/* Quotes read as an aside: a quiet rule down the left, muted text. */
+.agent-markdown blockquote {
+  margin: 0 0 var(--sp-4);
+  border-left: 2px solid var(--border);
+  padding-left: var(--sp-4);
+  color: var(--muted-foreground);
+}
+
+.agent-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* Tables stay airy — horizontal rules only, no grid boxing or zebra fill. */
+.agent-md-table {
+  overflow-x: auto;
+  margin: 0 0 var(--sp-4);
+}
+
+.agent-md-table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.agent-md-table th,
+.agent-md-table td {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) 0;
+}
+
+.agent-md-table th {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
 .agent-context-summary {
   width: min(760px, 100%);
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
 .agent-context-summary summary {
@@ -1397,7 +1481,7 @@ input:focus-visible,
   width: min(760px, 100%);
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
 .agent-hermes-note summary {
@@ -1450,7 +1534,9 @@ input:focus-visible,
 .agent-tool-disclosure {
   width: min(760px, 100%);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  /* Body-sized like the rest of the meta layer — the lighter color alone
+   * keeps it subordinate to the answer text. */
+  font-size: var(--fs-lg);
 }
 
 .agent-tool-disclosure > summary,
@@ -1458,8 +1544,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-sm);
+  padding: var(--sp-1) 0;
   color: var(--muted-foreground);
   list-style: none;
 }
@@ -1482,30 +1567,84 @@ input:focus-visible,
   display: none;
 }
 
+/* Inside disclosures the icon drops its boxed treatment — just the glyph — so
+ * the row reads as one quiet line of text rather than a chip. The tool glyph
+ * and the expand/minimize hints stack in the same cell; hover cross-fades
+ * between them. The cell is pinned to the icon size so the swap is pure
+ * opacity — any size mismatch here reads as a one-pixel hover glitch. */
 .agent-tool-disclosure .agent-tool-icon {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
   flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted-foreground);
 }
 
+/* The swap is intentionally INSTANT — an opacity transition here promotes the
+ * glyph to a compositing layer in WKWebView, and the layer rasterizes on a
+ * different pixel boundary than in-flow text, which read as a 1–2px hover
+ * hitch. No transition, no layer, no hitch. */
+.agent-tool-disclosure .agent-tool-icon > * {
+  grid-area: 1 / 1;
+}
+
+/* Plain-text "+" / "−" affordances on the text baseline grid. */
+.agent-tool-icon-expand,
+.agent-tool-icon-minimize {
+  opacity: 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* Closed rows hint expand; open rows hint collapse. */
+.agent-tool-disclosure:not([open]) > summary:hover .agent-tool-icon-expand,
+.agent-tool-disclosure[open] > summary:hover .agent-tool-icon-minimize {
+  opacity: 1;
+}
+
+/* Static rows render as a div (no summary), so this only ever fires on rows
+ * that actually have a swap icon to reveal. */
+.agent-tool-disclosure > summary:hover .agent-tool-icon-glyph {
+  opacity: 0;
+}
+
+/* Running rows trade the status word for the rolling pangolin (fixed-size
+ * mark; wrappers only set color). */
+.agent-tool-spinner {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--warm-strong);
+}
+
+/* Name inherits the row's muted color (the whole line darkens on hover). */
 .agent-tool-name {
   overflow: hidden;
-  color: var(--foreground);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-tool-disclosure .agent-tool-live-status,
+/* Status sits beside the name (not floated to the far edge) so the row reads
+ * as one phrase. StatusPill rows (hermes/tool events) flatten to the same
+ * quiet-word treatment inside disclosures. */
 .agent-tool-disclosure .agent-status-pill {
-  margin-left: auto;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .agent-tool-output {
   overflow: auto;
   max-height: 220px;
-  margin: var(--sp-1) 0 0 var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-3);
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--muted) 45%, transparent);
   color: var(--body-copy);
@@ -1598,13 +1737,17 @@ input:focus-visible,
   background: var(--tertiary);
 }
 
+/* The whole thinking layer sits at body size — muted color (not a size
+ * step-down) is what separates it from the answer. */
 .agent-reasoning {
   width: 100%;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
-.agent-reasoning summary {
+/* Direct-child selectors only — tool rows nest their own <summary> inside the
+ * reasoning body, and a descendant selector here would shrink-wrap them. */
+.agent-reasoning > summary {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -1613,24 +1756,24 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.agent-reasoning summary:hover {
+.agent-reasoning > summary:hover {
   color: var(--foreground);
 }
 
-.agent-reasoning summary::-webkit-details-marker {
+.agent-reasoning > summary::-webkit-details-marker {
   display: none;
 }
 
-.agent-reasoning summary svg {
+.agent-reasoning > summary svg {
   align-self: center;
   color: var(--muted-foreground);
 }
 
-.agent-reasoning summary span {
+.agent-reasoning > summary span {
   font-weight: 500;
 }
 
-.agent-reasoning[open] summary p {
+.agent-reasoning[open] > summary p {
   display: none;
 }
 
@@ -1641,14 +1784,16 @@ input:focus-visible,
   margin: var(--sp-3) 0 0;
 }
 
-/* The reasoning prose: readable but capped + scrollable so a long chain of
- * thought never balloons the conversation. */
+/* The reasoning prose: body-sized so the expanded thought reads in the same
+ * rhythm as the answer (the muted color alone carries the hierarchy), but
+ * capped + scrollable so a long chain of thought never balloons the
+ * conversation. */
 .agent-reasoning-text {
   overflow: auto;
   max-height: 260px;
   color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.55;
+  font-size: var(--fs-lg);
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
@@ -1669,29 +1814,37 @@ input:focus-visible,
   }
 }
 
+/* Status renders as a small tinted badge (same recipe as .agent-safety-badge)
+ * so it reads as state, not stray prose — neutral by default, terracotta while
+ * live, red on failure. */
 .agent-tool-live-status {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 var(--sp-2);
+  flex: 0 0 auto;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+  font-weight: 500;
   line-height: 1.4;
 }
 
 .agent-tool-live-status[data-status="running"] {
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
 }
 
 .agent-tool-live-status[data-status="failed"] {
-  color: var(--danger);
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
 }
 
+/* Sentence case per UI conventions — labels arrive already cased, so no
+ * transform (capitalize would retitle "Approval required" → "Approval Required"). */
 .agent-tool-title {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   font-weight: 600;
-  text-transform: capitalize;
 }
 
 .agent-tool-icon {
@@ -2847,31 +3000,26 @@ input:focus-visible,
   grid-row: 1;
 }
 
-/* Running agent sessions show a braille spinner; idle rows show nothing. The
- * glyph is decorative (aria-hidden inside BrailleSpinner) — the wrapping
+/* Running agent sessions show the rolling pangolin; idle rows show nothing.
+ * The glyph is decorative (aria-hidden inside PangolinSpinner) — the wrapping
  * status span carries "Working" for assistive tech. */
 .agent-sidebar-spinner {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--fs-sm);
-  line-height: 1;
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
-/* Braille cells are 2×4 (tall); widen the glyph so the loader reads as a
- * circle/square rather than an oval. */
-.agent-sidebar-spinner > span {
+/* Needs-you dot beside the session title: terracotta, matching the live-status
+ * accent used across the agent surfaces. */
+.agent-sidebar-working {
   display: inline-block;
-  transform: scaleX(1.35);
-  transform-origin: center;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
 }
 
 .agent-sidebar-working[data-status="waitingForUser"] {
-  background: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 18%, transparent);
+  background: var(--warm-strong);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 18%, transparent);
 }
 
 /* A session awaiting your input reads a touch heavier so it stands out in the
@@ -5117,16 +5265,67 @@ input:focus-visible,
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
+/* App-wide loading indicator: the rolling pangolin braille glyph. Size comes
+ * from font-size (set inline by <Spinner size>); color inherits. */
 .spinner {
-  width: 16px;
-  height: 16px;
+  display: inline-flex;
   flex-shrink: 0;
-  animation: spinner-spin 0.9s linear infinite;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
-@keyframes spinner-spin {
-  to {
-    transform: rotate(360deg);
+/* The pangolin spinner: a perfectly square 2×2 grid of tiny real circles with
+ * a dim spot rolling clockwise — drawn, not typeset, so the dots are crisp
+ * (à la Conductor's timer dots). The mark is one fixed size everywhere by
+ * design — wrappers set only color (currentColor), there is no size knob.
+ * Dot and gap MUST stay integer px: fractional sizes put the second column on
+ * a different subpixel phase and its circles rasterize ovular. */
+.pangolin-spinner {
+  display: inline-grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 2px;
+  line-height: 1;
+}
+
+.pangolin-spinner > span {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pangolin-roll 800ms linear infinite;
+}
+
+/* Stagger the dim spot clockwise: TL → TR → BR → BL (grid DOM order is
+ * TL TR / BL BR, hence 3 and 4 swapped). Negative delays so the loop is
+ * already rolling on first paint. */
+.pangolin-spinner > span:nth-child(1) {
+  animation-delay: -800ms;
+}
+
+.pangolin-spinner > span:nth-child(2) {
+  animation-delay: -600ms;
+}
+
+.pangolin-spinner > span:nth-child(4) {
+  animation-delay: -400ms;
+}
+
+.pangolin-spinner > span:nth-child(3) {
+  animation-delay: -200ms;
+}
+
+/* Each dot dips once per revolution; the 25% phase offsets above turn the
+ * dips into one gap travelling around the square. */
+@keyframes pangolin-roll {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+
+  35%,
+  65% {
+    opacity: 1;
   }
 }
 
@@ -5135,6 +5334,11 @@ input:focus-visible,
   .spinner {
     animation: none;
     opacity: 0.6;
+  }
+
+  /* The pangolin rests as a steady square of dots. */
+  .pangolin-spinner > span {
+    animation: none;
   }
 
   .sign-in-prompt-spinner {
@@ -8037,8 +8241,6 @@ input:focus-visible,
 }
 
 .welcome-spinner {
-  width: 15px;
-  height: 15px;
   color: var(--foreground);
 }
 
