@@ -40,11 +40,13 @@ describe("attachScrollThumbFade", () => {
   });
 
   const alpha = () => Number(el.style.getPropertyValue("--thumb-alpha"));
+  const isActive = () => el.dataset.scrollbarActive === "true";
 
   it("fades the thumb in on scroll and back out after the idle delay", () => {
     detach = attachScrollThumbFade(el);
 
     el.dispatchEvent(new Event("scroll"));
+    expect(isActive()).toBe(true);
     frame(50); // halfway through the 100ms fade-in
     expect(alpha()).toBeGreaterThan(0);
     expect(alpha()).toBeLessThan(30);
@@ -55,6 +57,7 @@ describe("attachScrollThumbFade", () => {
     frame(400);
     while (frame(2000));
     expect(alpha()).toBe(0);
+    expect(isActive()).toBe(false);
   });
 
   it("keeps the thumb visible while scrolling continues", () => {
@@ -78,6 +81,7 @@ describe("attachScrollThumbFade", () => {
     detach = attachScrollThumbFade(el);
 
     el.dispatchEvent(new Event("pointermove"));
+    expect(isActive()).toBe(true);
     frame(50);
     expect(alpha()).toBeGreaterThan(0);
     expect(alpha()).toBeLessThan(30);
@@ -89,6 +93,26 @@ describe("attachScrollThumbFade", () => {
     expect(alpha()).toBe(0);
   });
 
+  it("treats wheel and mouse movement as scrollbar activity", () => {
+    detach = attachScrollThumbFade(el);
+
+    el.dispatchEvent(new WheelEvent("wheel"));
+    expect(isActive()).toBe(true);
+    while (frame(200));
+    expect(alpha()).toBe(30);
+
+    vi.advanceTimersByTime(500);
+    el.dispatchEvent(new MouseEvent("mousemove"));
+    vi.advanceTimersByTime(500);
+    expect(isActive()).toBe(true);
+    expect(alpha()).toBe(30);
+
+    vi.advanceTimersByTime(300);
+    while (frame(5000));
+    expect(alpha()).toBe(0);
+    expect(isActive()).toBe(false);
+  });
+
   it("cleans up the listener, timers, and property on detach", () => {
     const cleanup = attachScrollThumbFade(el);
 
@@ -98,6 +122,7 @@ describe("attachScrollThumbFade", () => {
 
     cleanup();
     expect(el.style.getPropertyValue("--thumb-alpha")).toBe("");
+    expect(isActive()).toBe(false);
 
     el.dispatchEvent(new Event("scroll")); // detached — no longer reacts
     expect(el.style.getPropertyValue("--thumb-alpha")).toBe("");

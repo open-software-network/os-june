@@ -311,9 +311,8 @@ export function App() {
     preloadRecordingSounds();
   }, []);
 
-  // The card scroller's thumb fades in with scroll activity and back out when
-  // idle (native-overlay feel; the CSS only listens on breadcrumb views —
-  // see scroll-thumb-fade.ts).
+  // The card scroller's thumb fades in with scroll/pointer activity and back
+  // out when idle (native-overlay feel; see scroll-thumb-fade.ts).
   useEffect(() => {
     const el = mainPanelBodyRef.current;
     if (!el) return;

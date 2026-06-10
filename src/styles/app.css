@@ -3810,15 +3810,11 @@ input:focus-visible,
 }
 
 .transcript-view {
-  /* The scroll box is clipped to its own edges, so a turn's hover bleed
-   * (margin: 0 -sp-4) would be shorn flat against the right edge. Borrow
-   * the .main-panel-body trick: pad the scroller by sp-4 and pull it back
-   * out by the same amount with a negative margin (width:auto keeps the
-   * content column at content-max). The bleed now lands inside the
-   * padding — fully rounded — while the content still aligns with the
-   * editor header above. */
+  /* Borrow the .main-panel-body alignment trick for transcript turn hover
+   * bleed without creating a second scrollbar. The detail card scroller owns
+   * scrolling for Notes and Transcription alike, so both tabs share the same
+   * breadcrumb-safe thumb behavior. */
   width: auto;
-  overflow: auto;
   margin-inline: calc(-1 * var(--sp-4));
   padding: var(--sp-2) var(--sp-4) 140px;
   font-size: var(--fs-lg);
@@ -6200,6 +6196,7 @@ input:focus-visible,
 
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-track {
   margin-top: var(--detail-bar-h);
+  background: transparent;
 }
 
 /* Native overlay thumbs float a couple px off the window edge; match that on
@@ -6210,11 +6207,18 @@ input:focus-visible,
 .agent-scroll::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: 8px;
+  background: transparent;
 }
 
 .agent-scroll::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
+  background: transparent;
+  background-clip: padding-box;
+}
+
+.agent-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
+.main-panel-body[data-detail-scroller="true"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
   background: color-mix(
     in oklch,
     var(--muted-foreground) calc(var(--thumb-alpha, 0) * 1%),
