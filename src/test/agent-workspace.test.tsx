@@ -377,7 +377,10 @@ describe("AgentWorkspace", () => {
   it("stops a working session from the composer", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ prompt: "summarize the current page" }),
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
     );
     mocks.listHermesSessions.mockResolvedValue([
       {
