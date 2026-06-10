@@ -6091,6 +6091,22 @@ input:focus-visible,
 
 /* Sticky detail bar — quiet back affordance on folder and note detail */
 
+/* When a breadcrumb is present, the card scroller's content passes behind the
+ * translucent bar — but so would the scrollbar thumb, showing through the
+ * frost. Same treatment as .agent-scroll: the standard scrollbar props (set
+ * globally) make engines ignore ::-webkit-scrollbar styling, so opt the
+ * scroller out to re-engage the quiet 4px webkit scrollbar, then inset its
+ * track below the bar so the thumb can't ride up over it. Scoped with :has()
+ * so bar-less views keep the native overlay scrollbar. */
+.main-panel-body:has(.detail-bar) {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar-track {
+  margin-top: var(--detail-bar-h);
+}
+
 .detail-bar {
   position: sticky;
   top: 0;
