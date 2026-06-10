@@ -761,6 +761,80 @@ pub async fn import_hermes_bridge_file(
     })
 }
 
+/// Imports a dropped file from its raw bytes. DOM drops in WKWebView never
+/// expose a filesystem path (and Tauri's own drag-drop interception is
+/// disabled so notes can use HTML5 drag), so the frontend reads the dropped
+/// blob and sends its contents as the raw invoke payload, with the filename
+/// in a header.
+#[tauri::command]
+pub fn import_hermes_bridge_file_bytes(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<ImportedHermesFile, AppError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(AppError::new(
+            "hermes_file_import_failed",
+            "Expected the dropped file's contents as a binary payload.",
+        ));
+    };
+    if bytes.len() as u64 > HERMES_IMPORT_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_file_import_denied",
+            "Dropped files must be 50 MB or smaller.",
+        ));
+    }
+    let raw_name = request
+        .headers()
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| urlencoding::decode(value).ok())
+        .map(|value| value.into_owned())
+        .unwrap_or_default();
+    let file_name = validate_dropped_file_name(&raw_name)?;
+    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let upload_dir = hermes_home.join("workspace").join("uploads");
+    fs::create_dir_all(&upload_dir)
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
+    let destination = unique_upload_path(&upload_dir, Path::new(&file_name))?;
+    fs::write(&destination, bytes)
+        .map_err(|error| AppError::new("hermes_file_import_failed", error.to_string()))?;
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment")
+        .to_string();
+    Ok(ImportedHermesFile {
+        name,
+        path: destination.to_string_lossy().into_owned(),
+        root_label: "Workspace".to_string(),
+        size: bytes.len() as u64,
+        preview_data_url: image_preview_data_url(&destination)?,
+    })
+}
+
+/// Reduces a browser-supplied filename to a safe bare name, mirroring the
+/// checks `validate_dropped_file_path` applies to native paths.
+fn validate_dropped_file_name(raw: &str) -> Result<String, AppError> {
+    let name = Path::new(raw.trim())
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_string();
+    if name.is_empty() {
+        return Err(AppError::new(
+            "hermes_file_import_failed",
+            "The dropped file does not have a usable filename.",
+        ));
+    }
+    if is_hidden_secret_path(Path::new(&name)) {
+        return Err(AppError::new(
+            "hermes_file_import_denied",
+            "Hidden or sensitive files cannot be attached.",
+        ));
+    }
+    Ok(name)
+}
+
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
     let hermes_home = resolve_scribe_hermes_home(&app)?;
     let requested = PathBuf::from(path)

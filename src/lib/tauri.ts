@@ -793,6 +793,18 @@ export async function importHermesBridgeFile(path: string) {
   });
 }
 
+// DOM drops in WKWebView carry no filesystem path, so the file's contents go
+// over as the raw invoke payload with the name in a header (URI-encoded:
+// header values must be ASCII).
+export async function importHermesBridgeFileBytes(
+  name: string,
+  bytes: Uint8Array,
+) {
+  return invoke<ImportedHermesFile>("import_hermes_bridge_file_bytes", bytes, {
+    headers: { "x-file-name": encodeURIComponent(name) },
+  });
+}
+
 export async function hermesBridgeSessions(
   input: {
     limit?: number;

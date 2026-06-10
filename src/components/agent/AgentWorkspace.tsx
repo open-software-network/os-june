@@ -42,6 +42,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -61,6 +62,7 @@ import {
   hermesBridgeStatus,
   hermesBridgeToolsets,
   importHermesBridgeFile,
+  importHermesBridgeFileBytes,
   listAgentTasks,
   downloadHermesBridgeFile,
   retryAgentTask,
@@ -416,6 +418,7 @@ export function AgentWorkspace({
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
 
   useEffect(() => {
@@ -842,20 +845,83 @@ export function AgentWorkspace({
 
   // Auto-grow the composer with its content (capped), since WKWebView has no
   // CSS field-sizing. Recomputing on `draft` also collapses it back after a
-  // submit clears the value.
-  useEffect(() => {
+  // submit clears the value. Runs pre-paint (layout effect) so the FLIP
+  // measurements below straddle the reflow without a visible jump.
+  useLayoutEffect(() => {
     const el = composerRef.current;
-    if (!el) return;
+    const box = composerBoxRef.current;
+    if (!el || !box) return;
+    // FLIP "first": where things sit before this growth step reflows them.
+    // On rapid typing a previous step's 160ms animation may still be in
+    // flight, so these reads are mid-animation values — where the element
+    // visually is right now. Cancel the stale animations afterwards so the
+    // "last" measurement below is pure layout: the delta between the two then
+    // starts the new glide exactly where the old one left off, instead of
+    // double-applying a residual offset (jitter).
+    const prevBoxHeight = box.offsetHeight;
+    const prevRect = el.getBoundingClientRect();
+    if (typeof el.getAnimations === "function") {
+      for (const animation of el.getAnimations()) animation.cancel();
+      for (const animation of box.getAnimations()) animation.cancel();
+    }
+    // The toolbar drops below the input once the text can't fit on one line
+    // beside the buttons — so probe that at the narrow single-line width.
+    // Deciding at the *current* width feeds back into itself: text that
+    // overflows the narrow slot can fit on one full-width line, so the modes
+    // would flip-flop on every keystroke right at the wrap boundary.
+    box.dataset.multiline = "false";
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-    // Once the input wraps to a second line, the toolbar drops below it.
     const styles = getComputedStyle(el);
     const lineHeight = parseFloat(styles.lineHeight) || 20;
     const padding =
       parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
     const lines = Math.round((el.scrollHeight - padding) / lineHeight);
-    setComposerMultiline(lines >= 2);
-  }, [draft]);
+    const multiline = lines >= 2;
+    setComposerMultiline(multiline);
+    // Flip the layout attribute now rather than waiting for the re-render so
+    // the height below and the FLIP "last" measurement both see the final
+    // layout in this same effect (none of the probe states ever paint).
+    box.dataset.multiline = multiline ? "true" : "false";
+    // Size to the content at the final width, never the probe width — a
+    // narrow-width height on a full-width textarea leaves a phantom line.
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    const nextBoxHeight = box.offsetHeight;
+    if (nextBoxHeight === prevBoxHeight) return;
+    if (
+      typeof box.animate !== "function" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+    // Animate the box open/closed. Its content is bottom-anchored
+    // (justify-content: flex-end) and clipped (overflow: hidden), so the
+    // toolbar stays pinned to the bottom edge while the top edge glides up to
+    // reveal the new line.
+    const grow = {
+      duration: 160,
+      easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
+    };
+    box.animate(
+      [{ height: `${prevBoxHeight}px` }, { height: `${nextBoxHeight}px` }],
+      grow,
+    );
+    // Glide the textarea from its old spot, bottom-left anchored so the line
+    // being typed stays put while space opens above it (most visible on the
+    // one→two line hop, where it leaves the slot between the +/mic buttons).
+    const nextRect = el.getBoundingClientRect();
+    const dx = prevRect.left - nextRect.left;
+    const dy = prevRect.bottom - nextRect.bottom;
+    if (dx || dy) {
+      el.animate(
+        [
+          { transform: `translate(${dx}px, ${dy}px)` },
+          { transform: "translate(0, 0)" },
+        ],
+        grow,
+      );
+    }
+  }, [draft, attachments.length]);
 
   useEffect(() => {
     let disposed = false;
@@ -973,26 +1039,28 @@ export function AgentWorkspace({
   function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
     event.preventDefault();
     setDropActive(false);
-    const paths = Array.from(event.dataTransfer.files)
-      .map((file) => (file as File & { path?: string }).path)
-      .filter((path): path is string => Boolean(path));
-    if (!paths.length) {
+    const files = Array.from(event.dataTransfer.files);
+    if (!files.length) {
       setError("Drop files from Finder to attach them to the agent.");
       return;
     }
-    void importDroppedFilePaths(paths);
+    void importDroppedFiles(files);
   }
 
-  async function importDroppedFilePaths(paths: string[]) {
-    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
-      .filter(Boolean)
-      .slice(0, 8);
-    if (!uniquePaths.length) return;
+  async function importAttachments<T>(
+    items: T[],
+    importItem: (item: T) => Promise<ImportedHermesFile>,
+  ) {
+    if (!items.length) return;
     setImportingFiles(true);
     try {
-      const imported = await Promise.all(
-        uniquePaths.map((path) => importHermesBridgeFile(path)),
-      );
+      // One at a time on purpose: a dropped file's bytes can be 50 MB, so
+      // interleave read and upload to keep at most one buffer alive instead
+      // of staging the whole batch (up to ~400 MB) in memory at once.
+      const imported: ImportedHermesFile[] = [];
+      for (const item of items) {
+        imported.push(await importItem(item));
+      }
       setAttachments((current) => [
         ...current,
         ...imported.map((file) => ({
@@ -1007,6 +1075,33 @@ export function AgentWorkspace({
     } finally {
       setImportingFiles(false);
     }
+  }
+
+  // Native paths come from the file picker and Tauri drag-drop events.
+  async function importDroppedFilePaths(paths: string[]) {
+    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
+      .filter(Boolean)
+      .slice(0, 8);
+    await importAttachments(uniquePaths, importHermesBridgeFile);
+  }
+
+  // DOM drops are how Finder files actually arrive: Tauri's drag-drop
+  // interception is disabled (it has to be, so notes can use HTML5 drag into
+  // folders) and WKWebView never exposes filesystem paths on dropped Files —
+  // so read each blob and import its bytes.
+  async function importDroppedFiles(files: File[]) {
+    await importAttachments(files.slice(0, 8), async (file) => {
+      if (file.size > 50 * 1024 * 1024) {
+        throw new Error("Dropped files must be 50 MB or smaller.");
+      }
+      const bytes = await readFileBytes(file).catch(() => {
+        // Reading fails for directories, which Finder happily lets you drop.
+        throw new Error(
+          `Could not read "${file.name}" — folders can't be attached.`,
+        );
+      });
+      return importHermesBridgeFileBytes(file.name, bytes);
+    });
   }
 
   function removeAttachment(id: string) {
@@ -1984,6 +2079,7 @@ export function AgentWorkspace({
             onDrop={handleComposerDrop}
           >
             <div
+              ref={composerBoxRef}
               className="agent-composer-box"
               data-dirty={draft.trim() || attachments.length ? "true" : "false"}
               data-multiline={composerMultiline ? "true" : "false"}
@@ -4746,6 +4842,18 @@ function messageFromError(err: unknown) {
     return String((err as { message: unknown }).message);
   }
   return String(err);
+}
+
+// FileReader instead of Blob.arrayBuffer(): same everywhere a drop can land
+// (WKWebView and jsdom included).
+function readFileBytes(file: File) {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Could not read the dropped file."));
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 function omitRecordKey<T>(record: Record<string, T>, key: string) {

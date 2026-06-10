@@ -1989,6 +1989,10 @@ input:focus-visible,
   pointer-events: auto;
   display: flex;
   flex-direction: column;
+  /* Bottom-anchored so that while the JS FLIP animates the box height, the
+   * toolbar stays pinned to the bottom edge and new lines reveal from the
+   * rising top edge. */
+  justify-content: flex-end;
   gap: var(--sp-1);
   width: 100%;
   max-width: var(--content-max);
@@ -2008,7 +2012,11 @@ input:focus-visible,
 .agent-composer-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  /* The single-line textarea (33px) runs 1px taller than the 32px controls;
+   * centering splits the difference so the send button sits evenly inset
+   * instead of flush-bottom with a fatter top gap. On the multiline toolbar
+   * row every control is the same height, so centering is a no-op there. */
+  align-items: center;
   gap: var(--sp-1);
 }
 
@@ -2078,12 +2086,22 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+/* When the chip leads with an image thumb, drop the text-oriented left
+ * padding so the thumb sits flush at 2px on all sides, like the button. */
+.agent-attachment-chip:has(> img) {
+  padding-left: 2px;
+}
+
 .agent-attachment-chip > img {
   flex: 0 0 auto;
   width: 20px;
   height: 20px;
   border-radius: var(--r-xs);
   object-fit: cover;
+  /* Hairline just inside the thumb so light image edges don't melt into the
+   * chip. Mixed from --foreground so it flips with the theme. */
+  outline: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+  outline-offset: -1px;
 }
 
 .agent-attachment-chip > svg {
@@ -2098,20 +2116,47 @@ input:focus-visible,
 }
 
 .agent-attachment-chip button {
+  position: relative;
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  /* The same square as the image thumb, so it sits flush with the chip's 2px
+   * padding on all three sides — at 18px it floated 3px off the top/bottom
+   * but only 2px off the right edge, reading as off-center. */
+  width: 20px;
+  height: 20px;
+  /* The app never resets UA button padding globally — WebKit's default
+   * (2px 6px 3px) squeezes the content box to 8px, and the overflowing 12px
+   * icon gets safe-aligned to the start instead of centered: the x sat 2px
+   * right and 0.5px high of true center. */
+  padding: 0;
   border: 0;
+  /* Concentric with the chip: r-sm (6px) minus the 2px padding. */
   border-radius: var(--r-xs);
   background: transparent;
   color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    scale var(--t-fast) var(--ease-out);
+}
+
+/* The visible square is small; quietly widen the hit target around it
+ * (stops 1px shy of the textarea below, and the chip body to its left is
+ * inert, so nothing overlaps). */
+.agent-attachment-chip button::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
 }
 
 .agent-attachment-chip button:hover {
   background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--foreground);
+}
+
+.agent-attachment-chip button:active {
+  scale: 0.96;
 }
 
 .agent-composer-box:focus-within {
@@ -2134,8 +2179,9 @@ input:focus-visible,
   font-size: var(--fs-lg);
   line-height: 1.5;
   outline: none;
-  /* Smooths the upward growth as lines wrap (height is set in JS). */
-  transition: height var(--t-fast) var(--ease-out);
+  /* Growth is animated by the JS FLIP in AgentWorkspace (box height +
+   * textarea transform together) — a CSS height transition here would fight
+   * those measurements. */
 }
 
 .agent-composer textarea::placeholder {

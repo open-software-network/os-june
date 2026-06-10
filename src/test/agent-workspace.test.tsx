@@ -1,4 +1,10 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -21,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   importHermesBridgeFile: vi.fn(),
+  importHermesBridgeFileBytes: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   retryAgentTask: vi.fn(),
@@ -63,6 +70,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   importHermesBridgeFile: mocks.importHermesBridgeFile,
+  importHermesBridgeFileBytes: mocks.importHermesBridgeFileBytes,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
   retryAgentTask: mocks.retryAgentTask,
@@ -146,6 +154,15 @@ describe("AgentWorkspace", () => {
         ? "data:image/png;base64,preview"
         : null,
     }));
+    mocks.importHermesBridgeFileBytes.mockImplementation(
+      async (name: string) => ({
+        name,
+        path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${name}`,
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: null,
+      }),
+    );
     mocks.downloadHermesBridgeFile.mockResolvedValue(
       "/Users/junho/Downloads/sample.pdf",
     );
@@ -492,6 +509,29 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/junho/Library/Application Support/CleanShot/media/screenshot.png",
     );
+  });
+
+  it("imports DOM-dropped files by uploading their bytes", async () => {
+    // WKWebView never exposes filesystem paths on dropped Files, and Tauri's
+    // drag-drop interception is disabled — DOM drops must go through the
+    // bytes-based import.
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: {
+        files: [new File(["hello"], "notes.txt", { type: "text/plain" })],
+      },
+    });
+
+    expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+      "notes.txt",
+      expect.any(Uint8Array),
+    );
+    expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
   });
 
   it("keeps a re-sent duplicate message and the running state against older identical history", async () => {
