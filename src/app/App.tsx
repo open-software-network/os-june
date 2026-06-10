@@ -275,7 +275,7 @@ export function App() {
     : undefined;
   const detailScrollerActive =
     (activeView === "folders" && !!state.selectedFolderId) ||
-    (!!selectedNote && (originAllNotes || !!originFolder));
+    (activeView === "meetings" && !!selectedNote);
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
     void recoverRecording(sessionId, action)
