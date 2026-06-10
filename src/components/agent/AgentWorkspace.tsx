@@ -52,6 +52,7 @@ import {
   hermesBridgeStatus,
   hermesBridgeToolsets,
   importHermesBridgeFile,
+  importHermesBridgeFileBytes,
   listAgentTasks,
   downloadHermesBridgeFile,
   retryAgentTask,
@@ -912,26 +913,22 @@ export function AgentWorkspace({
   function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
     event.preventDefault();
     setDropActive(false);
-    const paths = Array.from(event.dataTransfer.files)
-      .map((file) => (file as File & { path?: string }).path)
-      .filter((path): path is string => Boolean(path));
-    if (!paths.length) {
+    const files = Array.from(event.dataTransfer.files);
+    if (!files.length) {
       setError("Drop files from Finder to attach them to the agent.");
       return;
     }
-    void importDroppedFilePaths(paths);
+    void importDroppedFiles(files);
   }
 
-  async function importDroppedFilePaths(paths: string[]) {
-    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
-      .filter(Boolean)
-      .slice(0, 8);
-    if (!uniquePaths.length) return;
+  async function importAttachments<T>(
+    items: T[],
+    importItem: (item: T) => Promise<ImportedHermesFile>,
+  ) {
+    if (!items.length) return;
     setImportingFiles(true);
     try {
-      const imported = await Promise.all(
-        uniquePaths.map((path) => importHermesBridgeFile(path)),
-      );
+      const imported = await Promise.all(items.map((item) => importItem(item)));
       setAttachments((current) => [
         ...current,
         ...imported.map((file) => ({
@@ -946,6 +943,33 @@ export function AgentWorkspace({
     } finally {
       setImportingFiles(false);
     }
+  }
+
+  // Native paths come from the file picker and Tauri drag-drop events.
+  async function importDroppedFilePaths(paths: string[]) {
+    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
+      .filter(Boolean)
+      .slice(0, 8);
+    await importAttachments(uniquePaths, importHermesBridgeFile);
+  }
+
+  // DOM drops are how Finder files actually arrive: Tauri's drag-drop
+  // interception is disabled (it has to be, so notes can use HTML5 drag into
+  // folders) and WKWebView never exposes filesystem paths on dropped Files —
+  // so read each blob and import its bytes.
+  async function importDroppedFiles(files: File[]) {
+    await importAttachments(files.slice(0, 8), async (file) => {
+      if (file.size > 50 * 1024 * 1024) {
+        throw new Error("Dropped files must be 50 MB or smaller.");
+      }
+      const bytes = await readFileBytes(file).catch(() => {
+        // Reading fails for directories, which Finder happily lets you drop.
+        throw new Error(
+          `Could not read "${file.name}" — folders can't be attached.`,
+        );
+      });
+      return importHermesBridgeFileBytes(file.name, bytes);
+    });
   }
 
   function removeAttachment(id: string) {
@@ -4637,6 +4661,18 @@ function messageFromError(err: unknown) {
     return String((err as { message: unknown }).message);
   }
   return String(err);
+}
+
+// FileReader instead of Blob.arrayBuffer(): same everywhere a drop can land
+// (WKWebView and jsdom included).
+function readFileBytes(file: File) {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Could not read the dropped file."));
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 function omitRecordKey<T>(record: Record<string, T>, key: string) {
