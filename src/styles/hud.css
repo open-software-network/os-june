@@ -307,6 +307,31 @@ body {
   transform: none;
 }
 
+/* Quiet ghost next to the filled primary action: dismissal must read as
+ * secondary to "Start transcription". */
+.hud-meeting-dismiss {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hud-handle);
+  cursor: pointer;
+}
+
+.hud-meeting-dismiss:hover {
+  background: var(--hud-stop-bg-hover);
+  color: var(--foreground);
+}
+
+.hud-meeting-dismiss:active {
+  transform: translateY(0.5px);
+}
+
 /* Stop button ---------------------------------------------------------- */
 .hud-stop {
   position: relative;
@@ -401,7 +426,8 @@ body {
 }
 
 .hud[data-state="meeting"] .hud-meeting-label,
-.hud[data-state="meeting"] .hud-meeting-start {
+.hud[data-state="meeting"] .hud-meeting-start,
+.hud[data-state="meeting"] .hud-meeting-dismiss {
   display: inline-flex;
 }
 

@@ -95,3 +95,19 @@ export function routineCreationPrompt(description: string) {
     "Pick a short descriptive name and an appropriate schedule (ask me if the timing is unclear), create the job, then confirm what you created and when it will first run.",
   ].join("\n\n");
 }
+
+/** Builds the agent prompt for "edit a routine". Editing also goes through
+ * June: the gateway's cron.manage has no update action (the bundled Hermes
+ * runtime is pinned upstream), while the agent's cronjob tool supports
+ * partial updates — it can change just the schedule without ever reading or
+ * re-sending the full prompt, which the list API truncates to a preview. */
+export function routineEditPrompt(
+  routine: Pick<RoutineJob, "job_id" | "name" | "schedule">,
+  changes: string,
+) {
+  return [
+    `Update my existing routine "${routine.name}" (cron job id ${routine.job_id}) using your cronjob tool's update action.`,
+    `It currently runs: ${routine.schedule}. Here is what should change: ${changes.trim()}`,
+    "Only modify the fields I asked about and leave everything else on the job untouched. Confirm the updated job and when it runs next.",
+  ].join("\n\n");
+}

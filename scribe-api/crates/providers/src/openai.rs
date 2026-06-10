@@ -205,4 +205,37 @@ mod tests {
 
         assert_eq!(result, Err(DomainError::UpstreamProvider));
     }
+
+    #[tokio::test]
+    async fn malformed_success_response_maps_to_upstream_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let result = transcriber(&server).transcribe(request()).await;
+
+        assert_eq!(result, Err(DomainError::UpstreamProvider));
+    }
+
+    #[tokio::test]
+    async fn empty_transcript_maps_to_no_speech_invalid_input() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "   " })))
+            .mount(&server)
+            .await;
+
+        let result = transcriber(&server).transcribe(request()).await;
+
+        assert_eq!(
+            result,
+            Err(DomainError::InvalidInput {
+                reason: "no_speech".to_string()
+            })
+        );
+    }
 }

@@ -1446,6 +1446,7 @@ dependencies = [
 name = "scribe-api"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "axum",
  "pretty_assertions",
  "scribe-config",

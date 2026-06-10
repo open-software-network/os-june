@@ -1621,6 +1621,11 @@ export function App() {
                   setActiveAgentSession(undefined);
                   setActiveView("agent");
                 }}
+                onEditRoutine={(prompt) => {
+                  markAgentNewSessionPending(prompt);
+                  setActiveAgentSession(undefined);
+                  setActiveView("agent");
+                }}
               />
             ) : activeView === "agent" ? (
               // The origin crumbs render inside the workspace's own sticky

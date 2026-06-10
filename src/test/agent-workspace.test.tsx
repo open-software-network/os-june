@@ -8,6 +8,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
@@ -43,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
+  gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   eventHandlers: new Map<
     string,
     (event: { payload?: { paths?: string[] } }) => void
@@ -102,7 +104,10 @@ vi.mock("../lib/hermes-gateway", () => ({
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
-    onEvent = vi.fn(() => vi.fn());
+    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+      mocks.gatewayEventHandlers.add(handler);
+      return () => mocks.gatewayEventHandlers.delete(handler);
+    });
     onClose = vi.fn(() => vi.fn());
     request = mocks.gatewayRequest;
   },
@@ -130,7 +135,9 @@ const existingSession = {
 describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.gatewayEventHandlers.clear();
     window.sessionStorage.clear();
+    window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.getAgentTask.mockResolvedValue(existingTask);
     mocks.hermesBridgeStatus.mockResolvedValue({
@@ -186,7 +193,10 @@ describe("AgentWorkspace", () => {
   });
 
   it("honors a pending New Session request instead of selecting existing work", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
 
     render(<AgentWorkspace />);
 
@@ -199,6 +209,114 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("ignores a stale pending New Session marker left over from a reload", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now() - 60_000,
+        prompt: "stale prompt from before the reload",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(
+      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
+    ).toBeNull();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: "stale prompt from before the reload" }),
+    );
+  });
+
+  it("submits a double-delivered New Session prompt only once", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "audit the repo" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "audit the repo",
+      }),
+    );
+
+    // App.tsx marks the pending marker AND fires the window event in a
+    // setTimeout — the event lands after the mount already consumed the
+    // marker. The echo must not create a second session.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: "audit the repo" },
+        }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const sessionCreates = mocks.gatewayRequest.mock.calls.filter(
+      ([method]) => method === "session.create",
+    );
+    expect(sessionCreates).toHaveLength(1);
+  });
+
+  it("restores the last open session after a reload", async () => {
+    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Newer session",
+        preview: "More recent work",
+        last_active: "2026-06-05T12:00:00Z",
+      },
+      existingSession,
+    ]);
+
+    render(<AgentWorkspace />);
+
+    // Without the restore, the workspace would select the newest session
+    // (session-2); the persisted id must win — the restored session's title
+    // is the one in the session bar and its messages are the ones fetched.
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"),
+    );
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+      "session-2",
+    );
+    expect(screen.queryByText("Newer session")).toBeNull();
+  });
+
+  it("forgets the persisted session when it is deleted", async () => {
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("scribe:agent:last-open-session"),
+      ).toBe("session-1"),
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("scribe:agent:last-open-session"),
+      ).toBeNull(),
+    );
   });
 
   it("keeps the blank composer after a New Session event during refresh", async () => {
@@ -217,7 +335,10 @@ describe("AgentWorkspace", () => {
   it("submits a pending New Session prompt as a fresh Hermes session", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ prompt: "summarize the current page" }),
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
     );
     mocks.listHermesSessions.mockResolvedValue([
       {
@@ -253,6 +374,53 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("stops a working session from the composer", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      // Markers must carry a fresh createdAt or the TTL check discards them.
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "summarize the current page",
+      }),
+    );
+
+    // The session is now working, so the composer offers a stop control.
+    const stop = await screen.findByRole("button", { name: "Stop June" });
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+    await userEvent.click(stop);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "runtime-session-2",
+      }),
+    );
+    // The working flag clears even before any gateway event arrives, so the
+    // stop control goes away and the session no longer reads as thinking.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
+    );
+    // Stopping also tears down the per-session gateway listener, so a
+    // straggler "running" event can't flip the session back to working.
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
+  });
+
   it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
@@ -283,7 +451,10 @@ describe("AgentWorkspace", () => {
   it("keeps an optimistic Hermes session visible while the persisted list lags", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ prompt: "open the release notes" }),
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "open the release notes",
+      }),
     );
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
 
@@ -300,6 +471,104 @@ describe("AgentWorkspace", () => {
       await screen.findByText("Summarize Current Page"),
     ).toBeInTheDocument();
     expect(screen.getByText("open the release notes")).toBeInTheDocument();
+  });
+
+  it("clears a working session the runtime is no longer running", async () => {
+    // A recent trailing user message with no reply resumes the session as
+    // working on mount — the exact state a dead run (provider failure, app
+    // quit mid-turn) leaves behind.
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "still waiting on this",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    // The whole flow runs under fake timers so the working-gated poll's
+    // interval is created on the fake clock and can be advanced.
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+      // Two reconcile polls: the first miss is tolerated (a fresh submit can
+      // race the runtime registering), the second clears the activity.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.active_list",
+        {},
+      );
+      expect(screen.queryByText("Thinking…")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a session working while the runtime reports it live", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "long running task",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "working",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.active_list",
+        {},
+      );
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps polling when a follow-up user message is still only pending locally", async () => {
@@ -422,6 +691,157 @@ describe("AgentWorkspace", () => {
     );
 
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
+  });
+
+  it("renders a workspace file's download card only on the first response that mentions it", async () => {
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md",
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done — I saved the summary as `report.md`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+      {
+        id: "message-2",
+        role: "user",
+        content: "Add a conclusion section.",
+        timestamp: "2026-06-04T18:40:00Z",
+      },
+      {
+        id: "message-3",
+        role: "assistant",
+        content: "I added a conclusion to report.md.",
+        timestamp: "2026-06-04T18:41:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Generated files")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: "Download report.md" }),
+    ).toHaveLength(1);
+  });
+
+  it("does not render download cards for files the user attached", async () => {
+    const attachedPath =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "june-context.md",
+              path: attachedPath,
+              kind: "file",
+              size: 14336,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: [
+          "Summarize this.",
+          "",
+          "Attached files copied into the Scribe Hermes workspace:",
+          `- june-context.md (Workspace): ${attachedPath}`,
+          "",
+          "Use these workspace paths when inspecting or operating on the files.",
+        ].join("\n"),
+        timestamp: "2026-06-04T18:38:00Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "Here's a summary of june-context.md: it covers the plan.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(/Here's a summary/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generated files")).not.toBeInTheDocument();
+  });
+
+  it("renders one download card when two workspace copies share a file name", async () => {
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "notes.md",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/notes.md",
+              kind: "file",
+              size: 512,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "archive",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive",
+              kind: "directory",
+              children: [
+                {
+                  name: "notes.md",
+                  path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive/notes.md",
+                  kind: "file",
+                  size: 512,
+                  modifiedAt: "2026-06-04T18:39:00Z",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "I wrote everything up in notes.md.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Download notes.md" }),
+    ).toHaveLength(1);
   });
 
   it("renders generated workspace images as thumbnails", async () => {
@@ -694,7 +1114,10 @@ describe("AgentWorkspace", () => {
   });
 
   it("launches a session immediately from a run shortcut", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
     // rand() of 0 keeps the rotating hero suggestions in curated pool order,
     // so the leading window (incl. "Tidy my Downloads") is what renders.
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
@@ -720,7 +1143,10 @@ describe("AgentWorkspace", () => {
   });
 
   it("prefills the composer from a prefill shortcut without submitting", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
     try {
       render(<AgentWorkspace />);
@@ -747,7 +1173,10 @@ describe("AgentWorkspace", () => {
   // bootstrap promises that can leak into a later test's pending-session
   // flow, so nothing runs after this one.
   it("renders origin crumbs and back arrow in the sticky session bar", async () => {
-    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
     const onBack = vi.fn();
     const onOpenProjects = vi.fn();
     render(

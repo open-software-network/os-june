@@ -358,6 +358,98 @@ describe("folders UI", () => {
     expect(onSelectNote).toHaveBeenCalledWith("note-2");
   });
 
+  it("keeps only one meeting actions menu open", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+      />,
+    );
+
+    const secondActions = screen.getByRole("button", {
+      name: "Actions for Second",
+    });
+    const newMeetingActions = screen.getByRole("button", {
+      name: "Actions for New meeting",
+    });
+
+    await user.click(secondActions);
+
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    expect(secondActions).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(newMeetingActions);
+
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    expect(secondActions).toHaveAttribute("aria-expanded", "false");
+    expect(newMeetingActions).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getAllByRole("menuitem", { name: "Move to project" }),
+    ).toHaveLength(1);
+  });
+
+  it("positions the meeting actions menu inside the viewport", async () => {
+    const user = userEvent.setup();
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+
+    try {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: 1000,
+      });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: 760,
+      });
+      render(
+        <NotesList
+          notes={notes}
+          onSelectNote={vi.fn()}
+          onCreateNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onDeleteNote={vi.fn()}
+        />,
+      );
+
+      const actions = screen.getByRole("button", {
+        name: "Actions for Second",
+      });
+      actions.getBoundingClientRect = vi.fn(
+        () =>
+          ({
+            x: 900,
+            y: 700,
+            left: 900,
+            right: 924,
+            top: 700,
+            bottom: 724,
+            width: 24,
+            height: 24,
+            toJSON: () => ({}),
+          }) as DOMRect,
+      );
+
+      await user.click(actions);
+
+      const menu = screen.getByRole("menu");
+      expect(menu).toHaveStyle({ right: "104px", top: "622px" });
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
   it("labels future-dated notes explicitly", () => {
     render(
       <NotesList

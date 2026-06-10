@@ -1,0 +1,146 @@
+name: desktop
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop.yml"
+      - "hud.html"
+      - "index.html"
+      - "meeting-hud.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "public/**"
+      - "scripts/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "tsconfig.json"
+      - "vite.config.ts"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/desktop.yml"
+      - "hud.html"
+      - "index.html"
+      - "meeting-hud.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "public/**"
+      - "scripts/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "tsconfig.json"
+      - "vite.config.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend lint and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm lint
+
+      - name: Vitest
+        run: pnpm test
+
+  rust:
+    name: Tauri Rust tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: tauri-cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: tauri-cargo-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-target-${{ runner.os }}-
+
+      - name: Cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  coverage:
+    name: Coverage artifacts
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend coverage
+        run: pnpm test:coverage
+
+      - name: Tauri Rust coverage
+        run: pnpm test:rust:coverage
+
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-frontend-coverage
+          path: coverage/frontend
+          if-no-files-found: error
+
+      - name: Upload Tauri Rust coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-rust-coverage
+          path: src-tauri/target/llvm-cov/html
+          if-no-files-found: error

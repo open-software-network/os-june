@@ -57,3 +57,25 @@ jobs:
         env:
           RUST_BACKTRACE: 1
         run: cargo test --all-targets --all-features --locked
+
+  coverage:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: cargo llvm-cov
+        working-directory: scribe-api
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo llvm-cov --workspace --all-features --html --output-dir target/llvm-cov/html
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-api-rust-coverage
+          path: scribe-api/target/llvm-cov/html
+          if-no-files-found: error

@@ -204,6 +204,50 @@ describe("notesReducer", () => {
     expect(state.notes[0].processingStatus).toBe("ready");
   });
 
+  it("keeps source transcript rows on authoritative processing updates", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        processingStatus: "generating",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteProcessingUpdated",
+      note: note({
+        id: "note-1",
+        processingStatus: "ready",
+        sourceTranscripts: [
+          {
+            id: "turn-1",
+            text: "System first",
+            source: "system",
+            startMs: 1000,
+            endMs: 2000,
+            turnIndex: 0,
+            status: "succeeded",
+          },
+          {
+            id: "turn-2",
+            text: "Microphone second",
+            source: "microphone",
+            startMs: 2500,
+            endMs: 3500,
+            turnIndex: 1,
+            status: "succeeded",
+          },
+        ],
+      }),
+    });
+
+    expect(state.selectedNote?.processingStatus).toBe("ready");
+    expect(
+      state.selectedNote?.sourceTranscripts?.map((turn) => turn.text),
+    ).toEqual(["System first", "Microphone second"]);
+    expect(state.notes[0].processingStatus).toBe("ready");
+  });
+
   it("tracks recording status transitions without changing selected note", () => {
     const initial = notesReducer(createInitialState(), {
       type: "noteLoaded",

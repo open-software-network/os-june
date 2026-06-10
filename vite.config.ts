@@ -35,6 +35,19 @@ export default defineConfig({
     setupFiles: ["src/test/setup.ts"],
     include: ["src/test/**/*.{test,spec}.{ts,tsx,mjs}"],
     css: true,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html", "lcov"],
+      reportsDirectory: "coverage/frontend",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/test/**",
+        "src/**/*.d.ts",
+        "src/main.tsx",
+        "src/hud.ts",
+        "src/mascot.ts",
+      ],
+    },
   },
 });
 

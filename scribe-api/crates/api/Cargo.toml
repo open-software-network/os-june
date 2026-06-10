@@ -23,5 +23,7 @@ tower-http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 pretty_assertions.workspace = true
 tokio.workspace = true
+tower = { workspace = true, features = ["util"] }

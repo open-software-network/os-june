@@ -17,6 +17,20 @@ type NotesListProps = {
   onDeleteNote: (noteId: string) => void;
 };
 
+type MenuPosition = {
+  right: number;
+  top: number;
+};
+
+type OpenMenu = MenuPosition & {
+  noteId: string;
+};
+
+const CONTEXT_MENU_WIDTH = 156;
+const MEETING_MENU_HEIGHT = 74;
+const MENU_GAP = 4;
+const VIEWPORT_MARGIN = 8;
+
 export function NotesList({
   notes,
   selectedNoteId,
@@ -26,6 +40,7 @@ export function NotesList({
   onDeleteNote,
 }: NotesListProps) {
   const [query, setQuery] = useState("");
+  const [openMenu, setOpenMenu] = useState<OpenMenu | null>(null);
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const sorted = [...notes].sort((a, b) =>
@@ -99,7 +114,16 @@ export function NotesList({
               key={note.id}
               note={note}
               selected={selectedNoteId === note.id}
+              menu={
+                openMenu?.noteId === note.id
+                  ? { right: openMenu.right, top: openMenu.top }
+                  : null
+              }
               onSelect={() => onSelectNote(note.id)}
+              onOpenMenu={(position) =>
+                setOpenMenu({ noteId: note.id, ...position })
+              }
+              onCloseMenu={() => setOpenMenu(null)}
               onOpenMove={() => onOpenMoveDialog(note.id)}
               onDelete={() => onDeleteNote(note.id)}
             />
@@ -113,25 +137,30 @@ export function NotesList({
 function AllNoteRow({
   note,
   selected,
+  menu,
   onSelect,
+  onOpenMenu,
+  onCloseMenu,
   onOpenMove,
   onDelete,
 }: {
   note: NoteListItemDto;
   selected: boolean;
+  menu: MenuPosition | null;
   onSelect: () => void;
+  onOpenMenu: (position: MenuPosition) => void;
+  onCloseMenu: () => void;
   onOpenMove: () => void;
   onDelete: () => void;
 }) {
   const title = note.title.trim() || "New meeting";
   const preview = note.preview.trim() || statusLabel(note.processingStatus);
-  const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!menu) return;
     function close() {
-      setMenu(null);
+      onCloseMenu();
     }
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") close();
@@ -142,7 +171,7 @@ function AllNoteRow({
       window.removeEventListener("click", close);
       window.removeEventListener("keydown", onKey);
     };
-  }, [menu]);
+  }, [menu, onCloseMenu]);
 
   return (
     <li>
@@ -175,14 +204,10 @@ function AllNoteRow({
               event.preventDefault();
               event.stopPropagation();
               if (menu) {
-                setMenu(null);
+                onCloseMenu();
                 return;
               }
-              const rect = event.currentTarget.getBoundingClientRect();
-              setMenu({
-                right: window.innerWidth - rect.right,
-                top: rect.bottom + 4,
-              });
+              onOpenMenu(meetingMenuPosition(event.currentTarget));
             }}
           >
             <IconDotGrid1x3Horizontal size={13} />
@@ -199,7 +224,7 @@ function AllNoteRow({
               type="button"
               role="menuitem"
               onClick={() => {
-                setMenu(null);
+                onCloseMenu();
                 onOpenMove();
               }}
             >
@@ -212,7 +237,7 @@ function AllNoteRow({
               role="menuitem"
               className="destructive"
               onClick={() => {
-                setMenu(null);
+                onCloseMenu();
                 setConfirmDelete(true);
               }}
             >
@@ -233,6 +258,28 @@ function AllNoteRow({
       />
     </li>
   );
+}
+
+function meetingMenuPosition(trigger: HTMLElement): MenuPosition {
+  const rect = trigger.getBoundingClientRect();
+  const maxRight = Math.max(
+    VIEWPORT_MARGIN,
+    window.innerWidth - CONTEXT_MENU_WIDTH - VIEWPORT_MARGIN,
+  );
+  const right = Math.min(
+    Math.max(window.innerWidth - rect.left + MENU_GAP, VIEWPORT_MARGIN),
+    maxRight,
+  );
+  const belowTop = rect.bottom + MENU_GAP;
+  const top =
+    belowTop + MEETING_MENU_HEIGHT <= window.innerHeight - VIEWPORT_MARGIN
+      ? belowTop
+      : rect.top - MEETING_MENU_HEIGHT - MENU_GAP;
+
+  return {
+    right,
+    top: Math.max(VIEWPORT_MARGIN, top),
+  };
 }
 
 function statusLabel(status: NoteListItemDto["processingStatus"]) {

@@ -2,6 +2,7 @@ import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPause } from "central-icons/IconPause";
+import { IconPencil } from "central-icons/IconPencil";
 import { IconPlay } from "central-icons/IconPlay";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
@@ -12,6 +13,7 @@ import {
   removeRoutine,
   resumeRoutine,
   routineCreationPrompt,
+  routineEditPrompt,
   type RoutineJob,
 } from "../../lib/hermes-routines";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -20,11 +22,16 @@ import { EmptyState } from "../ui/EmptyState";
 
 type RoutinesViewProps = {
   /** Hands off a composed agent prompt; the app opens a new June session with
-   * it so the agent does the actual cron-job creation. */
+   * it so the agent does the actual cron-job creation — and, for edits, the
+   * cron-job update. */
   onCreateRoutine: (prompt: string) => void;
+  onEditRoutine: (prompt: string) => void;
 };
 
-export function RoutinesView({ onCreateRoutine }: RoutinesViewProps) {
+export function RoutinesView({
+  onCreateRoutine,
+  onEditRoutine,
+}: RoutinesViewProps) {
   const [routines, setRoutines] = useState<RoutineJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,6 +41,8 @@ export function RoutinesView({ onCreateRoutine }: RoutinesViewProps) {
   const [pendingDelete, setPendingDelete] = useState<RoutineJob | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [editTarget, setEditTarget] = useState<RoutineJob | null>(null);
+  const [editDraft, setEditDraft] = useState("");
 
   // `loading` gates the whole list and only covers the first fetch;
   // `refreshing` covers every fetch so reloads keep the list visible while
@@ -109,6 +118,19 @@ export function RoutinesView({ onCreateRoutine }: RoutinesViewProps) {
   function openCreate() {
     setDraft("");
     setCreateOpen(true);
+  }
+
+  function openEdit(routine: RoutineJob) {
+    setEditDraft("");
+    setEditTarget(routine);
+  }
+
+  function submitEdit() {
+    const routine = editTarget;
+    const changes = editDraft.trim();
+    if (!routine || !changes) return;
+    setEditTarget(null);
+    onEditRoutine(routineEditPrompt(routine, changes));
   }
 
   function submitCreate() {
@@ -202,6 +224,7 @@ export function RoutinesView({ onCreateRoutine }: RoutinesViewProps) {
               routine={routine}
               busy={busyIds.has(routine.job_id)}
               onTogglePaused={() => void togglePaused(routine)}
+              onEdit={() => openEdit(routine)}
               onDelete={() => setPendingDelete(routine)}
             />
           ))}
@@ -249,6 +272,47 @@ export function RoutinesView({ onCreateRoutine }: RoutinesViewProps) {
         />
       </Dialog>
 
+      <Dialog
+        open={editTarget !== null}
+        onClose={() => setEditTarget(null)}
+        leading={<IconPencil size={15} />}
+        title={`Edit “${editTarget?.name ?? ""}”`}
+        description="Tell June what should change — the schedule, the task, or the name. It opens a session to apply the update."
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setEditTarget(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={!editDraft.trim()}
+              onClick={submitEdit}
+            >
+              Ask June to update it
+            </button>
+          </>
+        }
+      >
+        <textarea
+          className="routines-create-input"
+          rows={4}
+          placeholder="Run at 7am instead, and only on weekdays…"
+          value={editDraft}
+          onChange={(event) => setEditDraft(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              submitEdit();
+            }
+          }}
+        />
+      </Dialog>
+
       <ConfirmDialog
         open={pendingDelete !== null}
         onClose={() => setPendingDelete(null)}
@@ -266,11 +330,13 @@ function RoutineRow({
   routine,
   busy,
   onTogglePaused,
+  onEdit,
   onDelete,
 }: {
   routine: RoutineJob;
   busy: boolean;
   onTogglePaused: () => void;
+  onEdit: () => void;
   onDelete: () => void;
 }) {
   const paused = routine.state === "paused";
@@ -310,6 +376,15 @@ function RoutineRow({
       </div>
       <span className="routines-item-meta">{meta.join(" · ")}</span>
       <span className="routines-item-actions">
+        <button
+          type="button"
+          className="dictation-row-act"
+          aria-label="Edit"
+          disabled={busy}
+          onClick={onEdit}
+        >
+          <IconPencil size={14} />
+        </button>
         {!completed ? (
           <button
             type="button"

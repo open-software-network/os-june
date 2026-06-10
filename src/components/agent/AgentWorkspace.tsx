@@ -37,6 +37,7 @@ import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
+import { IconStop } from "central-icons/IconStop";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
 import { PangolinSpinner } from "../PangolinSpinner";
@@ -384,12 +385,16 @@ export function AgentWorkspace({
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
+  // Mounting without an explicit target restores the last open conversation,
+  // so app restarts and dev reloads land the user back in the session they
+  // were working in instead of bouncing them to the newest one.
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
     string | undefined
-  >(initialSessionId);
+  >(() => initialSessionId ?? readLastOpenSessionId());
   const selectedHermesSessionIdRef = useRef<string | undefined>(
-    initialSessionId,
+    selectedHermesSessionId,
   );
+  const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
   const [heroDeckStart, setHeroDeckStart] = useState(0);
@@ -426,6 +431,13 @@ export function AgentWorkspace({
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
   >({});
+  const runtimeSessionIdsRef = useRef(runtimeSessionIds);
+  // Consecutive runtime-reconcile polls in which a locally-working session was
+  // absent from the gateway's live list. Cleared the moment it's seen live.
+  const workingReconcileMissesRef = useRef(new Map<string, number>());
+  const [stoppingSessionIds, setStoppingSessionIds] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
   const [messagingPlatforms, setMessagingPlatforms] = useState<
@@ -474,6 +486,10 @@ export function AgentWorkspace({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
+
+  useEffect(() => {
+    runtimeSessionIdsRef.current = runtimeSessionIds;
+  }, [runtimeSessionIds]);
 
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
@@ -552,6 +568,8 @@ export function AgentWorkspace({
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
+      // A deleted session must not be the restore target on the next mount.
+      forgetLastOpenSessionId(sessionId);
     },
     [clearSessionActivity],
   );
@@ -706,6 +724,16 @@ export function AgentWorkspace({
       );
     }
   }, [initialSession, initialSessionId]);
+
+  // Remember the open conversation for the restore-on-mount above. Entering
+  // new-session mode leaves the last real session in place — if the new
+  // session never materializes (crash, reload), restoring the previous one
+  // beats landing on the hero screen.
+  useEffect(() => {
+    if (selectedHermesSessionId) {
+      writeLastOpenSessionId(selectedHermesSessionId);
+    }
+  }, [selectedHermesSessionId]);
 
   useEffect(() => {
     if (!pendingReply?.text.trim()) return;
@@ -911,6 +939,7 @@ export function AgentWorkspace({
       for (const sessionId of sessionIds) {
         void refreshHermesSession(sessionId);
       }
+      void reconcileWorkingSessionsAgainstRuntime();
     }, 2500);
     return () => window.clearInterval(interval);
   }, [bridge.running, workingSessionIds]);
@@ -1470,6 +1499,75 @@ export function AgentWorkspace({
     }
   }
 
+  // Message-based reconciliation above can only END a run when an assistant
+  // reply eventually persists. A run that died without one (provider failure,
+  // gateway drop, app quit mid-turn) — or a session wrongly resumed as
+  // working from a trailing user message — would otherwise stay "working"
+  // forever, leaving the menu bar stuck on "Working…". The gateway's
+  // session.active_list is ground truth for what is actually running, so any
+  // locally-working session absent from it (or sitting idle) for two
+  // consecutive polls gets its activity cleared. Two misses, not one: a
+  // just-submitted prompt can race the runtime session registering.
+  async function reconcileWorkingSessionsAgainstRuntime() {
+    const working = Array.from(workingSessionIdsRef.current);
+    const misses = workingReconcileMissesRef.current;
+    for (const sessionId of misses.keys()) {
+      if (!working.includes(sessionId)) misses.delete(sessionId);
+    }
+    if (working.length === 0) return;
+    let rows: Array<{ id?: string; session_key?: string; status?: string }>;
+    try {
+      const gateway = await ensureHermesGateway();
+      const response = await gateway.request<{
+        sessions?: Array<{
+          id?: string;
+          session_key?: string;
+          status?: string;
+        }>;
+      }>("session.active_list", {});
+      rows = Array.isArray(response?.sessions) ? response.sessions : [];
+    } catch {
+      // Can't reach the runtime — keep the current state rather than guess.
+      return;
+    }
+    const live = new Set<string>();
+    for (const row of rows) {
+      // "idle" means the runtime session exists but isn't processing a turn.
+      if (!row || row.status === "idle") continue;
+      if (row.session_key) live.add(String(row.session_key));
+      if (row.id) live.add(String(row.id));
+    }
+    for (const sessionId of working) {
+      const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
+      if (
+        live.has(sessionId) ||
+        (runtimeSessionId && live.has(runtimeSessionId))
+      ) {
+        misses.delete(sessionId);
+        continue;
+      }
+      const seen = (misses.get(sessionId) ?? 0) + 1;
+      if (seen < 2) {
+        misses.set(sessionId, seen);
+        continue;
+      }
+      misses.delete(sessionId);
+      const activityCounts = clearSessionActivity(sessionId);
+      // "completed" (not "failed") keeps the tray quiet: its title falls back
+      // to lastStatus when nothing is active, and a stale "running" there
+      // would still render "Working…".
+      dispatchAgentSessionStatus({
+        sessionId,
+        title:
+          hermesSessionItems.find((session) => session.id === sessionId)
+            ?.title ?? "Agent session",
+        status: "completed",
+        summary: "June stopped.",
+        ...activityCounts,
+      });
+    }
+  }
+
   async function refreshHermesSession(sessionId: string) {
     try {
       const messages = await listHermesSessionMessages(sessionId);
@@ -1615,13 +1713,29 @@ export function AgentWorkspace({
 
   async function startNewTask(prompt?: string) {
     clearPendingNewSessionRequest();
+    const initialPrompt = prompt?.trim() ?? "";
+    // The pending-marker mount path and the AGENT_NEW_SESSION_EVENT dispatch
+    // can deliver the same request twice (App marks the marker, then fires
+    // the event in a setTimeout for already-mounted workspaces). Submitting
+    // both would put two copies of the prompt in the transcript — drop the
+    // echo instead.
+    if (initialPrompt) {
+      const last = lastAutoSubmittedRef.current;
+      if (
+        last &&
+        last.prompt === initialPrompt &&
+        Date.now() - last.at < AUTO_SUBMIT_ECHO_WINDOW_MS
+      ) {
+        return;
+      }
+      lastAutoSubmittedRef.current = { prompt: initialPrompt, at: Date.now() };
+    }
     newSessionModeRef.current = true;
     setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     selectedHermesSessionIdRef.current = undefined;
     setSelectedHermesSessionId(undefined);
-    const initialPrompt = prompt?.trim() ?? "";
     setDraft(initialPrompt);
     if (!initialPrompt) return;
     dispatchAgentSessionStatus({
@@ -1711,6 +1825,50 @@ export function AgentWorkspace({
       upsertTask(await cancelAgentTask(taskId));
     } catch (err) {
       setError(messageFromError(err));
+    }
+  }
+
+  // Stops a running June turn: interrupts the runtime session over the
+  // gateway, then clears the local working/waiting flags regardless — the
+  // user asked for it to stop, so the UI must not stay "thinking" even when
+  // the RPC fails (gateway drop, runtime session already gone).
+  async function stopHermesSession(sessionId: string) {
+    if (stoppingSessionIds.has(sessionId)) return;
+    setStoppingSessionIds((current) => new Set(current).add(sessionId));
+    try {
+      const runtimeSessionId = runtimeSessionIds[sessionId];
+      if (runtimeSessionId) {
+        const gateway = await ensureHermesGateway();
+        await gateway.request("session.interrupt", {
+          session_id: runtimeSessionId,
+        });
+      }
+    } catch {
+      // Fall through to the local cleanup below.
+    } finally {
+      // Tear down the per-session gateway listener along with the flags —
+      // a straggler "running" event arriving after the interrupt would
+      // otherwise flip the session straight back to working (and on a
+      // gateway drop no terminal event ever comes to unregister it).
+      sessionGatewayUnlistenRef.current.get(sessionId)?.();
+      const activityCounts = clearSessionActivity(sessionId);
+      dispatchAgentSessionStatus({
+        sessionId,
+        title:
+          hermesSessionItems.find((session) => session.id === sessionId)
+            ?.title ?? "Agent session",
+        status: "cancelled",
+        summary: "Stopped.",
+        ...activityCounts,
+      });
+      setStoppingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      // Pull whatever the agent managed to persist before the interrupt so
+      // the transcript reflects the partial turn.
+      void refreshHermesSession(sessionId);
     }
   }
 
@@ -1982,6 +2140,10 @@ export function AgentWorkspace({
         ),
       )
     : [];
+  const turnArtifacts = assignArtifactsToTurns(
+    selectedHermesSessionId ? hermesTurns : taskTurns,
+    chatArtifacts,
+  );
 
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep
@@ -2184,6 +2346,21 @@ export function AgentWorkspace({
               }}
             />
             <div className="agent-composer-actions">
+              {selectedHermesSessionId &&
+              workingSessionIds.has(selectedHermesSessionId) ? (
+                <button
+                  type="button"
+                  className="agent-composer-stop"
+                  aria-label="Stop June"
+                  title="Stop June"
+                  disabled={stoppingSessionIds.has(selectedHermesSessionId)}
+                  onClick={() =>
+                    void stopHermesSession(selectedHermesSessionId)
+                  }
+                >
+                  <IconStop size={16} />
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="agent-composer-mic"
@@ -2230,7 +2407,7 @@ export function AgentWorkspace({
         <AgentChatTurnRow
           key={turn.id}
           turn={turn}
-          artifacts={chatArtifacts}
+          artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
           onDownloadArtifact={(artifact) =>
@@ -2299,7 +2476,7 @@ export function AgentWorkspace({
           <AgentChatTurnRow
             key={turn.id}
             turn={turn}
-            artifacts={chatArtifacts}
+            artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
             onDownloadArtifact={(artifact) =>
@@ -3654,14 +3831,6 @@ function AgentChatTurnRow({
       part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
-  const mentionedArtifacts = artifactsMentionedInText(
-    artifacts ?? [],
-    turn.parts
-      .map((part) =>
-        part.type !== "context" && "text" in part ? part.text : "",
-      )
-      .join("\n"),
-  );
 
   if (
     contextParts.length &&
@@ -3747,7 +3916,7 @@ function AgentChatTurnRow({
           ) : null,
         )}
         <AgentArtifactList
-          artifacts={mentionedArtifacts}
+          artifacts={artifacts ?? []}
           onDownload={onDownloadArtifact}
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
@@ -4676,26 +4845,46 @@ function filesystemEntriesToArtifacts(
   });
 }
 
-function artifactsMentionedInText(
+// Assigns each workspace file to the first turn that mentions it, so its
+// download card renders once instead of at the end of every later response
+// that happens to repeat the file name. User turns can claim a file too, but
+// only by full path — that's how promptWithAttachments injects attachments,
+// and a file the user just handed us shouldn't bounce back as a download.
+// Name-only matches are also deduplicated by name, so two workspace copies of
+// the same file don't produce twin cards.
+function assignArtifactsToTurns(
+  turns: AgentChatTurn[],
   artifacts: AgentArtifact[],
-  text: string,
-): AgentArtifact[] {
-  if (!artifacts.length || !text.trim()) return [];
-  const normalized = text.toLowerCase();
-  const seen = new Set<string>();
-  return artifacts.filter((artifact) => {
-    const name = artifact.name.toLowerCase();
-    const path = artifact.path.toLowerCase();
-    if (
-      !name ||
-      seen.has(artifact.path) ||
-      (!normalized.includes(name) && !normalized.includes(path))
-    ) {
-      return false;
+): Map<string, AgentArtifact[]> {
+  const byTurn = new Map<string, AgentArtifact[]>();
+  if (!artifacts.length) return byTurn;
+  const claimedPaths = new Set<string>();
+  const claimedNames = new Set<string>();
+  for (const turn of turns) {
+    const text = turn.parts
+      .map((part) =>
+        part.type !== "context" && "text" in part ? part.text : "",
+      )
+      .join("\n")
+      .toLowerCase();
+    if (!text.trim()) continue;
+    const mentioned: AgentArtifact[] = [];
+    for (const artifact of artifacts) {
+      const name = artifact.name.toLowerCase();
+      if (!name || claimedPaths.has(artifact.path)) continue;
+      const pathMentioned = text.includes(artifact.path.toLowerCase());
+      const nameMentioned =
+        turn.role === "assistant" &&
+        !claimedNames.has(name) &&
+        text.includes(name);
+      if (!pathMentioned && !nameMentioned) continue;
+      claimedPaths.add(artifact.path);
+      claimedNames.add(name);
+      if (turn.role === "assistant") mentioned.push(artifact);
     }
-    seen.add(artifact.path);
-    return true;
-  });
+    if (mentioned.length) byTurn.set(turn.id, mentioned);
+  }
+  return byTurn;
 }
 
 function includesQuery(value: unknown, query: string) {
@@ -5103,6 +5292,51 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
   return next;
 }
 
+// Survives app restarts (localStorage, not sessionStorage): restoring an
+// existing conversation after a relaunch is always safe, unlike the pending
+// new-session marker, which must NOT outlive its navigation.
+const AGENT_LAST_OPEN_SESSION_KEY = "scribe:agent:last-open-session";
+
+// How long a second startNewTask call with the same prompt counts as an echo
+// of the first (marker + window event double-delivery) rather than a new ask.
+// The echo lands a setTimeout(0) after the mount — milliseconds — so 1s is
+// already generous. It must stay time-bounded rather than clear when the
+// submission settles: a fast settle would otherwise reopen the window before
+// the echo arrives. User retries are unaffected either way — a failed
+// auto-submit restores the draft and re-sends go through submit(), which
+// never routes through this guard.
+const AUTO_SUBMIT_ECHO_WINDOW_MS = 1_000;
+
+function readLastOpenSessionId(): string | undefined {
+  try {
+    return (
+      window.localStorage.getItem(AGENT_LAST_OPEN_SESSION_KEY) ?? undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Drops the stored id only when it points at the given session, so deleting
+ * a background session doesn't forget the one actually open. */
+function forgetLastOpenSessionId(sessionId: string) {
+  try {
+    if (readLastOpenSessionId() === sessionId) {
+      window.localStorage.removeItem(AGENT_LAST_OPEN_SESSION_KEY);
+    }
+  } catch {
+    // Storage can be unavailable in restricted webviews; restore is best-effort.
+  }
+}
+
+function writeLastOpenSessionId(sessionId: string) {
+  try {
+    window.localStorage.setItem(AGENT_LAST_OPEN_SESSION_KEY, sessionId);
+  } catch {
+    // Storage can be unavailable in restricted webviews; restore is best-effort.
+  }
+}
+
 export function markAgentNewSessionPending(prompt?: string) {
   try {
     const payload = JSON.stringify({
@@ -5116,15 +5350,34 @@ export function markAgentNewSessionPending(prompt?: string) {
   }
 }
 
+// A pending marker is a navigation hint, not a durable command: it's written
+// just before switching to the Agent view and consumed by the very next
+// mount. Anything older is a leftover from a reload or crash — acting on it
+// would hijack whatever the user had open into a new session (and re-submit
+// the stale prompt).
+const AGENT_NEW_SESSION_PENDING_TTL_MS = 15_000;
+
 function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {
     const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
     if (value == null) return undefined;
+    // Consume on read so a remount (HMR, rapid view switches) can't re-fire
+    // the same request.
+    clearPendingNewSessionRequest();
     try {
-      const parsed = JSON.parse(value) as AgentNewSessionDetail;
+      const parsed = JSON.parse(value) as {
+        createdAt?: number;
+        prompt?: string;
+      };
+      if (
+        typeof parsed.createdAt !== "number" ||
+        Date.now() - parsed.createdAt > AGENT_NEW_SESSION_PENDING_TTL_MS
+      ) {
+        return undefined;
+      }
       return typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {};
     } catch {
-      return {};
+      return undefined;
     }
   } catch {
     return undefined;

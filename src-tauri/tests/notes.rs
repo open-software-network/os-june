@@ -673,3 +673,206 @@ async fn get_note_returns_failed_source_transcript_reason() {
         Some("System source was silent.")
     );
 }
+
+#[tokio::test]
+async fn get_note_orders_source_transcripts_by_session_then_turn() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let first_audio_id = create_session_audio(&repos, &note.id, "session-1").await;
+    let second_audio_id = create_session_audio(&repos, &note.id, "session-2").await;
+
+    repos
+        .create_source_transcript(
+            &note.id,
+            "session-1",
+            &first_audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "microphone",
+            "First session second turn",
+            Some("en".into()),
+            "venice",
+            Some(2_000),
+            Some(3_000),
+            Some(1),
+        )
+        .await
+        .expect("first session second turn");
+    repos
+        .create_source_transcript(
+            &note.id,
+            "session-2",
+            &second_audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Second session first turn",
+            Some("en".into()),
+            "venice",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("second session first turn");
+    repos
+        .create_source_transcript(
+            &note.id,
+            "session-1",
+            &first_audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "First session first turn",
+            Some("en".into()),
+            "venice",
+            Some(500),
+            Some(1_500),
+            Some(0),
+        )
+        .await
+        .expect("first session first turn");
+
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+
+    assert_eq!(
+        loaded
+            .source_transcripts
+            .iter()
+            .map(|transcript| transcript.text.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "First session first turn",
+            "First session second turn",
+            "Second session first turn",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn successful_source_turns_for_session_exclude_failed_and_empty_rows() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let audio_id = create_session_audio(&repos, &note.id, "session-1").await;
+
+    repos
+        .create_source_transcript(
+            &note.id,
+            "session-1",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "microphone",
+            "Valid microphone turn",
+            Some("en".into()),
+            "venice",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("valid turn");
+    repos
+        .create_source_transcript(
+            &note.id,
+            "session-1",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "   ",
+            Some("en".into()),
+            "venice",
+            Some(2_500),
+            Some(3_000),
+            Some(1),
+        )
+        .await
+        .expect("empty turn");
+    repos
+        .create_failed_source_transcript(
+            &note.id,
+            "session-1",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "venice",
+            "No speech detected.",
+            Some(3_500),
+            Some(4_000),
+            Some(2),
+        )
+        .await
+        .expect("failed turn");
+
+    let transcripts = repos
+        .successful_source_turn_transcripts_for_session("session-1")
+        .await
+        .expect("successful turns");
+
+    assert_eq!(transcripts.len(), 1);
+    assert_eq!(transcripts[0].text, "Valid microphone turn");
+    assert_eq!(transcripts[0].turn_index, Some(0));
+}
+
+#[tokio::test]
+async fn source_turn_upsert_replaces_failed_retry_with_success() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let audio_id = create_session_audio(&repos, &note.id, "session-1").await;
+
+    let failed = repos
+        .upsert_failed_source_turn_transcript(
+            &note.id,
+            "session-1",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "venice",
+            "No speech detected.",
+            1_000,
+            2_000,
+            0,
+        )
+        .await
+        .expect("failed upsert");
+    let succeeded = repos
+        .upsert_successful_source_turn_transcript(
+            &note.id,
+            "session-1",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Recovered system turn",
+            Some("en".into()),
+            "venice",
+            1_000,
+            2_000,
+            0,
+        )
+        .await
+        .expect("success upsert");
+
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+
+    assert_eq!(succeeded.id, failed.id);
+    assert_eq!(loaded.source_transcripts.len(), 1);
+    assert_eq!(loaded.source_transcripts[0].status, "succeeded");
+    assert_eq!(loaded.source_transcripts[0].text, "Recovered system turn");
+    assert_eq!(loaded.source_transcripts[0].last_error, None);
+}
+
+async fn create_session_audio(repos: &Repositories, note_id: &str, session_id: &str) -> String {
+    let final_path = format!("/tmp/{session_id}.wav");
+    repos
+        .create_recording_session(
+            note_id,
+            session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            &format!("/tmp/{session_id}.partial.wav"),
+            &final_path,
+            None,
+        )
+        .await
+        .expect("session");
+    repos
+        .create_audio_artifact(note_id, session_id, &final_path, 1200, 2048, session_id)
+        .await
+        .expect("artifact")
+        .id
+}

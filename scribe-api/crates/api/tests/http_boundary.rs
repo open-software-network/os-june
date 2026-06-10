@@ -1,0 +1,475 @@
+use async_trait::async_trait;
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Method, Request, StatusCode, header},
+};
+use pretty_assertions::assert_eq;
+use scribe_api::{ApiLimits, ApiState, ApiStateParams, router};
+use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
+use scribe_domain::{
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
+    Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
+    GeneratedNote, GenerationRequest, Generator, OsAccountsClient, Receipt, TokenUsage,
+    Transcriber, Transcript, TranscriptionRequest, UserId,
+};
+use scribe_services::{
+    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
+    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
+    PricingTable,
+};
+use std::{collections::BTreeMap, error::Error, sync::Arc, time::Duration};
+use tower::ServiceExt;
+
+const AUTHORIZATION: &str = "Bearer valid-token";
+
+#[tokio::test]
+async fn integration_missing_auth_returns_unauthorized_envelope() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "Transcript",
+            "model": "text-model"
+        }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 3001);
+    assert_eq!(body["message"], "missing_bearer_token");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_returns_enveloped_response() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "manualNotes": "Ask about rate limits",
+            "model": "text-model"
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["content"], "Generated note body");
+    assert_eq!(body["data"]["titleSuggestion"], "Generated title");
+    assert_eq!(body["data"]["creditsCharged"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_rejects_wrong_model_kind() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "Transcript",
+            "model": "asr-model"
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "model_type_invalid");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_transcribe_accepts_valid_audio_multipart() -> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "asr-model"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-1"),
+            text_part("context", "Previous transcript context"),
+            text_part("language", "en"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    assert_eq!(body["data"]["language"], "en");
+    assert_eq!(body["data"]["provider"], "fake-transcriber");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "asr-model"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-1"),
+            file_part("audio", "recording.txt", b"not-audio".to_vec()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "unsupported_audio_format");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/dictate/cleanup",
+        &serde_json::json!({
+            "sessionId": "session-1",
+            "utteranceId": "utterance-1",
+            "text": "hello scribe",
+            "dictionaryContext": "Scribe",
+            "style": "standard",
+            "model": "text-model"
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Cleaned dictation");
+    assert_eq!(body["data"]["creditsCharged"], 0);
+    Ok(())
+}
+
+fn test_router() -> Router {
+    router(test_state())
+}
+
+fn test_state() -> ApiState {
+    let pricing = Arc::new(PricingTable::new(models()));
+    let os_accounts = Arc::new(FakeOsAccounts);
+    let transcriber = Arc::new(FakeTranscriber);
+    let generator = Arc::new(FakeGenerator);
+    let cleaner = Arc::new(FakeCleaner);
+    let duration_probe = Arc::new(FakeDurationProbe);
+    let chat_completer = Arc::new(FakeChatCompleter);
+
+    ApiState::new(ApiStateParams {
+        pricing: pricing.clone(),
+        token_verifier: Arc::new(FakeTokenVerifier),
+        note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: pricing.clone(),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: duration_probe.clone(),
+            hold_ttl_seconds: 30,
+            flat_estimate_credits: 1_000,
+        })),
+        note_generate: Arc::new(NoteGenerateService::new(NoteGenerateServiceDeps {
+            pricing: pricing.clone(),
+            os_accounts: os_accounts.clone(),
+            generator,
+            hold_ttl_seconds: 30,
+            flat_estimate_credits: 1_000,
+        })),
+        agent_chat: Arc::new(AgentChatService::new(AgentChatServiceDeps {
+            pricing: pricing.clone(),
+            os_accounts: os_accounts.clone(),
+            chat_completer,
+            hold_ttl_seconds: 30,
+            flat_estimate_credits: 1_000,
+        })),
+        dictate: Arc::new(DictateService::new(DictateServiceDeps {
+            pricing,
+            os_accounts,
+            transcriber,
+            cleaner,
+            duration_probe,
+            transcribe_hold_ttl_seconds: 30,
+            cleanup_hold_ttl_seconds: 30,
+            flat_estimate_credits: 1_000,
+        })),
+        limits: ApiLimits {
+            max_audio_bytes: 1024 * 1024,
+            max_json_bytes: 1024 * 1024,
+            request_timeout_secs: 5,
+        },
+    })
+}
+
+fn models() -> BTreeMap<String, ModelPriceConfig> {
+    [
+        (
+            "asr-model",
+            ModelPriceConfig {
+                unit: PriceUnit::Seconds,
+                credits_per_million_seconds: Some(250_000),
+                input_credits_per_million_tokens: None,
+                output_credits_per_million_tokens: None,
+                provider: ModelProvider::Openai,
+                model_type: ModelType::Asr,
+                display_name: "ASR Model".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        ),
+        (
+            "text-model",
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(500),
+                output_credits_per_million_tokens: Some(500),
+                provider: ModelProvider::Openai,
+                model_type: ModelType::Text,
+                display_name: "Text Model".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(id, model)| (id.to_string(), model))
+    .collect()
+}
+
+async fn send(request: Request<Body>) -> axum::response::Response {
+    match test_router().oneshot(request).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
+}
+
+fn json_request(
+    uri: &str,
+    value: &serde_json::Value,
+    authorization: Option<&str>,
+) -> Result<Request<Body>, axum::http::Error> {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(authorization) = authorization {
+        builder = builder.header(header::AUTHORIZATION, authorization);
+    }
+    builder.body(Body::from(value.to_string()))
+}
+
+fn multipart_request(uri: &str, body: Vec<u8>) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={}", boundary()),
+        )
+        .body(Body::from(body))
+}
+
+async fn response_json(
+    response: axum::response::Response,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn boundary() -> &'static str {
+    "test-boundary"
+}
+
+enum MultipartPart {
+    Text {
+        name: &'static str,
+        value: &'static str,
+    },
+    File {
+        name: &'static str,
+        filename: &'static str,
+        bytes: Vec<u8>,
+    },
+}
+
+fn text_part(name: &'static str, value: &'static str) -> MultipartPart {
+    MultipartPart::Text { name, value }
+}
+
+fn file_part(name: &'static str, filename: &'static str, bytes: Vec<u8>) -> MultipartPart {
+    MultipartPart::File {
+        name,
+        filename,
+        bytes,
+    }
+}
+
+fn multipart_body<const N: usize>(parts: [MultipartPart; N]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for part in parts {
+        body.extend_from_slice(format!("--{}\r\n", boundary()).as_bytes());
+        match part {
+            MultipartPart::Text { name, value } => {
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                );
+                body.extend_from_slice(value.as_bytes());
+                body.extend_from_slice(b"\r\n");
+            }
+            MultipartPart::File {
+                name,
+                filename,
+                bytes,
+            } => {
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: audio/wav\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+                body.extend_from_slice(&bytes);
+                body.extend_from_slice(b"\r\n");
+            }
+        }
+    }
+    body.extend_from_slice(format!("--{}--\r\n", boundary()).as_bytes());
+    body
+}
+
+fn valid_wav() -> Vec<u8> {
+    b"RIFF....WAVEfmt ".to_vec()
+}
+
+struct FakeTokenVerifier;
+
+#[async_trait]
+impl scribe_domain::TokenVerifier for FakeTokenVerifier {
+    async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError> {
+        if access_jwt == "valid-token" {
+            Ok(UserId("usr_test".to_string()))
+        } else {
+            Err(AuthError::InvalidToken)
+        }
+    }
+}
+
+struct FakeOsAccounts;
+
+#[async_trait]
+impl OsAccountsClient for FakeOsAccounts {
+    async fn authorize(&self, _request: AuthorizeRequest) -> Result<Authorization, DomainError> {
+        Ok(Authorization {
+            allowed: true,
+            action_token: Some("agt_test".to_string()),
+            cap_credits: None,
+            reason: None,
+        })
+    }
+
+    async fn charge(&self, _request: scribe_domain::ChargeRequest) -> Result<Receipt, DomainError> {
+        Ok(Receipt {
+            credits_charged: Credits(1),
+            idempotent_replay: false,
+        })
+    }
+}
+
+struct FakeDurationProbe;
+
+impl AudioDurationProbe for FakeDurationProbe {
+    fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
+        Ok(Duration::from_secs(1))
+    }
+}
+
+struct FakeTranscriber;
+
+#[async_trait]
+impl Transcriber for FakeTranscriber {
+    async fn transcribe(&self, request: TranscriptionRequest) -> Result<Transcript, DomainError> {
+        Ok(Transcript {
+            text: "Transcribed audio".to_string(),
+            language: request.language,
+            provider: "fake-transcriber".to_string(),
+        })
+    }
+}
+
+struct FakeGenerator;
+
+#[async_trait]
+impl Generator for FakeGenerator {
+    async fn generate(&self, _request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        Ok(GeneratedNote {
+            content: "Generated note body".to_string(),
+            title_suggestion: Some("Generated title".to_string()),
+            provider: "fake-generator".to_string(),
+            usage: TokenUsage {
+                prompt_tokens: 500,
+                completion_tokens: 500,
+            },
+        })
+    }
+}
+
+struct FakeCleaner;
+
+#[async_trait]
+impl Cleaner for FakeCleaner {
+    async fn cleanup(&self, _request: CleanupRequest) -> Result<CleanedText, DomainError> {
+        Ok(CleanedText {
+            text: "Cleaned dictation".to_string(),
+            provider: "fake-cleaner".to_string(),
+            usage: TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 100,
+            },
+        })
+    }
+}
+
+struct FakeChatCompleter;
+
+#[async_trait]
+impl AgentChatCompleter for FakeChatCompleter {
+    async fn complete(
+        &self,
+        _request: AgentChatRequest,
+    ) -> Result<AgentChatCompletion, DomainError> {
+        Ok(AgentChatCompletion {
+            body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
+            content_type: "application/json".to_string(),
+            provider: "fake-chat".to_string(),
+            usage: TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 100,
+            },
+        })
+    }
+}
