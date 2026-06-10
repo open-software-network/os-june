@@ -431,7 +431,7 @@ export function Sidebar({
     >
       {inSettings ? null : (
         <header className="sidebar-header">
-          <a className="sidebar-brand" href="#" aria-label="OS June">
+          <a className="sidebar-brand" href="#" aria-label="June">
             <img
               className="sidebar-brand-img light"
               src="/os-june-light.svg"
@@ -444,7 +444,7 @@ export function Sidebar({
               alt=""
               height={16}
             />
-            <span style={{ position: "absolute", left: -9999 }}>OS June</span>
+            <span style={{ position: "absolute", left: -9999 }}>June</span>
           </a>
         </header>
       )}

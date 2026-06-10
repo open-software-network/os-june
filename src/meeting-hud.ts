@@ -41,9 +41,7 @@ function applyStatus(status: RecordingStatusDto) {
     pill.dataset.state = paused ? "paused" : "recording";
     pill.setAttribute(
       "aria-label",
-      paused
-        ? "Paused — click to open Scribe"
-        : "Recording — click to open Scribe",
+      paused ? "Paused — click to open June" : "Recording — click to open June",
     );
   }
 
@@ -103,12 +101,12 @@ function resetBars() {
 // Focus the main window from Rust (reliable app activation — clicking a
 // non-activating panel won't bring a backgrounded app forward on its own); Rust
 // then emits the action React uses to land back on the recording note.
-function reopenScribe() {
+function reopenJune() {
   void invoke("meeting_hud_reopen").catch(() => {});
 }
 
 // One surface, two gestures: a press that moves past a small threshold drags
-// the window; a press that stays put is a click → reopen Scribe. Handlers live
+// the window; a press that stays put is a click → reopen June. Handlers live
 // on the document, not the pill: the native quarter-turn rotates pixels but
 // not DOM hit-testing, so when the pill stands vertical a click on it lands in
 // the DOM's gutter. The window is barely bigger than the pill, so document-
@@ -139,13 +137,13 @@ document.addEventListener("pointerup", (event) => {
   if (event.button !== 0) return;
   const wasClick = !!pressStart && !dragging;
   pressStart = undefined;
-  if (wasClick) reopenScribe();
+  if (wasClick) reopenJune();
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    reopenScribe();
+    reopenJune();
   }
 });
 
