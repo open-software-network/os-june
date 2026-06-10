@@ -79,23 +79,16 @@ export function NoteFailureBanner({
 
   return (
     <aside className="note-failure-banner" role="alert" data-kind={kind}>
-      <div className="note-failure-copy">
-        <h3 className="note-failure-title">
-          {isBalanceIssue
-            ? "Add funds to finish this note"
-            : "Transcription failed"}
-        </h3>
-        <p className="note-failure-message">
-          {isBalanceIssue
-            ? audioPreserved
-              ? "Your recording is saved locally. Add funds and retry to transcribe."
-              : "Your balance is too low. Add funds to continue."
-            : (displayMessage ?? "June couldn't finish processing this note.")}
-          {!isBalanceIssue && audioPreserved
-            ? " Your recording is saved locally — you can retry."
-            : null}
-        </p>
-      </div>
+      <p className="note-failure-message">
+        {isBalanceIssue
+          ? audioPreserved
+            ? "Your balance ran out. Your recording is saved locally, so add funds and retry."
+            : "Your balance is too low. Add funds to continue."
+          : (displayMessage ?? "June couldn't finish processing this note.")}
+        {!isBalanceIssue && audioPreserved
+          ? " Your recording is saved locally, so you can retry."
+          : null}
+      </p>
       <div className="note-failure-actions">
         {isBalanceIssue ? (
           <button

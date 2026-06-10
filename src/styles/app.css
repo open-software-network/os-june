@@ -2112,6 +2112,28 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+/* Stop reads as a quiet text link beside the message (the same recipe as the
+ * recording-consent dismiss), not a boxed button inside a pill. */
+.agent-composer-notice button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font-size: inherit;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-composer-notice button:hover {
+  color: var(--foreground);
+}
+
+.agent-composer-notice button:disabled {
+  color: var(--muted-foreground);
+  cursor: default;
+}
+
 @keyframes agent-composer-notice-in {
   from {
     opacity: 0;
@@ -5384,18 +5406,20 @@ input:focus-visible,
   background: color-mix(in oklch, var(--destructive) 12%, transparent);
 }
 
-/* Out-of-credits card in the transcript. The base notice lays eyebrow + body
- * out as wrapping flex items, so a long body drops wholesale onto its own
- * line the moment it can't fit — which reads as a broken layout, not a wrap.
- * Flow the body inline after the eyebrow instead, wrapping mid-sentence like
- * a paragraph. */
+/* Out-of-credits card in the transcript: no title, just the tone-colored
+ * wallet glyph flowing inline with one sentence. The base notice lays its
+ * pieces out as wrapping flex items, so long text drops wholesale onto its
+ * own line the moment it can't fit — inline flow wraps mid-sentence like a
+ * paragraph instead. */
 .agent-credits-notice .inline-notice-message {
   display: block;
 }
 
 .agent-credits-notice .inline-notice-eyebrow {
-  margin-right: var(--sp-3);
-  vertical-align: baseline;
+  margin-right: var(--sp-2);
+  /* Icon-only inline-flex has no text baseline — WebKit sits it too high
+   * against the adjacent text without this nudge. */
+  vertical-align: -2px;
 }
 
 .agent-credits-notice .inline-notice-body {
@@ -5473,21 +5497,11 @@ input:focus-visible,
   border-radius: var(--r-md);
 }
 
-.note-failure-copy {
-  min-width: 0;
-}
-
-.note-failure-title {
-  margin: 0 0 var(--sp-1);
-  font-size: var(--fs-md);
-  font-weight: 500;
-  color: var(--foreground);
-}
-
 .note-failure-message {
   margin: 0;
+  min-width: 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   line-height: 1.45;
 }
 

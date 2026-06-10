@@ -20,8 +20,7 @@ export function NoteRecoveryPrompt({
       className="note-recovery-prompt"
       aria-label="Recoverable recording"
       icon={<IconRecord size={14} aria-hidden />}
-      eyebrow="Interrupted recording"
-      body={`We saved ${formatBytes(recovery.bytesFound)} before this note stopped.`}
+      body={`This recording was interrupted. We saved ${formatBytes(recovery.bytesFound)} of audio.`}
       actions={
         <>
           <button

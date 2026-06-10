@@ -19,7 +19,7 @@ import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
-import { IconCreditCard1 } from "central-icons/IconCreditCard1";
+import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
@@ -156,9 +156,9 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
 
-// What the user reads instead of the gateway's "session busy" rejection.
-const SESSION_BUSY_NOTICE =
-  "June is still working on the previous message — wait for it to finish, or stop it, then send again.";
+// What the user reads instead of the gateway's "session busy" rejection. The
+// pill carries its own Stop action, so the copy doesn't have to explain one.
+const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
 
 // Connection-shaped failures get a "Try again" on the error banner — these are
 // all our own strings (hermes-gateway.ts client errors, ensureHermesGateway),
@@ -2442,6 +2442,25 @@ export function AgentWorkspace({
           <p className="agent-composer-notice" role="status">
             <PangolinSpinner />
             {busyNotice ?? SESSION_BUSY_NOTICE}
+            {galleryErrors || selectedHermesSessionId ? (
+              <button
+                type="button"
+                onClick={
+                  galleryErrors
+                    ? galleryNoop
+                    : () =>
+                        selectedHermesSessionId &&
+                        void stopHermesSession(selectedHermesSessionId)
+                }
+                disabled={
+                  !galleryErrors &&
+                  !!selectedHermesSessionId &&
+                  stoppingSessionIds.has(selectedHermesSessionId)
+                }
+              >
+                Stop
+              </button>
+            ) : null}
           </p>
         ) : null}
         <div
@@ -4215,16 +4234,16 @@ function AgentErrorBanner({
 
 // The raw billing failure ("Error: Error code: 402 - …") never reaches the
 // transcript — the chat runtime folds it into a notice part, and this card is
-// how the user learns the turn stopped and what to do about it.
+// how the user learns the turn stopped and what to do about it. No title —
+// icon + one sentence + the action, Claude-style.
 function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
   return (
     <InlineNotice
       className="agent-credits-notice"
       tone="destructive"
       role="alert"
-      icon={<IconCreditCard1 size={14} aria-hidden />}
-      eyebrow="Out of credits"
-      body="June stopped because your balance ran out. Add funds, then send your message again."
+      icon={<IconWallet3 size={14} aria-hidden />}
+      body="June stopped because your balance ran out."
       actions={
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>

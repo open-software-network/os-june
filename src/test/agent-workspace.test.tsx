@@ -1478,7 +1478,9 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    expect(await screen.findByText("Out of credits")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/June stopped because your balance ran out/),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Error code: 402/)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Add funds" }));

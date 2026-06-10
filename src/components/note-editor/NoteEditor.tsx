@@ -380,8 +380,7 @@ export function NoteEditor({
             role="alert"
             aria-label="Microphone access required"
             icon={<IconMicrophoneOff size={14} aria-hidden />}
-            eyebrow="Microphone access is blocked"
-            body="Enable it in System Settings to record audio. You can still write notes here."
+            body="Microphone access is blocked. You can still write notes here."
             actions={
               <button
                 type="button"

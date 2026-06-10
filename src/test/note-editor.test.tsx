@@ -240,8 +240,11 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByText("Transcription failed")).toBeInTheDocument();
-    expect(screen.queryByText("Microphone")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Microphone: No speech detected. Try speaking louder or moving closer to the microphone.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText("0:15-0:18")).not.toBeInTheDocument();
   });
 
@@ -400,7 +403,7 @@ describe("NoteEditor", () => {
     );
 
     // An interrupted recording must not disable the record button.
-    expect(screen.getByText("Interrupted recording")).toBeInTheDocument();
+    expect(screen.getByText(/recording was interrupted/i)).toBeInTheDocument();
 
     const recordButton = screen.getByRole("button", { name: "Record" });
     expect(recordButton).toBeEnabled();
