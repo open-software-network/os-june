@@ -60,6 +60,10 @@
   --control-md: 28px;
   --control-lg: 32px;
   --control-xl: 36px;
+  /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
+   * inside it resolves to. Shared with the rules that tuck scrollers behind
+   * the bar and inset their scrollbar tracks below it. */
+  --detail-bar-h: 46px;
 
   /* Sidebar dimensions ---------------------------------------------- */
   --sidebar-w: 240px;

@@ -225,11 +225,11 @@ input:focus-visible,
 
 /* Agent ------------------------------------------------------------- */
 
-/* The breadcrumb is a fixed header and the conversation scrolls in .agent-scroll
- * below it, so the scrollbar starts under the bar instead of riding up over it
- * (the shared .main-panel-body scrollbar sits in the gutter past the bar's edge,
- * so the bar can't cover it). This means filling the card exactly — not growing
- * past it — so .agent-scroll has a bounded height to scroll within. */
+/* The breadcrumb is a fixed header and the conversation scrolls in .agent-scroll,
+ * whose box reaches up behind the bar (so the frost blurs passing content) while
+ * its scrollbar track is inset below the bar (so the thumb can't ride over it) —
+ * see .agent-scroll. This means filling the card exactly — not growing past it —
+ * so .agent-scroll has a bounded height to scroll within. */
 .agent-workspace {
   display: flex;
   flex-direction: column;
@@ -255,8 +255,7 @@ input:focus-visible,
 /* The card-edge fades animate off .main-panel-body's scroll, but in the agent
  * view that body is frozen and the conversation scrolls in .agent-scroll. Drive
  * the named timeline off that inner scroller instead so the bottom fade still
- * dissolves the conversation into the fixed composer (and reads at the top edge
- * under the breadcrumb), rather than sticking on. */
+ * dissolves the conversation into the fixed composer, rather than sticking on. */
 @supports (animation-timeline: scroll()) {
   .main-panel-body[data-active-view="agent"] {
     scroll-timeline: none;
@@ -264,15 +263,6 @@ input:focus-visible,
   .main-panel-body[data-active-view="agent"] .agent-scroll {
     scroll-timeline: --main-panel-scroll block;
   }
-}
-
-/* The conversation scrolls in a pane below the breadcrumb (not behind it), so
- * the frosted bar has nothing passing under it to blur. Drop the top fade to
- * the bar's bottom edge (its 46px min-height) so the conversation softly
- * dissolves into the breadcrumb as it scrolls up — the seam the frost used to
- * read from content moving behind it. */
-.main-panel:has(> .main-panel-body[data-active-view="agent"])::before {
-  top: 46px;
 }
 
 /* The agent already lives inside the floating .main-panel card, so it draws
@@ -419,12 +409,19 @@ input:focus-visible,
   -webkit-line-clamp: 2;
 }
 
-/* The conversation scroller, below the breadcrumb. Full-bleed (cancelling the
- * card body's gutter, then re-adding it inside) so its scrollbar hugs the card
- * edge like the shared scroller did — only now it starts beneath the bar.
- * No explicit width: the stretched flex item grows by the negative margins
- * (like .detail-bar does); width:100% would resolve to the container width and
- * leave the right edge — and the scrollbar — a gutter short of the card edge. */
+/* The conversation scroller. Full-bleed (cancelling the card body's gutter,
+ * then re-adding it inside) so its scrollbar hugs the card edge like the
+ * shared scroller did. No explicit width: the stretched flex item grows by
+ * the negative margins (like .detail-bar does); width:100% would resolve to
+ * the container width and leave the right edge — and the scrollbar — a
+ * gutter short of the card edge.
+ *
+ * The negative top margin slides the scroller's box up BEHIND the frosted
+ * breadcrumb (the matching top padding keeps the conversation itself starting
+ * below it), so scrolling content passes under the bar's backdrop blur — the
+ * frost actually frosts. The scrollbar would then span that band too, so the
+ * track is inset by the same height below: the thumb physically can't ride up
+ * over the breadcrumb. */
 .agent-scroll {
   display: flex;
   flex-direction: column;
@@ -433,8 +430,19 @@ input:focus-visible,
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  margin: 0 calc(-1 * var(--sp-8));
-  padding: 0 var(--sp-8) var(--sp-5);
+  margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
+  padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
+  /* The global standard props (scrollbar-width/color, top of file) make the
+   * engine IGNORE all ::-webkit-scrollbar styling and draw a native overlay
+   * scrollbar instead — which offers no way to start the track below the bar.
+   * Opt this scroller out so the app's quiet 4px webkit scrollbar rules
+   * actually engage here, including the track inset below. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.agent-scroll::-webkit-scrollbar-track {
+  margin-top: var(--detail-bar-h);
 }
 
 .agent-main {
@@ -6090,7 +6098,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  min-height: 46px;
+  min-height: var(--detail-bar-h);
   margin: 0 calc(-1 * var(--sp-8));
   /* Full-bleed bar, but the crumb lines up with the content gutter (sp-8)
    * rather than hugging the sidebar edge. */
