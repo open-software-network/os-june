@@ -40,6 +40,7 @@ import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
+import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
@@ -227,7 +228,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
       }),
     );
     return show
-      ? "Seeding sample files and opening the viewer (needs an open conversation — repeat runs add numbered copies). Run __agentFiles(false) to clear."
+      ? "Seeding sample files and opening the viewer (needs an open conversation; repeat runs add numbered copies). Run __agentFiles(false) to clear."
       : "Sample files cleared from the viewer (workspace copies remain).";
   };
 }
@@ -249,7 +250,7 @@ A sample document that exercises **bold**, *italic*, ~~strikethrough~~,
 2. Collect feedback for two weeks
 3. General availability
 
-> Blockquotes hold paragraphs, lists, or code — anything a block can.
+> Blockquotes hold anything a block can: paragraphs, lists, or code.
 
 ### Numbers
 
@@ -397,7 +398,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     key: "health-check",
     icon: <IconHeartBeat size={18} />,
     title: "Check my Mac's health",
-    description: "Disk, memory, login items — what needs attention.",
+    description: "Disk, memory, and login items that need attention.",
     prompt:
       "Give my Mac a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
     action: "run",
@@ -563,6 +564,10 @@ export function AgentWorkspace({
     running: false,
   });
   const [bridgeStarting, setBridgeStarting] = useState(false);
+  // Opt-in for the session being composed in the hero: start the runtime
+  // without the OS sandbox. Read through a ref inside the async submit path.
+  const [fullModeDraft, setFullModeDraft] = useState(false);
+  const fullModeDraftRef = useRef(false);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
@@ -670,6 +675,11 @@ export function AgentWorkspace({
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(false);
+  // True only while a brand-new thread is being started from the hero. The
+  // hero→dock composer FLIP keys off this so it glides *only* when the empty
+  // chat hands over to a fresh thread — not when the hero is dismissed by
+  // selecting an existing chat from the sidebar (that should swap instantly).
+  const heroExitViaThreadRef = useRef(false);
   const sessionTitleOverridesRef = useRef<Record<string, string>>({});
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -844,6 +854,19 @@ export function AgentWorkspace({
   const heroMode =
     !gallerySections &&
     (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+  // Holds the prior render's heroMode. Read by both the composer auto-grow
+  // effect (to skip its glide across a hero transition) and the hero→dock FLIP
+  // below (to detect the hero handoff); the FLIP effect, which runs last, is
+  // what advances it each render.
+  const prevHeroModeRef = useRef(heroMode);
+
+  // Full mode is an opt-in made per new session, so the toggle re-arms to off
+  // every time the hero is entered — it never carries over from the last one.
+  useEffect(() => {
+    if (!heroMode) return;
+    fullModeDraftRef.current = false;
+    setFullModeDraft(false);
+  }, [heroMode]);
 
   // The conversation scroller's thumb fades in with scroll activity and back
   // out when idle (native-overlay feel; see scroll-thumb-fade.ts). The hero
@@ -1287,6 +1310,14 @@ export function AgentWorkspace({
     ) {
       return;
     }
+    // The height is already applied above; only the glide is conditional. On a
+    // hero transition the composer changes shape (hero is full-width/taller),
+    // but we don't want to grow-animate that: entering the hero or swapping it
+    // for an existing chat should be instant, and on thread-start the hero→dock
+    // FLIP below owns the box animation — running both leaves two height
+    // animations fighting over the same box. prevHeroModeRef holds the prior
+    // render's heroMode (the FLIP effect updates it, and runs after this one).
+    if (prevHeroModeRef.current !== heroMode) return;
     // Animate the box open/closed. Its content is bottom-anchored
     // (justify-content: flex-end) and clipped (overflow: hidden), so the
     // toolbar stays pinned to the bottom edge while the top edge glides up to
@@ -1523,7 +1554,7 @@ export function AgentWorkspace({
       const bytes = await readFileBytes(file).catch(() => {
         // Reading fails for directories, which Finder happily lets you drop.
         throw new Error(
-          `Could not read "${file.name}" — folders can't be attached.`,
+          `Could not read "${file.name}". Folders can't be attached.`,
         );
       });
       return importHermesBridgeFileBytes(file.name, bytes);
@@ -1577,7 +1608,11 @@ export function AgentWorkspace({
     const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
-    const gateway = await ensureHermesGateway();
+    // Only a session being created applies the Full mode opt-in; follow-ups
+    // on existing sessions never change the runtime's mode under them.
+    const gateway = await ensureHermesGateway(
+      targetSessionId ? undefined : fullModeDraftRef.current,
+    );
     const sessionTitle = titlePromise ? await titlePromise : undefined;
     const created = targetSessionId
       ? undefined
@@ -1618,6 +1653,10 @@ export function AgentWorkspace({
     if (!runtimeSessionId)
       throw new Error("Hermes did not resume the session.");
     const createdAt = new Date().toISOString();
+    // A new session (no target id) means the hero is handing over to a fresh
+    // thread — arm the composer glide. Sending into an existing session leaves
+    // the flag alone so a later hero dismissal via the sidebar stays instant.
+    if (!targetSessionId) heroExitViaThreadRef.current = true;
     newSessionModeRef.current = false;
     setNewSessionMode(false);
     setRuntimeSessionIds((current) => ({
@@ -1762,8 +1801,22 @@ export function AgentWorkspace({
     }
   }
 
-  async function ensureHermesGateway() {
-    const current = bridge.running ? bridge : await startBridge();
+  // `fullMode` is an explicit per-new-session choice: when the running
+  // runtime's mode differs, the backend restarts it (the sandbox is applied at
+  // spawn and can't change on a live process). Callers acting on an existing
+  // session pass undefined and reuse whatever runtime is up.
+  async function ensureHermesGateway(fullMode?: boolean) {
+    let current = bridge.running ? bridge : await startBridge(fullMode);
+    if (
+      fullMode !== undefined &&
+      current.connection &&
+      Boolean(current.connection.fullMode) !== fullMode
+    ) {
+      // Close the gateway socket before the restart kills the old process, so
+      // the drop reads as intentional and doesn't trigger close-recovery.
+      gatewayRef.current?.close();
+      current = await startBridge(fullMode);
+    }
     const wsUrl = current.connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
     let gateway = gatewayRef.current;
@@ -1835,11 +1888,11 @@ export function AgentWorkspace({
     }
   }
 
-  async function startBridge() {
+  async function startBridge(fullMode?: boolean) {
     setBridgeStarting(true);
     setError(null);
     try {
-      const status = await startHermesBridge();
+      const status = await startHermesBridge(undefined, fullMode);
       setBridge(status);
       return status;
     } catch (err) {
@@ -2597,7 +2650,6 @@ export function AgentWorkspace({
   // While the hero is up, every render snapshots the box; the first render
   // after leaving measures the docked position and animates the delta.
   const heroExitRectRef = useRef<DOMRect | null>(null);
-  const prevHeroModeRef = useRef(heroMode);
   useLayoutEffect(() => {
     const wasHero = prevHeroModeRef.current;
     prevHeroModeRef.current = heroMode;
@@ -2605,11 +2657,19 @@ export function AgentWorkspace({
     if (!box) return;
     if (heroMode) {
       heroExitRectRef.current = box.getBoundingClientRect();
+      // Clear any stale intent while the hero is up so a sidebar dismissal
+      // can't inherit a glide armed by an earlier (failed) submit.
+      heroExitViaThreadRef.current = false;
       return;
     }
     const prev = heroExitRectRef.current;
     heroExitRectRef.current = null;
     if (!wasHero || !prev) return;
+    // Only glide when the hero handed over to a fresh thread. Leaving the hero
+    // because the user opened an existing chat should swap in place.
+    const viaThread = heroExitViaThreadRef.current;
+    heroExitViaThreadRef.current = false;
+    if (!viaThread) return;
     if (
       typeof box.animate !== "function" ||
       (typeof window.matchMedia === "function" &&
@@ -2913,6 +2973,7 @@ export function AgentWorkspace({
       className="agent-workspace"
       aria-label="Agent"
       data-artifact-panel={artifactPanel ? "open" : undefined}
+      data-hero={heroMode ? "true" : undefined}
     >
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
         <AgentSessionBar
@@ -2923,6 +2984,7 @@ export function AgentWorkspace({
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
           privacyBadge={generationPrivacyBadge}
+          fullMode={Boolean(bridge.running && bridge.connection?.fullMode)}
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -2962,6 +3024,31 @@ export function AgentWorkspace({
             <h2 className="agent-hero-title">What can June do for you?</h2>
           </div>
           {composer}
+          {activePanel === "chat" ? (
+            <div className="agent-fullmode-row">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={fullModeDraft}
+                className="agent-fullmode-toggle"
+                title="Start this session without the file sandbox. June can then change any file your account can. Switching modes restarts June's runtime and stops sessions that are still working."
+                onClick={() => {
+                  const next = !fullModeDraft;
+                  fullModeDraftRef.current = next;
+                  setFullModeDraft(next);
+                }}
+              >
+                <IconShieldCrossed size={14} aria-hidden />
+                Full mode
+              </button>
+              {fullModeDraft ? (
+                <p className="agent-fullmode-hint" role="alert">
+                  June won't be sandboxed and can change any file your account
+                  can.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {activePanel === "chat" ? (
             <div className="agent-hero-suggestions">
               <div
@@ -3059,6 +3146,24 @@ function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
   );
 }
 
+// Honest indicator of the live runtime, not of any one session: the jail is
+// per-process, so while the user has it in Full mode every session it serves
+// runs unsandboxed.
+function FullModeBadge() {
+  const description =
+    "June is running without the file sandbox and can change any file your account can. Start a session with Full mode off to restore the sandbox.";
+  return (
+    <span
+      className="agent-safety-badge agent-fullmode-badge"
+      title={description}
+      aria-label={`Full mode - ${description}`}
+    >
+      <IconShieldCrossed size={13} aria-hidden />
+      Full mode
+    </span>
+  );
+}
+
 // Persistent, full-width session bar — same chrome as the Notes/Folders
 // breadcrumb. Stays pinned while the conversation scrolls beneath it, carries
 // the back arrow + origin crumbs (Projects / {project} or Agents), the
@@ -3067,6 +3172,7 @@ function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
 function AgentSessionBar({
   origin,
   privacyBadge,
+  fullMode,
   title,
   artifactCount = 0,
   artifactsOpen = false,
@@ -3076,6 +3182,7 @@ function AgentSessionBar({
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
+  fullMode?: boolean;
   title?: string;
   artifactCount?: number;
   artifactsOpen?: boolean;
@@ -3184,6 +3291,7 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
+        {fullMode ? <FullModeBadge /> : null}
         {onToggleArtifacts && artifactCount > 0 ? (
           <button
             type="button"
@@ -4005,7 +4113,7 @@ function AgentResponseGallery({
           </strong>
           <p>
             {errors
-              ? "Every error surface in agent chat — the banner above and the composer notice below are forced samples too."
+              ? "Every error surface in agent chat. The banner above and the composer notice below are forced samples too."
               : "Every response part type and status, for styling."}{" "}
             Close from the console with{" "}
             <code>{errors ? "__agentErrors" : "__agentGallery"}(false)</code>.

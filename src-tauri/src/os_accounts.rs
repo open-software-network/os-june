@@ -29,9 +29,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // Scopes Scribe needs. profile:read for /me, billing:read for /billing/balance,
+// billing:write so the app can mint the free-trial Stripe Checkout session
+// itself (POST /billing/subscription) instead of detouring through the portal,
 // credits:spend so Scribe API can authorize-and-charge against the user's
 // wallet for transcription / generation / dictation work.
-const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
+const OAUTH_SCOPES: &str = "profile:read billing:read billing:write credits:spend";
 // Scribe's OS Accounts token store. Keep this app-scoped so Scribe does not
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
@@ -45,6 +47,17 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const ERR_TOKEN_EXPIRED: i64 = 3001;
+// ApiError::conflict — POST /billing/subscription returns this when a
+// non-canceled subscription already exists for the user.
+const ERR_CONFLICT: i64 = 4001;
+// ApiError::unprocessable — returned for a return_url the accounts
+// deployment hasn't allowlisted (or hasn't learned about yet).
+const ERR_UNPROCESSABLE: i64 = 4201;
+
+/// Tauri event fired when the `osscribe://billing/callback` deep link lands —
+/// the user just finished (or canceled) Stripe Checkout in the browser.
+/// Payload is the outcome string: "success" or "cancel".
+pub const BILLING_CALLBACK_EVENT: &str = "os-accounts-billing-callback";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static REFRESH_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
@@ -79,6 +92,11 @@ struct MeWire {
 struct BalanceWire {
     credits: i64,
     usd_millis: i64,
+}
+
+#[derive(Deserialize)]
+struct SubscribeWire {
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -405,6 +423,91 @@ pub fn os_accounts_open_portal() -> Result<(), AppError> {
     open_in_browser(url)
 }
 
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum TrialCheckout {
+    /// Stripe Checkout is open in the system browser; the caller should poll
+    /// the subscription status until it flips to trialing/active.
+    CheckoutOpened,
+    /// The accounts API reported a live subscription already exists — the
+    /// caller should refresh the account snapshot instead of waiting.
+    AlreadySubscribed,
+}
+
+/// Where Stripe (via the portal's /return bounce page) sends the user after
+/// trial checkout. Release builds only: the custom scheme reaches the app
+/// through the OS registration of the bundled .app; `tauri dev` has no such
+/// registration, so dev checkouts keep the portal-default destination and
+/// rely on the status poll.
+#[cfg(not(debug_assertions))]
+const BILLING_RETURN_URL: &str = "osscribe://billing/callback";
+#[cfg(debug_assertions)]
+const BILLING_RETURN_URL: &str = "";
+
+/// One-click free trial: mint the subscription Stripe Checkout session
+/// directly from the app (the user's own token authorizes it) and open it in
+/// the system browser — no detour through the portal's billing page. Any
+/// failure other than "already subscribed" surfaces as an error so the UI can
+/// fall back to the portal flow.
+#[tauri::command]
+pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppError> {
+    let cfg = Config::load();
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    let url = format!("{}/billing/subscription", cfg.api_url.trim_end_matches('/'));
+    let mut access = access_token().await?;
+    // Ask for a deep-link return first; an accounts deployment without the
+    // return-url allowlist 422s, so retry once without it rather than losing
+    // the direct-Stripe path entirely.
+    let mut return_url = (!BILLING_RETURN_URL.is_empty()).then_some(BILLING_RETURN_URL);
+    let mut refreshed = false;
+    for _ in 0..3 {
+        let body = match return_url {
+            Some(value) => serde_json::json!({ "return_url": value }),
+            None => serde_json::json!({}),
+        };
+        let resp: Envelope<SubscribeWire> = http_client()
+            .post(&url)
+            .bearer_auth(&access)
+            .json(&body)
+            .send()
+            .await
+            .map_err(net_error)?
+            .json()
+            .await
+            .map_err(net_error)?;
+        if resp.success {
+            let session = resp
+                .data
+                .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."))?;
+            open_in_browser(&session.url)?;
+            return Ok(TrialCheckout::CheckoutOpened);
+        }
+        match resp.error_code {
+            Some(ERR_CONFLICT) => return Ok(TrialCheckout::AlreadySubscribed),
+            Some(ERR_UNPROCESSABLE) if return_url.is_some() => {
+                return_url = None;
+            }
+            // 3001 doubles as "token expired" and "missing scope". Refresh
+            // once; a token from a pre-billing:write sign-in still fails the
+            // retry, and the error below sends the UI down the portal path.
+            Some(ERR_TOKEN_EXPIRED) if !refreshed => {
+                refreshed = true;
+                access = refresh_locked(&cfg).await?;
+            }
+            _ => break,
+        }
+    }
+    Err(AppError::new(
+        "trial_checkout_unavailable",
+        "Could not start the free trial checkout.",
+    ))
+}
+
 /// Register the deep-link handler at app setup. Drains any in-flight
 /// login's callback slot when an `osscribe://auth/callback?...` URL
 /// arrives — works in both cold-launch (OS starts the app with the URL)
@@ -422,13 +525,30 @@ pub fn setup_deep_link(app: &tauri::App) {
         let Some(url) = event.urls().first().cloned() else {
             return;
         };
+        if url.scheme() != "osscribe" {
+            return;
+        }
+        // Post-checkout return from Stripe via the portal's /return bounce.
+        // Opening the link already brought the app to the foreground; tell
+        // the webview so the trial UI refreshes immediately instead of
+        // waiting out its poll interval.
+        if url.host_str() == Some("billing") && url.path() == "/callback" {
+            use tauri::Emitter;
+            let outcome = url
+                .query_pairs()
+                .find_map(|(key, value)| {
+                    (key == "subscription" || key == "checkout").then(|| value.into_owned())
+                })
+                .unwrap_or_else(|| "success".to_string());
+            let _ = app_handle.emit(BILLING_CALLBACK_EVENT, outcome);
+            return;
+        }
         // Match on the parsed URL components — `starts_with` would also
         // accept `osscribe://auth/callback-extra?...` and similar, letting
         // an unrelated webpage drain the one-shot. CSRF would still reject
         // downstream, but tightening the gate here keeps the in-flight
         // login intact when a stray URL fires the handler.
-        if url.scheme() != "osscribe" || url.host_str() != Some("auth") || url.path() != "/callback"
-        {
+        if url.host_str() != Some("auth") || url.path() != "/callback" {
             return;
         }
         let url_str = url.to_string();

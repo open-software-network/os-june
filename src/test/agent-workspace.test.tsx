@@ -1607,6 +1607,74 @@ describe("AgentWorkspace", () => {
     }
   });
 
+  it("starts a new session in full mode only after the explicit opt-in", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    const toggle = await screen.findByRole("switch", { name: "Full mode" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    // Submitting without the opt-in must not touch the runtime's mode — the
+    // running sandboxed bridge is reused as-is.
+    await user.type(
+      screen.getByPlaceholderText("Describe a task for June…"),
+      "first task",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "first task" }),
+      ),
+    );
+    expect(mocks.startHermesBridge).not.toHaveBeenCalled();
+
+    // Re-entering the hero re-arms the opt-in to off, then opting in and
+    // submitting restarts the runtime in full mode.
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    const rearmed = await screen.findByRole("switch", { name: "Full mode" });
+    expect(rearmed).toHaveAttribute("aria-checked", "false");
+    await user.click(rearmed);
+    expect(rearmed).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByText(/won't be sandboxed and can change any file/),
+    ).toBeInTheDocument();
+
+    await user.type(
+      screen.getByPlaceholderText("Describe a task for June…"),
+      "risky task",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
+    );
+  });
+
+  it("shows the full mode badge while the runtime is unsandboxed by choice", async () => {
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: {
+        port: 61234,
+        wsUrl: "ws://127.0.0.1:61234",
+        fullMode: true,
+      },
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Full mode")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Full mode - June is running without the file/),
+    ).toBeInTheDocument();
+  });
+
   it("explains a busy rejection and removes the ghost bubble", async () => {
     const user = userEvent.setup();
     mocks.gatewayRequest.mockImplementation((method: string) => {

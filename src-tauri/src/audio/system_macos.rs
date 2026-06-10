@@ -390,7 +390,10 @@ fn send_signal(pid: u32, signal: &str) {
 fn terminate_existing_helpers() {
     // Also match the pre-rename helper so a recorder left over from an older
     // "OS Scribe" build still gets cleaned up.
-    let helper_names = ["june-system-audio-recorder", "os-scribe-system-audio-recorder"];
+    let helper_names = [
+        "june-system-audio-recorder",
+        "os-scribe-system-audio-recorder",
+    ];
     let mut pids: Vec<u32> = Vec::new();
     for helper_name in helper_names {
         let Ok(output) = Command::new("pgrep").arg("-f").arg(helper_name).output() else {

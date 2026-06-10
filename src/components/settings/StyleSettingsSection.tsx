@@ -14,12 +14,12 @@ const SAMPLES: Record<DictationStyle, { description: string; sample: string }> =
     standard: {
       description: "Sentence case with light cleanup. Keeps your natural tone.",
       sample:
-        "Got it. Let me know when you're free to chat about the Q3 plan — happy to jump on in the morning.",
+        "Got it. Let me know when you're free to chat about the Q3 plan. Happy to jump on in the morning.",
     },
     casualLowercase: {
       description: "Lowercase sentences, contractions, minimal cleanup.",
       sample:
-        "got it. let me know when you're free to chat about the q3 plan — happy to jump on in the morning.",
+        "got it. let me know when you're free to chat about the q3 plan. happy to jump on in the morning.",
     },
     formal: {
       description:

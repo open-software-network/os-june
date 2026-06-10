@@ -264,6 +264,12 @@ input:focus-visible,
  * see .agent-scroll. This means filling the card exactly — not growing past it —
  * so .agent-scroll has a bounded height to scroll within. */
 .agent-workspace {
+  position: relative;
+  /* Own stacking context so the warm fade below (z-index:-1) stays local —
+   * above this element's own (transparent) background, beneath the hero
+   * content. Without it the negative layer falls behind the opaque .main-panel
+   * card and never shows. */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -272,6 +278,59 @@ input:focus-visible,
   min-width: 0;
   min-height: 0;
   margin: 0 auto;
+}
+
+/* New-session warmth: a whisper of brand orange welling up from the bottom of
+ * the intro screen, clear at the top so the greeting and bar stay neutral.
+ * Two stacked layers share the same bounds and fade: ::before paints the wash
+ * gradient, ::after paints the 1px inset rim that keeps the wash's edge crisp
+ * against the shell — a separate layer because the rim must dissolve toward
+ * the top alongside the wash (a bare hairline over the clear region reads as
+ * a stray border, most visibly in dark mode), and a box-shadow can only fade
+ * via a mask on its own element. Full-bleed behind the centered hero column
+ * (z-index:-1 keeps them above the card but under the content), fading on
+ * opacity as the composer glides to its dock on thread handoff. */
+.agent-workspace::before,
+.agent-workspace::after {
+  content: "";
+  position: absolute;
+  /* Bleed past .main-panel-body's horizontal padding so the wash reaches the
+   * card's left/right edges and rounded corners (.main-panel clips the
+   * overflow); top/bottom already sit flush to the card in the agent view. */
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sp-8) * -1);
+  right: calc(var(--sp-8) * -1);
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 280ms var(--ease-out);
+}
+
+.agent-workspace::before {
+  background: linear-gradient(to bottom, transparent 30%, var(--hero-wash));
+}
+
+.agent-workspace::after {
+  /* Per-theme rim colors live in tokens.css (--hero-wash-rim). The mask
+   * mirrors the wash gradient's stops so the rim emerges exactly where the
+   * warmth does. */
+  border-radius: var(--r-window);
+  box-shadow: inset 0 0 0 1px var(--hero-wash-rim);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 30%, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 30%, #000 100%);
+}
+
+.agent-workspace[data-hero="true"]::before,
+.agent-workspace[data-hero="true"]::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-workspace::before,
+  .agent-workspace::after {
+    transition: none;
+  }
 }
 
 /* Agent view: stop the card body from scrolling (the breadcrumb would scroll
@@ -2898,7 +2957,8 @@ input:focus-visible,
   transform: translateY(-10px);
 }
 
-.agent-main[data-hero-leaving="true"] .agent-hero-suggestions {
+.agent-main[data-hero-leaving="true"] .agent-hero-suggestions,
+.agent-main[data-hero-leaving="true"] .agent-fullmode-row {
   opacity: 0;
   transform: translateY(10px);
   pointer-events: none;
@@ -3009,13 +3069,73 @@ input:focus-visible,
 .agent-hero-chip-icon {
   display: inline-grid;
   place-items: center;
-  color: var(--muted-foreground);
+  /* Warm terracotta to echo the new-session fade behind these chips. */
+  color: var(--brand);
 }
 
 .agent-hero-footnote {
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+}
+
+/* Full mode opt-in under the hero composer: a quiet switch-styled pill that
+ * turns destructive-tinted once armed, with the consequence spelled out
+ * beside it rather than only in the tooltip. */
+.agent-fullmode-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  transition:
+    opacity 280ms var(--ease-out),
+    transform 280ms var(--ease-out);
+}
+
+.agent-fullmode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-xs);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-fullmode-toggle:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.agent-fullmode-toggle[aria-checked="true"] {
+  border-color: color-mix(in oklch, var(--destructive) 40%, transparent);
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+.agent-fullmode-hint {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+/* Session-bar twin of .agent-safety-badge, tinted destructive: the runtime is
+ * live without the write-jail. */
+.agent-fullmode-badge {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+.agent-fullmode-badge svg {
+  color: var(--destructive);
 }
 
 /* Hero teardown: while a shortcut/submit is creating the session, the
@@ -4220,6 +4340,32 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
+  /* Soften any static opacity flip (e.g. leaving the agent view, where the
+   * :has() rule below holds the dissolve at 0) so the veil never pops in a
+   * single frame over content. Matches the warm wash's 280ms fade. Lives
+   * here, not on the :has() rule, because an exit transition must survive
+   * the rule un-matching; scroll-driven animation values are unaffected, as
+   * animations beat transitions. */
+  transition: opacity 280ms var(--ease-out);
+}
+
+/* Agent view: the dissolve is hidden at rest and only the scroll-driven
+ * animation reveals it. Whenever nothing scrolls — the hero (no .agent-scroll
+ * at all) or a conversation still too short to overflow — the scroll timeline
+ * is inactive, the keyframes don't apply, and the static opacity 1 would
+ * otherwise pin the veil over the hero's warm wash and the docked composer.
+ * With scrollable content the timeline activates and the animation overrides
+ * this (animations beat static declarations). In browsers without
+ * scroll-timeline support the agent view simply never shows the dissolve —
+ * a safe degradation, since it exists to dissolve scrolling content. */
+.main-panel:has(.main-panel-body[data-active-view="agent"])::after {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main-panel::after {
+    transition: none;
+  }
 }
 
 @supports (animation-timeline: scroll()) {
@@ -9835,4 +9981,481 @@ input:focus-visible,
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+/* Onboarding wizard ---------------------------------------------------
+ * First-run flow gating the app after sign-in. Reuses the welcome
+ * screen's warm gradient so the two read as one continuous sequence. */
+
+.onboarding-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  --welcome-bg-start: color-mix(
+    in oklch,
+    var(--background) 78%,
+    var(--warm-soft)
+  );
+  --welcome-bg-end: color-mix(
+    in oklch,
+    var(--background) 92%,
+    var(--warm-soft)
+  );
+  background: linear-gradient(
+    180deg,
+    var(--welcome-bg-start) 0%,
+    var(--background) 52%,
+    var(--welcome-bg-end) 100%
+  );
+}
+
+.onboarding-progress {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-7);
+  padding: calc(var(--titlebar-h) + var(--sp-5)) var(--sp-8) var(--sp-5);
+}
+
+.onboarding-progress-stage {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  padding-bottom: var(--sp-1);
+  border-bottom: 2px solid transparent;
+  transition: color var(--t-med) var(--ease-out);
+}
+
+.onboarding-progress-stage[data-state="current"] {
+  color: var(--foreground);
+  border-bottom-color: var(--brand);
+}
+
+.onboarding-progress-stage[data-state="done"] {
+  color: var(--foreground);
+}
+
+.onboarding-body {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  padding: var(--sp-10) var(--sp-8) var(--sp-12);
+}
+
+.onboarding-back {
+  position: absolute;
+  top: var(--sp-6);
+  left: var(--sp-8);
+  border: none;
+  background: transparent;
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+}
+
+.onboarding-back:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.onboarding-step {
+  width: min(100%, 560px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  /* Push the action row toward a stable position so Continue doesn't
+     jump around between short and tall steps. */
+  min-height: 420px;
+}
+
+.onboarding-heading {
+  display: grid;
+  gap: var(--sp-3);
+  text-align: center;
+}
+
+.onboarding-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 400;
+  color: var(--foreground);
+}
+
+.onboarding-subtitle {
+  margin: 0;
+  font-size: var(--fs-lg);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.onboarding-actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-top: var(--sp-5);
+}
+
+.onboarding-continue {
+  min-width: 220px;
+  height: var(--control-xl);
+  justify-content: center;
+}
+
+.onboarding-skip {
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+}
+
+.onboarding-skip:hover {
+  color: var(--foreground);
+}
+
+.onboarding-feature-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.onboarding-feature-list li {
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--body-copy);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-card-grid {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.onboarding-info-card {
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-info-card h2,
+.onboarding-setting-copy h2,
+.onboarding-permission-copy h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-info-card p,
+.onboarding-setting-copy p,
+.onboarding-permission-copy p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.onboarding-footnote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  text-align: center;
+  color: var(--muted-foreground);
+}
+
+.onboarding-footnote a {
+  color: var(--foreground);
+}
+
+/* Sign-in / trial "finish it in the browser" wait state: spinner + label,
+ * with quiet escape hatches stacked beneath. */
+.onboarding-browser-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-browser-wait-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-browser-wait-hint {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.onboarding-setting-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-select {
+  flex-shrink: 0;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.onboarding-kbd {
+  display: inline-block;
+  padding: 1px var(--sp-3);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.onboarding-permission-stack {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.onboarding-permission-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-permission-card[data-granted="true"] {
+  border-color: color-mix(in oklch, var(--success) 35%, transparent);
+}
+
+.onboarding-permission-card[data-deferred="true"] {
+  background: var(--surface-subtle);
+  box-shadow: none;
+}
+
+.onboarding-permission-copy h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.onboarding-permission-check {
+  display: inline-flex;
+  color: var(--success);
+}
+
+.onboarding-permission-card .primary-action {
+  flex-shrink: 0;
+}
+
+.onboarding-practice-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.onboarding-practice-header {
+  padding: var(--sp-4) var(--sp-6);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.onboarding-practice-bubble {
+  display: grid;
+  gap: var(--sp-1);
+  margin: var(--sp-6);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  font-size: var(--fs-md);
+  color: var(--foreground);
+  width: fit-content;
+  max-width: 80%;
+}
+
+.onboarding-practice-sender {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.onboarding-practice-input {
+  display: block;
+  width: calc(100% - var(--sp-6) * 2);
+  margin: 0 var(--sp-6) var(--sp-6);
+  padding: var(--sp-4);
+  border: 1px solid var(--input);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  resize: none;
+}
+
+.onboarding-practice-input:focus-visible {
+  outline: none;
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-practice-success {
+  margin: 0 var(--sp-6) var(--sp-6);
+  font-size: var(--fs-md);
+  color: var(--success);
+}
+
+.onboarding-demo-notes {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-6) var(--sp-6);
+  list-style: none;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.onboarding-demo-notes li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--body-copy);
+}
+
+.onboarding-demo-kind {
+  flex-shrink: 0;
+  padding: 1px var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.onboarding-approval-body {
+  margin: var(--sp-6);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--body-copy);
+}
+
+.onboarding-approval-actions {
+  display: flex;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-6) var(--sp-6);
+}
+
+.onboarding-approval-button {
+  padding: var(--sp-2) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+}
+
+.onboarding-approval-button[data-variant="approve"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.onboarding-honesty-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+  counter-reset: honesty;
+}
+
+.onboarding-honesty-list li {
+  counter-increment: honesty;
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-honesty-list h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-honesty-list h2::before {
+  content: counter(honesty) ". ";
+  color: var(--brand);
+}
+
+.onboarding-honesty-list p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.onboarding-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.onboarding-ack input {
+  margin-top: 3px;
+  accent-color: var(--brand);
 }

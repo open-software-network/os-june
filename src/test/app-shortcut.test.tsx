@@ -86,6 +86,19 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   mascotShow: mocks.mascotShow,
   mascotHide: mocks.mascotHide,
+  // The agent workspace mounts at launch; a quiet, not-running bridge keeps
+  // these tests focused on the meetings surfaces.
+  hermesBridgeStatus: vi.fn(async () => ({ running: false })),
+  listAgentTasks: vi.fn(async () => ({ items: [] })),
+  providerModelSettings: vi.fn(async () => ({
+    settings: { generationModel: "" },
+  })),
+  listVeniceModels: vi.fn(async () => ({
+    mode: "generation",
+    modelType: "text",
+    selectedModel: "",
+    models: [],
+  })),
 }));
 
 const now = "2026-05-19T10:00:00Z";
@@ -203,6 +216,8 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
+    // The app launches on the agent view; the notes list is one hop away.
+    await user.click(await screen.findByRole("button", { name: "Meetings" }));
     await user.click(
       await screen.findByRole("button", { name: /^First note/ }),
     );
@@ -242,12 +257,11 @@ describe("App shortcuts", () => {
     );
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
-    await waitFor(() =>
-      expect(mocks.createNote).toHaveBeenCalledWith(undefined),
-    );
-    await waitFor(() =>
-      expect(screen.getByLabelText("Meeting title")).toHaveValue(""),
-    );
+    // Clearing the gate lands on a fresh agent session, not a new note.
+    expect(
+      await screen.findByRole("heading", { name: "What can June do for you?" }),
+    ).toBeInTheDocument();
+    expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
   it("does not flash the sign-in gate while account status is loading", async () => {
@@ -277,10 +291,7 @@ describe("App shortcuts", () => {
     });
 
     expect(
-      await screen.findByRole("heading", { name: "Meetings" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /^First note/ }),
+      await screen.findByRole("heading", { name: "What can June do for you?" }),
     ).toBeInTheDocument();
   });
 });

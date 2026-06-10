@@ -4,6 +4,7 @@ import { IconCalendar1 } from "central-icons/IconCalendar1";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { osAccountsOpenPortal } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
+import { useTrialCheckout } from "../../lib/trial-checkout";
 import { Spinner } from "../ui/Spinner";
 import { JuneMark } from "./AccountGate";
 
@@ -14,8 +15,9 @@ type Props = {
 };
 
 // The account hook already refreshes on window focus, which covers the
-// common "came back from the portal" path; this poll is the fallback for
-// the portal-in-another-window case where focus never returns here.
+// common "came back from the browser" path; this poll is the fallback for
+// the checkout-in-another-window case where focus never returns here. The
+// checkout hook layers a faster poll on top while a checkout is in flight.
 const POLL_INTERVAL_MS = 10_000;
 
 // Must match trial_period_days on the Stripe price in the OS Accounts
@@ -27,7 +29,7 @@ const TRIAL_STEPS = [
   {
     icon: IconUnlocked,
     label: "Today",
-    detail: "Full access to June — record meetings, dictate, and get polished notes.",
+    detail: "Full access to June: record meetings, dictate, and get polished notes.",
   },
   {
     icon: IconCalendar1,
@@ -53,22 +55,13 @@ function trialEndDate() {
 }
 
 /** Signed in but not a member: the app stays unusable until the user is on a
- * subscription (trialing or active) — credits alone don't grant access. The
- * trial flow — Stripe Checkout with card capture — lives in the accounts
- * portal, so this gate hands off to the browser and watches for the
- * subscription to become active. */
+ * subscription (trialing or active) — credits alone don't grant access. This
+ * gate is the post-onboarding fallback (lapsed, canceled, signed in on a new
+ * machine after a wipe). One click mints the Stripe Checkout session directly
+ * and opens it in the browser; the gate dissolves on its own the moment the
+ * subscription appears. */
 export function TrialGate({ account, onRefresh, onSignOut }: Props) {
   const [checking, setChecking] = useState(false);
-  // Once the portal is open in the browser, the primary button gives way to a
-  // waiting row: the poll below (plus focus refresh) picks up the new
-  // subscription, and "Check now" is the impatient path.
-  const [waiting, setWaiting] = useState(false);
-  const [error, setError] = useState<string>();
-  // No fallback: portalUrl mirrors this build's accounts_url, and a hardcoded
-  // production URL would silently send dev/staging builds to the prod portal.
-  // Presence only gates the button; the actual navigation goes through Rust
-  // (os_accounts_open_portal) because the webview swallows _blank anchors.
-  const portalUrl = account.portalUrl;
   const handle = account.user?.handle;
   const status = account.subscription?.status;
   const pastDue = status === "past_due";
@@ -88,26 +81,35 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
       ? {
           title: "Welcome back",
           subtitle:
-            "Your subscription has ended. Resubscribe to keep using June — your notes are right where you left them.",
+            "Your subscription has ended. Resubscribe to keep using June. Your notes are right where you left them.",
           cta: "Resubscribe",
           waiting: "Waiting for your subscription to start",
         }
       : {
           title: "Start your free trial",
-          subtitle: "Try everything June can do — free to start, cancel anytime.",
+          subtitle: "Try everything June can do. Free to start, cancel anytime.",
           cta: "Start free trial",
           waiting: "Waiting for your trial to start",
         };
   // The timeline and "$0 due today" only make sense for a first trial.
   const trialPitch = !pastDue && !canceled;
 
-  async function handleOpenPortal() {
-    setError(undefined);
+  // No onActivated work needed: App re-renders past this gate as soon as the
+  // refreshed snapshot carries a live subscription.
+  const checkout = useTrialCheckout({
+    account,
+    onRefresh,
+    onActivated: () => undefined,
+  });
+  const waiting = checkout.phase === "waiting";
+
+  const [portalError, setPortalError] = useState<string>();
+  async function handleManageBilling() {
+    setPortalError(undefined);
     try {
       await osAccountsOpenPortal();
-      setWaiting(true);
     } catch (error) {
-      setError(messageFromError(error));
+      setPortalError(messageFromError(error));
     }
   }
 
@@ -118,10 +120,10 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
     return () => window.clearInterval(interval);
   }, [onRefresh]);
 
-  async function handleRefresh() {
+  async function handleCheckNow() {
     setChecking(true);
     try {
-      await onRefresh();
+      await checkout.checkNow();
     } finally {
       setChecking(false);
     }
@@ -133,8 +135,16 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
         <span className="welcome-mark" aria-hidden>
           <JuneMark />
         </span>
-        <h1 className="welcome-title">{copy.title}</h1>
-        <p className="welcome-subtitle">{copy.subtitle}</p>
+        <h1 className="welcome-title">
+          {waiting ? "Finish checkout in your browser" : copy.title}
+        </h1>
+        <p className="welcome-subtitle">
+          {waiting
+            ? checkout.usedPortalFallback
+              ? "We opened your account portal. Finish there and June will notice the moment you're done."
+              : "We opened a secure Stripe checkout. June will notice the moment you're done. No need to come back and click anything."
+            : copy.subtitle}
+        </p>
 
         {trialPitch ? (
           <ol className="trial-timeline" aria-label="How your free trial works">
@@ -163,10 +173,14 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
         ) : null}
 
         <div className="welcome-providers">
-          {!portalUrl ? (
-            <p className="welcome-status welcome-status-info">
-              The accounts portal is not configured for this build.
-            </p>
+          {pastDue ? (
+            <button
+              type="button"
+              className="primary-action"
+              onClick={() => void handleManageBilling()}
+            >
+              {copy.cta}
+            </button>
           ) : waiting ? (
             <>
               <div
@@ -182,7 +196,7 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
                   type="button"
                   className="welcome-cancel-btn"
                   disabled={checking}
-                  onClick={() => void handleRefresh()}
+                  onClick={() => void handleCheckNow()}
                 >
                   {checking ? "Checking…" : "Check now"}
                 </button>
@@ -192,9 +206,9 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
                 <button
                   type="button"
                   className="trial-gate-link"
-                  onClick={() => void handleOpenPortal()}
+                  onClick={() => void checkout.start()}
                 >
-                  Open the portal again
+                  Reopen checkout
                 </button>
               </p>
             </>
@@ -203,9 +217,10 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
               <button
                 type="button"
                 className="primary-action"
-                onClick={() => void handleOpenPortal()}
+                disabled={checkout.phase === "opening"}
+                onClick={() => void checkout.start()}
               >
-                {copy.cta}
+                {checkout.phase === "opening" ? "Opening checkout…" : copy.cta}
               </button>
               {trialPitch ? (
                 <p className="trial-hint">Due today: $0</p>
@@ -214,7 +229,14 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
           )}
         </div>
 
-        {error ? <p className="welcome-status">{error}</p> : null}
+        {checkout.error ? (
+          <p className="welcome-status">{checkout.error}</p>
+        ) : checkout.notice ? (
+          <p className="welcome-status welcome-status-info">
+            {checkout.notice}
+          </p>
+        ) : null}
+        {portalError ? <p className="welcome-status">{portalError}</p> : null}
 
         <p className="welcome-terms">
           {handle ? <>Signed in as @{handle}. </> : null}

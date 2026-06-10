@@ -101,7 +101,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Assistant text (markdown)",
       description:
-        "Standard assistant prose — exercises every markdown element.",
+        "Standard assistant prose. Exercises every markdown element.",
       turns: [
         assistantTurn("text", [
           { type: "text", text: MARKDOWN_SAMPLE, status: "complete" },
@@ -116,7 +116,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
         assistantTurn("artifacts", [
           {
             type: "text",
-            text: "Done — I exported three files: the chart as `revenue-chart.png`, the write-up in `summary.md`, and the raw run output in `build-log.txt`.",
+            text: "Done. I exported three files: the chart as `revenue-chart.png`, the write-up in `summary.md`, and the raw run output in `build-log.txt`.",
             status: "complete",
           },
         ]),
@@ -143,7 +143,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Thinking — in progress",
+      label: "Thinking: in progress",
       description:
         "Reasoning + tool still running. Shows the shimmering “Thinking” disclosure and a running tool row.",
       turns: [
@@ -168,7 +168,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Thought — completed, with tools",
+      label: "Thought: completed, with tools",
       description:
         "Collapsed “Thought” disclosure folding completed + failed tool calls, followed by the answer text.",
       turns: [
@@ -194,7 +194,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           },
           {
             type: "text",
-            text: "Done — I found two action items and added them to the recap above.",
+            text: "Done. I found two action items and added them to the recap above.",
             status: "complete",
           },
         ]),
@@ -259,7 +259,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
               type: "context",
               preview:
                 "Earlier turns were compacted; fallback summary generated without the LLM summarizer.",
-              text: "[CONTEXT COMPACTION — deterministic fallback]: Summarizer unavailable; kept the most recent turns verbatim.",
+              text: "[CONTEXT COMPACTION - deterministic fallback]: Summarizer unavailable; kept the most recent turns verbatim.",
               status: "complete",
             },
           ],
@@ -267,7 +267,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Approval — pending",
+      label: "Approval: pending",
       description:
         "Approval request awaiting a choice. Buttons: Explain first / Approve once / This session / Always / Deny.",
       turns: [
@@ -284,7 +284,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Approval — pending (no “Always”)",
+      label: "Approval: pending (no “Always”)",
       description:
         "When allowPermanent is false the “Always” button is hidden.",
       turns: [
@@ -301,7 +301,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Approval — resolved",
+      label: "Approval: resolved",
       description:
         "Each resolved outcome: approved once / session / always / denied.",
       turns: [
@@ -352,7 +352,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Clarify — pending (choices)",
+      label: "Clarify: pending (choices)",
       description:
         "Question with multiple-choice answers plus an “Other” escape hatch.",
       turns: [
@@ -368,9 +368,9 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Clarify — pending (free-form)",
+      label: "Clarify: pending (free-form)",
       description:
-        "No preset choices — renders the free-form textarea directly.",
+        "No preset choices. Renders the free-form textarea directly.",
       turns: [
         assistantTurn("clarify-freeform", [
           {
@@ -384,7 +384,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Clarify — answered",
+      label: "Clarify: answered",
       description: "Resolved clarify showing the chosen answer.",
       turns: [
         assistantTurn("clarify-answered", [
@@ -400,7 +400,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Clarify — skipped",
+      label: "Clarify: skipped",
       description:
         "Resolved clarify where the person skipped without answering.",
       turns: [
@@ -417,7 +417,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Empty — thinking placeholder",
+      label: "Empty: thinking placeholder",
       description:
         "An assistant turn with no parts yet shows the shimmering “Thinking…” fallback.",
       turns: [assistantTurn("empty", [], "running")],

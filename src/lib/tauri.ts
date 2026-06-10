@@ -367,6 +367,10 @@ export type HermesBridgeConnection = {
    * on non-macOS, when sandbox-exec is missing, or when disabled via the
    * escape-hatch env var). Mirrors the Rust connection field. */
   sandboxed: boolean;
+  /** True when the user opted this runtime into Full mode (sandbox
+   * deliberately off). Distinct from `sandboxed`, which can also be false for
+   * environmental reasons. Mirrors the Rust connection field. */
+  fullMode: boolean;
 };
 
 export type HermesBridgeStatus = {
@@ -904,9 +908,12 @@ export async function updateHermesBridgeMessagingPlatform(input: {
   );
 }
 
-export async function startHermesBridge(cwd?: string) {
+/** `fullMode` is an explicit mode choice: passing it restarts a running
+ * runtime whose mode differs (the sandbox is applied at spawn). Omit it to
+ * reuse whatever is running — fresh starts are always sandboxed. */
+export async function startHermesBridge(cwd?: string, fullMode?: boolean) {
   return invoke<HermesBridgeStatus>("start_hermes_bridge", {
-    request: { cwd },
+    request: { cwd, fullMode },
   });
 }
 
@@ -1058,6 +1065,24 @@ export async function osAccountsTopUp() {
  * target="_blank" anchors, so portal navigation must go through Rust. */
 export async function osAccountsOpenPortal() {
   return invoke<void>("os_accounts_open_portal");
+}
+
+export type TrialCheckoutResult = {
+  outcome: "checkoutOpened" | "alreadySubscribed";
+};
+
+/** Mints the free-trial Stripe Checkout session with the user's own token and
+ * opens it in the system browser — no portal detour. Rejects when the direct
+ * path is unavailable (old token without billing:write, subscriptions
+ * disabled, network); callers fall back to the portal. */
+export async function osAccountsStartTrialCheckout() {
+  return invoke<TrialCheckoutResult>("os_accounts_start_trial_checkout");
+}
+
+/** Bring the app window back to the foreground — used when checkout completes
+ * in the browser so the user lands back in June. */
+export async function focusMainWindow() {
+  return invoke<void>("focus_main_window");
 }
 
 export async function dictationSettings() {

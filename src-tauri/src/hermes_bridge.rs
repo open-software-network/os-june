@@ -154,6 +154,10 @@ pub struct HermesBridgeConnection {
     /// boundary is actually in force (false on non-macOS, when sandbox-exec is
     /// missing, or when the escape-hatch env var disabled it).
     pub sandboxed: bool,
+    /// True when the user opted this runtime into Full mode, i.e. the sandbox
+    /// is deliberately off. Distinct from `sandboxed`, which can also be false
+    /// for environmental reasons; mode-mismatch restarts compare against this.
+    pub full_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +173,13 @@ pub struct HermesBridgeStatus {
 pub struct StartHermesBridgeRequest {
     #[serde(default)]
     pub cwd: Option<String>,
+    /// `Some(_)` is an explicit, user-chosen mode: a running runtime whose
+    /// mode differs is restarted to honor it. `None` means "no preference" —
+    /// reuse whatever is running, and start sandboxed when starting fresh —
+    /// so background callers (auto-start, routines) can never flip a mode the
+    /// user opted into, and Full mode never survives an app relaunch.
+    #[serde(default)]
+    pub full_mode: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,15 +335,21 @@ pub fn start_on_app_start(app: &tauri::App) {
             return;
         }
         let bridge = app.state::<HermesBridge>();
-        let status =
-            start_hermes_bridge_inner(&app, &bridge, StartHermesBridgeRequest { cwd: None })
-                .await
-                .inspect_err(|error| {
-                    eprintln!(
-                        "failed to start Hermes bridge during app startup: {}",
-                        error.message
-                    );
-                });
+        let status = start_hermes_bridge_inner(
+            &app,
+            &bridge,
+            StartHermesBridgeRequest {
+                cwd: None,
+                full_mode: None,
+            },
+        )
+        .await
+        .inspect_err(|error| {
+            eprintln!(
+                "failed to start Hermes bridge during app startup: {}",
+                error.message
+            );
+        });
         let Ok(status) = status else {
             return;
         };
@@ -359,8 +376,21 @@ async fn start_hermes_bridge_inner(
     let _start_guard = bridge.start_lock.lock().await;
 
     if let Some(status) = existing_running_status(bridge)? {
-        return Ok(status);
+        let running_full_mode = status
+            .connection
+            .as_ref()
+            .is_some_and(|connection| connection.full_mode);
+        match request.full_mode {
+            // An explicit mode choice that differs from the running runtime
+            // restarts it; the jail is applied at spawn and can't be changed
+            // on a live process. Implicit (None) callers reuse what's up.
+            Some(requested) if requested != running_full_mode => {
+                stop_hermes_bridge_inner(bridge)?;
+            }
+            _ => return Ok(status),
+        }
     }
+    let full_mode = request.full_mode.unwrap_or(false);
 
     let port = pick_port()?;
     let token = random_token();
@@ -394,11 +424,17 @@ async fn start_hermes_bridge_inner(
     // are denied by the kernel rather than by Hermes' own pattern checks.
     // Resolved before the soul write so June's self-knowledge about the jail
     // matches what this spawn actually enforces.
-    let sandbox_profile = prepare_sandbox(app, &hermes_home);
+    let sandbox_profile = if full_mode {
+        None
+    } else {
+        prepare_sandbox(app, &hermes_home)
+    };
     let sandboxed = sandbox_profile.is_some();
     sync_june_soul(&hermes_home, sandboxed)?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
+    } else if full_mode {
+        eprintln!("Spawning Hermes in Full mode (user opt-in) — no OS sandbox.");
     } else {
         eprintln!(
             "Spawning Hermes WITHOUT an OS sandbox — the agent can write anywhere the user can."
@@ -454,6 +490,7 @@ async fn start_hermes_bridge_inner(
         provider_proxy_port: provider_proxy.port,
         pid,
         sandboxed,
+        full_mode,
     };
 
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2275,6 +2312,23 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn start_request_full_mode_is_opt_in_and_defaults_to_no_preference() {
+        // Background callers (auto-start, routines, older frontends) send no
+        // fullMode — that must deserialize as "no preference", never as an
+        // explicit mode that could restart a runtime the user put in Full mode.
+        let request: StartHermesBridgeRequest = serde_json::from_str("{}").expect("empty request");
+        assert_eq!(request.full_mode, None);
+
+        let request: StartHermesBridgeRequest =
+            serde_json::from_str(r#"{"fullMode":true}"#).expect("full mode request");
+        assert_eq!(request.full_mode, Some(true));
+
+        let request: StartHermesBridgeRequest =
+            serde_json::from_str(r#"{"fullMode":false}"#).expect("sandboxed request");
+        assert_eq!(request.full_mode, Some(false));
     }
 
     #[test]

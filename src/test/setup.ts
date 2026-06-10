@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { MotionGlobalConfig } from "framer-motion";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
+import { markOnboardingComplete } from "../lib/onboarding";
 
 // Resolve framer-motion animations instantly. Without this the frameloop
 // stalls when tests swap fake/real timers, leaving AnimatePresence exits
@@ -75,5 +76,12 @@ if (!HTMLElement.prototype.getClientRects) {
 if (!HTMLElement.prototype.getBoundingClientRect) {
   HTMLElement.prototype.getBoundingClientRect = () => new DOMRect();
 }
+
+// Existing App tests exercise the signed-in main shell; pre-complete the
+// first-run onboarding so the wizard doesn't gate them. Onboarding tests
+// opt back in by clearing localStorage.
+beforeEach(() => {
+  markOnboardingComplete();
+});
 
 afterEach(() => cleanup());

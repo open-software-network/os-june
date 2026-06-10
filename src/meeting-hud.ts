@@ -41,7 +41,7 @@ function applyStatus(status: RecordingStatusDto) {
     pill.dataset.state = paused ? "paused" : "recording";
     pill.setAttribute(
       "aria-label",
-      paused ? "Paused — click to open June" : "Recording — click to open June",
+      paused ? "Paused. Click to open June" : "Recording. Click to open June",
     );
   }
 

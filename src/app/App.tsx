@@ -12,6 +12,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
 import { TrialGate } from "../components/account/TrialGate";
+import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -102,6 +103,10 @@ import type {
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
+import {
+  isOnboardingComplete,
+  markOnboardingComplete,
+} from "../lib/onboarding";
 import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
 import {
   checkScribeUpdate,
@@ -156,7 +161,14 @@ export function App() {
     "none",
   );
   const [bootstrapped, setBootstrapped] = useState(false);
-  const [activeView, setActiveView] = useState<SidebarView>("notes");
+  // The app launches on a fresh agent session. The handshake is armed during
+  // state init — before AgentWorkspace's first mount consumes it — so the
+  // workspace opens on the hero instead of restoring the last open
+  // conversation.
+  const [activeView, setActiveView] = useState<SidebarView>(() => {
+    markAgentNewSessionPending();
+    return "agent";
+  });
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
   const [pendingAgentReply, setPendingAgentReply] =
@@ -236,7 +248,6 @@ export function App() {
     refresh: refreshAccount,
     setAccount,
   } = useAccountStatus();
-  const startOnFreshNoteRef = useRef(false);
   // The note the active recording session belongs to. recordingStatus carries
   // no noteId, so without this the finish flow could only guess from the
   // currently selected note — wrong whenever the user browsed away while
@@ -246,7 +257,18 @@ export function App() {
   const finishingSessionsRef = useRef<Set<string>>(new Set());
   const signInRequired = shouldBlockOnSignIn(account);
   const trialRequired = !signInRequired && shouldBlockOnTrial(account);
-  const appBlocked = accountLoading || signInRequired || trialRequired;
+  const [onboardingDone, setOnboardingDone] = useState(() =>
+    isOnboardingComplete(),
+  );
+  // The wizard handles sign-in and the free trial itself, so it gates on
+  // onboarding state alone; AccountGate/TrialGate remain for users who
+  // finished onboarding and later signed out or lapsed.
+  const onboardingRequired = !accountLoading && !onboardingDone;
+  // Onboarding counts as blocked so bootstrap, update checks, and the eager
+  // permission probes hold off until the wizard finishes — the wizard owns
+  // the permission prompts while it's on screen.
+  const appBlocked =
+    accountLoading || signInRequired || trialRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -299,7 +321,10 @@ export function App() {
   const handleAccountChanged = useCallback(
     (nextAccount: AccountStatus) => {
       if (signInRequired && !shouldBlockOnSignIn(nextAccount)) {
-        startOnFreshNoteRef.current = true;
+        // The launch handshake armed at state init has likely expired (15s
+        // TTL) while the user sat on the sign-in gate — re-arm it so clearing
+        // the gate still opens onto a fresh session.
+        markAgentNewSessionPending();
       }
       setAccount(nextAccount);
     },
@@ -797,14 +822,18 @@ export function App() {
         dispatch({ type: "bootstrapLoaded", payload: seeded.payload });
         if (seeded.fakeNote) {
           dispatch({ type: "noteLoaded", note: seeded.fakeNote });
+          // The fake-recovery dev flow inspects the notes list, so it skips
+          // the agent landing.
+          setActiveView("notes");
           setBootstrapped(true);
           return;
         }
-        if (startOnFreshNoteRef.current || seeded.payload.notes.length === 0) {
-          startOnFreshNoteRef.current = false;
+        // The app lands on the agent view, but a note is still selected
+        // up-front: the menu-bar meeting-start event records into the
+        // selected note without any further user input.
+        if (seeded.payload.notes.length === 0) {
           const note = await createNote(undefined);
           dispatch({ type: "noteLoaded", note });
-          setActiveView("meetings");
           setBootstrapped(true);
           return;
         }
@@ -812,8 +841,6 @@ export function App() {
         if (firstNoteId) {
           const note = await getNote(firstNoteId);
           dispatch({ type: "noteLoaded", note });
-        } else {
-          setActiveView("settings");
         }
         setBootstrapped(true);
       })
@@ -1447,6 +1474,28 @@ export function App() {
         <div
           className="welcome-screen welcome-screen-loading"
           aria-label="Loading account"
+        />
+      </main>
+    );
+  }
+
+  if (onboardingRequired) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <OnboardingFlow
+          account={account}
+          onAccountChanged={handleAccountChanged}
+          onRefreshAccount={refreshAccount}
+          onComplete={() => {
+            markOnboardingComplete();
+            setOnboardingDone(true);
+          }}
         />
       </main>
     );
