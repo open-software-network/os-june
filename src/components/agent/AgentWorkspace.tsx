@@ -16,6 +16,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconLayersTwo } from "central-icons/IconLayersTwo";
@@ -60,6 +61,7 @@ import {
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
   hermesBridgeFilePreview,
+  hermesBridgeFileText,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
@@ -330,6 +332,12 @@ type AgentAttachment = ImportedHermesFile & {
   id: string;
 };
 
+/** The right-hand file viewer: a list of every file surfaced in the
+ * conversation, or one file opened for reading. */
+type AgentArtifactPanelState =
+  | { view: "list" }
+  | { view: "file"; artifact: AgentArtifact };
+
 type TauriFileDropPayload = {
   paths?: string[];
 };
@@ -450,6 +458,8 @@ export function AgentWorkspace({
   const [filesystemSnapshot, setFilesystemSnapshot] =
     useState<HermesFilesystemSnapshot | null>(null);
   const [filesystemLoading, setFilesystemLoading] = useState(false);
+  const [artifactPanel, setArtifactPanel] =
+    useState<AgentArtifactPanelState | null>(null);
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
@@ -592,6 +602,12 @@ export function AgentWorkspace({
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
   );
+
+  // The file viewer is scoped to one conversation — files from the previous
+  // session must not linger open after a switch.
+  useEffect(() => {
+    setArtifactPanel(null);
+  }, [selectedHermesSessionId, selectedTaskId]);
 
   // New-session hero: greeting + centered composer + suggestion chips, shown
   // whenever nothing is selected — the same condition as the conversation
@@ -2140,6 +2156,15 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
     chatArtifacts,
   );
+  // Every file the conversation has surfaced, in turn order — the session
+  // bar's files button keeps them reachable after their cards scroll away.
+  const surfacedArtifacts = [...turnArtifacts.values()].flat();
+  const downloadArtifact = (artifact: AgentArtifact) =>
+    void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
+  const openArtifact = (artifact: AgentArtifact) =>
+    setArtifactPanel({ view: "file", artifact });
 
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep
@@ -2406,11 +2431,8 @@ export function AgentWorkspace({
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
-          onDownloadArtifact={(artifact) =>
-            void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
-              setError(messageFromError(err)),
-            )
-          }
+          onDownloadArtifact={downloadArtifact}
+          onOpenArtifact={openArtifact}
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -2475,11 +2497,8 @@ export function AgentWorkspace({
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
-            onDownloadArtifact={(artifact) =>
-              void downloadHermesBridgeFile(artifact.path).catch(
-                (err: unknown) => setError(messageFromError(err)),
-              )
-            }
+            onDownloadArtifact={downloadArtifact}
+            onOpenArtifact={openArtifact}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -2508,6 +2527,11 @@ export function AgentWorkspace({
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
         <AgentSessionBar
           origin={origin}
+          artifactCount={!newSessionMode ? surfacedArtifacts.length : 0}
+          artifactsOpen={artifactPanel !== null}
+          onToggleArtifacts={() =>
+            setArtifactPanel((open) => (open ? null : { view: "list" }))
+          }
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -2575,12 +2599,24 @@ export function AgentWorkspace({
           ) : null}
         </section>
       ) : (
-        <div ref={agentScrollRef} className="agent-scroll">
-          <section className="agent-main" aria-label="Agent task details">
-            {error ? <p className="error-banner">{error}</p> : null}
-            {detailContent}
-            {composer}
-          </section>
+        <div className="agent-split">
+          <div ref={agentScrollRef} className="agent-scroll">
+            <section className="agent-main" aria-label="Agent task details">
+              {error ? <p className="error-banner">{error}</p> : null}
+              {detailContent}
+              {composer}
+            </section>
+          </div>
+          {artifactPanel ? (
+            <AgentArtifactPanel
+              artifacts={surfacedArtifacts}
+              state={artifactPanel}
+              onShowList={() => setArtifactPanel({ view: "list" })}
+              onOpen={openArtifact}
+              onDownload={downloadArtifact}
+              onClose={() => setArtifactPanel(null)}
+            />
+          ) : null}
         </div>
       )}
     </section>
@@ -2854,11 +2890,17 @@ function SafetyBadge() {
 function AgentSessionBar({
   origin,
   title,
+  artifactCount = 0,
+  artifactsOpen = false,
+  onToggleArtifacts,
   onRename,
   onDelete,
 }: {
   origin?: AgentWorkspaceOrigin;
   title?: string;
+  artifactCount?: number;
+  artifactsOpen?: boolean;
+  onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
   onDelete?: () => void;
 }) {
@@ -2963,6 +3005,19 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
+        {onToggleArtifacts && artifactCount > 0 ? (
+          <button
+            type="button"
+            className="agent-session-files"
+            aria-label={`View files (${artifactCount})`}
+            title="View files"
+            aria-pressed={artifactsOpen}
+            onClick={onToggleArtifacts}
+          >
+            <IconFiles size={15} />
+            <span aria-hidden>{artifactCount}</span>
+          </button>
+        ) : null}
         <SafetyBadge />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
@@ -3800,6 +3855,7 @@ function AgentChatTurnRow({
   onApproval,
   onClarify,
   onDownloadArtifact,
+  onOpenArtifact,
   turn,
 }: {
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
@@ -3814,6 +3870,7 @@ function AgentChatTurnRow({
     answer: string,
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
+  onOpenArtifact?: (artifact: AgentArtifact) => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -3912,6 +3969,7 @@ function AgentChatTurnRow({
         <AgentArtifactList
           artifacts={artifacts ?? []}
           onDownload={onDownloadArtifact}
+          onOpen={onOpenArtifact}
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">
@@ -4291,9 +4349,11 @@ function AgentToolPartRow({
 function AgentArtifactList({
   artifacts,
   onDownload,
+  onOpen,
 }: {
   artifacts: AgentArtifact[];
   onDownload?: (artifact: AgentArtifact) => void;
+  onOpen?: (artifact: AgentArtifact) => void;
 }) {
   if (!artifacts.length) return null;
   return (
@@ -4303,6 +4363,7 @@ function AgentArtifactList({
           key={artifact.path}
           artifact={artifact}
           onDownload={onDownload}
+          onOpen={onOpen}
         />
       ))}
     </div>
@@ -4312,9 +4373,11 @@ function AgentArtifactList({
 function AgentArtifactCard({
   artifact,
   onDownload,
+  onOpen,
 }: {
   artifact: AgentArtifact;
   onDownload?: (artifact: AgentArtifact) => void;
+  onOpen?: (artifact: AgentArtifact) => void;
 }) {
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(
     artifact.previewDataUrl ?? null,
@@ -4338,11 +4401,8 @@ function AgentArtifactCard({
     };
   }, [artifact.path, artifact.previewDataUrl]);
 
-  return (
-    <article
-      className="agent-artifact-card"
-      data-has-preview={previewDataUrl ? "true" : undefined}
-    >
+  const summary = (
+    <>
       {previewDataUrl ? (
         <img
           className="agent-artifact-preview"
@@ -4364,9 +4424,30 @@ function AgentArtifactCard({
           <span>{compactPath(artifact.path)}</span>
         </p>
       </div>
+    </>
+  );
+
+  return (
+    <article
+      className="agent-artifact-card"
+      data-has-preview={previewDataUrl ? "true" : undefined}
+    >
+      {onOpen ? (
+        <button
+          type="button"
+          className="agent-artifact-open"
+          aria-label={`Open ${artifact.name}`}
+          onClick={() => onOpen(artifact)}
+        >
+          {summary}
+        </button>
+      ) : (
+        <div className="agent-artifact-open">{summary}</div>
+      )}
       {onDownload ? (
         <button
           type="button"
+          className="agent-artifact-download"
           aria-label={`Download ${artifact.name}`}
           title="Download"
           onClick={() => onDownload(artifact)}
@@ -4376,6 +4457,183 @@ function AgentArtifactCard({
       ) : null}
     </article>
   );
+}
+
+/** What the viewer fetched for the open file. Binary or oversized files
+ * resolve to `none` and fall back to the download affordance. */
+type AgentArtifactPreview =
+  | { kind: "loading" }
+  | { kind: "image"; dataUrl: string }
+  | { kind: "text"; text: string }
+  | { kind: "none" };
+
+function AgentArtifactPanel({
+  artifacts,
+  state,
+  onShowList,
+  onOpen,
+  onDownload,
+  onClose,
+}: {
+  artifacts: AgentArtifact[];
+  state: AgentArtifactPanelState;
+  onShowList: () => void;
+  onOpen: (artifact: AgentArtifact) => void;
+  onDownload: (artifact: AgentArtifact) => void;
+  onClose: () => void;
+}) {
+  const artifact = state.view === "file" ? state.artifact : null;
+  const [preview, setPreview] = useState<AgentArtifactPreview>({
+    kind: "loading",
+  });
+  const [showSource, setShowSource] = useState(false);
+
+  const artifactPath = artifact?.path;
+  useEffect(() => {
+    setShowSource(false);
+    if (!artifactPath) return;
+    let cancelled = false;
+    setPreview({ kind: "loading" });
+    const load: Promise<AgentArtifactPreview> = isPreviewableImagePath(
+      artifactPath,
+    )
+      ? hermesBridgeFilePreview(artifactPath).then((dataUrl) =>
+          dataUrl
+            ? ({ kind: "image", dataUrl } as const)
+            : ({ kind: "none" } as const),
+        )
+      : hermesBridgeFileText(artifactPath).then((text) =>
+          text !== null
+            ? ({ kind: "text", text } as const)
+            : ({ kind: "none" } as const),
+        );
+    load
+      .catch((): AgentArtifactPreview => ({ kind: "none" }))
+      .then((next) => {
+        if (!cancelled) setPreview(next);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactPath]);
+
+  const markdown =
+    artifact !== null &&
+    isMarkdownPath(artifact.path) &&
+    preview.kind === "text";
+
+  return (
+    <aside className="agent-artifact-panel" aria-label="Files">
+      <header className="agent-artifact-panel-bar">
+        {artifact ? (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="All files"
+            title="All files"
+            onClick={onShowList}
+          >
+            <IconChevronLeftSmall size={16} />
+          </button>
+        ) : null}
+        <div className="agent-artifact-panel-title">
+          {artifact ? (
+            <>
+              <span>{artifact.name}</span>
+              <em>{artifact.rootLabel}</em>
+            </>
+          ) : (
+            <span>Files</span>
+          )}
+        </div>
+        {markdown ? (
+          <button
+            type="button"
+            className="agent-artifact-source-toggle"
+            aria-pressed={showSource}
+            onClick={() => setShowSource((value) => !value)}
+          >
+            {showSource ? "Preview" : "Source"}
+          </button>
+        ) : null}
+        {artifact ? (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={`Download ${artifact.name}`}
+            title="Download"
+            onClick={() => onDownload(artifact)}
+          >
+            <DownloadIcon size={15} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Close files"
+          title="Close"
+          onClick={onClose}
+        >
+          <XIcon size={15} />
+        </button>
+      </header>
+      {artifact ? (
+        <div className="agent-artifact-panel-body" data-kind={preview.kind}>
+          {preview.kind === "loading" ? (
+            <Spinner />
+          ) : preview.kind === "image" ? (
+            <img
+              className="agent-artifact-panel-image"
+              src={preview.dataUrl}
+              alt={artifact.name}
+            />
+          ) : preview.kind === "text" && markdown && !showSource ? (
+            <MarkdownContent markdown={preview.text} />
+          ) : preview.kind === "text" ? (
+            <pre className="agent-artifact-source">{preview.text}</pre>
+          ) : (
+            <div className="agent-artifact-panel-empty">
+              <p>No preview for this file.</p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onDownload(artifact)}
+              >
+                <DownloadIcon size={14} />
+                Download
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="agent-artifact-panel-body" data-kind="list">
+          <ul className="agent-artifact-panel-list">
+            {artifacts.map((item) => (
+              <li key={item.path}>
+                <button
+                  type="button"
+                  className="agent-artifact-row"
+                  onClick={() => onOpen(item)}
+                >
+                  <span className="agent-tool-icon">
+                    <FileIcon size={14} />
+                  </span>
+                  <span className="agent-artifact-row-name">{item.name}</span>
+                  <span className="agent-artifact-row-meta">
+                    {formatBytes(item.size)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function isMarkdownPath(path: string) {
+  return /\.(md|markdown|mdx)$/i.test(path);
 }
 
 function MarkdownContent({ markdown }: { markdown: string }) {

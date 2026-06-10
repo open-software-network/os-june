@@ -95,6 +95,7 @@ pub fn run() {
             hermes_bridge::hermes_bridge_filesystem_snapshot,
             hermes_bridge::download_hermes_bridge_file,
             hermes_bridge::hermes_bridge_file_preview,
+            hermes_bridge::hermes_bridge_file_text,
             hermes_bridge::import_hermes_bridge_file,
             hermes_bridge::import_hermes_bridge_file_bytes,
             hermes_bridge::hermes_bridge_sessions,

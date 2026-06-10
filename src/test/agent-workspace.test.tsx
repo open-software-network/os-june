@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   getAgentTask: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
+  hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -67,6 +69,7 @@ vi.mock("../lib/tauri", () => ({
   getAgentTask: mocks.getAgentTask,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
+  hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -152,6 +155,7 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.hermesBridgeFilePreview.mockResolvedValue(null);
+    mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
       path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
@@ -741,6 +745,131 @@ describe("AgentWorkspace", () => {
     expect(
       screen.getAllByRole("button", { name: "Download report.md" }),
     ).toHaveLength(1);
+  });
+
+  it("opens a markdown artifact in the viewer panel with rendered content", async () => {
+    const user = userEvent.setup();
+    const reportPath =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: reportPath,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done — I saved the summary as `report.md`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+    mocks.hermesBridgeFileText.mockResolvedValue(
+      "# Quarterly summary\n\nRevenue grew.",
+    );
+
+    render(<AgentWorkspace />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Open report.md" }),
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath);
+    expect(
+      await within(panel).findByRole("heading", { name: "Quarterly summary" }),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("Revenue grew.")).toBeInTheDocument();
+
+    // The source toggle swaps the rendered document for the raw markdown.
+    await user.click(within(panel).getByRole("button", { name: "Source" }));
+    expect(
+      within(panel).getByText(/# Quarterly summary/),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(panel).getByRole("button", { name: "Close files" }),
+    );
+    expect(
+      screen.queryByRole("complementary", { name: "Files" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("lists every surfaced file behind the session bar files button", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: `${workspaceRoot}/report.md`,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "notes.txt",
+              path: `${workspaceRoot}/notes.txt`,
+              kind: "file",
+              size: 420,
+              modifiedAt: "2026-06-04T18:40:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Saved `report.md` and `notes.txt`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+    mocks.hermesBridgeFileText.mockResolvedValue("plain text body");
+
+    render(<AgentWorkspace />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "View files (2)" }),
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(within(panel).getByText("report.md")).toBeInTheDocument();
+
+    // Opening a non-markdown file from the list shows its raw text.
+    await user.click(within(panel).getByText("notes.txt"));
+    expect(
+      await within(panel).findByText("plain text body"),
+    ).toBeInTheDocument();
+    expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(
+      `${workspaceRoot}/notes.txt`,
+    );
+
+    // Back returns to the list of every surfaced file.
+    await user.click(within(panel).getByRole("button", { name: "All files" }));
+    expect(within(panel).getByText("report.md")).toBeInTheDocument();
   });
 
   it("does not render download cards for files the user attached", async () => {

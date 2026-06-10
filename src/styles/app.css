@@ -1736,7 +1736,7 @@ input:focus-visible,
 
 .agent-artifact-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
   max-width: 440px;
@@ -1744,6 +1744,27 @@ input:focus-visible,
   border-radius: var(--r-md);
   padding: var(--sp-3);
   background: var(--surface-subtle);
+  transition: background var(--t-fast) var(--ease-out);
+}
+
+/* The icon/preview + name region — a quiet button when the card can open in
+ * the viewer panel, a plain div in read-only contexts (dev gallery). */
+.agent-artifact-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-artifact-card:has(button.agent-artifact-open):hover {
+  background: color-mix(in oklch, var(--muted) 85%, transparent);
 }
 
 .agent-artifact-card[data-has-preview="true"] {
@@ -1794,7 +1815,7 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-artifact-card button {
+.agent-artifact-download {
   display: inline-grid;
   place-items: center;
   width: var(--control-sm);
@@ -1806,8 +1827,214 @@ input:focus-visible,
   color: var(--secondary-foreground);
 }
 
-.agent-artifact-card button:hover {
+.agent-artifact-download:hover {
   background: var(--tertiary);
+}
+
+/* Artifact viewer ----------------------------------------------------
+ * Opening a file splits the conversation area: the chat column compresses
+ * left and the viewer takes a fixed-width column on the right, separated by
+ * a hairline — the Claude-artifacts / Gemini-canvas pattern. The split
+ * wrapper inherits .agent-scroll's full-bleed negative margins (up behind
+ * the frosted breadcrumb, out to the card edges) so the chat scroller keeps
+ * its frost-and-scrollbar behavior whether or not the panel is open. */
+.agent-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
+}
+
+.agent-split > .agent-scroll {
+  margin: 0;
+}
+
+.agent-artifact-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 clamp(320px, 42%, 480px);
+  min-width: 0;
+  min-height: 0;
+  /* Starts below the frosted breadcrumb the split wrapper slides under. */
+  margin-top: var(--detail-bar-h);
+  border-left: 1px solid var(--border-subtle);
+  background: var(--card);
+  animation: agent-artifact-panel-in var(--t-slow) var(--ease-out);
+}
+
+@keyframes agent-artifact-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-artifact-panel {
+    animation: none;
+  }
+}
+
+.agent-artifact-panel-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-artifact-panel-title {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-artifact-panel-title span {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifact-panel-title em {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-style: normal;
+}
+
+.agent-artifact-source-toggle {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 2px var(--sp-4);
+  background: none;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 550;
+}
+
+.agent-artifact-source-toggle:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.agent-artifact-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-7) var(--sp-8);
+  overscroll-behavior: contain;
+}
+
+.agent-artifact-panel-body[data-kind="list"] {
+  padding: var(--sp-3);
+}
+
+.agent-artifact-panel-body[data-kind="loading"],
+.agent-artifact-panel-body[data-kind="none"] {
+  display: grid;
+  place-items: center;
+}
+
+.agent-artifact-panel-image {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--background);
+}
+
+.agent-artifact-source {
+  margin: 0;
+  color: var(--body-copy);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-artifact-panel-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-4);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.agent-artifact-panel-empty p {
+  margin: 0;
+}
+
+.agent-artifact-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-artifact-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  border: 0;
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-artifact-row:hover {
+  background: var(--surface-subtle);
+}
+
+.agent-artifact-row-name {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifact-row-meta {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+/* Session bar files toggle — icon + count pill in the breadcrumb actions. */
+.agent-session-files {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-md);
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  background: none;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-session-files:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.agent-session-files[aria-pressed="true"] {
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 /* The whole thinking layer sits at body size — muted color (not a size

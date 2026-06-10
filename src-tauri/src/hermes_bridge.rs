@@ -31,6 +31,7 @@ const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
@@ -724,6 +725,15 @@ pub async fn hermes_bridge_file_preview(
 }
 
 #[tauri::command]
+pub async fn hermes_bridge_file_text(
+    app: AppHandle,
+    request: HermesFilePreviewRequest,
+) -> Result<Option<String>, AppError> {
+    let requested = validate_hermes_file_path(&app, &request.path)?;
+    text_preview(&requested)
+}
+
+#[tauri::command]
 pub async fn import_hermes_bridge_file(
     app: AppHandle,
     request: ImportHermesFileRequest,
@@ -956,6 +966,20 @@ fn unique_upload_path(upload_dir: &Path, source: &Path) -> Result<PathBuf, AppEr
         "hermes_file_import_failed",
         "Could not find an available attachment filename.",
     ))
+}
+
+/// Reads a workspace file for the in-app viewer. `None` (rather than an
+/// error) when the file can't be shown as text — too large or not UTF-8 —
+/// so the frontend falls back to its download card.
+fn text_preview(path: &Path) -> Result<Option<String>, AppError> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| AppError::new("hermes_file_text_failed", error.to_string()))?;
+    if metadata.len() > HERMES_TEXT_PREVIEW_MAX_BYTES {
+        return Ok(None);
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| AppError::new("hermes_file_text_failed", error.to_string()))?;
+    Ok(String::from_utf8(bytes).ok())
 }
 
 fn image_preview_data_url(path: &Path) -> Result<Option<String>, AppError> {
