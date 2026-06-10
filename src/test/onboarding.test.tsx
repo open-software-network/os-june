@@ -276,7 +276,7 @@ describe("OnboardingFlow", () => {
     // step to its success state and pulls the app forward.
     rerender(<OnboardingFlow {...props} account={account} />);
     await screen.findByRole("heading", {
-      name: "You're in — your free trial is active",
+      name: "You're in! Your free trial is active",
     });
     expect(mocks.focusMainWindow).toHaveBeenCalledOnce();
 

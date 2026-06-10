@@ -83,15 +83,15 @@ export function SignInStep({
       />
       <ul className="onboarding-feature-list">
         <li>
-          <strong>Talk, don't type</strong> — hold a key and speak; June types
+          <strong>Talk, don't type</strong>: hold a key and speak; June types
           at your cursor in whatever app has focus.
         </li>
         <li>
-          <strong>Never take notes again</strong> — decisions, action items, and
+          <strong>Never take notes again</strong>: decisions, action items, and
           who said what, written for you.
         </li>
         <li>
-          <strong>Hand off real work</strong> — give June a task, not just a
+          <strong>Hand off real work</strong>: give June a task, not just a
           question. It comes back with it done.
         </li>
       </ul>

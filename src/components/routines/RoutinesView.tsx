@@ -200,7 +200,7 @@ export function RoutinesView({
           label="Create your first routine"
           icon={<IconArrowsRepeat size={28} />}
           title="Put June on a schedule"
-          description="Describe something June should do every morning, every hour, or at a specific time — a routine runs it for you automatically."
+          description="Describe something June should do every morning, every hour, or at a specific time. A routine runs it for you automatically."
           footer={
             <button
               type="button"
@@ -236,7 +236,7 @@ export function RoutinesView({
         onClose={() => setCreateOpen(false)}
         leading={<IconArrowsRepeat size={15} />}
         title="New routine"
-        description="Tell June what to do and when. It opens a new session to set the routine up — you can fine-tune the schedule there."
+        description="Tell June what to do and when. It opens a new session to set the routine up, and you can fine-tune the schedule there."
         footer={
           <>
             <button
@@ -277,7 +277,7 @@ export function RoutinesView({
         onClose={() => setEditTarget(null)}
         leading={<IconPencil size={15} />}
         title={`Edit “${editTarget?.name ?? ""}”`}
-        description="Tell June what should change — the schedule, the task, or the name. It opens a session to apply the update."
+        description="Tell June what should change: the schedule, the task, or the name. It opens a session to apply the update."
         footer={
           <>
             <button

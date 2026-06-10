@@ -11,6 +11,13 @@ shell commands, and other important information, read
 - **Sentence case for UI labels.** Section titles, button text, menu items, and
   tabs use sentence case ("Notes", "Filter notes", "New note") — never
   ALL CAPS / `text-transform: uppercase`. Eyebrows and pill labels included.
+- **No en-dashes (–) or em-dashes (—) in copy.** User-facing strings never
+  use typographic dashes. Ranges get a plain hyphen ("5-10 min", "Mon-Fri")
+  or the word "to". Where an em-dash would join clauses, rewrite: a period,
+  comma, colon, or parentheses, whichever reads best. This applies across
+  the board: UI labels, titles, body copy, tooltips, aria-labels,
+  notifications, empty states, error messages, HTML pages. (Code comments
+  are exempt; they're not copy.)
 - **Design tokens live in `src/styles/tokens.css`.** Reach for the variables
   there before adding hand-coded sizes, colors, radii, or motion values.
 - **Iconography:** `central-icons` ONLY — never lucide-react or any other

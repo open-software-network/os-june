@@ -228,7 +228,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
       }),
     );
     return show
-      ? "Seeding sample files and opening the viewer (needs an open conversation — repeat runs add numbered copies). Run __agentFiles(false) to clear."
+      ? "Seeding sample files and opening the viewer (needs an open conversation; repeat runs add numbered copies). Run __agentFiles(false) to clear."
       : "Sample files cleared from the viewer (workspace copies remain).";
   };
 }
@@ -250,7 +250,7 @@ A sample document that exercises **bold**, *italic*, ~~strikethrough~~,
 2. Collect feedback for two weeks
 3. General availability
 
-> Blockquotes hold paragraphs, lists, or code — anything a block can.
+> Blockquotes hold anything a block can: paragraphs, lists, or code.
 
 ### Numbers
 
@@ -398,7 +398,7 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     key: "health-check",
     icon: <IconHeartBeat size={18} />,
     title: "Check my Mac's health",
-    description: "Disk, memory, login items — what needs attention.",
+    description: "Disk, memory, and login items that need attention.",
     prompt:
       "Give my Mac a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
     action: "run",
@@ -1536,7 +1536,7 @@ export function AgentWorkspace({
       const bytes = await readFileBytes(file).catch(() => {
         // Reading fails for directories, which Finder happily lets you drop.
         throw new Error(
-          `Could not read "${file.name}" — folders can't be attached.`,
+          `Could not read "${file.name}". Folders can't be attached.`,
         );
       });
       return importHermesBridgeFileBytes(file.name, bytes);
@@ -4083,7 +4083,7 @@ function AgentResponseGallery({
           </strong>
           <p>
             {errors
-              ? "Every error surface in agent chat — the banner above and the composer notice below are forced samples too."
+              ? "Every error surface in agent chat. The banner above and the composer notice below are forced samples too."
               : "Every response part type and status, for styling."}{" "}
             Close from the console with{" "}
             <code>{errors ? "__agentErrors" : "__agentGallery"}(false)</code>.

@@ -22,7 +22,7 @@ export function DictationPracticeStep({
   return (
     <section className="onboarding-step">
       <StepHeading
-        title="Try it — reply by voice"
+        title="Try it: reply by voice"
         subtitle={
           <>
             Click into the message box, hold{" "}
@@ -46,7 +46,7 @@ export function DictationPracticeStep({
         />
         {succeeded ? (
           <p className="onboarding-practice-success" role="status">
-            Good work! That's all dictation is — anywhere on your Mac.
+            Good work! That's all dictation is, anywhere on your Mac.
           </p>
         ) : null}
       </div>
@@ -85,7 +85,7 @@ export function MeetingNotesStep({ onContinue }: { onContinue: () => void }) {
       </div>
       <p className="onboarding-footnote">
         Transcripts and notes stay on your Mac. The first time you record a
-        meeting, macOS will ask for system audio — that's the permission we
+        meeting, macOS will ask for system audio. That's the permission we
         mentioned earlier.
       </p>
       <StepActions onContinue={onContinue} />
@@ -98,11 +98,11 @@ export function AgentIntroStep({ onContinue }: { onContinue: () => void }) {
     <section className="onboarding-step">
       <StepHeading
         title="Hand off real work"
-        subtitle="Give June a task, not just a question. Draft the doc, dig through the files, pull the research together — the agent works on your Mac and comes back with it done."
+        subtitle="Give June a task, not just a question. Draft the doc, dig through the files, pull the research together. The agent works on your Mac and comes back with it done."
       />
       <div className="onboarding-practice-card">
         <div className="onboarding-practice-header">
-          Browser — waiting for you
+          Browser: waiting for you
         </div>
         <p className="onboarding-approval-body">
           June found the file and prepared the edit. Nothing changes until you
@@ -160,14 +160,15 @@ export function AgentHonestyStep({
         </li>
         <li>
           <h2>
-            Private inference protects your data — it doesn't approve the
+            Private inference protects your data. It doesn't approve the
             agent's actions.
           </h2>
           <p>
             When June thinks, your prompts go to zero-retention models: nothing
-            stored, nothing trained on. That's always on. When the agent acts —
-            visits a site, calls a tool, sends an email you approved — the other
-            side sees what it shares, exactly as if you'd done it yourself. June
+            stored, nothing trained on. That's always on. When the agent acts
+            (visits a site, calls a tool, sends an email you approved), the
+            other side sees what it shares, exactly as if you'd done it
+            yourself. June
             keeps your data private; it can't make the rest of the internet
             private. That's why you're the approval step.
           </p>

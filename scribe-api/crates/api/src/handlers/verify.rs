@@ -51,7 +51,7 @@ fn render_page(info: &AttestationInfo) -> String {
             )
         }
         None => (
-            "<em>not stamped — local or development build</em>".to_string(),
+            "<em>not stamped (local or development build)</em>".to_string(),
             "&lt;short-sha&gt;".to_string(),
         ),
     };
@@ -71,7 +71,7 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Verify this server — @SERVICE@</title>
+<title>Verify this server · @SERVICE@</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -168,7 +168,7 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
   <span class="badge">Intel TDX · Phala Cloud</span>
   <h1>Verify this server</h1>
   <p class="lede">@SERVICE@ runs inside an Intel TDX confidential VM. This page is
-  served from inside that VM and explains how to check — without trusting us —
+  served from inside that VM and explains how to check, without trusting us,
   that the code running here is exactly the public source code.</p>
 </header>
 
@@ -184,7 +184,7 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 <h2>Why this matters</h2>
 <p>Audio, transcripts, and notes pass through this server. Because the running
 image is remotely attested, neither Phala (the platform) nor Open Software (us)
-can quietly swap it for one that reads your data — any change to the running
+can quietly swap it for one that reads your data. Any change to the running
 code is visible in the chain below.</p>
 <p>The chain has three links: <strong>source</strong> (a public git commit),
 <strong>image</strong> (a container image our CI builds from that commit, published
@@ -215,22 +215,22 @@ git tag -l 'deploy/*/@SHORT_SHA@' -n3</code></pre>
   </li>
   <li>
     <p>Read the source at that commit. The commit linked above is the exact tree
-    the image was built from — the build stamps it into the image itself.</p>
+    the image was built from. The build stamps it into the image itself.</p>
   </li>
 </ol>
 <p class="muted">This proves the running digest is the one our public CI built
-and recorded for that commit. Bit-for-bit reproducible rebuilds — regenerating
-the digest yourself instead of trusting our CI — are in progress; see
+and recorded for that commit. Bit-for-bit reproducible rebuilds (regenerating
+the digest yourself instead of trusting our CI) are in progress; see
 <a href="@REPO_URL@/blob/main/docs/reproducible-builds.md">docs/reproducible-builds.md</a>.</p>
 
 <h2>What this does not cover</h2>
-<p>The chain verifies the <strong>code</strong> running in the confidential VM —
+<p>The chain verifies the <strong>code</strong> running in the confidential VM,
 not what upstream providers do. Audio still leaves the TEE when forwarded to
 OpenAI or Venice for transcription, under those providers' own privacy
 policies. End-to-end private speech-to-text is a separate workstream.</p>
 
 <footer>
-  <p>Open Software — <a href="@REPO_URL@">source</a> · <a href="@TRUST_CENTER_URL@">attestation</a></p>
+  <p>Open Software · <a href="@REPO_URL@">source</a> · <a href="@TRUST_CENTER_URL@">attestation</a></p>
 </footer>
 </body>
 </html>

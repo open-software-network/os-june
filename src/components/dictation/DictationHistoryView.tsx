@@ -481,7 +481,7 @@ function GetMoreCard({
             <span className="dictation-hint-item-body">
               <span className="dictation-hint-item-name">Writing style</span>
               <span className="dictation-hint-item-desc">
-                Choose how transcriptions read — casual, standard, or formal.
+                Choose how transcriptions read: casual, standard, or formal.
               </span>
             </span>
             <span className="dictation-hint-setup">

@@ -1196,7 +1196,7 @@ function SidebarIdentity({
         className="sidebar-nav-item sidebar-identity"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        aria-label={`${name} — account menu`}
+        aria-label={`${name}, account menu`}
         onClick={onToggleMenu}
       >
         <span className="sidebar-nav-icon">

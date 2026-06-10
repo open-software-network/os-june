@@ -86,7 +86,7 @@ export function useTrialCheckout({
     const unlisten = listen<string>(BILLING_CALLBACK_EVENT, (event) => {
       if (event.payload === "cancel") {
         setPhase("idle");
-        setNotice("Checkout canceled — ready when you are.");
+        setNotice("Checkout canceled. Ready when you are.");
         return;
       }
       void onRefreshRef.current();

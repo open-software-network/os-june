@@ -78,9 +78,9 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
             ? "Your subscription payment didn't go through. Update your billing details to keep using June."
             : waiting
               ? checkout.usedPortalFallback
-                ? "We opened your account portal — start the free trial there. June will notice the moment you're done."
-                : "We opened a secure Stripe checkout. June will notice the moment you're done — no need to come back and click anything."
-              : "June runs on your OpenSoftware membership. Checkout opens in your browser — no charge until the trial ends, cancel anytime."}
+                ? "We opened your account portal. Start the free trial there. June will notice the moment you're done."
+                : "We opened a secure Stripe checkout. June will notice the moment you're done. No need to come back and click anything."
+              : "June runs on your OpenSoftware membership. Checkout opens in your browser. No charge until the trial ends, cancel anytime."}
         </p>
 
         <div className="welcome-providers">
@@ -128,7 +128,7 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
             disabled={checking}
             onClick={() => void handleRefresh()}
           >
-            {checking ? "Checking…" : "I've done it — check again"}
+            {checking ? "Checking…" : "I've done it, check again"}
           </button>
         </div>
 

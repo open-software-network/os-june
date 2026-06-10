@@ -100,7 +100,7 @@ export function PermissionsStep({
             micGranted
               ? "Only while you hold the dictation key or a meeting note is recording."
               : micDenied
-                ? "Microphone access is turned off for June. Flip the toggle in System Settings, then come back — we'll notice."
+                ? "Microphone access is turned off for June. Flip the toggle in System Settings, then come back. We'll notice."
                 : "June only listens while you hold the dictation key or while a meeting note is recording."
           }
           action={
@@ -128,7 +128,7 @@ export function PermissionsStep({
           body={
             accessibilityGranted
               ? "Your spoken words land at your cursor, in any app."
-              : "Turn on June in System Settings → Privacy & Security → Accessibility, then come back — we'll notice."
+              : "Turn on June in System Settings → Privacy & Security → Accessibility, then come back. We'll notice."
           }
           action={{
             label: "Open System Settings",

@@ -55,7 +55,7 @@ export function TrialStep({
     return (
       <section className="onboarding-step">
         <StepHeading
-          title="You're in — your free trial is active"
+          title="You're in! Your free trial is active"
           subtitle="No charge until the trial ends, and you can cancel anytime from your account. Now for the fun part."
         />
         <StepActions
@@ -73,8 +73,8 @@ export function TrialStep({
           title="Finish checkout in your browser"
           subtitle={
             checkout.usedPortalFallback
-              ? "We opened your account portal — start the free trial there. June will notice the moment you're done."
-              : "We opened a secure Stripe checkout. June will notice the moment you're done — no need to come back and click anything."
+              ? "We opened your account portal. Start the free trial there. June will notice the moment you're done."
+              : "We opened a secure Stripe checkout. June will notice the moment you're done. No need to come back and click anything."
           }
         />
         <div
@@ -91,7 +91,7 @@ export function TrialStep({
             className="onboarding-skip"
             onClick={() => void checkout.checkNow()}
           >
-            I've finished — check now
+            I've finished, check now
           </button>
           <button
             type="button"
@@ -109,19 +109,19 @@ export function TrialStep({
     <section className="onboarding-step">
       <StepHeading
         title="Start your free trial"
-        subtitle="Everything you just set up — dictation, meeting notes, the agent — runs on your June membership."
+        subtitle="Everything you just set up (dictation, meeting notes, the agent) runs on your June membership."
       />
       <ul className="onboarding-feature-list">
         <li>
-          <strong>Free to start</strong> — you won't be charged until the trial
+          <strong>Free to start</strong>: you won't be charged until the trial
           ends.
         </li>
         <li>
-          <strong>Cancel anytime</strong> — one click in your account, keep
+          <strong>Cancel anytime</strong>: one click in your account, keep
           access through the trial.
         </li>
         <li>
-          <strong>One step left</strong> — checkout opens in your browser, then
+          <strong>One step left</strong>: checkout opens in your browser, then
           June brings you right back.
         </li>
       </ul>

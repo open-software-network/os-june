@@ -3,7 +3,7 @@ import { StepActions, StepHeading } from "../StepChrome";
 const PRIVACY_CARDS = [
   {
     title: "Local by default",
-    body: "The agent runs on your Mac, built on open-source Hermes. Your files, sessions, and memory stay on your disk — never mirrored to a cloud.",
+    body: "The agent runs on your Mac, built on open-source Hermes. Your files, sessions, and memory stay on your disk, never mirrored to a cloud.",
   },
   {
     title: "Private inference",
@@ -11,7 +11,7 @@ const PRIVACY_CARDS = [
   },
   {
     title: "Verifiable",
-    body: "Our code is open source and our backend runs in a secure enclave. You don't have to trust us — you can check.",
+    body: "Our code is open source and our backend runs in a secure enclave. You don't have to trust us. You can check.",
   },
 ];
 
@@ -37,8 +37,7 @@ export function PrivacyStep({ onContinue }: { onContinue: () => void }) {
           rel="noreferrer"
         >
           Verify it yourself
-        </a>{" "}
-        — how routing, retention, and attestation work.
+        </a>: how routing, retention, and attestation work.
       </p>
       <StepActions onContinue={onContinue} />
     </section>

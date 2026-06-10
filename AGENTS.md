@@ -9,6 +9,9 @@ shell commands, and other important information, read
 ## UI conventions
 
 See the "UI conventions" section in [CLAUDE.md](CLAUDE.md) — sentence-case
-labels, design tokens from `src/styles/tokens.css`, and **icons from
-`central-icons` / `central-icons-filled` only (never lucide-react or any
-other icon set; lucide was deliberately removed from the dependencies)**.
+labels, **no en-dashes (–) or em-dashes (—) in user-facing copy** (hyphen
+or "to" for ranges; rewrite asides with a period, comma, colon, or
+parentheses), design tokens from
+`src/styles/tokens.css`, and **icons from `central-icons` /
+`central-icons-filled` only (never lucide-react or any other icon set;
+lucide was deliberately removed from the dependencies)**.
