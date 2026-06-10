@@ -279,18 +279,24 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
   },
 ];
 
-const HERO_SHORTCUT_COUNT = 4;
+// Three per hand so the row never wraps — a row-count jump mid-rotation would
+// shove the footnote around every cycle.
+const HERO_SHORTCUT_COUNT = 3;
+// Idle cadence for cycling the hand, and how long the cascade-out runs before
+// the deck advances (240ms fade + 2 × 70ms stagger, see .agent-hero-chip).
+const HERO_ROTATE_MS = 8000;
+const HERO_CHIP_SWAP_MS = 400;
 
 // Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
 // is the identity permutation: tests that mock Math.random get the curated
 // leading window, real sessions get a fresh shuffle every visit.
-function pickHeroShortcuts(): AgentShortcut[] {
+function shuffleAgentShortcuts(): AgentShortcut[] {
   const pool = [...AGENT_SHORTCUTS];
   for (let i = pool.length - 1; i > 0; i--) {
     const j = i - Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
-  return pool.slice(0, HERO_SHORTCUT_COUNT);
+  return pool;
 }
 
 // First-run border beam: the hero composer wears an animated glint until the
@@ -401,7 +407,10 @@ export function AgentWorkspace({
     initialSessionId,
   );
   const [newSessionMode, setNewSessionMode] = useState(false);
-  const [heroShortcuts, setHeroShortcuts] = useState(pickHeroShortcuts);
+  const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
+  const [heroDeckStart, setHeroDeckStart] = useState(0);
+  const [heroChipPhase, setHeroChipPhase] = useState<"in" | "out">("in");
+  const heroChipsHoverRef = useRef(false);
   const [firstRunBeam, setFirstRunBeam] = useState(isFirstAgentSession);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
@@ -1956,11 +1965,59 @@ export function AgentWorkspace({
     !gallerySections &&
     (newSessionMode || (!selectedHermesSessionId && !selectedTask));
 
-  // Deal a fresh hand of suggestions each time the hero comes back, so repeat
-  // visits alternate through the pool instead of pinning the same four.
+  // Reshuffle the deck each time the hero comes back, so repeat visits start
+  // from a fresh hand instead of wherever the last rotation left off.
   useEffect(() => {
-    if (heroMode) setHeroShortcuts(pickHeroShortcuts());
+    if (!heroMode) return;
+    setHeroDeck(shuffleAgentShortcuts());
+    setHeroDeckStart(0);
+    setHeroChipPhase("in");
   }, [heroMode]);
+
+  // While the hero idles, cascade the hand through the deck: fade the chips
+  // out left-to-right, advance the window, fade the next hand in with the
+  // same wave. Skips a beat instead of yanking targets while the user is
+  // hovering the chips, has started typing, or has the window backgrounded;
+  // never cycles under reduced motion.
+  useEffect(() => {
+    if (!heroMode) return;
+    // matchMedia is feature-checked for jsdom, which doesn't implement it.
+    if (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+    let swapTimeout: number | undefined;
+    const interval = window.setInterval(() => {
+      if (document.hidden || heroChipsHoverRef.current) return;
+      if (composerRef.current?.value.trim()) return;
+      setHeroChipPhase("out");
+      swapTimeout = window.setTimeout(() => {
+        setHeroDeckStart(
+          (start) => (start + HERO_SHORTCUT_COUNT) % AGENT_SHORTCUTS.length,
+        );
+        // Two frames so the incoming chips paint hidden (phase still "out")
+        // before the fade-in transition has a start state to run from.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setHeroChipPhase("in"));
+        });
+      }, HERO_CHIP_SWAP_MS);
+    }, HERO_ROTATE_MS);
+    return () => {
+      window.clearInterval(interval);
+      if (swapTimeout !== undefined) window.clearTimeout(swapTimeout);
+    };
+  }, [heroMode]);
+
+  const heroShortcuts = useMemo(
+    () =>
+      Array.from(
+        { length: HERO_SHORTCUT_COUNT },
+        (_, index) => heroDeck[(heroDeckStart + index) % heroDeck.length],
+      ),
+    [heroDeck, heroDeckStart],
+  );
 
   return (
     <section className="agent-workspace" aria-label="Agent">
@@ -2108,9 +2165,6 @@ export function AgentWorkspace({
           </>
         ) : (
           <div className="agent-hero-heading">
-            <span className="agent-hero-mark" aria-hidden>
-              <IconPangolin size={26} />
-            </span>
             <h2 className="agent-hero-title">What can June do for you?</h2>
           </div>
         )}
@@ -2131,8 +2185,10 @@ export function AgentWorkspace({
               className="agent-composer-box"
               data-dirty={draft.trim() || attachments.length ? "true" : "false"}
               data-multiline={composerMultiline ? "true" : "false"}
-              data-beam={heroMode && firstRunBeam ? "true" : undefined}
             >
+              {heroMode && firstRunBeam ? (
+                <div className="agent-composer-beam" aria-hidden />
+              ) : null}
               {attachments.length ? (
                 <div className="agent-composer-attachments">
                   {attachments.map((attachment) => (
@@ -2234,12 +2290,22 @@ export function AgentWorkspace({
         ) : null}
         {activePanel === "chat" && heroMode ? (
           <div className="agent-hero-suggestions">
-            <div className="agent-hero-chips">
-              {heroShortcuts.map((shortcut) => (
+            <div
+              className="agent-hero-chips"
+              data-phase={heroChipPhase}
+              onMouseEnter={() => {
+                heroChipsHoverRef.current = true;
+              }}
+              onMouseLeave={() => {
+                heroChipsHoverRef.current = false;
+              }}
+            >
+              {heroShortcuts.map((shortcut, index) => (
                 <button
                   key={shortcut.key}
                   type="button"
                   className="agent-hero-chip"
+                  style={{ "--chip-i": index } as CSSProperties}
                   title={shortcut.description}
                   disabled={submitting}
                   onClick={() => runShortcut(shortcut)}
