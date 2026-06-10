@@ -80,6 +80,7 @@ import {
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
+import { messageFromError } from "../lib/errors";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import {
@@ -512,6 +513,10 @@ export function App() {
               })),
             )
             .catch(() => {});
+        } else {
+          // User switched to an existing session — abandon the pending
+          // project intent so the workspace doesn't show misleading crumbs.
+          setAgentOriginFolderId(undefined);
         }
       }
       agentMenuBarWorkingSessionIdsRef.current = new Set(
@@ -2347,13 +2352,6 @@ function withFakeRecovery(payload: BootstrapResponse): {
     },
     fakeNote,
   };
-}
-
-function messageFromError(err: unknown) {
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
 
 function isAppErrorCode(err: unknown, code: string) {

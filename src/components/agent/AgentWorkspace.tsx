@@ -112,6 +112,7 @@ import {
   HermesGatewayClient,
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
+import { messageFromError } from "../../lib/errors";
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
@@ -4879,13 +4880,6 @@ function relativeDate(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
-}
-
-function messageFromError(err: unknown) {
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
 
 // FileReader instead of Blob.arrayBuffer(): same everywhere a drop can land

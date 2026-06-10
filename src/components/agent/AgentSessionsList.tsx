@@ -11,6 +11,7 @@ import {
   sessionTimestamp,
 } from "../../lib/hermes-adapter";
 import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
+import { messageFromError } from "../../lib/errors";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { IconPangolin } from "../icons/IconPangolin";
@@ -340,11 +341,4 @@ function formatSessionTime(iso: string): string {
     month: "short",
     day: "numeric",
   });
-}
-
-function messageFromError(err: unknown) {
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }

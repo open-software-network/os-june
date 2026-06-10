@@ -42,6 +42,7 @@ import {
   listHermesSessions,
   sessionTimestamp,
 } from "../../lib/hermes-adapter";
+import { messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import type {
   AccountStatus,
@@ -1086,11 +1087,4 @@ function relativeDate(value: string) {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-function messageFromError(err: unknown) {
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
