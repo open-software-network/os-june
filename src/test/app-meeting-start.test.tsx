@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
@@ -148,6 +148,9 @@ describe("meeting start transcription event", () => {
     };
 
     mocks.getCurrentWindow.mockReturnValue({
+      show: vi.fn().mockResolvedValue(undefined),
+      unminimize: vi.fn().mockResolvedValue(undefined),
+      setFocus: vi.fn().mockResolvedValue(undefined),
       startDragging: vi.fn().mockResolvedValue(undefined),
     });
     mocks.bootstrapApp.mockResolvedValue(payload);
@@ -197,6 +200,34 @@ describe("meeting start transcription event", () => {
       ),
     );
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
+  });
+
+  it("reopens the recording HUD to the note editor for the active recording", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
+    });
+
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText("Note title")).toHaveValue("First note");
+
+    await act(async () => {
+      await mocks.listeners.get("meeting-hud-action")?.({
+        payload: { action: "reopen" },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Note title")).toHaveValue("First note"),
+    );
   });
 
   it("cleans up Tauri listeners that resolve after unmount", async () => {

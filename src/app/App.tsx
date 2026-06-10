@@ -642,7 +642,7 @@ export function App() {
       void main.setFocus();
       const noteId = recordingNoteIdRef.current;
       if (noteId) {
-        setActiveView("notes");
+        setActiveView("meetings");
         void handleSelectNote(noteId);
       }
     }).then((cleanup) => {
