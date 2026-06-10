@@ -97,6 +97,19 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   mascotShow: mocks.mascotShow,
   mascotHide: mocks.mascotHide,
+  // The agent workspace mounts at launch; a quiet, not-running bridge keeps
+  // these tests focused on the meetings surfaces.
+  hermesBridgeStatus: vi.fn(async () => ({ running: false })),
+  listAgentTasks: vi.fn(async () => ({ items: [] })),
+  providerModelSettings: vi.fn(async () => ({
+    settings: { generationModel: "" },
+  })),
+  listVeniceModels: vi.fn(async () => ({
+    mode: "generation",
+    modelType: "text",
+    selectedModel: "",
+    models: [],
+  })),
 }));
 
 const now = "2026-05-19T10:00:00Z";
