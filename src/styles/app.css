@@ -2088,7 +2088,9 @@ input:focus-visible,
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
- * composer) with the rolling pangolin tying it to the working state. */
+ * composer) with the rolling pangolin tying it to the working state. Same
+ * surface recipe as the recording-consent note and the "Generating notes…"
+ * pill so the app's status messages read as one family. */
 .agent-composer-notice {
   pointer-events: auto;
   display: inline-flex;
@@ -2097,13 +2099,12 @@ input:focus-visible,
   width: fit-content;
   max-width: var(--content-max);
   margin: 0 auto var(--sp-3);
-  padding: var(--sp-2) var(--sp-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  background: var(--card);
-  box-shadow: var(--shadow-sm);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+  font-weight: 500;
   animation: agent-composer-notice-in 240ms var(--ease-out);
 }
 
@@ -4459,11 +4460,10 @@ input:focus-visible,
   -webkit-user-select: none;
 }
 
+/* The rolling pangolin (drawn, colored via currentColor) — the same working
+ * indicator as the agent chat, sidebar, and composer notice. */
 .note-generating-spinner {
   flex: none;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--fs-md);
-  line-height: 1;
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
@@ -5363,19 +5363,43 @@ input:focus-visible,
 .agent-error-banner-actions button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  /* Fixed height so the text button and the icon-only dismiss match — their
+   * natural heights differ (text line box vs 14px glyph). */
+  height: 24px;
+  min-width: 24px;
   gap: var(--sp-1);
-  padding: var(--sp-1) var(--sp-2);
+  padding: 0 var(--sp-2);
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
   font-size: var(--fs-md);
   font-weight: 500;
+  line-height: 1;
   cursor: pointer;
 }
 
 .agent-error-banner-actions button:hover {
   background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+/* Out-of-credits card in the transcript. The base notice lays eyebrow + body
+ * out as wrapping flex items, so a long body drops wholesale onto its own
+ * line the moment it can't fit — which reads as a broken layout, not a wrap.
+ * Flow the body inline after the eyebrow instead, wrapping mid-sentence like
+ * a paragraph. */
+.agent-credits-notice .inline-notice-message {
+  display: block;
+}
+
+.agent-credits-notice .inline-notice-eyebrow {
+  margin-right: var(--sp-3);
+  vertical-align: baseline;
+}
+
+.agent-credits-notice .inline-notice-body {
+  display: inline;
 }
 
 /* Inline notice — shared shape used by NoteRecoveryPrompt and the
