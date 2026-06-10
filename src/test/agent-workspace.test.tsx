@@ -626,15 +626,11 @@ describe("AgentWorkspace", () => {
       await user.type(screen.getByRole("textbox"), "do something long");
       await user.click(screen.getByRole("button", { name: "Send message" }));
       await waitFor(() =>
-        expect(sessionDetails.at(-1)?.workingSessionIds).toContain(
-          "session-1",
-        ),
+        expect(sessionDetails.at(-1)?.workingSessionIds).toContain("session-1"),
       );
 
       mocks.listHermesSessions.mockResolvedValue([]);
-      await user.click(
-        screen.getByRole("button", { name: "Session actions" }),
-      );
+      await user.click(screen.getByRole("button", { name: "Session actions" }));
       await user.click(
         screen.getByRole("menuitem", { name: "Delete session" }),
       );
@@ -655,5 +651,43 @@ describe("AgentWorkspace", () => {
         onSessionsChanged,
       );
     }
+  });
+
+  it("launches a session immediately from a run shortcut", async () => {
+    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    render(<AgentWorkspace />);
+    const user = userEvent.setup();
+
+    await user.click(
+      await screen.findByRole("button", { name: /Tidy my Downloads/ }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({
+          text: expect.stringContaining("Downloads folder"),
+        }),
+      ),
+    );
+  });
+
+  it("prefills the composer from a prefill shortcut without submitting", async () => {
+    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    render(<AgentWorkspace />);
+    const user = userEvent.setup();
+
+    await user.click(
+      await screen.findByRole("button", { name: /Research a topic/ }),
+    );
+
+    const composer = screen.getByPlaceholderText(
+      "Send a message",
+    ) as HTMLTextAreaElement;
+    await waitFor(() => expect(composer.value).toContain("Research <topic>"));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.anything(),
+    );
   });
 });

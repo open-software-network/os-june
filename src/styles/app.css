@@ -2087,6 +2087,68 @@ input:focus-visible,
   padding: var(--sp-6) var(--sp-6) 148px;
 }
 
+/* Starter shortcuts in the agent empty-state footer: a two-up grid of quiet
+ * buttons that either launch a session outright or prefill the composer. */
+.agent-shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-1);
+  width: 100%;
+}
+
+.agent-shortcut {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: none;
+  border-radius: var(--r-lg);
+  background: none;
+  font: inherit;
+  text-align: left;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-shortcut:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+.agent-shortcut:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-shortcut-icon {
+  display: inline-grid;
+  place-items: center;
+  margin-top: 1px;
+  color: var(--muted-foreground);
+}
+
+.agent-shortcut-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-shortcut-title {
+  font-size: var(--fs-md);
+  color: var(--foreground);
+}
+
+.agent-shortcut-description {
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+
+@media (max-width: 720px) {
+  .agent-shortcut-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 980px) {
   .agent-workspace {
     grid-template-columns: 1fr;
