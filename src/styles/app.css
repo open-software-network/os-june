@@ -2085,6 +2085,8 @@ input:focus-visible,
   place-items: center;
   min-height: 0;
   padding: var(--sp-6) var(--sp-6) 148px;
+  /* The shortcut grid can outgrow short windows; scroll rather than clip. */
+  overflow-y: auto;
 }
 
 /* Starter shortcuts in the agent empty-state footer: a two-up grid of quiet

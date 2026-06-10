@@ -14,14 +14,20 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { IconArrowUp } from "central-icons/IconArrowUp";
+import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
+import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
+import { IconFileText } from "central-icons/IconFileText";
 import { IconFolderSparkle } from "central-icons/IconFolderSparkle";
+import { IconHeartBeat } from "central-icons/IconHeartBeat";
+import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
+import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
@@ -152,6 +158,41 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "run",
   },
   {
+    key: "rename-screenshots",
+    icon: <IconCameraSparkle size={18} />,
+    title: "Rename my screenshots",
+    description: "Turn screenshot gibberish into names that mean something.",
+    prompt:
+      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
+    action: "run",
+  },
+  {
+    key: "find-duplicates",
+    icon: <IconFiles size={18} />,
+    title: "Find duplicate files",
+    description: "Spot copies wasting space across your folders.",
+    prompt:
+      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
+    action: "run",
+  },
+  {
+    key: "health-check",
+    icon: <IconHeartBeat size={18} />,
+    title: "Check my Mac's health",
+    description: "Disk, memory, login items — what needs attention.",
+    prompt:
+      "Give my Mac a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
+    action: "run",
+  },
+  {
+    key: "find-file",
+    icon: <IconMagnifyingGlass size={18} />,
+    title: "Find a file",
+    description: "Describe what you remember; June tracks it down.",
+    prompt: "Find <a file I half-remember> on my Mac and tell me where it is.",
+    action: "prefill",
+  },
+  {
     key: "research",
     icon: <IconDeepSearch size={18} />,
     title: "Research a topic",
@@ -161,12 +202,30 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
+    key: "draft-document",
+    icon: <IconPencilLine size={18} />,
+    title: "Draft a document",
+    description: "Start a write-up and save it to your Documents.",
+    prompt:
+      "Draft a <kind of document> about <topic>, then save it as a Markdown file in my Documents folder.",
+    action: "prefill",
+  },
+  {
     key: "summarize-file",
     icon: <IconFileSparkle size={18} />,
     title: "Summarize a file",
     description: "Pick a document and get the key points out of it.",
     prompt:
       "Summarize the key points of the attached file and pull out any action items.",
+    action: "attach",
+  },
+  {
+    key: "extract-text",
+    icon: <IconFileText size={18} />,
+    title: "Extract text from a file",
+    description: "Pull clean text out of a PDF, image, or scan.",
+    prompt:
+      "Extract all the text from the attached file and clean it up into tidy Markdown.",
     action: "attach",
   },
 ];
