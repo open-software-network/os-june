@@ -527,17 +527,20 @@ input:focus-visible,
 
 /* Compact private-mode badge sitting under the title; full policy text lives in
  * the native tooltip. */
+/* Detail-bar pills share the control height of the back chevron and the
+ * overflow trigger so the actions row reads as one family. */
 .agent-safety-badge {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
   width: fit-content;
-  padding: 2px var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   cursor: default;
 }
 
@@ -1863,51 +1866,39 @@ input:focus-visible,
 }
 
 /* Artifact viewer ----------------------------------------------------
- * Opening a file splits the conversation area: the chat column compresses
- * left and the viewer rides along as a floating white card — a popover-like
- * surface docked to the right edge, the Claude-artifacts / Gemini-canvas
- * pattern. The split wrapper inherits .agent-scroll's full-bleed negative
- * margins (up behind the frosted breadcrumb, out to the card edges) so the
- * chat scroller keeps its frost-and-scrollbar behavior whether or not the
- * panel is open. The dock turns those bleeds back into padding so the card
- * sits inset below the breadcrumb without fighting flex-stretch margins.
+ * The files panel is its own card on the background surface — a sibling of
+ * .main-panel, not a box inside it. It fixes to the window's right edge with
+ * the same insets, radius, and shadow as the main card, and the main card
+ * slides left (via the :has() margin below) to accept it. Fixed top/bottom
+ * anchoring also guarantees the panel a bounded height, so its body always
+ * scrolls no matter what the chat column is doing.
  *
- * --agent-files-w is shared with the fixed-position composer (below), which
- * must shrink to the chat column while the panel is out. */
-.agent-workspace {
+ * --agent-files-w lives on .app-shell because three fixed/sibling boxes
+ * share it: the panel, the main card's margin, and the agent composer. */
+.app-shell {
   --agent-files-w: clamp(320px, 36vw, 460px);
 }
 
-.agent-split {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
+.main-panel {
+  transition: margin-right var(--t-slow) var(--ease-out);
 }
 
-.agent-split > .agent-scroll {
-  margin: 0;
-}
-
-.agent-artifact-dock {
-  display: flex;
-  flex: 0 0 var(--agent-files-w);
-  min-width: 0;
-  min-height: 0;
-  padding: calc(var(--detail-bar-h) + var(--sp-1)) var(--sp-5) var(--sp-5) 0;
+.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
+  margin-right: calc(var(--agent-files-w) + 2 * var(--sp-3));
 }
 
 .agent-artifact-panel {
+  position: fixed;
+  top: calc(var(--titlebar-h) + var(--sp-2));
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 6;
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xl);
+  width: var(--agent-files-w);
+  border-radius: var(--r-window);
   background: var(--card);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
   overflow: hidden;
   animation: agent-artifact-panel-in var(--t-slow) var(--ease-out);
 }
@@ -1915,7 +1906,7 @@ input:focus-visible,
 @keyframes agent-artifact-panel-in {
   from {
     opacity: 0;
-    transform: translateX(16px);
+    transform: translateX(calc(100% + var(--sp-3)));
   }
 }
 
@@ -1923,12 +1914,18 @@ input:focus-visible,
   .agent-artifact-panel {
     animation: none;
   }
+
+  .main-panel {
+    transition: none;
+  }
 }
 
 /* While the panel is out, the fixed composer hands its right side over to
- * the panel column instead of spanning the whole window. */
+ * the panel instead of spanning the whole window: window inset + panel +
+ * card gap + the card's own content gutter. */
 .agent-workspace[data-artifact-panel="open"] .agent-composer {
-  right: calc(var(--sp-3) + var(--sp-5) + var(--agent-files-w) + var(--sp-8));
+  right: calc(2 * var(--sp-3) + var(--agent-files-w) + var(--sp-8));
+  transition: right var(--t-slow) var(--ease-out);
 }
 
 /* No divider under the header — the body's top scroll fade is what signals
@@ -2079,6 +2076,20 @@ input:focus-visible,
   background: var(--surface-subtle);
 }
 
+/* In the borderless list the card tile reads too heavy — soften the fill
+ * and thin the glyph (the set ships at stroke-2) so the column stays quiet. */
+.agent-artifact-row .agent-artifact-icon {
+  background: var(--surface-subtle);
+}
+
+.agent-artifact-row .agent-artifact-icon svg {
+  stroke-width: 1.5;
+}
+
+.agent-artifact-row:hover .agent-artifact-icon {
+  background: var(--muted);
+}
+
 .agent-artifact-row-name {
   overflow: hidden;
   color: var(--body-copy);
@@ -2098,13 +2109,14 @@ input:focus-visible,
 .agent-session-files {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
+  min-height: var(--control-md);
   border: 0;
-  border-radius: var(--r-sm);
-  padding: 2px var(--sp-2);
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-3);
   background: var(--surface-subtle);
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
 

@@ -2772,7 +2772,7 @@ export function AgentWorkspace({
           ) : null}
         </section>
       ) : (
-        <div className="agent-split">
+        <>
           <div ref={agentScrollRef} className="agent-scroll">
             <section className="agent-main" aria-label="Agent task details">
               {error ? <p className="error-banner">{error}</p> : null}
@@ -2790,7 +2790,7 @@ export function AgentWorkspace({
               onClose={() => setArtifactPanel(null)}
             />
           ) : null}
-        </div>
+        </>
       )}
     </section>
   );
@@ -3187,7 +3187,7 @@ function AgentSessionBar({
             aria-pressed={artifactsOpen}
             onClick={onToggleArtifacts}
           >
-            <IconFiles size={13} />
+            <IconFiles size={14} />
             <span aria-hidden>{artifactCount}</span>
           </button>
         ) : null}
@@ -4711,129 +4711,125 @@ function AgentArtifactPanel({
   }, [updateFade, preview, state.view]);
 
   return (
-    <div className="agent-artifact-dock">
-      <aside className="agent-artifact-panel" aria-label="Files">
-        <header className="agent-artifact-panel-bar">
-          {artifact ? (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="All files"
-              title="All files"
-              onClick={onShowList}
-            >
-              <IconChevronLeftSmall size={16} />
-            </button>
-          ) : null}
-          <h2 className="agent-artifact-panel-title">
-            {artifact ? artifact.name : "Files"}
-          </h2>
-          {artifact ? (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={`Download ${artifact.name}`}
-              title="Download"
-              onClick={() => onDownload(artifact)}
-            >
-              <IconArrowInbox size={15} />
-            </button>
-          ) : null}
+    <aside className="agent-artifact-panel" aria-label="Files">
+      <header className="agent-artifact-panel-bar">
+        {artifact ? (
           <button
             type="button"
             className="icon-button"
-            aria-label="Close files"
-            title="Close"
-            onClick={onClose}
+            aria-label="All files"
+            title="All files"
+            onClick={onShowList}
           >
-            <IconCrossMedium size={15} />
+            <IconChevronLeftSmall size={16} />
           </button>
-        </header>
-        {markdown ? (
-          <div className="agent-artifact-panel-mode">
-            <SegmentedControl
-              aria-label="File view"
-              value={showSource ? "source" : "preview"}
-              onValueChange={(value) => setShowSource(value === "source")}
-              options={[
-                { value: "preview", label: "Preview" },
-                { value: "source", label: "Source" },
-              ]}
-            />
-          </div>
         ) : null}
+        <h2 className="agent-artifact-panel-title">
+          {artifact ? artifact.name : "Files"}
+        </h2>
         {artifact ? (
-          <div
-            ref={bodyRef}
-            className="agent-artifact-panel-body"
-            data-kind={preview.kind}
-            data-fade-top={fade.top || undefined}
-            data-fade-bottom={fade.bottom || undefined}
-            onScroll={updateFade}
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={`Download ${artifact.name}`}
+            title="Download"
+            onClick={() => onDownload(artifact)}
           >
-            {preview.kind === "loading" ? (
-              <Spinner />
-            ) : preview.kind === "image" ? (
-              <img
-                className="agent-artifact-panel-image"
-                src={preview.dataUrl}
-                alt={artifact.name}
-              />
-            ) : preview.kind === "text" && markdown && !showSource ? (
-              <MarkdownContent markdown={preview.text} />
-            ) : preview.kind === "text" ? (
-              <pre className="agent-artifact-source">{preview.text}</pre>
-            ) : (
-              <div className="agent-artifact-panel-empty">
-                <p>No preview for this file.</p>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => onDownload(artifact)}
-                >
-                  <IconArrowInbox size={14} />
-                  Download
-                </button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div
-            ref={bodyRef}
-            className="agent-artifact-panel-body"
-            data-kind="list"
-            data-fade-top={fade.top || undefined}
-            data-fade-bottom={fade.bottom || undefined}
-            onScroll={updateFade}
-          >
-            <ul className="agent-artifact-panel-list">
-              {artifacts.map((item) => {
-                const FileTypeIcon = artifactIcon(item.path);
-                return (
-                  <li key={item.path}>
-                    <button
-                      type="button"
-                      className="agent-artifact-row"
-                      onClick={() => onOpen(item)}
-                    >
-                      <span className="agent-artifact-icon">
-                        <FileTypeIcon size={18} />
-                      </span>
-                      <span className="agent-artifact-row-name">
-                        {item.name}
-                      </span>
-                      <span className="agent-artifact-row-meta">
-                        {formatBytes(item.size)}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-      </aside>
-    </div>
+            <IconArrowInbox size={15} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Close files"
+          title="Close"
+          onClick={onClose}
+        >
+          <IconCrossMedium size={15} />
+        </button>
+      </header>
+      {markdown ? (
+        <div className="agent-artifact-panel-mode">
+          <SegmentedControl
+            aria-label="File view"
+            value={showSource ? "source" : "preview"}
+            onValueChange={(value) => setShowSource(value === "source")}
+            options={[
+              { value: "preview", label: "Preview" },
+              { value: "source", label: "Source" },
+            ]}
+          />
+        </div>
+      ) : null}
+      {artifact ? (
+        <div
+          ref={bodyRef}
+          className="agent-artifact-panel-body"
+          data-kind={preview.kind}
+          data-fade-top={fade.top || undefined}
+          data-fade-bottom={fade.bottom || undefined}
+          onScroll={updateFade}
+        >
+          {preview.kind === "loading" ? (
+            <Spinner />
+          ) : preview.kind === "image" ? (
+            <img
+              className="agent-artifact-panel-image"
+              src={preview.dataUrl}
+              alt={artifact.name}
+            />
+          ) : preview.kind === "text" && markdown && !showSource ? (
+            <MarkdownContent markdown={preview.text} />
+          ) : preview.kind === "text" ? (
+            <pre className="agent-artifact-source">{preview.text}</pre>
+          ) : (
+            <div className="agent-artifact-panel-empty">
+              <p>No preview for this file.</p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onDownload(artifact)}
+              >
+                <IconArrowInbox size={14} />
+                Download
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div
+          ref={bodyRef}
+          className="agent-artifact-panel-body"
+          data-kind="list"
+          data-fade-top={fade.top || undefined}
+          data-fade-bottom={fade.bottom || undefined}
+          onScroll={updateFade}
+        >
+          <ul className="agent-artifact-panel-list">
+            {artifacts.map((item) => {
+              const FileTypeIcon = artifactIcon(item.path);
+              return (
+                <li key={item.path}>
+                  <button
+                    type="button"
+                    className="agent-artifact-row"
+                    onClick={() => onOpen(item)}
+                  >
+                    <span className="agent-artifact-icon">
+                      <FileTypeIcon size={18} />
+                    </span>
+                    <span className="agent-artifact-row-name">{item.name}</span>
+                    <span className="agent-artifact-row-meta">
+                      {formatBytes(item.size)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </aside>
   );
 }
 
