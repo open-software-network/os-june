@@ -2110,6 +2110,14 @@ input:focus-visible,
   border-color: transparent;
   background: var(--surface-subtle);
   animation: agent-artifact-filter-in var(--t-med) var(--ease-spring);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* The fill IS the surface here, so the shared focus ring border would just
+ * muddy it — focus reads as a slightly deeper fill (plus the caret) instead. */
+.agent-artifact-panel .agent-artifact-filter:focus-within {
+  border-color: transparent;
+  background: color-mix(in oklch, var(--muted) 85%, transparent);
 }
 
 @keyframes agent-artifact-filter-in {
