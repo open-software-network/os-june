@@ -32,6 +32,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -300,6 +301,7 @@ export function AgentWorkspace({
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
 
   useEffect(() => {
@@ -726,10 +728,15 @@ export function AgentWorkspace({
 
   // Auto-grow the composer with its content (capped), since WKWebView has no
   // CSS field-sizing. Recomputing on `draft` also collapses it back after a
-  // submit clears the value.
-  useEffect(() => {
+  // submit clears the value. Runs pre-paint (layout effect) so the FLIP
+  // measurements below straddle the reflow without a visible jump.
+  useLayoutEffect(() => {
     const el = composerRef.current;
     if (!el) return;
+    const box = composerBoxRef.current;
+    // FLIP "first": where things sit before this growth step reflows them.
+    const prevBoxHeight = box?.offsetHeight ?? 0;
+    const prevRect = el.getBoundingClientRect();
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     // Once the input wraps to a second line, the toolbar drops below it.
@@ -738,8 +745,48 @@ export function AgentWorkspace({
     const padding =
       parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
     const lines = Math.round((el.scrollHeight - padding) / lineHeight);
-    setComposerMultiline(lines >= 2);
-  }, [draft]);
+    const multiline = lines >= 2;
+    setComposerMultiline(multiline);
+    if (!box) return;
+    // Flip the layout attribute now rather than waiting for the re-render so
+    // the FLIP "last" measurement sees the final layout in this same effect.
+    box.dataset.multiline = multiline ? "true" : "false";
+    const nextBoxHeight = box.offsetHeight;
+    if (nextBoxHeight === prevBoxHeight) return;
+    if (
+      typeof box.animate !== "function" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+    // Animate the box open/closed. Its content is bottom-anchored
+    // (justify-content: flex-end) and clipped (overflow: hidden), so the
+    // toolbar stays pinned to the bottom edge while the top edge glides up to
+    // reveal the new line.
+    const grow = {
+      duration: 160,
+      easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
+    };
+    box.animate(
+      [{ height: `${prevBoxHeight}px` }, { height: `${nextBoxHeight}px` }],
+      grow,
+    );
+    // Glide the textarea from its old spot, bottom-left anchored so the line
+    // being typed stays put while space opens above it (most visible on the
+    // one→two line hop, where it leaves the slot between the +/mic buttons).
+    const nextRect = el.getBoundingClientRect();
+    const dx = prevRect.left - nextRect.left;
+    const dy = prevRect.bottom - nextRect.bottom;
+    if (dx || dy) {
+      el.animate(
+        [
+          { transform: `translate(${dx}px, ${dy}px)` },
+          { transform: "translate(0, 0)" },
+        ],
+        grow,
+      );
+    }
+  }, [draft, attachments.length]);
 
   useEffect(() => {
     let disposed = false;
@@ -1819,6 +1866,7 @@ export function AgentWorkspace({
             onDrop={handleComposerDrop}
           >
             <div
+              ref={composerBoxRef}
               className="agent-composer-box"
               data-dirty={draft.trim() || attachments.length ? "true" : "false"}
               data-multiline={composerMultiline ? "true" : "false"}

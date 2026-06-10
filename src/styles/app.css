@@ -1989,6 +1989,10 @@ input:focus-visible,
   pointer-events: auto;
   display: flex;
   flex-direction: column;
+  /* Bottom-anchored so that while the JS FLIP animates the box height, the
+   * toolbar stays pinned to the bottom edge and new lines reveal from the
+   * rising top edge. */
+  justify-content: flex-end;
   gap: var(--sp-1);
   width: 100%;
   max-width: var(--content-max);
@@ -2008,7 +2012,11 @@ input:focus-visible,
 .agent-composer-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  /* The single-line textarea (33px) runs 1px taller than the 32px controls;
+   * centering splits the difference so the send button sits evenly inset
+   * instead of flush-bottom with a fatter top gap. On the multiline toolbar
+   * row every control is the same height, so centering is a no-op there. */
+  align-items: center;
   gap: var(--sp-1);
 }
 
@@ -2134,8 +2142,9 @@ input:focus-visible,
   font-size: var(--fs-lg);
   line-height: 1.5;
   outline: none;
-  /* Smooths the upward growth as lines wrap (height is set in JS). */
-  transition: height var(--t-fast) var(--ease-out);
+  /* Growth is animated by the JS FLIP in AgentWorkspace (box height +
+   * textarea transform together) — a CSS height transition here would fight
+   * those measurements. */
 }
 
 .agent-composer textarea::placeholder {
