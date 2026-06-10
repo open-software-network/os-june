@@ -1562,12 +1562,13 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
+/* Expanded summary reads at body size, same as the row above it. */
 .agent-context-summary > .agent-markdown {
   overflow: auto;
   max-height: 320px;
   margin: var(--sp-2) 0 0 calc(15px + var(--sp-2));
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
 .agent-context-summary:not([open]) > .agent-markdown {
@@ -1758,6 +1759,8 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
+/* White card, 4px inset all around the icon tile — the tile fills the card's
+ * height so it reads as perfectly nested, not floating. */
 .agent-artifact-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1766,33 +1769,32 @@ input:focus-visible,
   max-width: 440px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
-  padding: var(--sp-2);
-  background: var(--surface-subtle);
+  padding: var(--sp-1);
+  padding-right: var(--sp-3);
+  background: var(--card);
 }
 
-/* File-type glyph in a soft tile — mirrors the boxed tool-icon treatment so the
- * card reads as one object, not an icon floating beside text. */
+/* Inner radius = outer radius − inset, so the tile's corners track the card's. */
 .agent-artifact-icon {
   display: inline-grid;
   place-items: center;
   width: var(--control-xl);
   height: var(--control-xl);
-  border-radius: var(--r-md);
-  background: var(--card);
+  border-radius: calc(var(--r-lg) - var(--sp-1));
+  background: var(--muted);
   color: var(--muted-foreground);
 }
 
 .agent-artifact-meta {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
   min-width: 0;
 }
 
 .agent-artifact-name {
   overflow: hidden;
   color: var(--foreground);
-  font-weight: 550;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1801,10 +1803,14 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
+  line-height: 1.3;
 }
 
 /* Download stays out of sight until the card is hovered (or the button takes
- * keyboard focus), so the resting card is just icon · name · size. */
+ * keyboard focus), so the resting card is just icon · name · size. The reveal
+ * is intentionally INSTANT — transitioning opacity promotes the button to a
+ * compositing layer in WKWebView, which rasterizes off the text pixel grid and
+ * reads as a hover glitch (same rule as the tool-icon swap). */
 .agent-artifact-download {
   display: inline-grid;
   place-items: center;
@@ -1816,10 +1822,6 @@ input:focus-visible,
   background: transparent;
   color: var(--muted-foreground);
   opacity: 0;
-  transition:
-    opacity var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out),
-    background var(--t-fast) var(--ease-out);
 }
 
 .agent-artifact-card:hover .agent-artifact-download,
