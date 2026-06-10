@@ -236,10 +236,15 @@ input:focus-visible,
   position: fixed;
   top: calc(var(--titlebar-h) + var(--sp-2));
   bottom: var(--sp-3);
-  right: calc(var(--agent-files-w) + var(--sp-3) - 6px);
+  /* Spans exactly the card-to-panel gap, pill centered in it. */
+  right: calc(var(--agent-files-w) + var(--sp-3));
   z-index: 71;
-  width: 12px;
+  width: var(--sp-5);
   cursor: col-resize;
+}
+
+.agent-files-resize-handle::before {
+  left: 5px;
 }
 
 /* Width tracks the cursor raw while dragging — the slide-over transitions
@@ -263,6 +268,7 @@ input:focus-visible,
   width: 100%;
   align-self: stretch;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   margin: 0 auto;
 }
@@ -282,6 +288,10 @@ input:focus-visible,
 
 .main-panel-body[data-active-view="agent"] .workspace {
   grid-template-rows: minmax(0, 1fr);
+  /* The column must be pinned like the row: an auto track can't shrink below
+   * the breadcrumb bar's nowrap min-content, so a narrow card would lay the
+   * conversation out wider than itself and clip at the card edge. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .main-panel-body[data-note-detail-scroller="true"] .workspace {
@@ -568,7 +578,20 @@ input:focus-visible,
   background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
   font-size: var(--fs-sm);
+  white-space: nowrap;
   cursor: default;
+}
+
+/* When the bar runs tight (files panel out, narrow window) the badge keeps
+ * the shield and sheds its label rather than wrapping. */
+.detail-bar {
+  container-type: inline-size;
+}
+
+@container (max-width: 600px) {
+  .agent-safety-badge-label {
+    display: none;
+  }
 }
 
 .agent-safety-badge svg {
@@ -1911,7 +1934,7 @@ input:focus-visible,
 }
 
 .app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
-  margin-right: calc(var(--agent-files-w) + 2 * var(--sp-3));
+  margin-right: calc(var(--agent-files-w) + var(--sp-3) + var(--sp-5));
 }
 
 .agent-artifact-panel {
@@ -1951,7 +1974,7 @@ input:focus-visible,
  * the panel instead of spanning the whole window: window inset + panel +
  * card gap + the card's own content gutter. */
 .agent-workspace[data-artifact-panel="open"] .agent-composer {
-  right: calc(2 * var(--sp-3) + var(--agent-files-w) + var(--sp-8));
+  right: calc(var(--sp-3) + var(--agent-files-w) + var(--sp-5) + var(--sp-8));
   transition: right var(--t-slow) var(--ease-spring);
 }
 
@@ -2072,33 +2095,11 @@ input:focus-visible,
   margin: 0;
 }
 
-/* Quiet filter under the Files header — the sidebar search's anatomy on the
- * panel's subtler surface. */
+/* The shared .folders-search pill, stretched to the panel's reading column. */
 .agent-artifact-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  align-items: center;
-  gap: var(--sp-2);
-  height: var(--control-lg);
+  width: auto;
+  max-width: none;
   margin: var(--sp-1) var(--sp-6) var(--sp-2);
-  padding: 0 var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
-  cursor: text;
-}
-
-.agent-artifact-search input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.agent-artifact-search input::placeholder {
-  color: var(--muted-foreground);
 }
 
 .agent-artifact-search-empty {

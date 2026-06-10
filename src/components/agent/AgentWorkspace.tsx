@@ -3066,7 +3066,7 @@ function SafetyBadge() {
       aria-label="Private mode — sensitive desktop, credential, payment, and destructive actions are blocked or escalated."
     >
       <IconShieldAi size={13} aria-hidden />
-      Private mode
+      <span className="agent-safety-badge-label">Private mode</span>
     </span>
   );
 }
@@ -4656,7 +4656,7 @@ function clampFilesPanelWidth(width: number) {
   const viewportCap =
     typeof window === "undefined"
       ? FILES_PANEL_MAX_W
-      : Math.round(window.innerWidth * 0.55);
+      : Math.round(window.innerWidth * 0.48);
   const max = Math.max(
     FILES_PANEL_MIN_W,
     Math.min(FILES_PANEL_MAX_W, viewportCap),
@@ -4894,7 +4894,7 @@ function AgentArtifactPanel({
           </div>
         ) : (
           <>
-            <label className="agent-artifact-search">
+            <label className="folders-search agent-artifact-search">
               <IconMagnifyingGlass size={14} />
               <input
                 type="search"
