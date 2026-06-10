@@ -3009,15 +3009,21 @@ input:focus-visible,
 
 /* Fade the title's tail instead of ellipsizing so long titles tuck under the
  * timestamp / trash can. The mask only bites when text actually reaches the
- * trailing zone; short titles render untouched. */
+ * trailing zone; short titles render untouched. Text must hit fully
+ * transparent BEFORE the meta slot ("May 28" right-aligned 8px in ≈ 48px) so
+ * overflowing titles never butt against the timestamp. */
 .agent-sidebar-row .note-row-title-text {
   text-overflow: clip;
   -webkit-mask-image: linear-gradient(
     to right,
-    #000 calc(100% - 48px),
-    transparent
+    #000 calc(100% - 84px),
+    transparent calc(100% - 40px)
   );
-  mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 84px),
+    transparent calc(100% - 40px)
+  );
 }
 
 /* Running agent sessions show the rolling pangolin; idle rows show nothing.
