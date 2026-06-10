@@ -6190,46 +6190,49 @@ input:focus-visible,
  * frost. Same treatment as .agent-scroll: the standard scrollbar props (set
  * globally) make engines ignore ::-webkit-scrollbar styling, so opt the
  * scroller out to re-engage the quiet 4px webkit scrollbar, then inset its
- * track below the bar so the thumb can't ride up over it. Scoped with :has()
- * so bar-less views keep the native overlay scrollbar. */
-.main-panel-body:has(.detail-bar) {
+ * track below the bar so the thumb can't ride up over it. App.tsx marks only
+ * breadcrumb/detail views with data-detail-scroller so bar-less views keep the
+ * native overlay scrollbar. */
+.main-panel-body[data-detail-scroller="true"] {
   scrollbar-width: auto;
   scrollbar-color: auto;
 }
 
-.main-panel-body:has(.detail-bar)::-webkit-scrollbar-track {
+.main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-track {
   margin-top: var(--detail-bar-h);
 }
 
 /* Native overlay thumbs float a couple px off the window edge; match that on
  * the custom scrollbar so breadcrumb views don't read flush against the card
- * edge next to the bar-less views' native thumb. Keep it visibly themed by
- * default; hiding it behind a JS-driven fade made dark detail views look like
- * they had no scrollbar at all. The region widens to 8px and transparent
- * borders clip the painted pill back to the usual 4px, inset 2px from the
- * card edge and the content alike. */
+ * edge next to the bar-less views' native thumb. The region widens to 8px and
+ * transparent borders clip the painted pill back to the usual 4px, inset 2px
+ * from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
-.main-panel-body:has(.detail-bar)::-webkit-scrollbar {
+.main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: 8px;
 }
 
 .agent-scroll::-webkit-scrollbar-thumb,
-.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb {
+.main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
-  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  background: color-mix(
+    in oklch,
+    var(--muted-foreground) calc(var(--thumb-alpha, 0) * 1%),
+    transparent
+  );
   background-clip: padding-box;
 }
 
 .agent-scroll:hover::-webkit-scrollbar-thumb,
 .agent-scroll:focus-within::-webkit-scrollbar-thumb,
-.main-panel-body:has(.detail-bar):hover::-webkit-scrollbar-thumb,
-.main-panel-body:has(.detail-bar):focus-within::-webkit-scrollbar-thumb {
+.main-panel-body[data-detail-scroller="true"]:hover::-webkit-scrollbar-thumb,
+.main-panel-body[data-detail-scroller="true"]:focus-within::-webkit-scrollbar-thumb {
   background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
   background-clip: padding-box;
 }
 
 .agent-scroll::-webkit-scrollbar-thumb:hover,
-.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb:hover {
+.main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   background-clip: padding-box;
 }

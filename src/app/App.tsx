@@ -273,6 +273,9 @@ export function App() {
   const selectedRecovery = selectedNote
     ? recoveriesByNote.get(selectedNote.id)
     : undefined;
+  const detailScrollerActive =
+    (activeView === "folders" && !!state.selectedFolderId) ||
+    (!!selectedNote && (originAllNotes || !!originFolder));
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
     void recoverRecording(sessionId, action)
@@ -1560,6 +1563,7 @@ export function App() {
           ref={mainPanelBodyRef}
           className="main-panel-body"
           data-active-view={activeView}
+          data-detail-scroller={detailScrollerActive ? "true" : undefined}
         >
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
