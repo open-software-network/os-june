@@ -211,6 +211,20 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
+      label: "Out of credits",
+      description:
+        "A turn that died on a billing failure renders as a notice card with a top-up action instead of the raw provider error.",
+      turns: [
+        assistantTurn("credits", [
+          {
+            type: "notice",
+            kind: "credits",
+            text: "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
+          },
+        ]),
+      ],
+    },
+    {
       label: "Context compacted",
       description:
         "System summary inserted when earlier turns are compacted. Collapsed to one quiet line; hover swaps the glyph for +/−, expand reveals the summary. Two body variants (LLM summary / deterministic fallback).",

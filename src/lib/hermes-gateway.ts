@@ -34,8 +34,28 @@ type Frame = {
   method?: string;
   params?: HermesGatewayEvent;
   result?: unknown;
-  error?: { message?: string };
+  error?: { code?: number; message?: string };
 };
+
+/** RPC rejection from the gateway, keeping the JSON-RPC error code so callers
+ * can branch on well-known conditions instead of matching message strings. */
+export class HermesGatewayError extends Error {
+  readonly code?: number;
+
+  constructor(message: string, code?: number) {
+    super(message);
+    this.name = "HermesGatewayError";
+    this.code = code;
+  }
+}
+
+// The gateway rejects prompt.submit (and other mutations) with 4009 while a
+// turn is running — see tui_gateway/server.py `_err(rid, 4009, "session busy")`.
+const SESSION_BUSY_CODE = 4009;
+
+export function isSessionBusyError(err: unknown) {
+  return err instanceof HermesGatewayError && err.code === SESSION_BUSY_CODE;
+}
 
 export class HermesGatewayClient {
   private nextId = 0;
@@ -155,7 +175,12 @@ export class HermesGatewayClient {
       if (pending.timer) window.clearTimeout(pending.timer);
       this.pending.delete(frame.id);
       if (frame.error) {
-        pending.reject(new Error(frame.error.message ?? "Hermes RPC failed."));
+        pending.reject(
+          new HermesGatewayError(
+            frame.error.message ?? "Hermes RPC failed.",
+            frame.error.code,
+          ),
+        );
       } else {
         pending.resolve(frame.result);
       }

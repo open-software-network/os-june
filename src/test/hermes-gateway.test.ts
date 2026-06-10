@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HermesGatewayClient } from "../lib/hermes-gateway";
+import {
+  HermesGatewayClient,
+  HermesGatewayError,
+  isSessionBusyError,
+} from "../lib/hermes-gateway";
 
 type Listener = (event: unknown) => void;
 
@@ -138,6 +142,30 @@ describe("HermesGatewayClient", () => {
     socket.close();
 
     await expect(pending).rejects.toThrow("Hermes gateway connection closed.");
+  });
+
+  it("keeps the RPC error code so callers can branch on busy rejections", async () => {
+    const client = new HermesGatewayClient();
+    const connecting = client.connect("ws://gateway");
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await connecting;
+
+    const pending = client.request("prompt.submit", { text: "hi" });
+    const frame = JSON.parse(socket.sent[0]) as { id: number };
+    socket.message({
+      id: frame.id,
+      error: { code: 4009, message: "session busy" },
+    });
+
+    const error = await pending.then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(HermesGatewayError);
+    expect((error as HermesGatewayError).code).toBe(4009);
+    expect(isSessionBusyError(error)).toBe(true);
+    expect(isSessionBusyError(new Error("session busy"))).toBe(false);
   });
 
   it("notifies close listeners on unexpected drops but not on explicit close", async () => {

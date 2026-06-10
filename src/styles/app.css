@@ -2078,8 +2078,27 @@ input:focus-visible,
   bottom: calc(var(--sp-3) + var(--sp-5));
   z-index: 5;
   display: flex;
-  justify-content: center;
+  /* Column so the busy notice can stack above the box; the form is
+   * content-sized and bottom-anchored, so this changes nothing else. */
+  flex-direction: column;
+  align-items: center;
   pointer-events: none;
+}
+
+/* Why a rejected send didn't go through — sits on the composer because that's
+ * where the user just acted, and clears itself when the turn finishes. */
+.agent-composer-notice {
+  pointer-events: auto;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
 }
 
 .app-shell[data-sidebar="collapsed"] .agent-composer {

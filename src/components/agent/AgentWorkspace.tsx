@@ -19,6 +19,7 @@ import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
+import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
@@ -58,6 +59,7 @@ import {
 } from "react";
 import { BackButton } from "../ui/BackButton";
 import { EmptyState } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
@@ -75,6 +77,7 @@ import {
   listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
+  osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
   sendAgentMessage,
@@ -120,6 +123,7 @@ import {
 } from "../../lib/agent-events";
 import {
   HermesGatewayClient,
+  isSessionBusyError,
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
 import {
@@ -150,6 +154,10 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "waitingForUser",
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
+
+// What the user reads instead of the gateway's "session busy" rejection.
+const SESSION_BUSY_NOTICE =
+  "June is still working on the previous message. Wait for the reply to finish — or stop it — and send again.";
 
 // Dev-tools response gallery handle. Registered at module scope so
 // __agentGallery() exists from app launch — registering it inside the component
@@ -388,6 +396,10 @@ export function AgentWorkspace({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A rejected send into a still-running session, explained by the composer.
+  // Separate from `error` because background session refreshes clear that
+  // banner on success — this notice must survive until the turn finishes.
+  const [busyNotice, setBusyNotice] = useState<string | null>(null);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1134,6 +1146,19 @@ export function AgentWorkspace({
     }
   }, [newSessionMode, activePanel]);
 
+  // The busy notice's advice ("wait for the reply") expires the moment the
+  // selected session stops working — including when the user switches to a
+  // session that isn't running.
+  useEffect(() => {
+    if (!busyNotice) return;
+    if (
+      selectedHermesSessionId &&
+      workingSessionIds.has(selectedHermesSessionId)
+    )
+      return;
+    setBusyNotice(null);
+  }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     const message = draft.trim();
@@ -1146,13 +1171,18 @@ export function AgentWorkspace({
     try {
       await submitHermesSession(content);
       setError(null);
+      setBusyNotice(null);
     } catch (err) {
       // Restore the composer so a failed send doesn't eat the message or its
       // attachments — but only where the user hasn't typed or attached
       // something new during the in-flight send.
       setDraft((current) => (current.trim() ? current : message));
       setAttachments((current) => (current.length ? current : attachments));
-      setError(messageFromError(err));
+      if (isSessionBusyError(err)) {
+        setBusyNotice(SESSION_BUSY_NOTICE);
+      } else {
+        setError(messageFromError(err));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1187,11 +1217,16 @@ export function AgentWorkspace({
     try {
       await submitHermesSession(message, targetSession);
       setError(null);
+      setBusyNotice(null);
     } catch (err) {
       // Same merge-restore as submit(): don't clobber a draft the user
       // started typing while the reply was in flight.
       setDraft((current) => (current.trim() ? current : message));
-      setError(messageFromError(err));
+      if (isSessionBusyError(err)) {
+        setBusyNotice(SESSION_BUSY_NOTICE);
+      } else {
+        setError(messageFromError(err));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1471,6 +1506,25 @@ export function AgentWorkspace({
       });
       await loadHermesSessions();
     } catch (err) {
+      // The prompt never entered the session, so its optimistic bubble must
+      // not linger — a retained pending message renders below every later
+      // persisted message and reads as a send the agent ignored.
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [storedSessionId]: (current[storedSessionId] ?? []).filter(
+            (message) => message.id !== pendingUserMessage.id,
+          ),
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+      if (isSessionBusyError(err)) {
+        // The gateway rejected this prompt because the previous turn is still
+        // running — the session itself is healthy, so keep the listener and
+        // working state. Callers translate this into the composer notice.
+        throw err;
+      }
       unlisten();
       setSessionWorking(storedSessionId, false);
       setSessionWaiting(storedSessionId, false);
@@ -2337,6 +2391,11 @@ export function AgentWorkspace({
         onDragLeave={() => setDropActive(false)}
         onDrop={handleComposerDrop}
       >
+        {busyNotice ? (
+          <p className="agent-composer-notice" role="status">
+            {busyNotice}
+          </p>
+        ) : null}
         <div
           ref={composerBoxRef}
           className="agent-composer-box"
@@ -2485,6 +2544,11 @@ export function AgentWorkspace({
               choice,
             )
           }
+          onTopUp={() =>
+            void osAccountsTopUp().catch((err: unknown) =>
+              setError(messageFromError(err)),
+            )
+          }
           onClarify={(part, answer) =>
             void respondToClarify(selectedHermesSessionId, part.id, answer)
           }
@@ -2544,6 +2608,11 @@ export function AgentWorkspace({
             onDownloadArtifact={(artifact) =>
               void downloadHermesBridgeFile(artifact.path).catch(
                 (err: unknown) => setError(messageFromError(err)),
+              )
+            }
+            onTopUp={() =>
+              void osAccountsTopUp().catch((err: unknown) =>
+                setError(messageFromError(err)),
               )
             }
             onApproval={(part, choice) => {
@@ -3877,6 +3946,7 @@ function AgentChatTurnRow({
   onApproval,
   onClarify,
   onDownloadArtifact,
+  onTopUp,
   turn,
 }: {
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
@@ -3891,6 +3961,7 @@ function AgentChatTurnRow({
     answer: string,
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
+  onTopUp?: () => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -3984,6 +4055,11 @@ function AgentChatTurnRow({
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
+          ) : part.type === "notice" ? (
+            <CreditsNoticePart
+              key={`${turn.id}:notice:${index}`}
+              onTopUp={onTopUp}
+            />
           ) : null,
         )}
         <AgentArtifactList
@@ -4023,6 +4099,29 @@ function ContextCompactionPart({
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
+  );
+}
+
+// The raw billing failure ("Error: Error code: 402 - …") never reaches the
+// transcript — the chat runtime folds it into a notice part, and this card is
+// how the user learns the turn stopped and what to do about it.
+function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
+  return (
+    <InlineNotice
+      className="agent-credits-notice"
+      tone="destructive"
+      role="alert"
+      icon={<IconCreditCard1 size={14} aria-hidden />}
+      eyebrow="Out of credits"
+      body="June stopped because your balance ran out. Add funds, then send your message again."
+      actions={
+        onTopUp ? (
+          <button type="button" className="btn btn-secondary" onClick={onTopUp}>
+            Add funds
+          </button>
+        ) : undefined
+      }
+    />
   );
 }
 

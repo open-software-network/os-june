@@ -16,6 +16,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import { HermesGatewayError } from "../lib/hermes-gateway";
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
+  osAccountsTopUp: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock("../lib/tauri", () => ({
   listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
+  osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
@@ -105,7 +108,9 @@ vi.mock("../lib/hermes-adapter", () => ({
   titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
 }));
 
-vi.mock("../lib/hermes-gateway", () => ({
+vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
+  // Real HermesGatewayError / isSessionBusyError — only the client is faked.
+  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
@@ -1381,6 +1386,72 @@ describe("AgentWorkspace", () => {
     } finally {
       randomSpy.mockRestore();
     }
+  });
+
+  it("explains a busy rejection and removes the ghost bubble", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(new HermesGatewayError("session busy", 4009));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByPlaceholderText("Send a message");
+    await user.type(composer, "are the subagents using my CLI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "are the subagents using my CLI?",
+      }),
+    );
+    // The user learns what's happening in plain language, not "session busy".
+    expect(
+      await screen.findByText(/June is still working on the previous message/),
+    ).toBeInTheDocument();
+    // The rejected prompt never entered the session: no optimistic bubble
+    // lingers in the transcript (it would render below later persisted
+    // messages as a send the agent ignored), and the draft comes back.
+    expect(document.querySelector(".agent-user-turn")).toBeNull();
+    expect(composer).toHaveValue("are the subagents using my CLI?");
+    // The previous turn is still running, so the live listener stays attached.
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+  });
+
+  it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "How are the subagents doing",
+        timestamp: "2026-06-10T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content:
+          "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
+        timestamp: "2026-06-10T10:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Out of credits")).toBeInTheDocument();
+    expect(screen.queryByText(/Error code: 402/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Add funds" }));
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
   });
 
   // Last in the suite: mounting the workspace kicks off bridge/session
