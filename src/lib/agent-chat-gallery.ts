@@ -7,11 +7,31 @@ import type { AgentChatPart, AgentChatTurn } from "./agent-chat-runtime";
 //
 // Each section is rendered through the real <AgentChatTurnRow>, so what you see
 // here is exactly what ships.
+// Mirrors the AgentArtifact shape in AgentWorkspace.tsx. Kept structural (not
+// imported) so this catalog stays dependency-free; the fields must match.
+export type AgentGalleryArtifact = {
+  name: string;
+  path: string;
+  rootLabel: string;
+  size?: number | null;
+  previewDataUrl?: string | null;
+};
+
 export type AgentChatGallerySection = {
   label: string;
   description?: string;
   turns: AgentChatTurn[];
+  // Generated-file cards hang off the turn, not its parts. When present they're
+  // passed to <AgentChatTurnRow> so the artifact card renders in the catalog.
+  // The turn text must name each file for it to surface (see
+  // artifactsMentionedInText).
+  artifacts?: AgentGalleryArtifact[];
 };
+
+// Brand-tinted inline SVG so the image-preview variant renders without a bridge
+// round-trip (a previewDataUrl short-circuits the live preview fetch).
+const PREVIEW_DATA_URL =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Crect width='128' height='128' fill='%23C25A33'/%3E%3Ccircle cx='44' cy='42' r='11' fill='%23F4E3D8'/%3E%3Cpath d='M16 96l30-34 20 22 16-18 30 30v12H16z' fill='%23F4E3D8'/%3E%3C/svg%3E";
 
 // Fixed timestamps keep the gallery deterministic (no churn from relativeDate).
 const BASE = "2026-06-09T12:00:00.000Z";
@@ -86,6 +106,41 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
         assistantTurn("text", [
           { type: "text", text: MARKDOWN_SAMPLE, status: "complete" },
         ]),
+      ],
+    },
+    {
+      label: "Generated files",
+      description:
+        "Download cards for files the agent produced. Covers an image preview, a plain document (file icon), and a long path that truncates while the size holds its line.",
+      turns: [
+        assistantTurn("artifacts", [
+          {
+            type: "text",
+            text: "Done — I exported three files: the chart as `revenue-chart.png`, the write-up in `summary.md`, and the raw run output in `build-log.txt`.",
+            status: "complete",
+          },
+        ]),
+      ],
+      artifacts: [
+        {
+          name: "revenue-chart.png",
+          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/revenue-chart.png",
+          rootLabel: "Workspace",
+          size: 31_000,
+          previewDataUrl: PREVIEW_DATA_URL,
+        },
+        {
+          name: "summary.md",
+          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/summary.md",
+          rootLabel: "Workspace",
+          size: 4_200,
+        },
+        {
+          name: "build-log.txt",
+          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/2026-06-09/run-4821/artifacts/logs/build-log.txt",
+          rootLabel: "Home",
+          size: 1_280_000,
+        },
       ],
     },
     {

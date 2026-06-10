@@ -3604,10 +3604,12 @@ function AgentResponseGallery({
             <AgentChatTurnRow
               key={turn.id}
               turn={turn}
+              artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
+              onDownloadArtifact={galleryNoop}
             />
           ))}
         </section>
