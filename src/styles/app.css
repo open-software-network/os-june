@@ -236,10 +236,11 @@ input:focus-visible,
   position: fixed;
   top: calc(var(--titlebar-h) + var(--sp-2));
   bottom: var(--sp-3);
-  /* Spans exactly the card-to-panel gap, pill centered in it. */
-  right: calc(var(--agent-files-w) + var(--sp-3));
+  /* The 12px hit strip is centered on the --sp-3 card-to-panel gap, lapping
+   * the card and panel edges invisibly; the pill lands mid-gap. */
+  right: calc(var(--agent-files-w) + var(--sp-3) - 2px);
   z-index: 71;
-  width: var(--sp-5);
+  width: 12px;
   cursor: col-resize;
 }
 
@@ -1851,6 +1852,7 @@ input:focus-visible,
 
 .agent-artifact-card:has(button.agent-artifact-open):hover {
   border-color: var(--border);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
 }
 
 /* Inner radius = outer radius − inset, so the tile's corners track the card's. */
@@ -1934,7 +1936,7 @@ input:focus-visible,
 }
 
 .app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
-  margin-right: calc(var(--agent-files-w) + var(--sp-3) + var(--sp-5));
+  margin-right: calc(var(--agent-files-w) + 2 * var(--sp-3));
 }
 
 .agent-artifact-panel {
@@ -1974,7 +1976,7 @@ input:focus-visible,
  * the panel instead of spanning the whole window: window inset + panel +
  * card gap + the card's own content gutter. */
 .agent-workspace[data-artifact-panel="open"] .agent-composer {
-  right: calc(var(--sp-3) + var(--agent-files-w) + var(--sp-5) + var(--sp-8));
+  right: calc(2 * var(--sp-3) + var(--agent-files-w) + var(--sp-8));
   transition: right var(--t-slow) var(--ease-spring);
 }
 
@@ -2095,8 +2097,9 @@ input:focus-visible,
   margin: 0;
 }
 
-/* The shared .folders-search pill, stretched to the panel's reading column. */
-.agent-artifact-search {
+/* The shared .folders-search pill, stretched to the panel's reading column.
+ * (Scoped under the panel so it outranks .folders-search's fixed width.) */
+.agent-artifact-panel .agent-artifact-search {
   width: auto;
   max-width: none;
   margin: var(--sp-1) var(--sp-6) var(--sp-2);
@@ -7589,6 +7592,17 @@ input:focus-visible,
 }
 
 .folders-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* The magnifier reads a step lighter than the placeholder — it's decoration,
+ * not content — and firms up while the field is in use. */
+.folders-search > svg {
+  color: color-mix(in oklch, var(--muted-foreground) 65%, transparent);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.folders-search:focus-within > svg {
   color: var(--muted-foreground);
 }
 
