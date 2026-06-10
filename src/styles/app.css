@@ -9231,3 +9231,450 @@ input:focus-visible,
   text-underline-offset: 2px;
   cursor: pointer;
 }
+
+/* Onboarding wizard ---------------------------------------------------
+ * First-run flow gating the app after sign-in. Reuses the welcome
+ * screen's warm gradient so the two read as one continuous sequence. */
+
+.onboarding-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  --welcome-bg-start: color-mix(
+    in oklch,
+    var(--background) 78%,
+    var(--warm-soft)
+  );
+  --welcome-bg-end: color-mix(
+    in oklch,
+    var(--background) 92%,
+    var(--warm-soft)
+  );
+  background: linear-gradient(
+    180deg,
+    var(--welcome-bg-start) 0%,
+    var(--background) 52%,
+    var(--welcome-bg-end) 100%
+  );
+}
+
+.onboarding-progress {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-7);
+  padding: calc(var(--titlebar-h) + var(--sp-5)) var(--sp-8) var(--sp-5);
+}
+
+.onboarding-progress-stage {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  padding-bottom: var(--sp-1);
+  border-bottom: 2px solid transparent;
+  transition: color var(--t-med) var(--ease-out);
+}
+
+.onboarding-progress-stage[data-state="current"] {
+  color: var(--foreground);
+  border-bottom-color: var(--brand);
+}
+
+.onboarding-progress-stage[data-state="done"] {
+  color: var(--foreground);
+}
+
+.onboarding-body {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  padding: var(--sp-10) var(--sp-8) var(--sp-12);
+}
+
+.onboarding-back {
+  position: absolute;
+  top: var(--sp-6);
+  left: var(--sp-8);
+  border: none;
+  background: transparent;
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+}
+
+.onboarding-back:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.onboarding-step {
+  width: min(100%, 560px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  /* Push the action row toward a stable position so Continue doesn't
+     jump around between short and tall steps. */
+  min-height: 420px;
+}
+
+.onboarding-heading {
+  display: grid;
+  gap: var(--sp-3);
+  text-align: center;
+}
+
+.onboarding-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 400;
+  color: var(--foreground);
+}
+
+.onboarding-subtitle {
+  margin: 0;
+  font-size: var(--fs-lg);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.onboarding-actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-top: var(--sp-5);
+}
+
+.onboarding-continue {
+  min-width: 220px;
+  height: var(--control-xl);
+  justify-content: center;
+}
+
+.onboarding-skip {
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+}
+
+.onboarding-skip:hover {
+  color: var(--foreground);
+}
+
+.onboarding-feature-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.onboarding-feature-list li {
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--body-copy);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-card-grid {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.onboarding-info-card {
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-info-card h2,
+.onboarding-setting-copy h2,
+.onboarding-permission-copy h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-info-card p,
+.onboarding-setting-copy p,
+.onboarding-permission-copy p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.onboarding-footnote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  text-align: center;
+  color: var(--muted-foreground);
+}
+
+.onboarding-footnote a {
+  color: var(--foreground);
+}
+
+.onboarding-setting-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-select {
+  flex-shrink: 0;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.onboarding-kbd {
+  display: inline-block;
+  padding: 1px var(--sp-3);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.onboarding-permission-stack {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.onboarding-permission-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-permission-card[data-granted="true"] {
+  border-color: color-mix(in oklch, var(--success) 35%, transparent);
+}
+
+.onboarding-permission-card[data-deferred="true"] {
+  background: var(--surface-subtle);
+  box-shadow: none;
+}
+
+.onboarding-permission-copy h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.onboarding-permission-check {
+  display: inline-flex;
+  color: var(--success);
+}
+
+.onboarding-permission-card .primary-action {
+  flex-shrink: 0;
+}
+
+.onboarding-practice-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.onboarding-practice-header {
+  padding: var(--sp-4) var(--sp-6);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.onboarding-practice-bubble {
+  display: grid;
+  gap: var(--sp-1);
+  margin: var(--sp-6);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  font-size: var(--fs-md);
+  color: var(--foreground);
+  width: fit-content;
+  max-width: 80%;
+}
+
+.onboarding-practice-sender {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.onboarding-practice-input {
+  display: block;
+  width: calc(100% - var(--sp-6) * 2);
+  margin: 0 var(--sp-6) var(--sp-6);
+  padding: var(--sp-4);
+  border: 1px solid var(--input);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  resize: none;
+}
+
+.onboarding-practice-input:focus-visible {
+  outline: none;
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-practice-success {
+  margin: 0 var(--sp-6) var(--sp-6);
+  font-size: var(--fs-md);
+  color: var(--success);
+}
+
+.onboarding-demo-notes {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-6) var(--sp-6);
+  list-style: none;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.onboarding-demo-notes li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--body-copy);
+}
+
+.onboarding-demo-kind {
+  flex-shrink: 0;
+  padding: 1px var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.onboarding-approval-body {
+  margin: var(--sp-6);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--body-copy);
+}
+
+.onboarding-approval-actions {
+  display: flex;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-6) var(--sp-6);
+}
+
+.onboarding-approval-button {
+  padding: var(--sp-2) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+}
+
+.onboarding-approval-button[data-variant="approve"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.onboarding-honesty-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+  counter-reset: honesty;
+}
+
+.onboarding-honesty-list li {
+  counter-increment: honesty;
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-honesty-list h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-honesty-list h2::before {
+  content: counter(honesty) ". ";
+  color: var(--brand);
+}
+
+.onboarding-honesty-list p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.onboarding-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.onboarding-ack input {
+  margin-top: 3px;
+  accent-color: var(--brand);
+}
