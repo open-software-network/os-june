@@ -1,24 +1,23 @@
-import {
-  CheckIcon,
-  CircleHelpIcon,
-  CircleStopIcon,
-  DownloadIcon,
-  FileIcon,
-  FolderIcon,
-  FolderTreeIcon,
-  MessageSquareIcon,
-  RotateCwIcon,
-  ShieldCheckIcon,
-  WrenchIcon,
-  XIcon,
-} from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
+import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconBubbleWide } from "central-icons/IconBubbleWide";
+import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconCrossMedium } from "central-icons/IconCrossMedium";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconFolders } from "central-icons/IconFolders";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
+import { IconStopCircle } from "central-icons/IconStopCircle";
+import { IconToolbox } from "central-icons/IconToolbox";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
@@ -49,6 +48,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type DragEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -61,6 +61,7 @@ import {
 import { BackButton } from "../ui/BackButton";
 import { EmptyState } from "../ui/EmptyState";
 import { InlineNotice } from "../ui/InlineNotice";
+import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
@@ -70,6 +71,8 @@ import {
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
+  hermesBridgeFilePreview,
+  hermesBridgeFileText,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
@@ -203,6 +206,139 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
       ? "Agent error gallery shown. Run __agentErrors(false) to hide."
       : "Agent error gallery hidden.";
   };
+}
+
+// Dev-tools file viewer seeder (window.__agentFiles). Imports one sample file
+// per preview path — markdown (rendered + source toggle), plain text, JSON,
+// CSV, code, an image, and a binary blob for the no-preview fallback — into
+// the real Hermes workspace, then opens the viewer panel on them. Going
+// through import_hermes_bridge_file_bytes means every preview is fetched back
+// through the same Tauri commands and path validation a real agent file uses.
+// Dev builds only — like the gallery, the handle never ships.
+const AGENT_DEV_FILES_EVENT = "scribe:agent:dev-files";
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__agentFiles = (
+    show: boolean = true,
+  ) => {
+    window.dispatchEvent(
+      new CustomEvent<{ show: boolean }>(AGENT_DEV_FILES_EVENT, {
+        detail: { show },
+      }),
+    );
+    return show
+      ? "Seeding sample files and opening the viewer (needs an open conversation — repeat runs add numbered copies). Run __agentFiles(false) to clear."
+      : "Sample files cleared from the viewer (workspace copies remain).";
+  };
+}
+
+const SAMPLE_MARKDOWN = `# Quarterly review
+
+A sample document that exercises **bold**, *italic*, ~~strikethrough~~,
+\`inline code\`, and [links](https://opensoftware.co).
+
+## Highlights
+
+- Revenue grew 14% quarter over quarter
+- Churn fell below 2%
+- *Notes* shipped to general availability
+
+## Rollout plan
+
+1. Ship the beta to design partners
+2. Collect feedback for two weeks
+3. General availability
+
+> Blockquotes hold paragraphs, lists, or code — anything a block can.
+
+### Numbers
+
+| Metric  | Q1   | Q2   |
+| ------- | ---- | ---- |
+| Revenue | 1.2M | 1.4M |
+| Churn   | 2.4% | 1.9% |
+
+---
+
+\`\`\`ts
+export function growth(previous: number, current: number) {
+  return (current - previous) / previous;
+}
+\`\`\`
+`;
+
+const SAMPLE_JSON = JSON.stringify(
+  {
+    report: "quarterly-review",
+    quarter: "Q2",
+    metrics: { revenue: 1_400_000, churn: 0.019 },
+    highlights: ["revenue", "churn", "notes-ga"],
+  },
+  null,
+  2,
+);
+
+const SAMPLE_CSV = `metric,q1,q2
+revenue,1200000,1400000
+churn,0.024,0.019
+seats,310,355
+`;
+
+const SAMPLE_CODE = `import { growth } from "./growth";
+
+const quarters = [1_200_000, 1_400_000];
+
+export function report() {
+  return {
+    growth: growth(quarters[0], quarters[1]),
+    generatedAt: new Date().toISOString(),
+  };
+}
+`;
+
+const SAMPLE_TEXT = `Plain-text sample.
+
+No markdown extension, so the viewer shows this as monospace text
+rather than a rendered document. Line breaks and    spacing survive.
+`;
+
+function buildSampleArtifactFiles(): { name: string; bytes: Uint8Array }[] {
+  const encoder = new TextEncoder();
+  // 0xFE/0xFF never appear in UTF-8, so the backend's text preview rejects
+  // this and the viewer lands on its no-preview download fallback.
+  const binary = new Uint8Array(512).map((_, index) =>
+    index % 2 ? 0xfe : 0xff,
+  );
+  return [
+    { name: "june-sample.md", bytes: encoder.encode(SAMPLE_MARKDOWN) },
+    { name: "june-sample.txt", bytes: encoder.encode(SAMPLE_TEXT) },
+    { name: "june-sample.json", bytes: encoder.encode(SAMPLE_JSON) },
+    { name: "june-sample.csv", bytes: encoder.encode(SAMPLE_CSV) },
+    { name: "june-sample.ts", bytes: encoder.encode(SAMPLE_CODE) },
+    { name: "june-sample.png", bytes: sampleImageBytes() },
+    { name: "june-sample.bin", bytes: binary },
+  ];
+}
+
+/** Paints a small gradient card on a canvas so the image preview path has a
+ * real PNG to chew on, without bundling a fixture. */
+function sampleImageBytes(): Uint8Array {
+  const canvas = document.createElement("canvas");
+  canvas.width = 480;
+  canvas.height = 320;
+  const context = canvas.getContext("2d");
+  if (context) {
+    const gradient = context.createLinearGradient(0, 0, 480, 320);
+    gradient.addColorStop(0, "#c25a33");
+    gradient.addColorStop(1, "#f4e3d7");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 480, 320);
+    context.fillStyle = "rgba(255, 255, 255, 0.92)";
+    context.font = "600 28px sans-serif";
+    context.fillText("june-sample.png", 24, 168);
+  }
+  const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
+  return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 }
 
 type AgentPanel = "chat" | "skills" | "messaging";
@@ -369,6 +505,12 @@ type AgentAttachment = ImportedHermesFile & {
   id: string;
 };
 
+/** The right-hand file viewer: a list of every file surfaced in the
+ * conversation, or one file opened for reading. */
+type AgentArtifactPanelState =
+  | { view: "list" }
+  | { view: "file"; artifact: AgentArtifact };
+
 type TauriFileDropPayload = {
   paths?: string[];
 };
@@ -495,6 +637,11 @@ export function AgentWorkspace({
   const [filesystemSnapshot, setFilesystemSnapshot] =
     useState<HermesFilesystemSnapshot | null>(null);
   const [filesystemLoading, setFilesystemLoading] = useState(false);
+  const [artifactPanel, setArtifactPanel] =
+    useState<AgentArtifactPanelState | null>(null);
+  // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
+  // the conversation's own artifacts so the viewer can be exercised at will.
+  const [devArtifacts, setDevArtifacts] = useState<AgentArtifact[]>([]);
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
@@ -640,6 +787,55 @@ export function AgentWorkspace({
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
   );
+
+  // The file viewer is scoped to one conversation — files from the previous
+  // session must not linger open after a switch.
+  useEffect(() => {
+    setArtifactPanel(null);
+    setDevArtifacts([]);
+  }, [selectedHermesSessionId, selectedTaskId]);
+
+  // Esc dismisses the file viewer. The card slides away from the toggle pill
+  // when the panel opens, so the keyboard is the close affordance that never
+  // moves; the panel's filter input claims the first Esc to clear itself.
+  const artifactPanelOpen = artifactPanel !== null;
+  useEffect(() => {
+    if (!artifactPanelOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        setArtifactPanel(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [artifactPanelOpen]);
+
+  // Dev-tools sample file seeder (window.__agentFiles, registered at module
+  // scope above): imports one file per preview path into the real workspace
+  // and opens the viewer's list on them.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const onDevFiles = (event: Event) => {
+      const show = (event as CustomEvent<{ show: boolean }>).detail?.show;
+      if (!show) {
+        setDevArtifacts([]);
+        setArtifactPanel(null);
+        return;
+      }
+      void (async () => {
+        const imported: AgentArtifact[] = [];
+        for (const sample of buildSampleArtifactFiles()) {
+          imported.push(
+            await importHermesBridgeFileBytes(sample.name, sample.bytes),
+          );
+        }
+        setDevArtifacts(imported);
+        setArtifactPanel({ view: "list" });
+      })().catch((err: unknown) => setError(messageFromError(err)));
+    };
+    window.addEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
+    return () => window.removeEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
+  }, []);
 
   // New-session hero: greeting + centered composer + suggestion chips, shown
   // whenever nothing is selected — the same condition as the conversation
@@ -2312,6 +2508,17 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
     chatArtifacts,
   );
+  // Every file the conversation has surfaced, in turn order — the session
+  // bar's files button keeps them reachable after their cards scroll away.
+  const surfacedArtifacts = [...turnArtifacts.values()]
+    .flat()
+    .concat(devArtifacts);
+  const downloadArtifact = (artifact: AgentArtifact) =>
+    void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
+  const openArtifact = (artifact: AgentArtifact) =>
+    setArtifactPanel({ view: "file", artifact });
 
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep
@@ -2482,7 +2689,7 @@ export function AgentWorkspace({
                       aria-hidden="true"
                     />
                   ) : (
-                    <FileIcon size={14} />
+                    <IconFileText size={14} />
                   )}
                   <span className="agent-attachment-name">
                     {attachment.name}
@@ -2492,7 +2699,7 @@ export function AgentWorkspace({
                     aria-label={`Remove ${attachment.name}`}
                     onClick={() => removeAttachment(attachment.id)}
                   >
-                    <XIcon size={12} />
+                    <IconCrossSmall size={12} />
                   </button>
                 </span>
               ))}
@@ -2600,11 +2807,8 @@ export function AgentWorkspace({
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
-          onDownloadArtifact={(artifact) =>
-            void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
-              setError(messageFromError(err)),
-            )
-          }
+          onDownloadArtifact={downloadArtifact}
+          onOpenArtifact={openArtifact}
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -2650,7 +2854,7 @@ export function AgentWorkspace({
               aria-label="Cancel task"
               onClick={() => void cancelTask(selectedTask.id)}
             >
-              <CircleStopIcon size={15} />
+              <IconStopCircle size={15} />
             </button>
           ) : null}
           {selectedTask.status === "failed" ||
@@ -2661,7 +2865,7 @@ export function AgentWorkspace({
               aria-label="Retry task"
               onClick={() => void retryTask(selectedTask.id)}
             >
-              <RotateCwIcon size={15} />
+              <IconArrowRotateClockwise size={15} />
             </button>
           ) : null}
         </div>
@@ -2674,11 +2878,8 @@ export function AgentWorkspace({
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
-            onDownloadArtifact={(artifact) =>
-              void downloadHermesBridgeFile(artifact.path).catch(
-                (err: unknown) => setError(messageFromError(err)),
-              )
-            }
+            onDownloadArtifact={downloadArtifact}
+            onOpenArtifact={openArtifact}
             onTopUp={() =>
               void osAccountsTopUp().catch((err: unknown) =>
                 setError(messageFromError(err)),
@@ -2708,10 +2909,19 @@ export function AgentWorkspace({
   ) : null;
 
   return (
-    <section className="agent-workspace" aria-label="Agent">
+    <section
+      className="agent-workspace"
+      aria-label="Agent"
+      data-artifact-panel={artifactPanel ? "open" : undefined}
+    >
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
         <AgentSessionBar
           origin={origin}
+          artifactCount={!newSessionMode ? surfacedArtifacts.length : 0}
+          artifactsOpen={artifactPanel !== null}
+          onToggleArtifacts={() =>
+            setArtifactPanel((open) => (open ? null : { view: "list" }))
+          }
           privacyBadge={generationPrivacyBadge}
           title={
             !newSessionMode && selectedHermesSessionId
@@ -2790,29 +3000,41 @@ export function AgentWorkspace({
           ) : null}
         </section>
       ) : (
-        <div ref={agentScrollRef} className="agent-scroll">
-          <section className="agent-main" aria-label="Agent task details">
-            {galleryErrors ? (
-              <AgentErrorBanner
-                message="Could not connect to Hermes gateway."
-                onRetry={galleryNoop}
-                onDismiss={galleryNoop}
-              />
-            ) : error ? (
-              <AgentErrorBanner
-                message={error}
-                onRetry={
-                  GATEWAY_CONNECTION_ERROR.test(error)
-                    ? () => void retryGatewayConnection()
-                    : undefined
-                }
-                onDismiss={() => setError(null)}
-              />
-            ) : null}
-            {detailContent}
-            {composer}
-          </section>
-        </div>
+        <>
+          <div ref={agentScrollRef} className="agent-scroll">
+            <section className="agent-main" aria-label="Agent task details">
+              {galleryErrors ? (
+                <AgentErrorBanner
+                  message="Could not connect to Hermes gateway."
+                  onRetry={galleryNoop}
+                  onDismiss={galleryNoop}
+                />
+              ) : error ? (
+                <AgentErrorBanner
+                  message={error}
+                  onRetry={
+                    GATEWAY_CONNECTION_ERROR.test(error)
+                      ? () => void retryGatewayConnection()
+                      : undefined
+                  }
+                  onDismiss={() => setError(null)}
+                />
+              ) : null}
+              {detailContent}
+              {composer}
+            </section>
+          </div>
+          {artifactPanel ? (
+            <AgentArtifactPanel
+              artifacts={surfacedArtifacts}
+              state={artifactPanel}
+              onShowList={() => setArtifactPanel({ view: "list" })}
+              onOpen={openArtifact}
+              onDownload={downloadArtifact}
+              onClose={() => setArtifactPanel(null)}
+            />
+          ) : null}
+        </>
       )}
     </section>
   );
@@ -2832,7 +3054,7 @@ function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
       ) : (
         <IconAnonymous size={13} aria-hidden />
       )}
-      {privacyBadge.label}
+      <span className="agent-safety-badge-label">{privacyBadge.label}</span>
     </span>
   );
 }
@@ -2846,12 +3068,18 @@ function AgentSessionBar({
   origin,
   privacyBadge,
   title,
+  artifactCount = 0,
+  artifactsOpen = false,
+  onToggleArtifacts,
   onRename,
   onDelete,
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
   title?: string;
+  artifactCount?: number;
+  artifactsOpen?: boolean;
+  onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
   onDelete?: () => void;
 }) {
@@ -2956,6 +3184,19 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
+        {onToggleArtifacts && artifactCount > 0 ? (
+          <button
+            type="button"
+            className="agent-session-files"
+            aria-label={`View files (${artifactCount})`}
+            title="View files"
+            aria-pressed={artifactsOpen}
+            onClick={onToggleArtifacts}
+          >
+            <IconFiles size={14} />
+            <span aria-hidden>{artifactCount}</span>
+          </button>
+        ) : null}
         <SafetyBadge privacyBadge={privacyBadge} />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
@@ -3076,7 +3317,7 @@ function PanelTabs({
         aria-selected={activePanel === "skills"}
         onClick={() => onChange("skills")}
       >
-        <WrenchIcon size={14} />
+        <IconToolbox size={14} />
         Skills
       </button>
       <button
@@ -3084,7 +3325,7 @@ function PanelTabs({
         aria-selected={activePanel === "messaging"}
         onClick={() => onChange("messaging")}
       >
-        <MessageSquareIcon size={14} />
+        <IconBubbleWide size={14} />
         Messaging
       </button>
     </div>
@@ -3355,7 +3596,7 @@ export function FilesystemPanel({
       ) : (
         <div className="agent-loading">
           <EmptyState
-            icon={<FolderTreeIcon size={24} />}
+            icon={<IconFolders size={24} />}
             title="No files"
             description="No matching agent files were found."
           />
@@ -3381,7 +3622,7 @@ function FilesystemEntryRow({
         style={{ "--agent-file-depth": level } as CSSProperties}
       >
         <span className="agent-files-entry-icon" aria-hidden="true">
-          {isDirectory ? <FolderIcon size={14} /> : <FileIcon size={14} />}
+          {isDirectory ? <IconFolder1 size={14} /> : <IconFileText size={14} />}
         </span>
         <span className="agent-files-entry-name">{entry.name}</span>
         <span className="agent-files-entry-meta">
@@ -3424,7 +3665,7 @@ function MessagingPlatformDetail({
     return (
       <div className="agent-messaging-detail">
         <EmptyState
-          icon={<MessageSquareIcon size={24} />}
+          icon={<IconBubbleWide size={24} />}
           title="No messaging platform"
           description="No matching Hermes messaging platform is available."
         />
@@ -3601,7 +3842,7 @@ function ManagementToolbar({
         placeholder={placeholder}
       />
       <button type="button" disabled={loading} onClick={onRefresh}>
-        <RotateCwIcon size={14} />
+        <IconArrowRotateClockwise size={14} />
         Refresh
       </button>
     </div>
@@ -3776,7 +4017,7 @@ function AgentResponseGallery({
           aria-label="Close gallery"
           onClick={onClose}
         >
-          <XIcon size={15} />
+          <IconCrossMedium size={15} />
         </button>
       </div>
       {sections.map((section) => (
@@ -3811,6 +4052,7 @@ function AgentChatTurnRow({
   onApproval,
   onClarify,
   onDownloadArtifact,
+  onOpenArtifact,
   onTopUp,
   turn,
 }: {
@@ -3826,6 +4068,7 @@ function AgentChatTurnRow({
     answer: string,
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
+  onOpenArtifact?: (artifact: AgentArtifact) => void;
   onTopUp?: () => void;
   turn: AgentChatTurn;
 }) {
@@ -3930,6 +4173,7 @@ function AgentChatTurnRow({
         <AgentArtifactList
           artifacts={artifacts ?? []}
           onDownload={onDownloadArtifact}
+          onOpen={onOpenArtifact}
         />
         {textParts.length === 0 && nonTextParts.length === 0 ? (
           <p className="agent-assistant-empty">
@@ -3988,7 +4232,7 @@ function AgentErrorBanner({
           </button>
         ) : null}
         <button type="button" aria-label="Dismiss" onClick={onDismiss}>
-          <XIcon size={14} />
+          <IconCrossMedium size={14} />
         </button>
       </div>
     </div>
@@ -4037,7 +4281,7 @@ function ClarifyPart({
   return (
     <article className="agent-clarify-card" data-status={part.status}>
       <span className="agent-tool-icon">
-        <MessageSquareIcon size={14} />
+        <IconBubbleWide size={14} />
       </span>
       <div>
         <div className="agent-tool-title">
@@ -4155,7 +4399,7 @@ function ApprovalPart({
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
-        <ShieldCheckIcon size={14} />
+        <IconShieldCheck size={14} />
       </span>
       <div>
         <div className="agent-tool-title">
@@ -4188,9 +4432,9 @@ function ApprovalPart({
         {resolved ? (
           <p className="agent-approval-result" data-choice={activeChoice}>
             {activeChoice === "deny" ? (
-              <XIcon size={14} />
+              <IconCrossMedium size={14} />
             ) : (
-              <CheckIcon size={14} />
+              <IconCheckmark1Small size={14} />
             )}
             {approvalChoiceLabel(
               activeChoice,
@@ -4209,7 +4453,7 @@ function ApprovalPart({
               disabled={disabled}
               onClick={() => setExplainOpen((value) => !value)}
             >
-              <CircleHelpIcon size={14} />
+              <IconCircleQuestionmark size={14} />
               {explainOpen ? "Hide explanation" : "Explain first"}
             </button>
             <button
@@ -4393,9 +4637,11 @@ function AgentToolPartRow({
 function AgentArtifactList({
   artifacts,
   onDownload,
+  onOpen,
 }: {
   artifacts: AgentArtifact[];
   onDownload?: (artifact: AgentArtifact) => void;
+  onOpen?: (artifact: AgentArtifact) => void;
 }) {
   if (!artifacts.length) return null;
   return (
@@ -4405,6 +4651,7 @@ function AgentArtifactList({
           key={artifact.path}
           artifact={artifact}
           onDownload={onDownload}
+          onOpen={onOpen}
         />
       ))}
     </div>
@@ -4430,13 +4677,15 @@ function artifactIcon(path: string): typeof IconFileText {
 function AgentArtifactCard({
   artifact,
   onDownload,
+  onOpen,
 }: {
   artifact: AgentArtifact;
   onDownload?: (artifact: AgentArtifact) => void;
+  onOpen?: (artifact: AgentArtifact) => void;
 }) {
   const FileTypeIcon = artifactIcon(artifact.path);
-  return (
-    <article className="agent-artifact-card">
+  const summary = (
+    <>
       <span className="agent-artifact-icon">
         <FileTypeIcon size={18} />
       </span>
@@ -4448,6 +4697,23 @@ function AgentArtifactCard({
           </span>
         ) : null}
       </div>
+    </>
+  );
+
+  return (
+    <article className="agent-artifact-card">
+      {onOpen ? (
+        <button
+          type="button"
+          className="agent-artifact-open"
+          aria-label={`Open ${artifact.name}`}
+          onClick={() => onOpen(artifact)}
+        >
+          {summary}
+        </button>
+      ) : (
+        <div className="agent-artifact-open">{summary}</div>
+      )}
       {onDownload ? (
         <button
           type="button"
@@ -4456,18 +4722,459 @@ function AgentArtifactCard({
           title="Download"
           onClick={() => onDownload(artifact)}
         >
-          <DownloadIcon size={16} />
+          <IconArrowInbox size={16} />
         </button>
       ) : null}
     </article>
   );
 }
 
-function MarkdownContent({ markdown }: { markdown: string }) {
-  return <div className="agent-markdown">{renderMarkdownBlocks(markdown)}</div>;
+/** What the viewer fetched for the open file. Binary or oversized files
+ * resolve to `none` and fall back to the download affordance. */
+type AgentArtifactPreview =
+  | { kind: "loading" }
+  | { kind: "image"; dataUrl: string }
+  | { kind: "text"; text: string }
+  | { kind: "none" };
+
+// Files panel width — user-resizable between these bounds (and never past
+// roughly half the window), remembered across sessions. The live value is
+// the --agent-files-w custom property on .app-shell, which the panel, the
+// main card's margin, and the composer all share.
+const AGENT_FILES_WIDTH_KEY = "scribe:agent:files-panel-width";
+const FILES_PANEL_MIN_W = 300;
+const FILES_PANEL_MAX_W = 600;
+
+function clampFilesPanelWidth(width: number) {
+  const viewportCap =
+    typeof window === "undefined"
+      ? FILES_PANEL_MAX_W
+      : Math.round(window.innerWidth * 0.48);
+  const max = Math.max(
+    FILES_PANEL_MIN_W,
+    Math.min(FILES_PANEL_MAX_W, viewportCap),
+  );
+  return Math.min(Math.max(Math.round(width), FILES_PANEL_MIN_W), max);
 }
 
-function renderMarkdownBlocks(markdown: string) {
+function AgentArtifactPanel({
+  artifacts,
+  state,
+  onShowList,
+  onOpen,
+  onDownload,
+  onClose,
+}: {
+  artifacts: AgentArtifact[];
+  state: AgentArtifactPanelState;
+  onShowList: () => void;
+  onOpen: (artifact: AgentArtifact) => void;
+  onDownload: (artifact: AgentArtifact) => void;
+  onClose: () => void;
+}) {
+  const artifact = state.view === "file" ? state.artifact : null;
+  const [preview, setPreview] = useState<AgentArtifactPreview>({
+    kind: "loading",
+  });
+  const [showSource, setShowSource] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const panelRef = useRef<HTMLElement>(null);
+
+  // Restore the remembered width once per panel mount. The property lives on
+  // .app-shell (not this element) because the main card's slide-over margin
+  // and the composer's right inset consume it too.
+  useEffect(() => {
+    const shell = panelRef.current?.closest(".app-shell");
+    if (!(shell instanceof HTMLElement)) return;
+    const stored = Number.parseInt(
+      window.localStorage.getItem(AGENT_FILES_WIDTH_KEY) ?? "",
+      10,
+    );
+    if (Number.isFinite(stored)) {
+      shell.style.setProperty(
+        "--agent-files-w",
+        `${clampFilesPanelWidth(stored)}px`,
+      );
+    }
+  }, []);
+
+  // Drag-resize from the panel's left edge, mirroring the sidebar handle:
+  // the var tracks the cursor with transitions suppressed (the
+  // data-files-resizing attribute), and the final width persists on release.
+  const startResize = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const shell = event.currentTarget.closest(".app-shell");
+    const startWidth = panelRef.current?.offsetWidth;
+    if (!(shell instanceof HTMLElement) || !startWidth) return;
+    shell.setAttribute("data-files-resizing", "true");
+    const startX = event.clientX;
+    const onMove = (move: PointerEvent) => {
+      const next = clampFilesPanelWidth(startWidth + (startX - move.clientX));
+      shell.style.setProperty("--agent-files-w", `${next}px`);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      shell.removeAttribute("data-files-resizing");
+      const finalWidth = panelRef.current?.offsetWidth;
+      if (finalWidth) {
+        window.localStorage.setItem(AGENT_FILES_WIDTH_KEY, `${finalWidth}`);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }, []);
+
+  const artifactPath = artifact?.path;
+  useEffect(() => {
+    setShowSource(false);
+    if (!artifactPath) return;
+    let cancelled = false;
+    setPreview({ kind: "loading" });
+    const load: Promise<AgentArtifactPreview> = isPreviewableImagePath(
+      artifactPath,
+    )
+      ? hermesBridgeFilePreview(artifactPath).then((dataUrl) =>
+          dataUrl
+            ? ({ kind: "image", dataUrl } as const)
+            : ({ kind: "none" } as const),
+        )
+      : hermesBridgeFileText(artifactPath).then((text) =>
+          text !== null
+            ? ({ kind: "text", text } as const)
+            : ({ kind: "none" } as const),
+        );
+    void load
+      .then((next) => {
+        if (!cancelled) setPreview(next);
+      })
+      .catch(() => {
+        if (!cancelled) setPreview({ kind: "none" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactPath]);
+
+  useEffect(() => {
+    setQuery("");
+    setFilterOpen(false);
+  }, [artifactPath, state.view]);
+
+  const markdown =
+    artifact !== null &&
+    isMarkdownPath(artifact.path) &&
+    preview.kind === "text";
+
+  // In the list the magnifier filters file names; on a text preview it finds
+  // within the document. Images and binaries have nothing to search.
+  const searchable = !artifact || preview.kind === "text";
+  const filterLabel = artifact ? "Find in file" : "Filter files";
+
+  // Find-in-file re-renders the whole document, so the highlight trails the
+  // keystrokes slightly instead of re-parsing a near-2 MB file on each one.
+  // Clearing syncs immediately — Esc/X should unhighlight without lag. The
+  // list filter stays live; it only re-renders its rows.
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    if (!query) {
+      setDebouncedQuery("");
+      return;
+    }
+    const id = window.setTimeout(() => setDebouncedQuery(query), 150);
+    return () => window.clearTimeout(id);
+  }, [query]);
+  const docHighlight = artifact
+    ? debouncedQuery.trim() || undefined
+    : undefined;
+
+  // Position-aware scroll fades on the document body (same recipe as the
+  // dictation history dialog): the header has no divider, so the top fade is
+  // what tells you content has scrolled up behind it.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [fade, setFade] = useState({ top: false, bottom: false });
+  const updateFade = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const canScroll = el.scrollHeight - el.clientHeight > 1;
+    const atTop = el.scrollTop <= 1;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    setFade({ top: canScroll && !atTop, bottom: canScroll && !atBottom });
+  }, []);
+  useEffect(() => {
+    const id = requestAnimationFrame(updateFade);
+    const el = bodyRef.current;
+    if (el && typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(updateFade);
+      observer.observe(el);
+      return () => {
+        cancelAnimationFrame(id);
+        observer.disconnect();
+      };
+    }
+    return () => cancelAnimationFrame(id);
+  }, [updateFade, preview, state.view]);
+
+  const q = query.trim().toLowerCase();
+  const visibleArtifacts = q
+    ? artifacts.filter((item) => item.name.toLowerCase().includes(q))
+    : artifacts;
+
+  return (
+    <>
+      <div
+        className="agent-files-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize files panel"
+        onPointerDown={startResize}
+      />
+      <aside ref={panelRef} className="agent-artifact-panel" aria-label="Files">
+        <header className="agent-artifact-panel-bar">
+          {artifact ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="All files"
+              title="All files"
+              onClick={onShowList}
+            >
+              <IconChevronLeftSmall size={16} />
+            </button>
+          ) : null}
+          {searchable && filterOpen ? (
+            <label className="folders-search agent-artifact-filter">
+              <IconMagnifyingGlass size={14} />
+              <input
+                type="search"
+                value={query}
+                placeholder={filterLabel}
+                aria-label={filterLabel}
+                autoFocus
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                onBlur={() => {
+                  if (!query.trim()) setFilterOpen(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  // Esc walks back one step at a time — clear the query,
+                  // collapse the filter — before a final Esc (bubbling to
+                  // the workspace listener) closes the panel.
+                  event.stopPropagation();
+                  if (query) setQuery("");
+                  else setFilterOpen(false);
+                }}
+              />
+              <button
+                type="button"
+                className="agent-artifact-filter-clear"
+                aria-label={query ? "Clear filter" : "Close filter"}
+                title={query ? "Clear" : "Close"}
+                // Mirrors the Esc ladder for the mouse: clear the query
+                // first, then collapse back to the magnifier. mousedown is
+                // suppressed so clearing doesn't blur (and collapse) the
+                // field.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  if (query) setQuery("");
+                  else setFilterOpen(false);
+                }}
+              >
+                <IconCrossSmall size={12} />
+              </button>
+            </label>
+          ) : (
+            <h2 className="agent-artifact-panel-title">
+              {artifact ? artifact.name : "Files"}
+            </h2>
+          )}
+          {searchable && !filterOpen ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={filterLabel}
+              title={filterLabel}
+              onClick={() => setFilterOpen(true)}
+            >
+              <IconMagnifyingGlass size={15} />
+            </button>
+          ) : null}
+          {artifact ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={`Download ${artifact.name}`}
+              title="Download"
+              onClick={() => onDownload(artifact)}
+            >
+              <IconArrowInbox size={15} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Close files"
+            title="Close"
+            onClick={onClose}
+          >
+            <IconCrossMedium size={15} />
+          </button>
+        </header>
+        {markdown ? (
+          <div className="agent-artifact-panel-mode">
+            <SegmentedControl
+              aria-label="File view"
+              value={showSource ? "source" : "preview"}
+              onValueChange={(value) => setShowSource(value === "source")}
+              options={[
+                { value: "preview", label: "Preview" },
+                { value: "source", label: "Source" },
+              ]}
+            />
+          </div>
+        ) : null}
+        {artifact ? (
+          <div
+            ref={bodyRef}
+            className="agent-artifact-panel-body"
+            data-kind={preview.kind}
+            data-fade-top={fade.top || undefined}
+            data-fade-bottom={fade.bottom || undefined}
+            onScroll={updateFade}
+          >
+            {preview.kind === "loading" ? (
+              <Spinner />
+            ) : preview.kind === "image" ? (
+              <img
+                className="agent-artifact-panel-image"
+                src={preview.dataUrl}
+                alt={artifact.name}
+              />
+            ) : preview.kind === "text" && markdown && !showSource ? (
+              <MarkdownContent
+                markdown={preview.text}
+                highlight={docHighlight}
+              />
+            ) : preview.kind === "text" ? (
+              <pre className="agent-artifact-source">
+                {docHighlight
+                  ? highlightText(preview.text, docHighlight, "source")
+                  : preview.text}
+              </pre>
+            ) : (
+              <div className="agent-artifact-panel-empty">
+                <p>No preview for this file.</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => onDownload(artifact)}
+                >
+                  <IconArrowInbox size={14} />
+                  Download
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <div
+              ref={bodyRef}
+              className="agent-artifact-panel-body"
+              data-kind="list"
+              data-fade-top={fade.top || undefined}
+              data-fade-bottom={fade.bottom || undefined}
+              onScroll={updateFade}
+            >
+              {visibleArtifacts.length ? (
+                <ul className="agent-artifact-panel-list">
+                  {visibleArtifacts.map((item) => {
+                    const FileTypeIcon = artifactIcon(item.path);
+                    return (
+                      <li key={item.path}>
+                        <button
+                          type="button"
+                          className="agent-artifact-row"
+                          onClick={() => onOpen(item)}
+                        >
+                          <span className="agent-artifact-icon">
+                            <FileTypeIcon size={18} />
+                          </span>
+                          <span className="agent-artifact-row-name">
+                            {item.name}
+                          </span>
+                          <span className="agent-artifact-row-meta">
+                            {formatBytes(item.size)}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="agent-artifact-search-empty">No files match.</p>
+              )}
+            </div>
+          </>
+        )}
+      </aside>
+    </>
+  );
+}
+
+function isPreviewableImagePath(path: string) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(path);
+}
+
+function isMarkdownPath(path: string) {
+  return /\.(md|markdown|mdx)$/i.test(path);
+}
+
+function MarkdownContent({
+  markdown,
+  highlight,
+}: {
+  markdown: string;
+  highlight?: string;
+}) {
+  return (
+    <div className="agent-markdown">
+      {renderMarkdownBlocks(markdown, highlight)}
+    </div>
+  );
+}
+
+/** Wraps case-insensitive matches of `highlight` in <mark>, leaving the text
+ * untouched when there's nothing to find. Every text emission point in the
+ * markdown renderer funnels through here so find-in-file can light up
+ * rendered documents, not just raw source. */
+function highlightText(
+  text: string,
+  highlight: string | undefined,
+  keySeed: string,
+): ReactNode[] {
+  const needle = highlight?.toLowerCase();
+  if (!needle) return [text];
+  const lower = text.toLowerCase();
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let count = 0;
+  for (;;) {
+    const at = lower.indexOf(needle, cursor);
+    if (at < 0) break;
+    if (at > cursor) nodes.push(text.slice(cursor, at));
+    nodes.push(
+      <mark key={`hl-${keySeed}-${count++}`}>
+        {text.slice(at, at + needle.length)}
+      </mark>,
+    );
+    cursor = at + needle.length;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
+function renderMarkdownBlocks(markdown: string, highlight?: string) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -4477,7 +5184,9 @@ function renderMarkdownBlocks(markdown: string) {
     const text = paragraph.join("\n").trim();
     paragraph = [];
     if (!text) return;
-    blocks.push(<p key={`p-${key++}`}>{renderInlineMarkdown(text, key)}</p>);
+    blocks.push(
+      <p key={`p-${key++}`}>{renderInlineMarkdown(text, key, highlight)}</p>,
+    );
   };
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -4502,7 +5211,7 @@ function renderMarkdownBlocks(markdown: string) {
       if (body.trim()) {
         blocks.push(
           <pre key={`code-${key++}`}>
-            <code>{body}</code>
+            <code>{highlightText(body, highlight, `code-${key}`)}</code>
           </pre>,
         );
       }
@@ -4528,7 +5237,7 @@ function renderMarkdownBlocks(markdown: string) {
       index -= 1;
       blocks.push(
         <blockquote key={`quote-${key++}`}>
-          {renderMarkdownBlocks(quoted.join("\n"))}
+          {renderMarkdownBlocks(quoted.join("\n"), highlight)}
         </blockquote>,
       );
       continue;
@@ -4562,7 +5271,9 @@ function renderMarkdownBlocks(markdown: string) {
             <thead>
               <tr>
                 {header.map((cell, cellIndex) => (
-                  <th key={cellIndex}>{renderInlineMarkdown(cell, key)}</th>
+                  <th key={cellIndex}>
+                    {renderInlineMarkdown(cell, key, highlight)}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -4570,7 +5281,9 @@ function renderMarkdownBlocks(markdown: string) {
               {rows.map((row, rowIndex) => (
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
-                    <td key={cellIndex}>{renderInlineMarkdown(cell, key)}</td>
+                    <td key={cellIndex}>
+                      {renderInlineMarkdown(cell, key, highlight)}
+                    </td>
                   ))}
                 </tr>
               ))}
@@ -4585,7 +5298,7 @@ function renderMarkdownBlocks(markdown: string) {
     if (heading) {
       flushParagraph();
       const level = Math.min(heading[1].length, 3);
-      const content = renderInlineMarkdown(heading[2], key);
+      const content = renderInlineMarkdown(heading[2], key, highlight);
       blocks.push(
         level === 1 ? (
           <h2 key={`h-${key++}`}>{content}</h2>
@@ -4614,7 +5327,7 @@ function renderMarkdownBlocks(markdown: string) {
       index -= 1;
       const listItems = items.map((item, itemIndex) => (
         <li key={`li-${key}-${itemIndex}`}>
-          {renderInlineMarkdown(item, key + itemIndex)}
+          {renderInlineMarkdown(item, key + itemIndex, highlight)}
         </li>
       ));
       blocks.push(
@@ -4634,8 +5347,14 @@ function renderMarkdownBlocks(markdown: string) {
   return blocks;
 }
 
-function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
+function renderInlineMarkdown(
+  text: string,
+  keySeed: number,
+  highlight?: string,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
+  const mark = (value: string, slot: string) =>
+    highlightText(value, highlight, `${keySeed}-${slot}`);
   const pattern =
     /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
@@ -4643,18 +5362,30 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
   let index = 0;
   while ((match = pattern.exec(text))) {
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+      nodes.push(...mark(text.slice(lastIndex, match.index), `g${index}`));
     }
     if (match[2]) {
       nodes.push(
-        <strong key={`strong-${keySeed}-${index}`}>{match[2]}</strong>,
+        <strong key={`strong-${keySeed}-${index}`}>
+          {mark(match[2], `s${index}`)}
+        </strong>,
       );
     } else if (match[3]) {
-      nodes.push(<em key={`em-${keySeed}-${index}`}>{match[3]}</em>);
+      nodes.push(
+        <em key={`em-${keySeed}-${index}`}>{mark(match[3], `e${index}`)}</em>,
+      );
     } else if (match[4]) {
-      nodes.push(<del key={`del-${keySeed}-${index}`}>{match[4]}</del>);
+      nodes.push(
+        <del key={`del-${keySeed}-${index}`}>
+          {mark(match[4], `d${index}`)}
+        </del>,
+      );
     } else if (match[5]) {
-      nodes.push(<code key={`code-${keySeed}-${index}`}>{match[5]}</code>);
+      nodes.push(
+        <code key={`code-${keySeed}-${index}`}>
+          {mark(match[5], `c${index}`)}
+        </code>,
+      );
     } else if (match[6] && match[7]) {
       nodes.push(
         <a
@@ -4663,7 +5394,7 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
           rel="noreferrer"
           target="_blank"
         >
-          {match[6]}
+          {mark(match[6], `a${index}`)}
         </a>,
       );
     }
@@ -4671,7 +5402,7 @@ function renderInlineMarkdown(text: string, keySeed: number): ReactNode[] {
     index += 1;
   }
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+    nodes.push(...mark(text.slice(lastIndex), "t"));
   }
   return nodes;
 }

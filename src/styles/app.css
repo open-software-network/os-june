@@ -202,25 +202,58 @@ input:focus-visible,
   cursor: col-resize;
 }
 
-.sidebar-resize-handle::before {
+/* The full strip drags; the visible affordance is a short centered pill —
+ * quieter than a window-height line, darker than the old one so it actually
+ * reads as a grabber when it appears. */
+.sidebar-resize-handle::before,
+.agent-files-resize-handle::before {
   content: "";
   position: absolute;
-  top: var(--sp-4);
-  bottom: var(--sp-8);
+  top: 50%;
   left: 7px;
   width: 2px;
+  height: min(var(--resize-grabber-h), 50%);
   border-radius: var(--r-pill);
   background: transparent;
+  transform: translateY(-50%);
   transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .sidebar-resize-handle:hover::before,
-.app-shell[data-sidebar-resizing="true"] .sidebar-resize-handle::before {
-  background: color-mix(in oklch, var(--foreground) 16%, transparent);
+.app-shell[data-sidebar-resizing="true"] .sidebar-resize-handle::before,
+.agent-files-resize-handle:hover::before,
+.app-shell[data-files-resizing="true"] .agent-files-resize-handle::before {
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .app-shell[data-sidebar="collapsed"] .sidebar-resize-handle {
   display: none;
+}
+
+/* Files panel edge — same anatomy as the sidebar handle, fixed alongside the
+ * panel and tracking its width variable. */
+.agent-files-resize-handle {
+  position: fixed;
+  top: calc(var(--titlebar-h) + var(--sp-2));
+  bottom: var(--sp-3);
+  /* The 12px hit strip is centered on the --sp-3 card-to-panel gap, lapping
+   * the card and panel edges invisibly; the pill lands mid-gap. */
+  right: calc(var(--agent-files-w) + var(--sp-3) - 2px);
+  z-index: 71;
+  width: 12px;
+  cursor: col-resize;
+}
+
+.agent-files-resize-handle::before {
+  left: 5px;
+}
+
+/* Width tracks the cursor raw while dragging — the slide-over transitions
+ * would lag the pointer. */
+.app-shell[data-files-resizing="true"] .main-panel,
+.app-shell[data-files-resizing="true"] .agent-composer,
+.app-shell[data-files-resizing="true"] .agent-artifact-panel {
+  transition: none;
 }
 
 /* Agent ------------------------------------------------------------- */
@@ -236,6 +269,7 @@ input:focus-visible,
   width: 100%;
   align-self: stretch;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   margin: 0 auto;
 }
@@ -255,6 +289,10 @@ input:focus-visible,
 
 .main-panel-body[data-active-view="agent"] .workspace {
   grid-template-rows: minmax(0, 1fr);
+  /* The column must be pinned like the row: an auto track can't shrink below
+   * the breadcrumb bar's nowrap min-content, so a narrow card would lay the
+   * conversation out wider than itself and clip at the card edge. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .main-panel-body[data-note-detail-scroller="true"] .workspace {
@@ -527,18 +565,34 @@ input:focus-visible,
 
 /* Compact private-mode badge sitting under the title; full policy text lives in
  * the native tooltip. */
+/* Detail-bar pills share the control height of the back chevron and the
+ * overflow trigger so the actions row reads as one family. */
 .agent-safety-badge {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
   width: fit-content;
-  padding: 2px var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
   cursor: default;
+}
+
+/* When the bar runs tight (files panel out, narrow window) the badge keeps
+ * the shield and sheds its label rather than wrapping. */
+.detail-bar {
+  container-type: inline-size;
+}
+
+@container (max-width: 600px) {
+  .agent-safety-badge-label {
+    display: none;
+  }
 }
 
 .agent-safety-badge svg {
@@ -1382,6 +1436,10 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-lg);
   line-height: 1.6;
+  /* Workspace paths and bare URLs are unbroken strings — wrap them rather
+   * than letting them push past the bubble or column. Only kicks in when a
+   * word would actually overflow. */
+  overflow-wrap: anywhere;
 }
 
 .agent-markdown > :first-child {
@@ -1780,7 +1838,7 @@ input:focus-visible,
  * height so it reads as perfectly nested, not floating. */
 .agent-artifact-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
   max-width: 440px;
@@ -1789,6 +1847,29 @@ input:focus-visible,
   padding: var(--sp-1);
   padding-right: var(--sp-3);
   background: var(--card);
+}
+
+/* The icon tile + name region — a quiet button when the card can open in
+ * the viewer panel, a plain div in read-only contexts (dev gallery). The
+ * border picks up the hover emphasis (no fill swap: the card is white on
+ * white, a fill would fight the inset tile). */
+.agent-artifact-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-artifact-card:has(button.agent-artifact-open):hover {
+  border-color: var(--border);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
 }
 
 /* Inner radius = outer radius − inset, so the tile's corners track the card's. */
@@ -1853,6 +1934,347 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* Artifact viewer ----------------------------------------------------
+ * The files panel is its own card on the background surface — a sibling of
+ * .main-panel, not a box inside it. It fixes to the window's right edge with
+ * the same insets, radius, and shadow as the main card, and the main card
+ * slides left (via the :has() margin below) to accept it. Fixed top/bottom
+ * anchoring also guarantees the panel a bounded height, so its body always
+ * scrolls no matter what the chat column is doing.
+ *
+ * --agent-files-w lives on .app-shell because three fixed/sibling boxes
+ * share it: the panel, the main card's margin, and the agent composer. */
+.app-shell {
+  --agent-files-w: clamp(320px, 36vw, 460px);
+}
+
+.main-panel {
+  transition: margin-right var(--t-slow) var(--ease-spring);
+}
+
+.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
+  margin-right: calc(var(--agent-files-w) + 2 * var(--sp-3));
+}
+
+.agent-artifact-panel {
+  position: fixed;
+  top: calc(var(--titlebar-h) + var(--sp-2));
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: var(--agent-files-w);
+  border-radius: var(--r-window);
+  background: var(--card);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+  overflow: hidden;
+  animation: agent-artifact-panel-in var(--t-slow) var(--ease-spring);
+}
+
+@keyframes agent-artifact-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(100% + var(--sp-3)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-artifact-panel {
+    animation: none;
+  }
+
+  .main-panel {
+    transition: none;
+  }
+}
+
+/* While the panel is out, the fixed composer hands its right side over to
+ * the panel instead of spanning the whole window: window inset + panel +
+ * card gap + the card's own content gutter. */
+.agent-workspace[data-artifact-panel="open"] .agent-composer {
+  right: calc(2 * var(--sp-3) + var(--agent-files-w) + var(--sp-8));
+  transition: right var(--t-slow) var(--ease-spring);
+}
+
+/* No divider under the header — the body's top scroll fade is what signals
+ * content passing underneath (same trick as the dictation history dialog). */
+.agent-artifact-panel-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-5) var(--sp-2) var(--sp-6);
+}
+
+/* Document titles read in the serif, like note titles — the panel is a
+ * reading surface, not chrome. */
+.agent-artifact-panel-title {
+  flex: 1;
+  overflow: hidden;
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* When the back chevron leads, it supplies the left inset. */
+.agent-artifact-panel-bar > .icon-button:first-child {
+  margin-left: calc(-1 * var(--sp-2));
+}
+
+.agent-artifact-panel-mode {
+  display: flex;
+  padding: var(--sp-1) var(--sp-6) 0;
+}
+
+.agent-artifact-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-5) var(--sp-6) var(--sp-7);
+  overscroll-behavior: contain;
+  --fade: 28px;
+}
+
+.agent-artifact-panel-body[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+}
+
+.agent-artifact-panel-body[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+}
+
+.agent-artifact-panel-body:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+}
+
+.agent-artifact-panel-body[data-kind="list"] {
+  padding: var(--sp-2) var(--sp-4) var(--sp-4);
+}
+
+.agent-artifact-panel-body[data-kind="loading"],
+.agent-artifact-panel-body[data-kind="none"] {
+  display: grid;
+  place-items: center;
+}
+
+.agent-artifact-panel-image {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--background);
+}
+
+.agent-artifact-source {
+  margin: 0;
+  color: var(--body-copy);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-artifact-panel-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-4);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.agent-artifact-panel-empty p {
+  margin: 0;
+}
+
+/* The header filter takes the title's slot while open — the shared
+ * .folders-search pill at control height, with room for its clear button.
+ * (Scoped under the panel so it outranks .folders-search's fixed width.) */
+.agent-artifact-panel .agent-artifact-filter {
+  flex: 1;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  width: auto;
+  max-width: none;
+  height: var(--control-md);
+  margin: 0;
+  border-color: transparent;
+  background: var(--surface-subtle);
+  animation: agent-artifact-filter-in var(--t-med) var(--ease-spring);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* The fill IS the surface here, so the shared focus ring border would just
+ * muddy it — focus reads as a slightly deeper fill (plus the caret) instead. */
+.agent-artifact-panel .agent-artifact-filter:focus-within {
+  border-color: transparent;
+  background: color-mix(in oklch, var(--muted) 85%, transparent);
+}
+
+@keyframes agent-artifact-filter-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--sp-3));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-artifact-panel .agent-artifact-filter {
+    animation: none;
+  }
+}
+
+.agent-artifact-panel-body mark {
+  border-radius: var(--sp-px);
+  background: var(--warm-soft);
+  color: inherit;
+}
+
+/* Lives on the gray pill, so contrast comes from the glyph (foreground-
+ * leaning) and a darkening hover wash — a --muted circle would vanish into
+ * the fill. */
+.agent-artifact-filter-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--r-pill);
+  padding: 0;
+  background: transparent;
+  color: var(--body-copy);
+}
+
+.agent-artifact-filter-clear:hover {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+}
+
+.agent-artifact-search-empty {
+  margin: var(--sp-4) var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.agent-artifact-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* List rows echo the chat's file cards — same icon tile, same quiet type —
+ * minus the card border, so the list reads as one surface. */
+.agent-artifact-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  border: 0;
+  border-radius: var(--r-md);
+  padding: var(--sp-1);
+  padding-right: var(--sp-3);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-artifact-row:hover {
+  background: var(--surface-subtle);
+}
+
+/* In the borderless list the card tile reads too heavy — soften the fill
+ * and thin the glyph (the set ships at stroke-2) so the column stays quiet. */
+.agent-artifact-row .agent-artifact-icon {
+  background: var(--surface-subtle);
+}
+
+.agent-artifact-row .agent-artifact-icon svg {
+  stroke-width: 1.5;
+}
+
+.agent-artifact-row:hover .agent-artifact-icon {
+  background: var(--muted);
+}
+
+.agent-artifact-row-name {
+  overflow: hidden;
+  color: var(--body-copy);
+  font-size: var(--fs-md);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifact-row-meta {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+/* Session bar files toggle — sized and shaped like the safety badge beside
+ * it, with the glyph a step lighter than the count so the number carries. */
+.agent-session-files {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  border: 0;
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-3);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-session-files svg {
+  color: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
+}
+
+.agent-session-files:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.agent-session-files[aria-pressed="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.agent-session-files:hover svg,
+.agent-session-files[aria-pressed="true"] svg {
+  color: var(--muted-foreground);
+}
 /* The whole thinking layer sits at body size — muted color (not a size
  * step-down) is what separates it from the answer. */
 .agent-reasoning {
@@ -7328,6 +7750,23 @@ input:focus-visible,
 }
 
 .folders-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.folders-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+/* The magnifier reads a step lighter than the placeholder — it's decoration,
+ * not content — and firms up while the field is in use. */
+.folders-search > svg {
+  color: color-mix(in oklch, var(--muted-foreground) 65%, transparent);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.folders-search:focus-within > svg {
   color: var(--muted-foreground);
 }
 
