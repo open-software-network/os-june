@@ -389,6 +389,22 @@ pub fn os_accounts_top_up() -> Result<(), AppError> {
     open_in_browser(cfg.accounts_url.trim_end_matches('/'))
 }
 
+/// Opens the accounts portal in the default browser. The webview swallows
+/// `target="_blank"` anchors, so any in-app "go to the portal" affordance
+/// (trial gate, billing) must route through this command.
+#[tauri::command]
+pub fn os_accounts_open_portal() -> Result<(), AppError> {
+    let cfg = Config::load();
+    let url = cfg.accounts_url.trim_end_matches('/');
+    if url.is_empty() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    open_in_browser(url)
+}
+
 /// Register the deep-link handler at app setup. Drains any in-flight
 /// login's callback slot when an `osscribe://auth/callback?...` URL
 /// arrives — works in both cold-launch (OS starts the app with the URL)

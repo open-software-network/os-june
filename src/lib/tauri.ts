@@ -1042,6 +1042,12 @@ export async function osAccountsTopUp() {
   return invoke<void>("os_accounts_top_up");
 }
 
+/** Opens the accounts portal in the default browser — the webview swallows
+ * target="_blank" anchors, so portal navigation must go through Rust. */
+export async function osAccountsOpenPortal() {
+  return invoke<void>("os_accounts_open_portal");
+}
+
 export async function dictationSettings() {
   return invoke<DictationSettingsResponse>("dictation_settings");
 }

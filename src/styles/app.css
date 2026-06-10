@@ -9216,16 +9216,7 @@ input:focus-visible,
   text-underline-offset: 2px;
 }
 
-/* Trial gate — same card chrome as the sign-in gate; the primary action is
- * an anchor (opens the portal in the browser), so it inherits .primary-action
- * with the link reset below. */
-.welcome-providers a.primary-action {
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
+/* Trial gate — same card chrome as the sign-in gate. */
 .trial-gate-refresh {
   margin-top: var(--sp-2);
 }
