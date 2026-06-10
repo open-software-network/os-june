@@ -2092,6 +2092,10 @@ input:focus-visible,
   height: 20px;
   border-radius: var(--r-xs);
   object-fit: cover;
+  /* Hairline just inside the thumb so light image edges don't melt into the
+   * chip. Mixed from --foreground so it flips with the theme. */
+  outline: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+  outline-offset: -1px;
 }
 
 .agent-attachment-chip > svg {
@@ -2106,20 +2110,42 @@ input:focus-visible,
 }
 
 .agent-attachment-chip button {
+  position: relative;
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  /* The same square as the image thumb, so it sits flush with the chip's 2px
+   * padding on all three sides — at 18px it floated 3px off the top/bottom
+   * but only 2px off the right edge, reading as off-center. */
+  width: 20px;
+  height: 20px;
   border: 0;
+  /* Concentric with the chip: r-sm (6px) minus the 2px padding. */
   border-radius: var(--r-xs);
   background: transparent;
   color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    scale var(--t-fast) var(--ease-out);
+}
+
+/* The visible square is small; quietly widen the hit target around it
+ * (stops 1px shy of the textarea below, and the chip body to its left is
+ * inert, so nothing overlaps). */
+.agent-attachment-chip button::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
 }
 
 .agent-attachment-chip button:hover {
   background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--foreground);
+}
+
+.agent-attachment-chip button:active {
+  scale: 0.96;
 }
 
 .agent-composer-box:focus-within {
