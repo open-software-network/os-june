@@ -47,6 +47,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { BackButton } from "../ui/BackButton";
 import { EmptyState } from "../ui/EmptyState";
 import { Spinner } from "../ui/Spinner";
 import {
@@ -307,9 +308,18 @@ type HermesRuntimeSessionResponse = {
   stored_session_id?: string;
 };
 
+/** Where the session was opened from — rendered as the leading crumbs in the
+ * sticky session bar ("Projects / Scribe" or "Agents") with a back arrow. */
+export type AgentWorkspaceOrigin = {
+  backLabel: string;
+  onBack: () => void;
+  crumbs: { label: string; onClick: () => void }[];
+};
+
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
   pendingReply?: AgentReplyDetail;
+  origin?: AgentWorkspaceOrigin;
 };
 
 // Module-scoped so a remount of AgentWorkspace (e.g. navigating away from the
@@ -320,6 +330,7 @@ const handledMascotReplyIds = new Set<string>();
 export function AgentWorkspace({
   initialSession,
   pendingReply,
+  origin,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id;
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
@@ -1893,6 +1904,7 @@ export function AgentWorkspace({
     <section className="agent-workspace" aria-label="Agent">
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
         <AgentSessionBar
+          origin={origin}
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -2445,13 +2457,16 @@ function SafetyBadge() {
 
 // Persistent, full-width session bar — same chrome as the Notes/Folders
 // breadcrumb. Stays pinned while the conversation scrolls beneath it, carries
-// the private-mode badge, and folds rename/delete into an overflow menu so the
+// the back arrow + origin crumbs (Projects / {project} or Agents), the
+// private-mode badge, and folds rename/delete into an overflow menu so the
 // conversation keeps the focus (no separate title heading).
 function AgentSessionBar({
+  origin,
   title,
   onRename,
   onDelete,
 }: {
+  origin?: AgentWorkspaceOrigin;
   title?: string;
   onRename?: (title: string) => void;
   onDelete?: () => void;
@@ -2489,11 +2504,33 @@ function AgentSessionBar({
 
   return (
     <div className="detail-bar agent-session-bar" data-tauri-drag-region>
+      {origin ? (
+        <BackButton label={origin.backLabel} onClick={origin.onBack} />
+      ) : null}
       <nav className="detail-breadcrumb" aria-label="Breadcrumb">
         <ol>
-          <li>
-            <span className="detail-breadcrumb-label">Agent</span>
-          </li>
+          {origin ? (
+            origin.crumbs.map((crumb, index) => (
+              <li key={`${crumb.label}-${index}`}>
+                {index > 0 ? (
+                  <span className="detail-breadcrumb-separator" aria-hidden>
+                    /
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="detail-breadcrumb-link"
+                  onClick={crumb.onClick}
+                >
+                  {crumb.label}
+                </button>
+              </li>
+            ))
+          ) : (
+            <li>
+              <span className="detail-breadcrumb-label">Agent</span>
+            </li>
+          )}
           {title !== undefined ? (
             <li>
               <span className="detail-breadcrumb-separator" aria-hidden>
@@ -2523,6 +2560,13 @@ function AgentSessionBar({
                   {title || "Untitled session"}
                 </span>
               )}
+            </li>
+          ) : origin ? (
+            <li>
+              <span className="detail-breadcrumb-separator" aria-hidden>
+                /
+              </span>
+              <span className="detail-breadcrumb-current">New session</span>
             </li>
           ) : null}
         </ol>

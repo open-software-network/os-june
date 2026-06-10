@@ -240,20 +240,6 @@ input:focus-visible,
   min-height: 100%;
   margin: 0 auto;
 }
-
-/* Agent opened from a project: the breadcrumb bar sits above the workspace,
- * which fills the remaining height like the note editor does. */
-.agent-project-shell {
-  align-self: start;
-  width: 100%;
-  min-height: 100%;
-}
-
-.agent-project-shell > .agent-workspace {
-  flex: 1;
-  min-height: 0;
-}
-
 /* The agent already lives inside the floating .main-panel card, so it draws
  * no card of its own — that card-in-a-card read busier than any Notes view.
  * The rail surface (kept for any rail-mode reuse) is the only bordered box. */

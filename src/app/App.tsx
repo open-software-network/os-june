@@ -1171,6 +1171,13 @@ export function App() {
     setAgentOriginFolderId(undefined);
   }
 
+  // Back target for sessions opened outside a project: the Agents view-all.
+  function handleReturnToAgentsList() {
+    setActiveView("agent-sessions");
+    setActiveAgentSession(undefined);
+    setAgentOriginFolderId(undefined);
+  }
+
   async function handleSelectNote(noteId: string) {
     try {
       const note = await getNote(noteId);
@@ -1581,47 +1588,47 @@ export function App() {
                 }}
               />
             ) : activeView === "agent" ? (
-              agentOriginFolder ? (
-                <div className="note-shell agent-project-shell">
-                  <BreadcrumbBar
-                    backLabel={`Back to ${agentOriginFolder.name}`}
-                    onBack={handleReturnToAgentOriginFolder}
-                    items={[
-                      {
-                        label: "Projects",
-                        onClick: () => {
-                          setActiveView("folders");
-                          dispatch({
-                            type: "folderSelected",
-                            folderId: undefined,
-                          });
-                          setActiveAgentSession(undefined);
-                          setAgentOriginFolderId(undefined);
-                        },
-                      },
-                      {
-                        label: agentOriginFolder.name,
-                        onClick: handleReturnToAgentOriginFolder,
-                      },
-                      {
-                        label:
-                          activeAgentSession?.title?.trim() ||
-                          activeAgentSession?.preview?.trim() ||
-                          "New session",
-                      },
-                    ]}
-                  />
-                  <AgentWorkspace
-                    initialSession={activeAgentSession}
-                    pendingReply={pendingAgentReply}
-                  />
-                </div>
-              ) : (
-                <AgentWorkspace
-                  initialSession={activeAgentSession}
-                  pendingReply={pendingAgentReply}
-                />
-              )
+              // The origin crumbs render inside the workspace's own sticky
+              // session bar, so they persist while the chat scrolls beneath.
+              <AgentWorkspace
+                initialSession={activeAgentSession}
+                pendingReply={pendingAgentReply}
+                origin={
+                  agentOriginFolder
+                    ? {
+                        backLabel: `Back to ${agentOriginFolder.name}`,
+                        onBack: handleReturnToAgentOriginFolder,
+                        crumbs: [
+                          {
+                            label: "Projects",
+                            onClick: () => {
+                              setActiveView("folders");
+                              dispatch({
+                                type: "folderSelected",
+                                folderId: undefined,
+                              });
+                              setActiveAgentSession(undefined);
+                              setAgentOriginFolderId(undefined);
+                            },
+                          },
+                          {
+                            label: agentOriginFolder.name,
+                            onClick: handleReturnToAgentOriginFolder,
+                          },
+                        ],
+                      }
+                    : {
+                        backLabel: "Back to agents",
+                        onBack: handleReturnToAgentsList,
+                        crumbs: [
+                          {
+                            label: "Agents",
+                            onClick: handleReturnToAgentsList,
+                          },
+                        ],
+                      }
+                }
+              />
             ) : activeView === "agent-sessions" ? (
               <AgentSessionsList
                 sessions={agentSessions}

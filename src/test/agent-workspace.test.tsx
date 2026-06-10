@@ -730,4 +730,36 @@ describe("AgentWorkspace", () => {
       expect.anything(),
     );
   });
+
+  // Last in the suite: mounting the workspace kicks off bridge/session
+  // bootstrap promises that can leak into a later test's pending-session
+  // flow, so nothing runs after this one.
+  it("renders origin crumbs and back arrow in the sticky session bar", async () => {
+    window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, "1");
+    const onBack = vi.fn();
+    const onOpenProjects = vi.fn();
+    render(
+      <AgentWorkspace
+        origin={{
+          backLabel: "Back to Scribe",
+          onBack,
+          crumbs: [
+            { label: "Projects", onClick: onOpenProjects },
+            { label: "Scribe", onClick: onBack },
+          ],
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Start an agent session"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Projects")).toBeInTheDocument();
+    expect(screen.getByText("Scribe")).toBeInTheDocument();
+    expect(screen.getByText("New session")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Scribe" }));
+    expect(onBack).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    expect(onOpenProjects).toHaveBeenCalled();
+  });
 });
