@@ -167,6 +167,139 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
   };
 }
 
+// Dev-tools file viewer seeder (window.__agentFiles). Imports one sample file
+// per preview path — markdown (rendered + source toggle), plain text, JSON,
+// CSV, code, an image, and a binary blob for the no-preview fallback — into
+// the real Hermes workspace, then opens the viewer panel on them. Going
+// through import_hermes_bridge_file_bytes means every preview is fetched back
+// through the same Tauri commands and path validation a real agent file uses.
+// Dev builds only — like the gallery, the handle never ships.
+const AGENT_DEV_FILES_EVENT = "scribe:agent:dev-files";
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__agentFiles = (
+    show: boolean = true,
+  ) => {
+    window.dispatchEvent(
+      new CustomEvent<{ show: boolean }>(AGENT_DEV_FILES_EVENT, {
+        detail: { show },
+      }),
+    );
+    return show
+      ? "Seeding sample files and opening the viewer (needs an open conversation — repeat runs add numbered copies). Run __agentFiles(false) to clear."
+      : "Sample files cleared from the viewer (workspace copies remain).";
+  };
+}
+
+const SAMPLE_MARKDOWN = `# Quarterly review
+
+A sample document that exercises **bold**, *italic*, ~~strikethrough~~,
+\`inline code\`, and [links](https://opensoftware.co).
+
+## Highlights
+
+- Revenue grew 14% quarter over quarter
+- Churn fell below 2%
+- *Notes* shipped to general availability
+
+## Rollout plan
+
+1. Ship the beta to design partners
+2. Collect feedback for two weeks
+3. General availability
+
+> Blockquotes hold paragraphs, lists, or code — anything a block can.
+
+### Numbers
+
+| Metric  | Q1   | Q2   |
+| ------- | ---- | ---- |
+| Revenue | 1.2M | 1.4M |
+| Churn   | 2.4% | 1.9% |
+
+---
+
+\`\`\`ts
+export function growth(previous: number, current: number) {
+  return (current - previous) / previous;
+}
+\`\`\`
+`;
+
+const SAMPLE_JSON = JSON.stringify(
+  {
+    report: "quarterly-review",
+    quarter: "Q2",
+    metrics: { revenue: 1_400_000, churn: 0.019 },
+    highlights: ["revenue", "churn", "notes-ga"],
+  },
+  null,
+  2,
+);
+
+const SAMPLE_CSV = `metric,q1,q2
+revenue,1200000,1400000
+churn,0.024,0.019
+seats,310,355
+`;
+
+const SAMPLE_CODE = `import { growth } from "./growth";
+
+const quarters = [1_200_000, 1_400_000];
+
+export function report() {
+  return {
+    growth: growth(quarters[0], quarters[1]),
+    generatedAt: new Date().toISOString(),
+  };
+}
+`;
+
+const SAMPLE_TEXT = `Plain-text sample.
+
+No markdown extension, so the viewer shows this as monospace text
+rather than a rendered document. Line breaks and    spacing survive.
+`;
+
+function buildSampleArtifactFiles(): { name: string; bytes: Uint8Array }[] {
+  const encoder = new TextEncoder();
+  // 0xFE/0xFF never appear in UTF-8, so the backend's text preview rejects
+  // this and the viewer lands on its no-preview download fallback.
+  const binary = new Uint8Array(512).map((_, index) =>
+    index % 2 ? 0xfe : 0xff,
+  );
+  return [
+    { name: "june-sample.md", bytes: encoder.encode(SAMPLE_MARKDOWN) },
+    { name: "june-sample.txt", bytes: encoder.encode(SAMPLE_TEXT) },
+    { name: "june-sample.json", bytes: encoder.encode(SAMPLE_JSON) },
+    { name: "june-sample.csv", bytes: encoder.encode(SAMPLE_CSV) },
+    { name: "june-sample.ts", bytes: encoder.encode(SAMPLE_CODE) },
+    { name: "june-sample.png", bytes: sampleImageBytes() },
+    { name: "june-sample.bin", bytes: binary },
+  ];
+}
+
+/** Paints a small gradient card on a canvas so the image preview path has a
+ * real PNG to chew on, without bundling a fixture. */
+function sampleImageBytes(): Uint8Array {
+  const canvas = document.createElement("canvas");
+  canvas.width = 480;
+  canvas.height = 320;
+  const context = canvas.getContext("2d");
+  if (context) {
+    const gradient = context.createLinearGradient(0, 0, 480, 320);
+    gradient.addColorStop(0, "#c25a33");
+    gradient.addColorStop(1, "#f4e3d7");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 480, 320);
+    context.fillStyle = "rgba(255, 255, 255, 0.92)";
+    context.font = "600 28px sans-serif";
+    context.fillText("june-sample.png", 24, 168);
+  }
+  const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
+  return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+}
+
 type AgentPanel = "chat" | "skills" | "messaging";
 
 type AgentShortcut = {
@@ -460,6 +593,9 @@ export function AgentWorkspace({
   const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [artifactPanel, setArtifactPanel] =
     useState<AgentArtifactPanelState | null>(null);
+  // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
+  // the conversation's own artifacts so the viewer can be exercised at will.
+  const [devArtifacts, setDevArtifacts] = useState<AgentArtifact[]>([]);
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
@@ -607,7 +743,35 @@ export function AgentWorkspace({
   // session must not linger open after a switch.
   useEffect(() => {
     setArtifactPanel(null);
+    setDevArtifacts([]);
   }, [selectedHermesSessionId, selectedTaskId]);
+
+  // Dev-tools sample file seeder (window.__agentFiles, registered at module
+  // scope above): imports one file per preview path into the real workspace
+  // and opens the viewer's list on them.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const onDevFiles = (event: Event) => {
+      const show = (event as CustomEvent<{ show: boolean }>).detail?.show;
+      if (!show) {
+        setDevArtifacts([]);
+        setArtifactPanel(null);
+        return;
+      }
+      void (async () => {
+        const imported: AgentArtifact[] = [];
+        for (const sample of buildSampleArtifactFiles()) {
+          imported.push(
+            await importHermesBridgeFileBytes(sample.name, sample.bytes),
+          );
+        }
+        setDevArtifacts(imported);
+        setArtifactPanel({ view: "list" });
+      })().catch((err: unknown) => setError(messageFromError(err)));
+    };
+    window.addEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
+    return () => window.removeEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
+  }, []);
 
   // New-session hero: greeting + centered composer + suggestion chips, shown
   // whenever nothing is selected — the same condition as the conversation
@@ -2158,7 +2322,9 @@ export function AgentWorkspace({
   );
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
-  const surfacedArtifacts = [...turnArtifacts.values()].flat();
+  const surfacedArtifacts = [...turnArtifacts.values()]
+    .flat()
+    .concat(devArtifacts);
   const downloadArtifact = (artifact: AgentArtifact) =>
     void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
       setError(messageFromError(err)),
