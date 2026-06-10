@@ -11,7 +11,9 @@
  * frosted surface is a native NSVisualEffectView framed to the pill behind the
  * webview (CSS backdrop-filter can't sample other apps' pixels) and depth
  * comes from the native NSWindow shadow, so there's no CSS shadow or blur
- * here — just a translucent tint over vibrancy.
+ * here — just a translucent tint over vibrancy. As in hud.css, that native
+ * path is macOS-only by design (the app ships macOS-only); other platforms
+ * would need a backdrop-filter fallback reintroduced.
  *
  * Orientation triad: parked in the left/right screen thirds the pill stands
  * upright; the middle third lies flat. The quarter turn happens in Rust

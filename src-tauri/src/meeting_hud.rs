@@ -154,6 +154,12 @@ struct ZoneTracker {
     stable_ticks: u32,
     /// Settled while the button was still held — flip on release instead.
     pending_release: bool,
+    /// Position + zone were applied last tick; show on this one. The native
+    /// rotation is queued on the main thread and lands before show either
+    /// way, but the `meeting-hud-zone` event rides WKWebView's async message
+    /// queue — without this beat, the bars' CSS counter-rotation could miss
+    /// the first visible frame and paint sideways for an instant.
+    show_armed: bool,
 }
 
 fn spawn_supervisor(app: AppHandle) {
@@ -162,6 +168,7 @@ fn spawn_supervisor(app: AppHandle) {
             last_position: None,
             stable_ticks: 0,
             pending_release: false,
+            show_armed: false,
         };
         loop {
             let tick = supervise(&app, &mut tracker);
@@ -190,6 +197,7 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
             *guard = None;
         }
         tracker.last_position = None;
+        tracker.show_armed = false;
         return IDLE_TICK;
     };
 
@@ -200,13 +208,23 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
     let should_show = main_window_dismissed(app);
     let visible = hud.is_visible().unwrap_or(false);
     if should_show && !visible {
-        position_window(app, &hud);
-        // Apply the zone for wherever the pill landed before it appears, so it
-        // never flashes the wrong orientation.
-        apply_zone_now(&hud, &state);
-        let _ = hud.show();
-    } else if !should_show && visible {
-        let _ = hud.hide();
+        if tracker.show_armed {
+            // Position + zone went out last tick; the webview has had a full
+            // tick to apply data-orient before the first visible frame.
+            tracker.show_armed = false;
+            let _ = hud.show();
+        } else {
+            position_window(app, &hud);
+            // Apply the zone for wherever the pill landed before it appears,
+            // so it never flashes the wrong orientation.
+            apply_zone_now(&hud, &state);
+            tracker.show_armed = true;
+        }
+    } else if !should_show {
+        tracker.show_armed = false;
+        if visible {
+            let _ = hud.hide();
+        }
     }
 
     if hud.is_visible().unwrap_or(false) {
@@ -708,5 +726,71 @@ fn make_nonactivating(hud: &WebviewWindow) {
 
         let _: () = msg_send![window, setAcceptsMouseMovedEvents: true];
         let _: () = msg_send![window, setBecomesKeyOnlyIfNeeded: true];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
+
+    /// First `prop: <n>px` declaration inside the rule whose selector line
+    /// contains `selector`. Good enough for the flat declarations this test
+    /// reads — it is a tripwire, not a CSS parser.
+    fn css_px(css: &str, selector: &str, prop: &str) -> f64 {
+        let start = css
+            .lines()
+            .position(|line| line.contains(selector) && line.contains('{'))
+            .unwrap_or_else(|| panic!("selector {selector:?} not found"));
+        let mut depth = 0usize;
+        for line in css.lines().skip(start) {
+            if let Some(value) = line.trim().strip_prefix(&format!("{prop}: ")) {
+                if depth == 1 {
+                    return value
+                        .trim_end_matches(';')
+                        .trim_end_matches("px")
+                        .parse()
+                        .unwrap_or_else(|_| panic!("unparsable {prop} in {selector:?}"));
+                }
+            }
+            depth += line.matches('{').count();
+            depth = depth.saturating_sub(line.matches('}').count());
+            if depth == 0 && line.contains('}') {
+                break;
+            }
+        }
+        panic!("{prop} not found inside {selector:?}");
+    }
+
+    /// The frost NSVisualEffectView is framed from these Rust constants while
+    /// the pill itself is painted from meeting-hud.css and the window from
+    /// tauri.conf.json — nothing aligns them at runtime, so drift means a
+    /// frost halo sticking out of (or hiding under) the pill. This test is
+    /// the shared source of truth the comments promise.
+    #[test]
+    fn pill_dimensions_agree_with_css_and_window_config() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let css = std::fs::read_to_string(manifest.join("../src/styles/meeting-hud.css"))
+            .expect("meeting-hud.css should be readable");
+
+        assert_eq!(css_px(&css, ".mhud", "width"), PILL_SIZE.width);
+        assert_eq!(css_px(&css, ".mhud", "height"), PILL_SIZE.height);
+        assert_eq!(
+            css_px(&css, ".mhud[data-orient=\"vertical\"]", "width"),
+            VERTICAL_PILL_LENGTH,
+        );
+
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(manifest.join("tauri.conf.json"))
+                .expect("tauri.conf.json should be readable"),
+        )
+        .expect("tauri.conf.json should parse");
+        let window = conf["app"]["windows"]
+            .as_array()
+            .expect("windows array")
+            .iter()
+            .find(|window| window["label"] == "meeting-hud")
+            .expect("meeting-hud window entry");
+        assert_eq!(window["width"].as_f64(), Some(WINDOW_SIZE.width));
+        assert_eq!(window["height"].as_f64(), Some(WINDOW_SIZE.height));
     }
 }

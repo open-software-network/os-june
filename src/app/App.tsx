@@ -1098,6 +1098,7 @@ export function App() {
         (source) => source.source === "microphone",
       );
       if (!micSource?.ready) {
+        recordingNoteIdRef.current = undefined;
         dispatch({ type: "recordingStatusCleared" });
         setError(micSource?.message ?? "Microphone is not ready.");
         return;
@@ -1123,6 +1124,9 @@ export function App() {
       });
       playRecordingSound("start");
     } catch (err) {
+      // The ref was set optimistically above; a failed start must not leave
+      // the meeting HUD's reopen path pointing at a note with no recording.
+      recordingNoteIdRef.current = undefined;
       dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     } finally {

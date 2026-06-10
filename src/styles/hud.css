@@ -13,6 +13,11 @@
  * other apps' pixels) and depth comes from the native NSWindow shadow, so
  * there's no CSS shadow or blur here — just a translucent tint over vibrancy.
  * Mirrors the meeting HUD (meeting-hud.css).
+ *
+ * Platform note: the vibrancy/shadow path is macOS-only (cfg-gated in
+ * dictation.rs) and there's deliberately no CSS blur fallback — the app
+ * ships macOS-only, so on other platforms the pill would render as a solid
+ * tint. If that ever changes, reintroduce a backdrop-filter fallback here.
  */
 
 :root {
