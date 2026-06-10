@@ -3007,6 +3007,15 @@ input:focus-visible,
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
+/* The status wrapper is inline by default, so its line box inherits the row's
+ * line-height and the dot-grid lands off-center in the icon cell. Make it a
+ * centering grid so the pangolin sits dead-center like the idle icon. */
+.agent-sidebar-row .note-row-icon > [role="status"] {
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+
 /* Needs-you dot beside the session title: terracotta, matching the live-status
  * accent used across the agent surfaces. */
 .agent-sidebar-working {
