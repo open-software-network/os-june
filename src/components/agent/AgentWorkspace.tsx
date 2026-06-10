@@ -1204,6 +1204,9 @@ export function AgentWorkspace({
       setDraft((current) => (current.trim() ? current : message));
       setAttachments((current) => (current.length ? current : attachments));
       if (isSessionBusyError(err)) {
+        // A busy rejection is proof the gateway is healthy — retire any stale
+        // connection banner along with showing the notice.
+        setError(null);
         setBusyNotice(SESSION_BUSY_NOTICE);
       } else {
         setError(messageFromError(err));
@@ -1248,6 +1251,9 @@ export function AgentWorkspace({
       // started typing while the reply was in flight.
       setDraft((current) => (current.trim() ? current : message));
       if (isSessionBusyError(err)) {
+        // Same as submit(): a 4009 proves the gateway is healthy, so a stale
+        // connection banner must not outlive it.
+        setError(null);
         setBusyNotice(SESSION_BUSY_NOTICE);
       } else {
         setError(messageFromError(err));

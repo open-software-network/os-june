@@ -710,6 +710,28 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("drops partially streamed text when the turn completes as a credits failure", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "Let me check" },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: CREDITS_ERROR, status: "error" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
+  });
+
   it("folds an insufficient-credits message.complete into a credits notice", () => {
     const turns = buildHermesSessionChatTurns(
       [],

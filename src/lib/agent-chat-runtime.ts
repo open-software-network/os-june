@@ -328,6 +328,12 @@ function appendLiveHermesEvents(
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNoticeFromTurnText(text) : undefined;
       if (notice) {
+        // The complete text is authoritative for the turn (see
+        // completeAssistantTextPart); when it's a billing failure, any
+        // partially streamed text is superseded along with it.
+        currentAssistant.parts = currentAssistant.parts.filter(
+          (part) => part.type !== "text",
+        );
         currentAssistant.parts.push(notice);
       } else if (text) {
         completeAssistantTextPart(currentAssistant.parts, text);
