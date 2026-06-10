@@ -6114,13 +6114,25 @@ input:focus-visible,
  * show-while-scrolling fade is recreated by stepping --thumb-alpha from JS
  * (attachScrollThumbFade in src/lib/scroll-thumb-fade.ts) — engines DO repaint
  * the thumb when a custom property changes. */
+/* Native overlay thumbs float a couple px off the window edge; match that on
+ * the custom scrollbar so breadcrumb views don't read flush against the card
+ * edge next to the bar-less views' native thumb. The region widens to 8px and
+ * transparent borders clip the painted pill back to the usual 4px, inset 2px
+ * from the card edge and the content alike. */
+.agent-scroll::-webkit-scrollbar,
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar {
+  width: 8px;
+}
+
 .agent-scroll::-webkit-scrollbar-thumb,
 .main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
   background: color-mix(
     in oklch,
     var(--muted-foreground) calc(var(--thumb-alpha, 0) * 1%),
     transparent
   );
+  background-clip: padding-box;
 }
 
 .detail-bar {
