@@ -4612,10 +4612,12 @@ function AgentArtifactPanel({
             ? ({ kind: "text", text } as const)
             : ({ kind: "none" } as const),
         );
-    load
-      .catch((): AgentArtifactPreview => ({ kind: "none" }))
+    void load
       .then((next) => {
         if (!cancelled) setPreview(next);
+      })
+      .catch(() => {
+        if (!cancelled) setPreview({ kind: "none" });
       });
     return () => {
       cancelled = true;
@@ -4636,7 +4638,21 @@ function AgentArtifactPanel({
   // within the document. Images and binaries have nothing to search.
   const searchable = !artifact || preview.kind === "text";
   const filterLabel = artifact ? "Find in file" : "Filter files";
-  const docHighlight = artifact ? query.trim() || undefined : undefined;
+
+  // Find-in-file re-renders the whole document, so the highlight trails the
+  // keystrokes slightly instead of re-parsing a near-2 MB file on each one.
+  // Clearing syncs immediately — Esc/X should unhighlight without lag. The
+  // list filter stays live; it only re-renders its rows.
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    if (!query) {
+      setDebouncedQuery("");
+      return;
+    }
+    const id = window.setTimeout(() => setDebouncedQuery(query), 150);
+    return () => window.clearTimeout(id);
+  }, [query]);
+  const docHighlight = artifact ? debouncedQuery.trim() || undefined : undefined;
 
   // Position-aware scroll fades on the document body (same recipe as the
   // dictation history dialog): the header has no divider, so the top fade is

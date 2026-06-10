@@ -1067,9 +1067,11 @@ describe("AgentWorkspace", () => {
       within(panel).getByRole("button", { name: "Find in file" }),
     );
     await user.type(within(panel).getByLabelText("Find in file"), "revenue");
-    const marks = panel.querySelectorAll("mark");
-    expect(marks.length).toBeGreaterThan(0);
-    expect(marks[0]).toHaveTextContent(/revenue/i);
+    // Highlighting trails typing by a short debounce.
+    await waitFor(() =>
+      expect(panel.querySelectorAll("mark").length).toBeGreaterThan(0),
+    );
+    expect(panel.querySelectorAll("mark")[0]).toHaveTextContent(/revenue/i);
     await user.keyboard("{Escape}"); // clear
     await user.keyboard("{Escape}"); // collapse
     expect(panel.querySelectorAll("mark")).toHaveLength(0);
