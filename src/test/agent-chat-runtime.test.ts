@@ -463,6 +463,31 @@ describe("Agent chat runtime", () => {
     ).toEqual(["Let me explore it."]);
   });
 
+  it("honors a complete payload that corrects streamed whitespace", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "return\nvalue" },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: "return value" },
+        },
+      ],
+    );
+
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["return value"]);
+  });
+
   it("does not truncate streamed text when the complete payload lags behind", () => {
     const turns = buildAgentChatTurns(
       [],
