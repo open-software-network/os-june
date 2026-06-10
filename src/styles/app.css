@@ -288,7 +288,13 @@ input:focus-visible,
 .agent-workspace::before {
   content: "";
   position: absolute;
-  inset: 0;
+  /* Bleed past .main-panel-body's horizontal padding so the wash reaches the
+   * card's left/right edges and rounded corners (.main-panel clips the
+   * overflow); top/bottom already sit flush to the card in the agent view. */
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sp-8) * -1);
+  right: calc(var(--sp-8) * -1);
   z-index: -1;
   pointer-events: none;
   opacity: 0;
@@ -3046,7 +3052,8 @@ input:focus-visible,
 .agent-hero-chip-icon {
   display: inline-grid;
   place-items: center;
-  color: var(--muted-foreground);
+  /* Warm terracotta to echo the new-session fade behind these chips. */
+  color: var(--brand);
 }
 
 .agent-hero-footnote {
@@ -4316,6 +4323,14 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
+}
+
+/* New-session hero: no scrolling content to dissolve, and the scroll timeline
+ * that would otherwise fade this overlay is inactive (no .agent-scroll), so it
+ * sits at full opacity and bleaches the bottom of the hero's warm wash back to
+ * white. Hide it for the hero; it returns with the conversation scroller. */
+.main-panel:has(.agent-workspace[data-hero="true"])::after {
+  opacity: 0;
 }
 
 @supports (animation-timeline: scroll()) {
