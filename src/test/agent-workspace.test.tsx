@@ -693,6 +693,157 @@ describe("AgentWorkspace", () => {
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
   });
 
+  it("renders a workspace file's download card only on the first response that mentions it", async () => {
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md",
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done — I saved the summary as `report.md`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+      {
+        id: "message-2",
+        role: "user",
+        content: "Add a conclusion section.",
+        timestamp: "2026-06-04T18:40:00Z",
+      },
+      {
+        id: "message-3",
+        role: "assistant",
+        content: "I added a conclusion to report.md.",
+        timestamp: "2026-06-04T18:41:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Generated files")).toHaveLength(1);
+    expect(
+      screen.getAllByRole("button", { name: "Download report.md" }),
+    ).toHaveLength(1);
+  });
+
+  it("does not render download cards for files the user attached", async () => {
+    const attachedPath =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "june-context.md",
+              path: attachedPath,
+              kind: "file",
+              size: 14336,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: [
+          "Summarize this.",
+          "",
+          "Attached files copied into the Scribe Hermes workspace:",
+          `- june-context.md (Workspace): ${attachedPath}`,
+          "",
+          "Use these workspace paths when inspecting or operating on the files.",
+        ].join("\n"),
+        timestamp: "2026-06-04T18:38:00Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "Here's a summary of june-context.md: it covers the plan.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(/Here's a summary/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generated files")).not.toBeInTheDocument();
+  });
+
+  it("renders one download card when two workspace copies share a file name", async () => {
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "notes.md",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/notes.md",
+              kind: "file",
+              size: 512,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "archive",
+              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive",
+              kind: "directory",
+              children: [
+                {
+                  name: "notes.md",
+                  path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive/notes.md",
+                  kind: "file",
+                  size: 512,
+                  modifiedAt: "2026-06-04T18:39:00Z",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "I wrote everything up in notes.md.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Download notes.md" }),
+    ).toHaveLength(1);
+  });
+
   it("renders generated workspace images as thumbnails", async () => {
     const screenshotPath =
       "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/screenshot.png";
