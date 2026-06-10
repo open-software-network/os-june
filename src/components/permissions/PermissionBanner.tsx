@@ -10,10 +10,10 @@ export function PermissionBanner() {
       <p className="permission-banner-message">
         <span className="permission-banner-eyebrow">
           <IconLock size={14} aria-hidden />
-          Accessibility needed
         </span>
         <span className="permission-banner-body">
-          Dictation can't paste into other apps until you grant access.
+          Dictation can't paste into other apps until you grant accessibility
+          access.
         </span>
       </p>
       <div className="permission-banner-actions">

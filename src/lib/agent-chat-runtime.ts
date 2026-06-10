@@ -5,6 +5,7 @@ import type {
   HermesSessionMessage,
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
+import { isInsufficientCreditsMessage } from "./errors";
 
 export type LiveHermesEvent = HermesGatewayEvent & {
   receivedAt: string;
@@ -60,13 +61,22 @@ export type AgentChatClarifyPart = {
   status: "pending" | "resolved";
 };
 
+/** A turn-level condition the user can act on (today: the turn died because
+ * the balance ran out), rendered as a notice card instead of raw error text. */
+export type AgentChatNoticePart = {
+  type: "notice";
+  kind: "credits";
+  text: string;
+};
+
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
   | AgentChatContextPart
   | AgentChatToolPart
   | AgentChatApprovalPart
-  | AgentChatClarifyPart;
+  | AgentChatClarifyPart
+  | AgentChatNoticePart;
 
 export type AgentChatTurn = {
   id: string;
@@ -164,11 +174,15 @@ export function buildHermesSessionChatTurns(
       }
 
       if (content) {
-        turn.parts.push({
-          type: "text",
-          text: content,
-          status: "complete",
-        });
+        turn.parts.push(
+          (turn.role === "assistant"
+            ? creditsNoticeFromTurnText(content)
+            : undefined) ?? {
+            type: "text",
+            text: content,
+            status: "complete",
+          },
+        );
       }
     }
 
@@ -197,7 +211,30 @@ export function completedHermesMessageText(events: LiveHermesEvent[]) {
   return turn?.status === "complete" ? (text ?? "") : "";
 }
 
+// A turn that died on a billing failure reaches us as the raw provider error
+// ("Error: Error code: 402 - {... 'insufficient_credits'}") — persisted as the
+// assistant's text, or carried by a live error/message.complete event. Surface
+// it as a first-class notice instead of leaking the raw error string.
+function creditsNotice(text: string): AgentChatNoticePart | undefined {
+  return isInsufficientCreditsMessage(text)
+    ? { type: "notice", kind: "credits", text }
+    : undefined;
+}
+
+// Assistant text only counts as a billing failure when it's the runtime's
+// error sentinel ("Error: <provider error>") — June talking *about* credits in
+// prose must stay ordinary text.
+function creditsNoticeFromTurnText(
+  text: string,
+): AgentChatNoticePart | undefined {
+  return /^\s*error\b/i.test(text) ? creditsNotice(text) : undefined;
+}
+
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
+  const notice =
+    message.role === "assistant"
+      ? creditsNoticeFromTurnText(message.content)
+      : undefined;
   return {
     id: message.id,
     role:
@@ -208,7 +245,9 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
           : "user",
     createdAt: message.createdAt,
     status: "complete",
-    parts: [{ type: "text", text: message.content, status: "complete" }],
+    parts: [
+      notice ?? { type: "text", text: message.content, status: "complete" },
+    ],
   };
 }
 
@@ -287,7 +326,16 @@ function appendLiveHermesEvents(
 
     if (event.type === "message.complete") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      if (text) {
+      const notice = text ? creditsNoticeFromTurnText(text) : undefined;
+      if (notice) {
+        // The complete text is authoritative for the turn (see
+        // completeAssistantTextPart); when it's a billing failure, any
+        // partially streamed text is superseded along with it.
+        currentAssistant.parts = currentAssistant.parts.filter(
+          (part) => part.type !== "text",
+        );
+        currentAssistant.parts.push(notice);
+      } else if (text) {
         completeAssistantTextPart(currentAssistant.parts, text);
       }
       currentAssistant.status = "complete";
@@ -419,12 +467,17 @@ function appendLiveHermesEvents(
 
     if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      upsertToolPart(currentAssistant.parts, {
-        id: `error:${event.receivedAt}`,
-        name: "Error",
-        text: text || "The agent reported an error.",
-        status: "failed",
-      });
+      const notice = text ? creditsNotice(text) : undefined;
+      if (notice) {
+        currentAssistant.parts.push(notice);
+      } else {
+        upsertToolPart(currentAssistant.parts, {
+          id: `error:${event.receivedAt}`,
+          name: "Error",
+          text: text || "The agent reported an error.",
+          status: "failed",
+        });
+      }
       currentAssistant.status = "complete";
       completeRunningParts(currentAssistant.parts);
       currentAssistant = null;

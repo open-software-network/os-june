@@ -30,6 +30,12 @@ export type AgentChatGallerySection = {
 // Fixed timestamps keep the gallery deterministic (no churn from relativeDate).
 const BASE = "2026-06-09T12:00:00.000Z";
 
+// Labels shared between the full catalog and buildAgentErrorGallery's filter —
+// constants so renaming a section can't silently drop it from the error
+// gallery.
+const ERROR_SECTION_LABEL = "Error";
+const CREDITS_SECTION_LABEL = "Out of credits";
+
 function userTurn(id: string, text: string): AgentChatTurn {
   return {
     id: `gallery:${id}`,
@@ -195,7 +201,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
-      label: "Error",
+      label: ERROR_SECTION_LABEL,
       description:
         "A surfaced error renders as a failed tool row named “Error”.",
       turns: [
@@ -206,6 +212,20 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
             name: "Error",
             text: "The agent process exited unexpectedly (code 1).",
             status: "failed",
+          },
+        ]),
+      ],
+    },
+    {
+      label: CREDITS_SECTION_LABEL,
+      description:
+        "A turn that died on a billing failure renders as a notice card with a top-up action instead of the raw provider error.",
+      turns: [
+        assistantTurn("credits", [
+          {
+            type: "notice",
+            kind: "credits",
+            text: "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
           },
         ]),
       ],
@@ -403,4 +423,19 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       turns: [assistantTurn("empty", [], "running")],
     },
   ];
+}
+
+// The error-focused gallery (window.__agentErrors) is the full catalog
+// filtered to its failure surfaces — one source of truth for the samples. The
+// chrome-level error states (the error banner and the composer busy notice)
+// aren't turns, so the workspace forces those alongside these sections.
+const ERROR_SECTION_LABELS = new Set([
+  ERROR_SECTION_LABEL,
+  CREDITS_SECTION_LABEL,
+]);
+
+export function buildAgentErrorGallery(): AgentChatGallerySection[] {
+  return buildAgentChatGallery().filter((section) =>
+    ERROR_SECTION_LABELS.has(section.label),
+  );
 }

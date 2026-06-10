@@ -22,6 +22,13 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const SCRIBE_HERMES_COMMAND_ENV: &str = "SCRIBE_HERMES_COMMAND";
+// Set to 1/true/yes to spawn Hermes without the macOS Seatbelt jail. An escape
+// hatch for debugging a runtime that won't boot under the profile — leaving the
+// agent able to write anywhere the user can, so only flip it knowingly.
+const SCRIBE_HERMES_DISABLE_SANDBOX_ENV: &str = "SCRIBE_HERMES_DISABLE_SANDBOX";
+// Referenced by the spawn match arm on every target; only ever reached when
+// `prepare_sandbox` returns a profile, which it only does on macOS.
+const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 const HERMES_AGENT_INSTALL_COMMIT: &str = "31c40c72c03cb11d5e596d015d61e7dd118cecee";
 const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/31c40c72c03cb11d5e596d015d61e7dd118cecee.tar.gz";
@@ -130,6 +137,11 @@ pub struct HermesBridgeConnection {
     pub cwd: Option<String>,
     pub provider_proxy_port: u16,
     pub pid: u32,
+    /// True when this process is wrapped in the macOS Seatbelt write-jail.
+    /// The UI uses it to show the enforced-sandbox safety copy only when the
+    /// boundary is actually in force (false on non-macOS, when sandbox-exec is
+    /// missing, or when the escape-hatch env var disabled it).
+    pub sandboxed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,21 +377,50 @@ async fn start_hermes_bridge_inner(
     sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
     sync_june_soul(&hermes_home)?;
 
-    let mut cmd = Command::new(&command);
-    cmd.args([
+    // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
+    // its tool calls, and any subprocess it forks all inherit the profile, so
+    // destructive writes (rm -rf of user dirs, dotfile rewrites, TCC db edits)
+    // are denied by the kernel rather than by Hermes' own pattern checks.
+    let sandbox_profile = prepare_sandbox(app, &hermes_home);
+    let sandboxed = sandbox_profile.is_some();
+    if sandboxed {
+        eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
+    } else {
+        eprintln!(
+            "Spawning Hermes WITHOUT an OS sandbox — the agent can write anywhere the user can."
+        );
+    }
+    let port_string = port.to_string();
+    let hermes_args: [&str; 7] = [
         "dashboard",
         "--no-open",
         "--tui",
         "--host",
         "127.0.0.1",
         "--port",
-        &port.to_string(),
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
+        port_string.as_str(),
+    ];
+
+    let mut cmd = match &sandbox_profile {
+        Some(profile_path) => {
+            let mut cmd = Command::new(SANDBOX_EXEC_PATH);
+            cmd.arg("-f")
+                .arg(profile_path)
+                .arg(&command)
+                .args(hermes_args);
+            cmd
+        }
+        None => {
+            let mut cmd = Command::new(&command);
+            cmd.args(hermes_args);
+            cmd
+        }
+    };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     apply_isolated_hermes_env(&mut cmd, &hermes_home, &token);
-    cmd.current_dir(cwd);
+    cmd.current_dir(&cwd);
 
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
@@ -398,6 +439,7 @@ async fn start_hermes_bridge_inner(
         cwd: cwd_display,
         provider_proxy_port: provider_proxy.port,
         pid,
+        sandboxed,
     };
 
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1465,6 +1507,188 @@ fn apply_isolated_hermes_env(cmd: &mut Command, hermes_home: &std::path::Path, t
         .env("no_proxy", "127.0.0.1,localhost,::1");
 }
 
+/// Builds the Seatbelt profile, writes it to disk, and returns the path to hand
+/// to `sandbox-exec -f`. Returns `None` — meaning "spawn unsandboxed" — on
+/// non-macOS, when `sandbox-exec` is absent, when the escape-hatch env var is
+/// set, or if the profile can't be written. Callers treat `None` as "not
+/// sandboxed" and surface that honestly in the UI.
+///
+/// The profile is written to `app_data_dir` itself, deliberately *outside* every
+/// granted write root (the `hermes/` and `hermes-runtime/` subdirs), so the
+/// jailed agent can't rewrite the policy that governs it or the one the next
+/// spawn will read.
+#[cfg(target_os = "macos")]
+fn prepare_sandbox(app: &AppHandle, hermes_home: &Path) -> Option<PathBuf> {
+    // The caller logs the sandboxed/unsandboxed outcome; this only short-circuits.
+    if env_flag_enabled(SCRIBE_HERMES_DISABLE_SANDBOX_ENV) {
+        return None;
+    }
+    if !Path::new(SANDBOX_EXEC_PATH).exists() {
+        return None;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
+    let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
+    let profile = build_sandbox_profile(&home, &write_roots);
+    let app_data_dir = app.path().app_data_dir().ok()?;
+    if std::fs::create_dir_all(&app_data_dir).is_err() {
+        return None;
+    }
+    let profile_path = app_data_dir.join("hermes-sandbox.sb");
+    match std::fs::write(&profile_path, profile) {
+        Ok(()) => Some(profile_path),
+        Err(error) => {
+            eprintln!("Could not write Hermes sandbox profile, spawning unsandboxed: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prepare_sandbox(_app: &AppHandle, _hermes_home: &Path) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn env_flag_enabled(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Directories the jailed agent may write to. Everything else is read-only.
+/// Paths are canonicalized so `subpath` rules match the realpaths the kernel
+/// enforces against (macOS resolves `/tmp` -> `/private/tmp` and `$TMPDIR`
+/// under `/private/var/folders`).
+///
+/// Deliberately scoped to `$TMPDIR` (this app's per-session temp dir) rather
+/// than the whole `/private/var/folders` tree, which is the parent of every
+/// other app's caches too. The session cwd is intentionally *not* a write root:
+/// it defaults to the workspace (already under `hermes_home`), and a non-default
+/// cwd is user-influenced, so granting it write would let the jail span an
+/// arbitrary directory — a project-dir feature would need an explicit, validated
+/// grant instead.
+#[cfg(target_os = "macos")]
+fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![
+        hermes_home.to_path_buf(),
+        runtime_dir.to_path_buf(),
+        // Shared temp dirs, used mainly as a fallback when $TMPDIR is unset.
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/private/var/tmp"),
+    ];
+    // The per-session temp dir (resolves under /private/var/folders). The Python
+    // runtime and its children use it for scratch files and multiprocessing
+    // sockets; scoping to it keeps other apps' caches out of the jail.
+    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
+        if !tmpdir.is_empty() {
+            roots.push(PathBuf::from(tmpdir));
+        }
+    }
+    let mut canonical: Vec<PathBuf> = Vec::with_capacity(roots.len());
+    for root in roots {
+        let resolved = std::fs::canonicalize(&root).unwrap_or(root);
+        if !canonical.contains(&resolved) {
+            canonical.push(resolved);
+        }
+    }
+    canonical
+}
+
+/// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
+/// the embedded Python runtime needs wide syscall, mach-service, and exec
+/// rights and any tighter base brings the runtime down; then deny every write
+/// and re-grant only the app-owned roots, and deny reads of credential stores.
+/// Pure (no IO) so it can be unit-tested.
+#[cfg(target_os = "macos")]
+fn build_sandbox_profile(home: &Path, write_roots: &[PathBuf]) -> String {
+    let mut out = String::new();
+    out.push_str("(version 1)\n");
+    out.push_str(";; June desktop agent sandbox — generated by Scribe, do not edit.\n");
+    out.push_str(";; Allow broadly (the Python runtime needs wide syscall/mach access and\n");
+    out.push_str(";; must exec interpreters), then carve a hard write-jail and a secret-read\n");
+    out.push_str(";; denylist. Subprocesses inherit this profile.\n");
+    out.push_str("(allow default)\n\n");
+
+    out.push_str(";; Write jail: deny all writes, then re-grant only app-owned roots.\n");
+    out.push_str("(deny file-write*)\n");
+    out.push_str("(allow file-write*\n");
+    for root in write_roots {
+        out.push_str(&format!(
+            "  (subpath {})\n",
+            sbpl_quote(&root.to_string_lossy())
+        ));
+    }
+    out.push_str(")\n\n");
+
+    out.push_str(";; Character devices and pipes the runtime needs to write.\n");
+    out.push_str("(allow file-write*\n");
+    for device in [
+        "/dev/null",
+        "/dev/zero",
+        "/dev/dtracehelper",
+        "/dev/tty",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/random",
+        "/dev/urandom",
+    ] {
+        out.push_str(&format!("  (literal {})\n", sbpl_quote(device)));
+    }
+    out.push_str("  (regex #\"^/dev/fd/[0-9]+$\")\n");
+    out.push_str("  (regex #\"^/dev/ttys[0-9]+$\")\n");
+    out.push_str(")\n\n");
+
+    out.push_str(";; Secret-read denylist: reads are otherwise open so June can work on\n");
+    out.push_str(";; the user's files, but credential stores stay off-limits.\n");
+    out.push_str("(deny file-read*\n");
+    for relative in [
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".kube",
+        ".docker",
+        ".config/gcloud",
+        ".config/gh",
+        "Library/Keychains",
+    ] {
+        out.push_str(&format!(
+            "  (subpath {})\n",
+            sbpl_quote(&home.join(relative).to_string_lossy())
+        ));
+    }
+    out.push_str("  (subpath \"/Library/Keychains\")\n");
+    for relative in [".netrc", ".git-credentials", ".npmrc", ".pypirc", ".pgpass"] {
+        out.push_str(&format!(
+            "  (literal {})\n",
+            sbpl_quote(&home.join(relative).to_string_lossy())
+        ));
+    }
+    out.push_str(")\n");
+    out
+}
+
+/// Quotes a string as an SBPL literal: wrap in double quotes, backslash-escape
+/// embedded quotes and backslashes. Spaces (e.g. "Application Support") are
+/// fine inside the quotes.
+#[cfg(target_os = "macos")]
+fn sbpl_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for ch in value.chars() {
+        if ch == '\\' || ch == '"' {
+            quoted.push('\\');
+        }
+        quoted.push(ch);
+    }
+    quoted.push('"');
+    quoted
+}
+
 fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
     let path = app
         .path()
@@ -2047,5 +2271,129 @@ mod tests {
         assert!(soul.contains("You are June"));
         assert!(soul.contains("Open Software"));
         assert!(!soul.contains("Nous Research"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn write_roots_are_scoped_and_exclude_the_var_folders_blanket() {
+        let hermes_home = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
+        let runtime_dir = PathBuf::from("/Users/test/Library/Application Support/scribe/runtime");
+        let roots = sandbox_write_roots(&hermes_home, &runtime_dir);
+
+        assert!(roots.contains(&hermes_home), "workspace root missing");
+        assert!(roots.contains(&runtime_dir), "runtime root missing");
+        // The blanket /private/var/folders (parent of every app's caches) must
+        // not be a write root — only this app's $TMPDIR may slip under it.
+        assert!(
+            !roots.contains(&PathBuf::from("/private/var/folders")),
+            "must not grant the whole /private/var/folders tree"
+        );
+        // No root may be the home dir or a filesystem root — the jail must never
+        // span the user's whole account (regression guard for the dropped cwd).
+        for root in &roots {
+            assert!(root != &PathBuf::from("/"), "root / granted");
+            assert!(
+                !root.to_string_lossy().eq("/Users/test"),
+                "home dir granted as a write root"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_profile_jails_writes_to_allowed_roots() {
+        let home = PathBuf::from("/Users/test");
+        let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
+        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace));
+
+        // Allow-everything base, then a hard write-jail re-granting the root.
+        assert!(profile.contains("(allow default)"));
+        assert!(profile.contains("(deny file-write*)"));
+        assert!(
+            profile.contains("(subpath \"/Users/test/Library/Application Support/scribe/hermes\")")
+        );
+        // The re-grant must come after the blanket write deny, or it's a no-op.
+        let deny_at = profile.find("(deny file-write*)").expect("deny present");
+        let grant_at = profile
+            .find("(allow file-write*\n  (subpath")
+            .expect("grant present");
+        assert!(deny_at < grant_at);
+
+        // Credential stores stay unreadable even though reads are otherwise open.
+        assert!(profile.contains("(deny file-read*"));
+        assert!(profile.contains("(subpath \"/Users/test/.ssh\")"));
+        assert!(profile.contains("(subpath \"/Users/test/Library/Keychains\")"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_quote_escapes_quotes_and_backslashes() {
+        assert_eq!(sbpl_quote("/plain/path"), "\"/plain/path\"");
+        assert_eq!(sbpl_quote("/with space/x"), "\"/with space/x\"");
+        assert_eq!(sbpl_quote("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    /// Runs the *actual* generated profile through the kernel via `sandbox-exec`
+    /// to prove it's valid SBPL and enforces the jail — not just that the string
+    /// looks right. Catches malformed regexes, bad escaping, or rule ordering
+    /// that a string-content assertion would miss.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn generated_profile_is_enforced_by_the_kernel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Canonicalize so the profile's subpaths match the realpaths the kernel
+        // resolves (/var/folders -> /private/var/folders).
+        let home = std::fs::canonicalize(dir.path()).expect("canonicalize home");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(home.join(".ssh")).expect("create .ssh");
+        std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
+
+        let profile_text = build_sandbox_profile(&home, std::slice::from_ref(&workspace));
+        let profile_path = home.join("test.sb");
+        std::fs::write(&profile_path, &profile_text).expect("write profile");
+
+        let run = |script: &str| {
+            std::process::Command::new(SANDBOX_EXEC_PATH)
+                .arg("-f")
+                .arg(&profile_path)
+                .arg("/bin/bash")
+                .arg("-c")
+                .arg(script)
+                .output()
+                .expect("run sandbox-exec")
+        };
+
+        // Allowed: write inside the workspace root.
+        let inside = workspace.join("ok.txt");
+        let out = run(&format!("echo ok > {}", sbpl_shell_quote(&inside)));
+        assert!(
+            out.status.success() && inside.exists(),
+            "workspace write should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Denied: write outside the workspace (home root is not a write root here).
+        let outside = home.join("escaped.txt");
+        run(&format!("echo bad > {}", sbpl_shell_quote(&outside)));
+        assert!(
+            !outside.exists(),
+            "write outside the jail must be denied, but the file was created"
+        );
+
+        // Denied: read a credential store even though reads are otherwise open.
+        let out = run(&format!(
+            "cat {}",
+            sbpl_shell_quote(&home.join(".ssh").join("id_secret"))
+        ));
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("TOPSECRET"),
+            "secret read must be denied, but the contents leaked"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sbpl_shell_quote(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
     }
 }

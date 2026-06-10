@@ -746,4 +746,98 @@ describe("Agent chat runtime", () => {
       status: "failed",
     });
   });
+
+  // The raw provider error a turn dies with when the wallet is empty — this
+  // exact shape reaches us as persisted assistant text and as live event text.
+  const CREDITS_ERROR =
+    "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}";
+
+  it("folds a live insufficient-credits error event into a credits notice", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "error",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { message: CREDITS_ERROR },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
+  });
+
+  it("folds a persisted insufficient-credits error turn into a credits notice", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: CREDITS_ERROR,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
+  });
+
+  it("drops partially streamed text when the turn completes as a credits failure", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "Let me check" },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: CREDITS_ERROR, status: "error" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
+  });
+
+  it("folds an insufficient-credits message.complete into a credits notice", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { text: CREDITS_ERROR, status: "error" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
+  });
+
+  it("keeps assistant prose about credits as ordinary text", () => {
+    const prose =
+      "If you see insufficient_credits errors, top up from settings.";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: prose, status: "complete" },
+    ]);
+  });
 });

@@ -12,12 +12,14 @@ import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStopCircle } from "central-icons/IconStopCircle";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { AnimatePresence, motion } from "framer-motion";
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
+import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
@@ -58,6 +60,7 @@ import {
 } from "react";
 import { BackButton } from "../ui/BackButton";
 import { EmptyState } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
 import {
@@ -78,6 +81,7 @@ import {
   listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
+  osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
   sendAgentMessage,
@@ -121,6 +125,7 @@ import {
 } from "../../lib/agent-events";
 import {
   HermesGatewayClient,
+  isSessionBusyError,
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
 import {
@@ -140,6 +145,7 @@ import {
 } from "../../lib/agent-chat-runtime";
 import {
   buildAgentChatGallery,
+  buildAgentErrorGallery,
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
@@ -151,6 +157,17 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
 
+// What the user reads instead of the gateway's "session busy" rejection. No
+// action in the pill — the composer's send slot already shows stop while
+// June works.
+const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
+
+// Connection-shaped failures get a "Try again" on the error banner — these are
+// all our own strings (hermes-gateway.ts client errors, ensureHermesGateway),
+// so the match is stable. Other errors (downloads, renames…) have no single
+// retryable action, so they only offer dismiss.
+const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
+
 // Dev-tools response gallery handle. Registered at module scope so
 // __agentGallery() exists from app launch — registering it inside the component
 // meant it was undefined unless the Agent view happened to be mounted, which is
@@ -158,13 +175,13 @@ const AGENT_TITLE_TIMEOUT_MS = 2500;
 // the desired state and broadcasts it; App switches to the Agent view on show,
 // and the workspace applies the state on mount or live via the event.
 // Dev builds only — the handle never exists in production bundles.
-let galleryDesired = false;
+let galleryDesired: "all" | "errors" | false = false;
 
-function setGalleryDesired(show: boolean) {
-  galleryDesired = show;
+function setGalleryDesired(show: boolean, errors = false) {
+  galleryDesired = show ? (errors ? "errors" : "all") : false;
   window.dispatchEvent(
     new CustomEvent<AgentGalleryDetail>(AGENT_GALLERY_EVENT, {
-      detail: { show },
+      detail: { show, errors },
     }),
   );
 }
@@ -177,6 +194,17 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
     return show
       ? "Agent response gallery shown. Run __agentGallery(false) to hide."
       : "Agent response gallery hidden.";
+  };
+  // Error-focused variant: just the failure sections, plus the chrome-level
+  // error surfaces (error banner, composer busy notice) the turn-based
+  // gallery can't represent.
+  (window as unknown as Record<string, unknown>).__agentErrors = (
+    show: boolean = true,
+  ) => {
+    setGalleryDesired(show, true);
+    return show
+      ? "Agent error gallery shown. Run __agentErrors(false) to hide."
+      : "Agent error gallery hidden.";
   };
 }
 
@@ -527,6 +555,10 @@ export function AgentWorkspace({
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A rejected send into a still-running session, explained by the composer.
+  // Separate from `error` because background session refreshes clear that
+  // banner on success — this notice must survive until the turn finishes.
+  const [busyNotice, setBusyNotice] = useState<string | null>(null);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -618,10 +650,13 @@ export function AgentWorkspace({
   >({});
   // Dev-tools response gallery: when set, the timeline is replaced by a labeled
   // catalog of every agent response part type. Toggled from the console via
-  // window.__agentGallery() — see the effect below.
+  // window.__agentGallery() — see the effect below. The errors flag marks the
+  // __agentErrors() variant, which additionally forces the chrome-level error
+  // surfaces (error banner, composer busy notice) for styling.
   const [gallerySections, setGallerySections] = useState<
     AgentChatGallerySection[] | null
   >(null);
+  const [galleryErrors, setGalleryErrors] = useState(false);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
@@ -896,7 +931,9 @@ export function AgentWorkspace({
         selectedHermesSessionIdRef.current = nextSessionId;
         return nextSessionId;
       });
-      setError(null);
+      // Deliberately no setError(null) here: this runs from background polls,
+      // so a success would wipe an unrelated banner (e.g. a failed send)
+      // moments after it appeared. The banner is dismissable instead.
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -1327,6 +1364,19 @@ export function AgentWorkspace({
     }
   }, [newSessionMode, activePanel]);
 
+  // The busy notice's advice ("wait for the reply") expires the moment the
+  // selected session stops working — including when the user switches to a
+  // session that isn't running.
+  useEffect(() => {
+    if (!busyNotice) return;
+    if (
+      selectedHermesSessionId &&
+      workingSessionIds.has(selectedHermesSessionId)
+    )
+      return;
+    setBusyNotice(null);
+  }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     const message = draft.trim();
@@ -1339,13 +1389,21 @@ export function AgentWorkspace({
     try {
       await submitHermesSession(content);
       setError(null);
+      setBusyNotice(null);
     } catch (err) {
       // Restore the composer so a failed send doesn't eat the message or its
       // attachments — but only where the user hasn't typed or attached
       // something new during the in-flight send.
       setDraft((current) => (current.trim() ? current : message));
       setAttachments((current) => (current.length ? current : attachments));
-      setError(messageFromError(err));
+      if (isSessionBusyError(err)) {
+        // A busy rejection is proof the gateway is healthy — retire any stale
+        // connection banner along with showing the notice.
+        setError(null);
+        setBusyNotice(SESSION_BUSY_NOTICE);
+      } else {
+        setError(messageFromError(err));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1380,11 +1438,19 @@ export function AgentWorkspace({
     try {
       await submitHermesSession(message, targetSession);
       setError(null);
+      setBusyNotice(null);
     } catch (err) {
       // Same merge-restore as submit(): don't clobber a draft the user
       // started typing while the reply was in flight.
       setDraft((current) => (current.trim() ? current : message));
-      setError(messageFromError(err));
+      if (isSessionBusyError(err)) {
+        // Same as submit(): a 4009 proves the gateway is healthy, so a stale
+        // connection banner must not outlive it.
+        setError(null);
+        setBusyNotice(SESSION_BUSY_NOTICE);
+      } else {
+        setError(messageFromError(err));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1664,6 +1730,25 @@ export function AgentWorkspace({
       });
       await loadHermesSessions();
     } catch (err) {
+      // The prompt never entered the session, so its optimistic bubble must
+      // not linger — a retained pending message renders below every later
+      // persisted message and reads as a send the agent ignored.
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [storedSessionId]: (current[storedSessionId] ?? []).filter(
+            (message) => message.id !== pendingUserMessage.id,
+          ),
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+      if (isSessionBusyError(err)) {
+        // The gateway rejected this prompt because the previous turn is still
+        // running — the session itself is healthy, so keep the listener and
+        // working state. Callers translate this into the composer notice.
+        throw err;
+      }
       unlisten();
       setSessionWorking(storedSessionId, false);
       setSessionWaiting(storedSessionId, false);
@@ -1691,6 +1776,18 @@ export function AgentWorkspace({
     }
     await gateway.connect(wsUrl);
     return gateway;
+  }
+
+  // "Try again" on a connection-shaped error banner: rebuild the bridge +
+  // gateway connection and reload sessions, surfacing whatever still fails.
+  async function retryGatewayConnection() {
+    setError(null);
+    try {
+      await ensureHermesGateway();
+      await loadHermesSessions();
+    } catch (err) {
+      setError(messageFromError(err));
+    }
   }
 
   // prompt.submit is ack-style: once acked there are no pending RPCs, so a
@@ -2178,7 +2275,9 @@ export function AgentWorkspace({
     try {
       await ensureHermesGateway();
       setFilesystemSnapshot(await hermesBridgeFilesystemSnapshot());
-      setError(null);
+      // No setError(null): this refires in the background on message-count
+      // changes, so a success would wipe an unrelated banner (e.g. a failed
+      // send). The banner is dismissable instead.
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -2366,10 +2465,20 @@ export function AgentWorkspace({
   // follow live toggles via the window event.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    setGallerySections(galleryDesired ? buildAgentChatGallery() : null);
+    const apply = (show: boolean, errors: boolean) => {
+      setGallerySections(
+        show
+          ? errors
+            ? buildAgentErrorGallery()
+            : buildAgentChatGallery()
+          : null,
+      );
+      setGalleryErrors(show && errors);
+    };
+    apply(Boolean(galleryDesired), galleryDesired === "errors");
     const onGallery = (event: Event) => {
       const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
-      setGallerySections(detail?.show ? buildAgentChatGallery() : null);
+      apply(Boolean(detail?.show), Boolean(detail?.errors));
     };
     window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
     return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
@@ -2541,6 +2650,24 @@ export function AgentWorkspace({
         onDragLeave={() => setDropActive(false)}
         onDrop={handleComposerDrop}
       >
+        <AnimatePresence>
+          {busyNotice || galleryErrors ? (
+            // Same fade as the recording-consent note, so the pill dissolves
+            // when the turn finishes instead of vanishing.
+            <motion.p
+              key="busy-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <PangolinSpinner />
+              {busyNotice ?? SESSION_BUSY_NOTICE}
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
         <div
           ref={composerBoxRef}
           className="agent-composer-box"
@@ -2612,8 +2739,19 @@ export function AgentWorkspace({
               }}
             />
             <div className="agent-composer-actions">
+              <button
+                type="button"
+                className="agent-composer-mic"
+                aria-label="Dictate"
+                title="Start dictation"
+                onClick={() => void startDictation()}
+              >
+                <IconMicrophone size={18} />
+              </button>
               {selectedHermesSessionId &&
               workingSessionIds.has(selectedHermesSessionId) ? (
+                // While June works, stop owns the send slot — sending would
+                // only bounce off the gateway's busy guard anyway.
                 <button
                   type="button"
                   className="agent-composer-stop"
@@ -2626,36 +2764,28 @@ export function AgentWorkspace({
                 >
                   <IconStop size={16} />
                 </button>
-              ) : null}
-              <button
-                type="button"
-                className="agent-composer-mic"
-                aria-label="Dictate"
-                title="Start dictation"
-                onClick={() => void startDictation()}
-              >
-                <IconMicrophone size={18} />
-              </button>
-              <button
-                type="submit"
-                className="agent-composer-send"
-                disabled={
-                  submitting ||
-                  importingFiles ||
-                  (!draft.trim() && !attachments.length)
-                }
-                tabIndex={draft.trim() || attachments.length ? 0 : -1}
-                aria-hidden={
-                  draft.trim() || attachments.length ? undefined : true
-                }
-                aria-label={
-                  selectedHermesSessionId || selectedTask
-                    ? "Send message"
-                    : "Start session"
-                }
-              >
-                {submitting ? <Spinner /> : <IconArrowUp size={16} />}
-              </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="agent-composer-send"
+                  disabled={
+                    submitting ||
+                    importingFiles ||
+                    (!draft.trim() && !attachments.length)
+                  }
+                  tabIndex={draft.trim() || attachments.length ? 0 : -1}
+                  aria-hidden={
+                    draft.trim() || attachments.length ? undefined : true
+                  }
+                  aria-label={
+                    selectedHermesSessionId || selectedTask
+                      ? "Send message"
+                      : "Start session"
+                  }
+                >
+                  {submitting ? <Spinner /> : <IconArrowUp size={16} />}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2665,6 +2795,7 @@ export function AgentWorkspace({
   const detailContent = gallerySections ? (
     <AgentResponseGallery
       sections={gallerySections}
+      errors={galleryErrors}
       onClose={() => setGalleryDesired(false)}
     />
   ) : !newSessionMode && selectedHermesSessionId ? (
@@ -2684,6 +2815,11 @@ export function AgentWorkspace({
               part.sessionId ?? selectedHermesSessionId,
               part.id,
               choice,
+            )
+          }
+          onTopUp={() =>
+            void osAccountsTopUp().catch((err: unknown) =>
+              setError(messageFromError(err)),
             )
           }
           onClarify={(part, answer) =>
@@ -2744,6 +2880,11 @@ export function AgentWorkspace({
             clarifySubmitting={clarifySubmitting}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
+            onTopUp={() =>
+              void osAccountsTopUp().catch((err: unknown) =>
+                setError(messageFromError(err)),
+              )
+            }
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -2806,7 +2947,17 @@ export function AgentWorkspace({
           data-hero="true"
           data-hero-leaving={heroLeaving ? "true" : undefined}
         >
-          {error ? <p className="error-banner">{error}</p> : null}
+          {error ? (
+            <AgentErrorBanner
+              message={error}
+              onRetry={
+                GATEWAY_CONNECTION_ERROR.test(error)
+                  ? () => void retryGatewayConnection()
+                  : undefined
+              }
+              onDismiss={() => setError(null)}
+            />
+          ) : null}
           <div className="agent-hero-heading">
             <h2 className="agent-hero-title">What can June do for you?</h2>
           </div>
@@ -2852,7 +3003,23 @@ export function AgentWorkspace({
         <>
           <div ref={agentScrollRef} className="agent-scroll">
             <section className="agent-main" aria-label="Agent task details">
-              {error ? <p className="error-banner">{error}</p> : null}
+              {galleryErrors ? (
+                <AgentErrorBanner
+                  message="Could not connect to Hermes gateway."
+                  onRetry={galleryNoop}
+                  onDismiss={galleryNoop}
+                />
+              ) : error ? (
+                <AgentErrorBanner
+                  message={error}
+                  onRetry={
+                    GATEWAY_CONNECTION_ERROR.test(error)
+                      ? () => void retryGatewayConnection()
+                      : undefined
+                  }
+                  onDismiss={() => setError(null)}
+                />
+              ) : null}
               {detailContent}
               {composer}
             </section>
@@ -3822,19 +3989,26 @@ const galleryNoop = () => {};
 
 function AgentResponseGallery({
   sections,
+  errors,
   onClose,
 }: {
   sections: AgentChatGallerySection[];
+  errors?: boolean;
   onClose: () => void;
 }) {
   return (
     <div className="agent-timeline agent-gallery">
       <div className="agent-gallery-banner">
         <div>
-          <strong>Agent response gallery</strong>
+          <strong>
+            {errors ? "Agent error gallery" : "Agent response gallery"}
+          </strong>
           <p>
-            Every response part type and status, for styling. Close from the
-            console with <code>__agentGallery(false)</code>.
+            {errors
+              ? "Every error surface in agent chat — the banner above and the composer notice below are forced samples too."
+              : "Every response part type and status, for styling."}{" "}
+            Close from the console with{" "}
+            <code>{errors ? "__agentErrors" : "__agentGallery"}(false)</code>.
           </p>
         </div>
         <button
@@ -3862,6 +4036,7 @@ function AgentResponseGallery({
               onApproval={galleryNoop}
               onClarify={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onTopUp={galleryNoop}
             />
           ))}
         </section>
@@ -3878,6 +4053,7 @@ function AgentChatTurnRow({
   onClarify,
   onDownloadArtifact,
   onOpenArtifact,
+  onTopUp,
   turn,
 }: {
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
@@ -3893,6 +4069,7 @@ function AgentChatTurnRow({
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
+  onTopUp?: () => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -3986,6 +4163,11 @@ function AgentChatTurnRow({
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
+          ) : part.type === "notice" ? (
+            <CreditsNoticePart
+              key={`${turn.id}:notice:${index}`}
+              onTopUp={onTopUp}
+            />
           ) : null,
         )}
         <AgentArtifactList
@@ -4026,6 +4208,57 @@ function ContextCompactionPart({
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
+  );
+}
+
+// The shared .error-banner tint, with actions: dismiss always, and "Try again"
+// when the failure is connection-shaped and reconnecting can actually fix it.
+function AgentErrorBanner({
+  message,
+  onDismiss,
+  onRetry,
+}: {
+  message: string;
+  onDismiss: () => void;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="error-banner agent-error-banner" role="alert">
+      <p>{message}</p>
+      <div className="agent-error-banner-actions">
+        {onRetry ? (
+          <button type="button" onClick={onRetry}>
+            Try again
+          </button>
+        ) : null}
+        <button type="button" aria-label="Dismiss" onClick={onDismiss}>
+          <IconCrossMedium size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// The raw billing failure ("Error: Error code: 402 - …") never reaches the
+// transcript — the chat runtime folds it into a notice part, and this card is
+// how the user learns the turn stopped and what to do about it. No title —
+// icon + one sentence + the action, Claude-style.
+function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
+  return (
+    <InlineNotice
+      className="agent-credits-notice"
+      tone="destructive"
+      role="alert"
+      icon={<IconWallet3 size={14} aria-hidden />}
+      body="June stopped because your balance ran out."
+      actions={
+        onTopUp ? (
+          <button type="button" className="btn btn-secondary" onClick={onTopUp}>
+            Add funds
+          </button>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -4652,7 +4885,9 @@ function AgentArtifactPanel({
     const id = window.setTimeout(() => setDebouncedQuery(query), 150);
     return () => window.clearTimeout(id);
   }, [query]);
-  const docHighlight = artifact ? debouncedQuery.trim() || undefined : undefined;
+  const docHighlight = artifact
+    ? debouncedQuery.trim() || undefined
+    : undefined;
 
   // Position-aware scroll fades on the document body (same recipe as the
   // dictation history dialog): the header has no divider, so the top fade is

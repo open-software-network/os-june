@@ -363,6 +363,10 @@ export type HermesBridgeConnection = {
   cwd?: string | null;
   providerProxyPort: number;
   pid: number;
+  /** True when the runtime is wrapped in the macOS Seatbelt write-jail (false
+   * on non-macOS, when sandbox-exec is missing, or when disabled via the
+   * escape-hatch env var). Mirrors the Rust connection field. */
+  sandboxed: boolean;
 };
 
 export type HermesBridgeStatus = {

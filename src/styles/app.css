@@ -2500,8 +2500,39 @@ input:focus-visible,
   bottom: calc(var(--sp-3) + var(--sp-5));
   z-index: 5;
   display: flex;
-  justify-content: center;
+  /* Column so the busy notice can stack above the box; the form is
+   * content-sized and bottom-anchored, so this changes nothing else. */
+  flex-direction: column;
+  align-items: center;
   pointer-events: none;
+}
+
+/* Why a rejected send didn't go through — sits on the composer because that's
+ * where the user just acted, and clears itself when the turn finishes. A
+ * content-sized pill (not another full-width box, which read as a second
+ * composer) with the rolling pangolin tying it to the working state. Same
+ * surface recipe as the recording-consent note and the "Generating notes…"
+ * pill so the app's status messages read as one family. */
+.agent-composer-notice {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: fit-content;
+  max-width: var(--content-max);
+  margin: 0 auto var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  /* Entrance/exit fades come from framer-motion (AnimatePresence), matching
+   * the recording-consent note. */
+}
+
+.agent-composer-notice .pangolin-spinner {
+  flex-shrink: 0;
 }
 
 .app-shell[data-sidebar="collapsed"] .agent-composer {
@@ -2751,9 +2782,10 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-/* Stop control — appears while June is working on the open session. Same
- * squircle as the mic so the actions row doesn't shift when it comes and
- * goes; the destructive tint marks it as an interrupt. */
+/* Stop control — takes over the send slot while June is working on the open
+ * session. The record button's warm hover recipe (cream surface, terracotta
+ * glyph) rather than a solid fill: present but subtle, an interrupt offered
+ * rather than an alarm. */
 .agent-composer-stop {
   display: inline-grid;
   place-items: center;
@@ -2763,16 +2795,13 @@ input:focus-visible,
   padding: 0;
   border: 0;
   border-radius: var(--r-lg);
-  background: transparent;
-  color: var(--muted-foreground);
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-composer-stop:hover {
-  background: color-mix(in oklch, var(--destructive) 12%, transparent);
-  color: var(--destructive);
+  background: color-mix(in oklch, var(--warm-soft) 88%, var(--warm-strong));
 }
 
 .agent-composer-stop:disabled {
@@ -4839,11 +4868,10 @@ input:focus-visible,
   -webkit-user-select: none;
 }
 
+/* The rolling pangolin (drawn, colored via currentColor) — the same working
+ * indicator as the agent chat, sidebar, and composer notice. */
 .note-generating-spinner {
   flex: none;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--fs-md);
-  line-height: 1;
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
@@ -5715,6 +5743,75 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* Agent variant: actions on the right, and breathing room below the sticky
+ * session bar instead of sitting on its bottom edge. */
+.agent-main > .agent-error-banner {
+  margin-top: var(--sp-5);
+}
+
+.agent-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.agent-error-banner p {
+  margin: 0;
+  min-width: 0;
+}
+
+.agent-error-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+.agent-error-banner-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Fixed height so the text button and the icon-only dismiss match — their
+   * natural heights differ (text line box vs 14px glyph). */
+  height: 24px;
+  min-width: 24px;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-error-banner-actions button:hover {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+/* Out-of-credits card in the transcript: no title, just the tone-colored
+ * wallet glyph flowing inline with one sentence. The base notice lays its
+ * pieces out as wrapping flex items, so long text drops wholesale onto its
+ * own line the moment it can't fit — inline flow wraps mid-sentence like a
+ * paragraph instead. */
+.agent-credits-notice .inline-notice-message {
+  display: block;
+}
+
+.agent-credits-notice .inline-notice-eyebrow {
+  margin-right: var(--sp-2);
+  /* Icon-only inline-flex has no text baseline — WebKit sits it too high
+   * against the adjacent text without this nudge. */
+  vertical-align: -2px;
+}
+
+.agent-credits-notice .inline-notice-body {
+  display: inline;
+}
+
 /* Inline notice — shared shape used by NoteRecoveryPrompt and the
  * mic-blocked banner. Tone-aware via the [data-tone] attribute so the
  * eyebrow color reflects the severity without changing the surrounding
@@ -5786,21 +5883,11 @@ input:focus-visible,
   border-radius: var(--r-md);
 }
 
-.note-failure-copy {
-  min-width: 0;
-}
-
-.note-failure-title {
-  margin: 0 0 var(--sp-1);
-  font-size: var(--fs-md);
-  font-weight: 500;
-  color: var(--foreground);
-}
-
 .note-failure-message {
   margin: 0;
+  min-width: 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   line-height: 1.45;
 }
 

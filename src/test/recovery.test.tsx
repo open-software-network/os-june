@@ -26,7 +26,7 @@ describe("NoteRecoveryPrompt", () => {
       />,
     );
 
-    expect(screen.getByText("Interrupted recording")).toBeInTheDocument();
+    expect(screen.getByText(/recording was interrupted/i)).toBeInTheDocument();
     expect(screen.getByText(/4\.0 KB/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Recover" }));

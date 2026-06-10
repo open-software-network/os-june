@@ -21,7 +21,7 @@ import type {
   RecoverableRecordingDto,
   TranscriptDto,
 } from "../../lib/tauri";
-import { BrailleSpinner } from "../BrailleSpinner";
+import { PangolinSpinner } from "../PangolinSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
@@ -337,7 +337,7 @@ export function NoteEditor({
             />
             {processingLock ? (
               <div className="note-generating" role="status" aria-live="polite">
-                <BrailleSpinner className="note-generating-spinner" />
+                <PangolinSpinner className="note-generating-spinner" />
                 <span className="note-generating-label">
                   {note.processingStatus === "generating"
                     ? "Generating notes…"
@@ -380,8 +380,7 @@ export function NoteEditor({
             role="alert"
             aria-label="Microphone access required"
             icon={<IconMicrophoneOff size={14} aria-hidden />}
-            eyebrow="Microphone access is blocked"
-            body="Enable it in System Settings to record audio. You can still write notes here."
+            body="Microphone access is blocked. You can still write notes here."
             actions={
               <button
                 type="button"

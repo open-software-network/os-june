@@ -1,5 +1,6 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
+import { isInsufficientCreditsMessage } from "../../lib/errors";
 
 export type FailureKind = "balance_low" | "generic";
 
@@ -10,18 +11,14 @@ type Props = {
   onTopUp: () => void;
 };
 
-// String match is intentional and a known weakness — the backend currently
-// persists only the error message on the note, not the structured code (see
-// commands.rs::finish_recording where set_note_status is called with
-// Some(error.message)). When we start storing the code we can switch to a
-// strict equality check on the backend billing error code.
+// String match (see isInsufficientCreditsMessage) is intentional and a known
+// weakness — the backend currently persists only the error message on the
+// note, not the structured code (see commands.rs::finish_recording where
+// set_note_status is called with Some(error.message)). When we start storing
+// the code we can switch to a strict equality check on the backend billing
+// error code.
 export function classifyFailure(message?: string): FailureKind {
-  if (!message) return "generic";
-  return /out of credits|insufficient credits|insufficient_credits|balance is too low/i.test(
-    message,
-  )
-    ? "balance_low"
-    : "generic";
+  return isInsufficientCreditsMessage(message) ? "balance_low" : "generic";
 }
 
 export function userFacingFailureMessage(message?: string) {
@@ -82,23 +79,16 @@ export function NoteFailureBanner({
 
   return (
     <aside className="note-failure-banner" role="alert" data-kind={kind}>
-      <div className="note-failure-copy">
-        <h3 className="note-failure-title">
-          {isBalanceIssue
-            ? "Add funds to finish this note"
-            : "Transcription failed"}
-        </h3>
-        <p className="note-failure-message">
-          {isBalanceIssue
-            ? audioPreserved
-              ? "Your recording is saved locally. Add funds and retry to transcribe."
-              : "Your balance is too low. Add funds to continue."
-            : (displayMessage ?? "June couldn't finish processing this note.")}
-          {!isBalanceIssue && audioPreserved
-            ? " Your recording is saved locally — you can retry."
-            : null}
-        </p>
-      </div>
+      <p className="note-failure-message">
+        {isBalanceIssue
+          ? audioPreserved
+            ? "Your balance ran out. Your recording is saved locally, so add funds and retry."
+            : "Your balance is too low. Add funds to continue."
+          : (displayMessage ?? "June couldn't finish processing this note.")}
+        {!isBalanceIssue && audioPreserved
+          ? " Your recording is saved locally, so you can retry."
+          : null}
+      </p>
       <div className="note-failure-actions">
         {isBalanceIssue ? (
           <button

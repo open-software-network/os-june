@@ -17,6 +17,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import { HermesGatewayError } from "../lib/hermes-gateway";
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -35,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
+  osAccountsTopUp: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -82,6 +84,7 @@ vi.mock("../lib/tauri", () => ({
   listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
+  osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
@@ -108,7 +111,9 @@ vi.mock("../lib/hermes-adapter", () => ({
   titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
 }));
 
-vi.mock("../lib/hermes-gateway", () => ({
+vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
+  // Real HermesGatewayError / isSessionBusyError — only the client is faked.
+  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
@@ -1600,6 +1605,143 @@ describe("AgentWorkspace", () => {
     } finally {
       randomSpy.mockRestore();
     }
+  });
+
+  it("explains a busy rejection and removes the ghost bubble", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(new HermesGatewayError("session busy", 4009));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByPlaceholderText("Send a message");
+    await user.type(composer, "are the subagents using my CLI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "are the subagents using my CLI?",
+      }),
+    );
+    // The user learns what's happening in plain language, not "session busy".
+    expect(
+      await screen.findByText(/June is still working on the previous message/),
+    ).toBeInTheDocument();
+    // The rejected prompt never entered the session: no optimistic bubble
+    // lingers in the transcript (it would render below later persisted
+    // messages as a send the agent ignored), and the draft comes back.
+    expect(document.querySelector(".agent-user-turn")).toBeNull();
+    expect(composer).toHaveValue("are the subagents using my CLI?");
+    // The previous turn is still running, so the live listener stays attached.
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+  });
+
+  it("offers retry and dismiss on a connection-shaped error banner", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(new Error("Hermes gateway is not connected."));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText("Hermes gateway is not connected."),
+    ).toBeInTheDocument();
+    // Connection-shaped failures are the retryable ones — reconnecting can fix
+    // them, unlike one-off action failures which only offer dismiss.
+    expect(
+      screen.getByRole("button", { name: "Try again" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
+  });
+
+  it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "How are the subagents doing",
+        timestamp: "2026-06-10T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content:
+          "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
+        timestamp: "2026-06-10T10:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText(/June stopped because your balance ran out/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Error code: 402/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Add funds" }));
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+  });
+
+  it("shows every error surface via the __agentErrors() dev handle", async () => {
+    const agentErrors = (
+      window as unknown as { __agentErrors: (show?: boolean) => string }
+    ).__agentErrors;
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => void agentErrors());
+
+    try {
+      expect(
+        await screen.findByText("Agent error gallery"),
+      ).toBeInTheDocument();
+      // Turn-level samples from the catalog (section label + the card itself)…
+      expect(screen.getAllByText("Out of credits").length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole("button", { name: "Add funds" }),
+      ).toBeInTheDocument();
+      // …plus the forced chrome samples the turn gallery can't represent.
+      expect(
+        screen.getByText("Could not connect to Hermes gateway."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Try again" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/June is still working on the previous message/),
+      ).toBeInTheDocument();
+    } finally {
+      // Always reset the module-level desired state — a failure here must not
+      // leave the gallery on and cascade into later workspace mounts.
+      act(() => void agentErrors(false));
+    }
+    await waitFor(() =>
+      expect(screen.queryByText("Agent error gallery")).toBeNull(),
+    );
   });
 
   // Last in the suite: mounting the workspace kicks off bridge/session

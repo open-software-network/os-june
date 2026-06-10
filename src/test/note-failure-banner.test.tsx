@@ -48,12 +48,13 @@ describe("NoteFailureBanner", () => {
         onTopUp={onTopUp}
       />,
     );
+    // No title — one sentence carries the failure and the reassurance.
     expect(
-      screen.getByRole("heading", { name: /Add funds to finish this note/i }),
+      screen.getByText(
+        /Your balance ran out\. Your recording is saved locally/i,
+      ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Your recording is saved locally/i),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("heading")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /Add funds/i }));
     expect(onTopUp).toHaveBeenCalledOnce();
@@ -71,9 +72,7 @@ describe("NoteFailureBanner", () => {
         onTopUp={() => undefined}
       />,
     );
-    expect(
-      screen.getByRole("heading", { name: /Transcription failed/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Network unreachable/i)).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Add funds/i }),
     ).not.toBeInTheDocument();
