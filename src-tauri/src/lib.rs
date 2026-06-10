@@ -147,7 +147,9 @@ pub fn run() {
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
             os_accounts::os_accounts_top_up,
-            os_accounts::os_accounts_open_portal
+            os_accounts::os_accounts_open_portal,
+            os_accounts::os_accounts_start_trial_checkout,
+            focus_main_window
         ])
         .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
@@ -294,6 +296,21 @@ fn repair_agent_task_statuses_on_app_start(app: &tauri::App) {
             ),
         }
     });
+}
+
+/// Bring the app back to the foreground. The trial flow calls this when the
+/// subscription poll detects checkout finished in the browser, so the user
+/// lands back in June without hunting for the window.
+#[tauri::command]
+fn focus_main_window(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    show_main_window(&app);
+    #[cfg(not(target_os = "macos"))]
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 #[cfg(target_os = "macos")]

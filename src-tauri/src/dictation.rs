@@ -828,8 +828,10 @@ fn animate_frame_to(hud: &WebviewWindow, new_size: PhysicalSize<u32>, animate: b
             let t = f64::from(step) / f64::from(STEPS);
             // ease-out cubic — fast start, soft landing.
             let e = 1.0 - (1.0 - t).powi(3);
-            let w = f64::from(old_size.width) + f64::from(new_size.width as i32 - old_size.width as i32) * e;
-            let h = f64::from(old_size.height) + f64::from(new_size.height as i32 - old_size.height as i32) * e;
+            let w = f64::from(old_size.width)
+                + f64::from(new_size.width as i32 - old_size.width as i32) * e;
+            let h = f64::from(old_size.height)
+                + f64::from(new_size.height as i32 - old_size.height as i32) * e;
             let x = f64::from(position.x) + f64::from(target_x - position.x) * e;
             let y = f64::from(position.y) + f64::from(target_y - position.y) * e;
             let _ = hud.set_size(PhysicalSize::new(w.round() as u32, h.round() as u32));

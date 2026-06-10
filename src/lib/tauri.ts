@@ -1067,6 +1067,24 @@ export async function osAccountsOpenPortal() {
   return invoke<void>("os_accounts_open_portal");
 }
 
+export type TrialCheckoutResult = {
+  outcome: "checkoutOpened" | "alreadySubscribed";
+};
+
+/** Mints the free-trial Stripe Checkout session with the user's own token and
+ * opens it in the system browser — no portal detour. Rejects when the direct
+ * path is unavailable (old token without billing:write, subscriptions
+ * disabled, network); callers fall back to the portal. */
+export async function osAccountsStartTrialCheckout() {
+  return invoke<TrialCheckoutResult>("os_accounts_start_trial_checkout");
+}
+
+/** Bring the app window back to the foreground — used when checkout completes
+ * in the browser so the user lands back in June. */
+export async function focusMainWindow() {
+  return invoke<void>("focus_main_window");
+}
+
 export async function dictationSettings() {
   return invoke<DictationSettingsResponse>("dictation_settings");
 }

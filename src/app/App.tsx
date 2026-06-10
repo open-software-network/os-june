@@ -12,6 +12,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
 import { TrialGate } from "../components/account/TrialGate";
+import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -102,6 +103,10 @@ import type {
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
+import {
+  isOnboardingComplete,
+  markOnboardingComplete,
+} from "../lib/onboarding";
 import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
 import {
   checkScribeUpdate,
@@ -246,7 +251,18 @@ export function App() {
   const finishingSessionsRef = useRef<Set<string>>(new Set());
   const signInRequired = shouldBlockOnSignIn(account);
   const trialRequired = !signInRequired && shouldBlockOnTrial(account);
-  const appBlocked = accountLoading || signInRequired || trialRequired;
+  const [onboardingDone, setOnboardingDone] = useState(() =>
+    isOnboardingComplete(),
+  );
+  // The wizard handles sign-in and the free trial itself, so it gates on
+  // onboarding state alone; AccountGate/TrialGate remain for users who
+  // finished onboarding and later signed out or lapsed.
+  const onboardingRequired = !accountLoading && !onboardingDone;
+  // Onboarding counts as blocked so bootstrap, update checks, and the eager
+  // permission probes hold off until the wizard finishes — the wizard owns
+  // the permission prompts while it's on screen.
+  const appBlocked =
+    accountLoading || signInRequired || trialRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -1447,6 +1463,28 @@ export function App() {
         <div
           className="welcome-screen welcome-screen-loading"
           aria-label="Loading account"
+        />
+      </main>
+    );
+  }
+
+  if (onboardingRequired) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <OnboardingFlow
+          account={account}
+          onAccountChanged={handleAccountChanged}
+          onRefreshAccount={refreshAccount}
+          onComplete={() => {
+            markOnboardingComplete();
+            setOnboardingDone(true);
+          }}
         />
       </main>
     );
