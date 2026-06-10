@@ -2286,6 +2286,35 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* Stop control — appears while June is working on the open session. Same
+ * squircle as the mic so the actions row doesn't shift when it comes and
+ * goes; the destructive tint marks it as an interrupt. */
+.agent-composer-stop {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-stop:hover {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+
+.agent-composer-stop:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* Send slides in from the right (pushing the mic over) only once there's
  * something to send — an up arrow in a solid circle. */
 /* Send is the primary action in the brand terracotta (the logo mark color);

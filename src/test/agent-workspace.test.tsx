@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
+  gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   eventHandlers: new Map<
     string,
     (event: { payload?: { paths?: string[] } }) => void
@@ -103,7 +104,10 @@ vi.mock("../lib/hermes-gateway", () => ({
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
-    onEvent = vi.fn(() => vi.fn());
+    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+      mocks.gatewayEventHandlers.add(handler);
+      return () => mocks.gatewayEventHandlers.delete(handler);
+    });
     onClose = vi.fn(() => vi.fn());
     request = mocks.gatewayRequest;
   },
@@ -131,6 +135,7 @@ const existingSession = {
 describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.gatewayEventHandlers.clear();
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
@@ -367,6 +372,49 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("stops a working session from the composer", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ prompt: "summarize the current page" }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "summarize the current page",
+      }),
+    );
+
+    // The session is now working, so the composer offers a stop control.
+    const stop = await screen.findByRole("button", { name: "Stop June" });
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+    await userEvent.click(stop);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "runtime-session-2",
+      }),
+    );
+    // The working flag clears even before any gateway event arrives, so the
+    // stop control goes away and the session no longer reads as thinking.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
+    );
+    // Stopping also tears down the per-session gateway listener, so a
+    // straggler "running" event can't flip the session back to working.
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
   it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
