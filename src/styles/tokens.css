@@ -28,6 +28,11 @@
   --fs-2xl: 20px;
   --fs-display: 30px;
 
+  /* Diatype ships Regular (400) and Medium (600) only, and font-synthesis is
+   * off — intermediate weights silently resolve to Regular. "Medium" anywhere
+   * in the app means this token. */
+  --fw-medium: 600;
+
   /* Spacing ---------------------------------------------------------- */
   --sp-px: 2px;
   --sp-1: 4px;

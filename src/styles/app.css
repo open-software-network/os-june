@@ -1792,13 +1792,11 @@ input:focus-visible,
   min-width: 0;
 }
 
-/* Regular on purpose. Diatype only ships 400 and 600 faces here and
- * font-synthesis is off, so 500 silently resolves to 400 — if this ever
- * wants true medium, it's font-weight: 600. */
 .agent-artifact-name {
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--body-copy);
   font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
