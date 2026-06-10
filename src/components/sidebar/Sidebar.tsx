@@ -795,6 +795,7 @@ function AgentSessionRow({
 }) {
   const title = session.title || session.preview || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
+  const time = formatSessionTime(sessionTimestamp(session));
   return (
     <article
       className="note-row agent-sidebar-row"
@@ -824,16 +825,23 @@ function AgentSessionRow({
         </span>
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
-          {waiting ? (
-            <span
-              className="agent-sidebar-working"
-              data-status="waitingForUser"
-              aria-label="Needs you"
-              title="Needs you"
-            />
-          ) : null}
         </span>
       </div>
+      {waiting ? (
+        <span
+          className="agent-session-meta"
+          role="status"
+          aria-label="Needs you"
+        >
+          <span
+            className="agent-sidebar-working"
+            data-status="waitingForUser"
+            title="Needs you"
+          />
+        </span>
+      ) : time ? (
+        <span className="agent-session-meta agent-session-time">{time}</span>
+      ) : null}
       <button
         type="button"
         className="note-row-menu agent-session-delete"
@@ -850,6 +858,26 @@ function AgentSessionRow({
       </button>
     </article>
   );
+}
+
+// Compact trailing timestamp for agent session rows: "now", "5m", "3h", "2d"
+// while recent, then "May 2". sessionTimestamp falls back to the epoch when a
+// session has no dates at all, which we render as nothing rather than 1970.
+function formatSessionTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime()) || date.getTime() === 0) return "";
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 60_000) return "now";
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function NoteContextMenu({

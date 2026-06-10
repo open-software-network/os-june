@@ -2992,12 +2992,32 @@ input:focus-visible,
   color: var(--destructive);
 }
 
+/* Agent rows drop the reserved menu column: the title spans (nearly) the full
+ * row and fades out under the trailing overlay — a relative timestamp (or the
+ * needs-you dot), swapped for the delete button on hover. */
+.agent-sidebar-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .agent-sidebar-row .note-row-main {
   grid-template-rows: auto;
 }
 
 .agent-sidebar-row .note-row-icon {
   grid-row: 1;
+}
+
+/* Fade the title's tail instead of ellipsizing so long titles tuck under the
+ * timestamp / trash can. The mask only bites when text actually reaches the
+ * trailing zone; short titles render untouched. */
+.agent-sidebar-row .note-row-title-text {
+  text-overflow: clip;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 48px),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
 }
 
 /* Running agent sessions show the rolling pangolin; idle rows show nothing.
@@ -3016,8 +3036,51 @@ input:focus-visible,
   line-height: 0;
 }
 
-/* Needs-you dot beside the session title: terracotta, matching the live-status
- * accent used across the agent surfaces. */
+/* Trailing meta on agent rows: the relative timestamp, or the terracotta
+ * needs-you dot when the session is waiting. It sits where the delete button
+ * lands, so the hover swap reads as the trash can covering the date. */
+.agent-session-meta {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-3);
+  translate: 0 -50%;
+  display: inline-flex;
+  align-items: center;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-session-time {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-sidebar-row:hover .agent-session-meta,
+.agent-sidebar-row:has(.agent-session-delete:focus-visible)
+  .agent-session-meta {
+  opacity: 0;
+}
+
+/* The delete button overlays the meta slot rather than holding a grid column
+ * of its own, and reveals on hover only — a selected row keeps showing its
+ * timestamp until pointed at. */
+.agent-sidebar-row .note-row-menu.agent-session-delete {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-1);
+  translate: 0 -50%;
+  opacity: 0;
+}
+
+.agent-sidebar-row:hover .agent-session-delete,
+.agent-sidebar-row .agent-session-delete:focus-visible {
+  opacity: 1;
+}
+
+/* Needs-you dot: terracotta, matching the live-status accent used across the
+ * agent surfaces. */
 .agent-sidebar-working {
   display: inline-block;
   flex: 0 0 auto;
@@ -3038,7 +3101,8 @@ input:focus-visible,
 }
 
 .sidebar[data-collapsed="true"] .note-row-menu,
-.sidebar[data-collapsed="true"] .note-row-title {
+.sidebar[data-collapsed="true"] .note-row-title,
+.sidebar[data-collapsed="true"] .agent-session-meta {
   display: none;
 }
 
