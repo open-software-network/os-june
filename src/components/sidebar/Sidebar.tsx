@@ -21,6 +21,8 @@ import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import {
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
   type ReactNode,
   useEffect,
   useMemo,
@@ -92,6 +94,20 @@ type MenuState = {
   noteId: string;
   right: number;
   top: number;
+};
+
+type CommandPaletteItem = {
+  id: string;
+  label: string;
+  meta?: string;
+  icon: ReactNode;
+  searchText: string;
+  action: () => void;
+};
+
+type CommandPaletteGroup = {
+  title: string;
+  items: CommandPaletteItem[];
 };
 
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
@@ -168,6 +184,10 @@ export function Sidebar({
   collapsed = false,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
+  const commandInputRef = useRef<HTMLInputElement>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const inSettings = activeView === "settings";
@@ -241,10 +261,146 @@ export function Sidebar({
     );
   }, [agentSessions, query]);
 
+  const commandPaletteGroups = useMemo<CommandPaletteGroup[]>(() => {
+    const normalized = normalizeCommandQuery(commandQuery);
+    const matches = (item: CommandPaletteItem) =>
+      !normalized || item.searchText.includes(normalized);
+
+    const recentItems: CommandPaletteItem[] = [
+      ...notes.slice(0, 5).map((note) => {
+        const title = note.title.trim() || "New meeting";
+        return {
+          id: `note:${note.id}`,
+          label: title,
+          meta: "Meeting",
+          icon: <IconNoteText size={15} />,
+          searchText: normalizeCommandQuery(`${title} ${note.preview}`),
+          action: () => onSelectNote(note.id),
+        };
+      }),
+      ...agentSessions.slice(0, 5).map((session) => {
+        const title =
+          session.title?.trim() || session.preview?.trim() || "Untitled";
+        return {
+          id: `agent:${session.id}`,
+          label: title,
+          meta: "Agent",
+          icon: <IconPangolin size={15} />,
+          searchText: normalizeCommandQuery(
+            `${title} ${session.preview ?? ""} agent session`,
+          ),
+          action: () => {
+            setSelectedAgentSessionId(session.id);
+            onSelectAgentSession(session);
+          },
+        };
+      }),
+    ]
+      .filter(matches)
+      .slice(0, 6);
+
+    const quickItems: CommandPaletteItem[] = [
+      {
+        id: "quick:new-session",
+        label: "New session",
+        icon: <IconPlusMedium size={15} />,
+        searchText: normalizeCommandQuery("new session agent"),
+        action: handleNewAgentSession,
+      },
+      {
+        id: "quick:meetings",
+        label: "Go to Meetings",
+        icon: <IconNoteText size={15} />,
+        searchText: normalizeCommandQuery("meetings notes go to"),
+        action: () => onChangeView("notes"),
+      },
+      {
+        id: "quick:projects",
+        label: "Go to Projects",
+        icon: <IconProjects size={15} />,
+        searchText: normalizeCommandQuery("projects folders go to"),
+        action: () => onChangeView("folders"),
+      },
+      {
+        id: "quick:dictation",
+        label: "Go to Dictation",
+        icon: <IconMicrophone size={15} />,
+        searchText: normalizeCommandQuery("dictation go to"),
+        action: () => onChangeView("dictation"),
+      },
+      {
+        id: "quick:routines",
+        label: "Go to Routines",
+        icon: <IconArrowsRepeat size={15} />,
+        searchText: normalizeCommandQuery("routines go to"),
+        action: () => onChangeView("routines"),
+      },
+      {
+        id: "quick:settings-general",
+        label: "Settings -> General",
+        icon: <IconSettingsGear4 size={15} />,
+        searchText: normalizeCommandQuery("settings general"),
+        action: () => {
+          onSettingsTabChange?.("general");
+          onChangeView("settings");
+        },
+      },
+    ].filter(matches);
+
+    return [
+      { title: "Recents", items: recentItems },
+      { title: "Quick actions", items: quickItems },
+    ].filter((group) => group.items.length > 0);
+  }, [
+    agentSessions,
+    commandQuery,
+    notes,
+    onChangeView,
+    onSelectAgentSession,
+    onSelectNote,
+    onSettingsTabChange,
+  ]);
+
+  const commandPaletteItems = commandPaletteGroups.flatMap(
+    (group) => group.items,
+  );
+
+  useEffect(() => {
+    setCommandActiveIndex(0);
+  }, [commandPaletteOpen, commandQuery]);
+
+  useEffect(() => {
+    if (commandActiveIndex < commandPaletteItems.length) return;
+    setCommandActiveIndex(Math.max(commandPaletteItems.length - 1, 0));
+  }, [commandActiveIndex, commandPaletteItems.length]);
+
   function dispatchAgentEvent<T>(name: string, detail?: T) {
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent(name, { detail }));
     }, 0);
+  }
+
+  function handleNewAgentSession() {
+    markAgentNewSessionPending();
+    onNewAgentSession();
+    dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
+  }
+
+  function openCommandPalette() {
+    setMenu(null);
+    setIdentityMenuOpen(false);
+    setCommandQuery("");
+    setCommandActiveIndex(0);
+    setCommandPaletteOpen(true);
+  }
+
+  function closeCommandPalette() {
+    setCommandPaletteOpen(false);
+  }
+
+  function runCommandPaletteItem(item: CommandPaletteItem) {
+    closeCommandPalette();
+    item.action();
   }
 
   useEffect(() => {
@@ -265,6 +421,26 @@ export function Sidebar({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [menu]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!isSearchShortcut(event)) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      event.preventDefault();
+      openCommandPalette();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  useEffect(() => {
+    if (!commandPaletteOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      commandInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [commandPaletteOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -459,24 +635,32 @@ export function Sidebar({
         />
       ) : (
         <>
-          <label className="sidebar-search">
+          <label
+            className="sidebar-search"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              openCommandPalette();
+            }}
+          >
             <IconMagnifyingGlass size={15} />
             <input
+              type="search"
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               placeholder="Search"
+              aria-label="Search"
+              readOnly
             />
+            <span className="sidebar-search-kbd" aria-hidden="true">
+              ⌘ K
+            </span>
           </label>
 
           <nav className="sidebar-nav" aria-label="Primary">
             <button
               type="button"
               className="sidebar-nav-item"
-              onClick={() => {
-                markAgentNewSessionPending();
-                onNewAgentSession();
-                dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
-              }}
+              onClick={handleNewAgentSession}
             >
               <span className="sidebar-nav-icon">
                 <IconPlusMedium size={15} />
@@ -631,6 +815,19 @@ export function Sidebar({
           onRemoveNoteFromFolder={onRemoveNoteFromFolder}
           onDeleteNote={onDeleteNote}
           onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {commandPaletteOpen ? (
+        <CommandPalette
+          inputRef={commandInputRef}
+          query={commandQuery}
+          groups={commandPaletteGroups}
+          items={commandPaletteItems}
+          activeIndex={commandActiveIndex}
+          onQueryChange={setCommandQuery}
+          onActiveIndexChange={setCommandActiveIndex}
+          onClose={closeCommandPalette}
+          onSelect={runCommandPaletteItem}
         />
       ) : null}
       <ConfirmDialog
@@ -802,6 +999,155 @@ function SettingsSidebarNav({
         </div>
       ))}
     </section>
+  );
+}
+
+function CommandPalette({
+  inputRef,
+  query,
+  groups,
+  items,
+  activeIndex,
+  onQueryChange,
+  onActiveIndexChange,
+  onClose,
+  onSelect,
+}: {
+  inputRef: RefObject<HTMLInputElement>;
+  query: string;
+  groups: CommandPaletteGroup[];
+  items: CommandPaletteItem[];
+  activeIndex: number;
+  onQueryChange: (value: string) => void;
+  onActiveIndexChange: (index: number) => void;
+  onClose: () => void;
+  onSelect: (item: CommandPaletteItem) => void;
+}) {
+  function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (items.length === 0) return;
+      onActiveIndexChange(Math.min(activeIndex + 1, items.length - 1));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (items.length === 0) return;
+      onActiveIndexChange(Math.max(activeIndex - 1, 0));
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const item = items[activeIndex];
+      if (item) onSelect(item);
+    }
+  }
+
+  let itemIndex = 0;
+
+  return (
+    <div
+      className="command-palette-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="command-palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search"
+      >
+        <label className="command-palette-search">
+          <IconMagnifyingGlass size={16} />
+          <input
+            ref={inputRef}
+            type="search"
+            value={query}
+            onChange={(event) => onQueryChange(event.currentTarget.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Search meetings, sessions, or jump to..."
+            aria-label="Search"
+            aria-activedescendant={
+              items[activeIndex]
+                ? `command-palette-item-${activeIndex}`
+                : undefined
+            }
+          />
+        </label>
+        <div className="command-palette-results">
+          {groups.length > 0 ? (
+            groups.map((group) => (
+              <section className="command-palette-group" key={group.title}>
+                <div className="command-palette-group-title">{group.title}</div>
+                <div className="command-palette-group-list">
+                  {group.items.map((item) => {
+                    const index = itemIndex;
+                    itemIndex += 1;
+                    return (
+                      <button
+                        type="button"
+                        id={`command-palette-item-${index}`}
+                        className="command-palette-item"
+                        data-active={index === activeIndex}
+                        key={item.id}
+                        onMouseEnter={() => onActiveIndexChange(index)}
+                        onClick={() => onSelect(item)}
+                      >
+                        <span className="command-palette-item-icon">
+                          {item.icon}
+                        </span>
+                        <span className="command-palette-item-label">
+                          {item.label}
+                        </span>
+                        {item.meta ? (
+                          <span className="command-palette-item-meta">
+                            {item.meta}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))
+          ) : (
+            <div className="command-palette-empty">No results</div>
+          )}
+        </div>
+        <div className="command-palette-footer" aria-hidden="true">
+          <span>
+            <kbd>↵</kbd> Open
+          </span>
+          <span>
+            <kbd>↑↓</kbd> Navigate
+          </span>
+          <span>
+            <kbd>Esc</kbd> Close
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function normalizeCommandQuery(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function isSearchShortcut(event: KeyboardEvent) {
+  return (
+    event.key.toLowerCase() === "k" &&
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey
   );
 }
 

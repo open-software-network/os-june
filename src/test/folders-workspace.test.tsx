@@ -99,6 +99,69 @@ describe("Sidebar primary navigation", () => {
     expect(onChangeView).toHaveBeenCalledWith("agent-sessions");
   });
 
+  it("opens the command palette with Command-K", async () => {
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("⌘ K")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    const palette = screen.getByRole("dialog", { name: "Search" });
+    const search = within(palette).getByRole("searchbox", { name: "Search" });
+    await waitFor(() => expect(search).toHaveFocus());
+    expect(
+      within(palette).getByPlaceholderText(
+        "Search meetings, sessions, or jump to...",
+      ),
+    ).toBeInTheDocument();
+    expect(within(palette).getByText("Recents")).toBeInTheDocument();
+    expect(within(palette).getByText("Roadmap")).toBeInTheDocument();
+    expect(within(palette).getByText("Quick actions")).toBeInTheDocument();
+    expect(within(palette).getByText("New session")).toBeInTheDocument();
+
+    fireEvent.keyDown(search, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
+  });
+
+  it("opens the command palette when clicking the sidebar search", async () => {
+    const user = userEvent.setup();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("searchbox", { name: "Search" }));
+
+    const palette = screen.getByRole("dialog", { name: "Search" });
+    await waitFor(() =>
+      expect(
+        within(palette).getByRole("searchbox", { name: "Search" }),
+      ).toHaveFocus(),
+    );
+  });
+
   it("renders settings as a sidebar footer action", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
