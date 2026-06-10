@@ -40,7 +40,10 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-scribe,os-scribe-releases
+          # The source repo was renamed os-scribe -> os-june; the token request
+          # 404s on the old name even though the App installation follows the
+          # rename.
+          repositories: os-june,os-scribe-releases
 
       - uses: actions/checkout@v4
         with:
