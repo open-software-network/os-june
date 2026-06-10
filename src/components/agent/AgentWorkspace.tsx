@@ -327,7 +327,6 @@ type AgentArtifact = {
   path: string;
   rootLabel: string;
   size?: number | null;
-  previewDataUrl?: string | null;
 };
 
 type AgentAttachment = ImportedHermesFile & {

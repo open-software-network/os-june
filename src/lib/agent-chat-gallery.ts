@@ -14,7 +14,6 @@ export type AgentGalleryArtifact = {
   path: string;
   rootLabel: string;
   size?: number | null;
-  previewDataUrl?: string | null;
 };
 
 export type AgentChatGallerySection = {
@@ -27,11 +26,6 @@ export type AgentChatGallerySection = {
   // artifactsMentionedInText).
   artifacts?: AgentGalleryArtifact[];
 };
-
-// Brand-tinted inline SVG so the image-preview variant renders without a bridge
-// round-trip (a previewDataUrl short-circuits the live preview fetch).
-const PREVIEW_DATA_URL =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Crect width='128' height='128' fill='%23C25A33'/%3E%3Ccircle cx='44' cy='42' r='11' fill='%23F4E3D8'/%3E%3Cpath d='M16 96l30-34 20 22 16-18 30 30v12H16z' fill='%23F4E3D8'/%3E%3C/svg%3E";
 
 // Fixed timestamps keep the gallery deterministic (no churn from relativeDate).
 const BASE = "2026-06-09T12:00:00.000Z";
@@ -111,7 +105,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Generated files",
       description:
-        "Download cards for files the agent produced. Covers an image preview, a plain document (file icon), and a long path that truncates while the size holds its line.",
+        "Download cards for files the agent produced. The icon is keyed off the file extension; the download button only shows on hover.",
       turns: [
         assistantTurn("artifacts", [
           {
@@ -127,7 +121,6 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/revenue-chart.png",
           rootLabel: "Workspace",
           size: 31_000,
-          previewDataUrl: PREVIEW_DATA_URL,
         },
         {
           name: "summary.md",
