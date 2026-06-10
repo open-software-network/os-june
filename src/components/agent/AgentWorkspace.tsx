@@ -471,14 +471,6 @@ export function AgentWorkspace({
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
 
-  // The conversation scroller's thumb fades in with scroll activity and back
-  // out when idle (native-overlay feel; see scroll-thumb-fade.ts).
-  useEffect(() => {
-    const el = agentScrollRef.current;
-    if (!el) return;
-    return attachScrollThumbFade(el);
-  }, []);
-
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
@@ -590,6 +582,16 @@ export function AgentWorkspace({
   const heroMode =
     !gallerySections &&
     (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+
+  // The conversation scroller's thumb fades in with scroll activity and back
+  // out when idle (native-overlay feel; see scroll-thumb-fade.ts). The hero
+  // intentionally does not mount .agent-scroll, so attach after hero handoff.
+  useEffect(() => {
+    if (heroMode) return;
+    const el = agentScrollRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, [heroMode]);
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
