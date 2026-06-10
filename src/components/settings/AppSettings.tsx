@@ -108,6 +108,7 @@ const EMPTY_MODIFIERS: DictationShortcutModifiers = {
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   pushToTalkShortcut: {
+    keyCode: 0x02,
     code: "KeyD",
     label: "Ctrl+Opt+D",
     pressCount: 1,
@@ -118,6 +119,7 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
     },
   },
   toggleShortcut: {
+    keyCode: 0x11,
     code: "KeyT",
     label: "Ctrl+Opt+T",
     pressCount: 1,
@@ -130,6 +132,14 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   microphone: {},
   style: "standard",
   language: undefined,
+};
+
+const DEFAULT_SHORTCUTS: Record<
+  DictationShortcutKind,
+  DictationShortcutSetting
+> = {
+  push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
+  toggle: DEFAULT_SETTINGS.toggleShortcut,
 };
 
 const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
@@ -833,6 +843,7 @@ export function AppSettings({
                   title="Push to talk"
                   description="Hold this shortcut to dictate, then release to paste."
                   shortcut={settings.pushToTalkShortcut}
+                  defaultShortcut={DEFAULT_SHORTCUTS.push_to_talk}
                   capturing={capturingShortcut === "push_to_talk"}
                   disabled={
                     !!capturingShortcut && capturingShortcut !== "push_to_talk"
@@ -843,6 +854,12 @@ export function AppSettings({
                       : undefined
                   }
                   onChange={() => void startShortcutCapture("push_to_talk")}
+                  onReset={() =>
+                    void saveShortcut(
+                      "push_to_talk",
+                      DEFAULT_SHORTCUTS.push_to_talk,
+                    )
+                  }
                   onCancel={() => void cancelShortcutCapture()}
                 />
 
@@ -850,6 +867,7 @@ export function AppSettings({
                   title="Toggle dictation"
                   description="Press this shortcut to start or stop dictation."
                   shortcut={settings.toggleShortcut}
+                  defaultShortcut={DEFAULT_SHORTCUTS.toggle}
                   capturing={capturingShortcut === "toggle"}
                   disabled={
                     !!capturingShortcut && capturingShortcut !== "toggle"
@@ -858,6 +876,9 @@ export function AppSettings({
                     capturingShortcut === "toggle" ? shortcutError : undefined
                   }
                   onChange={() => void startShortcutCapture("toggle")}
+                  onReset={() =>
+                    void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)
+                  }
                   onCancel={() => void cancelShortcutCapture()}
                 />
               </div>
@@ -1429,21 +1450,28 @@ function ShortcutRow({
   title,
   description,
   shortcut,
+  defaultShortcut,
   capturing,
   disabled,
   error,
   onChange,
+  onReset,
   onCancel,
 }: {
   title: string;
   description: string;
   shortcut: DictationShortcutSetting;
+  defaultShortcut: DictationShortcutSetting;
   capturing: boolean;
   disabled: boolean;
   error?: string;
   onChange: () => void;
+  onReset: () => void;
   onCancel: () => void;
 }) {
+  const canReset =
+    !capturing && !shortcutsMatch(shortcut, defaultShortcut) && !disabled;
+
   return (
     <div className="settings-row">
       <div className="settings-row-info">
@@ -1461,6 +1489,16 @@ function ShortcutRow({
         >
           {capturing ? "Cancel" : "Change"}
         </button>
+        {canReset ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            aria-label={`Reset ${title} shortcut to default`}
+            onClick={onReset}
+          >
+            Reset
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -1725,6 +1763,28 @@ function shortcutForKind(
   return kind === "toggle"
     ? settings.toggleShortcut
     : settings.pushToTalkShortcut;
+}
+
+function shortcutsMatch(
+  first: DictationShortcutSetting,
+  second: DictationShortcutSetting,
+) {
+  const keyCodesMatch =
+    first.keyCode === undefined ||
+    second.keyCode === undefined ||
+    first.keyCode === second.keyCode;
+
+  return (
+    keyCodesMatch &&
+    first.code === second.code &&
+    first.label === second.label &&
+    first.pressCount === second.pressCount &&
+    first.modifiers.command === second.modifiers.command &&
+    first.modifiers.control === second.modifiers.control &&
+    first.modifiers.option === second.modifiers.option &&
+    first.modifiers.shift === second.modifiers.shift &&
+    first.modifiers.function === second.modifiers.function
+  );
 }
 
 function languageLabel(value: string) {
