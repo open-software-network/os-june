@@ -158,7 +158,13 @@ const AGENT_TITLE_TIMEOUT_MS = 2500;
 
 // What the user reads instead of the gateway's "session busy" rejection.
 const SESSION_BUSY_NOTICE =
-  "June is still working on the previous message. Wait for the reply to finish — or stop it — and send again.";
+  "June is still working on the previous message — wait for it to finish, or stop it, then send again.";
+
+// Connection-shaped failures get a "Try again" on the error banner — these are
+// all our own strings (hermes-gateway.ts client errors, ensureHermesGateway),
+// so the match is stable. Other errors (downloads, renames…) have no single
+// retryable action, so they only offer dismiss.
+const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 
 // Dev-tools response gallery handle. Registered at module scope so
 // __agentGallery() exists from app launch — registering it inside the component
@@ -730,7 +736,9 @@ export function AgentWorkspace({
         selectedHermesSessionIdRef.current = nextSessionId;
         return nextSessionId;
       });
-      setError(null);
+      // Deliberately no setError(null) here: this runs from background polls,
+      // so a success would wipe an unrelated banner (e.g. a failed send)
+      // moments after it appeared. The banner is dismissable instead.
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -1569,6 +1577,18 @@ export function AgentWorkspace({
     return gateway;
   }
 
+  // "Try again" on a connection-shaped error banner: rebuild the bridge +
+  // gateway connection and reload sessions, surfacing whatever still fails.
+  async function retryGatewayConnection() {
+    setError(null);
+    try {
+      await ensureHermesGateway();
+      await loadHermesSessions();
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   // prompt.submit is ack-style: once acked there are no pending RPCs, so a
   // socket drop mid-run rejects nothing and no event will ever arrive — the
   // session would otherwise stay "working" (and broadcast "June is working.")
@@ -2054,7 +2074,9 @@ export function AgentWorkspace({
     try {
       await ensureHermesGateway();
       setFilesystemSnapshot(await hermesBridgeFilesystemSnapshot());
-      setError(null);
+      // No setError(null): this refires in the background on message-count
+      // changes, so a success would wipe an unrelated banner (e.g. a failed
+      // send). The banner is dismissable instead.
     } catch (err) {
       setError(messageFromError(err));
     } finally {
@@ -2418,6 +2440,7 @@ export function AgentWorkspace({
       >
         {busyNotice || galleryErrors ? (
           <p className="agent-composer-notice" role="status">
+            <PangolinSpinner />
             {busyNotice ?? SESSION_BUSY_NOTICE}
           </p>
         ) : null}
@@ -2694,7 +2717,17 @@ export function AgentWorkspace({
           data-hero="true"
           data-hero-leaving={heroLeaving ? "true" : undefined}
         >
-          {error ? <p className="error-banner">{error}</p> : null}
+          {error ? (
+            <AgentErrorBanner
+              message={error}
+              onRetry={
+                GATEWAY_CONNECTION_ERROR.test(error)
+                  ? () => void retryGatewayConnection()
+                  : undefined
+              }
+              onDismiss={() => setError(null)}
+            />
+          ) : null}
           <div className="agent-hero-heading">
             <h2 className="agent-hero-title">What can June do for you?</h2>
           </div>
@@ -2740,11 +2773,21 @@ export function AgentWorkspace({
         <div ref={agentScrollRef} className="agent-scroll">
           <section className="agent-main" aria-label="Agent task details">
             {galleryErrors ? (
-              <p className="error-banner">
-                Could not connect to Hermes gateway.
-              </p>
+              <AgentErrorBanner
+                message="Could not connect to Hermes gateway."
+                onRetry={galleryNoop}
+                onDismiss={galleryNoop}
+              />
             ) : error ? (
-              <p className="error-banner">{error}</p>
+              <AgentErrorBanner
+                message={error}
+                onRetry={
+                  GATEWAY_CONNECTION_ERROR.test(error)
+                    ? () => void retryGatewayConnection()
+                    : undefined
+                }
+                onDismiss={() => setError(null)}
+              />
             ) : null}
             {detailContent}
             {composer}
@@ -4139,6 +4182,34 @@ function ContextCompactionPart({
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
+  );
+}
+
+// The shared .error-banner tint, with actions: dismiss always, and "Try again"
+// when the failure is connection-shaped and reconnecting can actually fix it.
+function AgentErrorBanner({
+  message,
+  onDismiss,
+  onRetry,
+}: {
+  message: string;
+  onDismiss: () => void;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="error-banner agent-error-banner" role="alert">
+      <p>{message}</p>
+      <div className="agent-error-banner-actions">
+        {onRetry ? (
+          <button type="button" onClick={onRetry}>
+            Try again
+          </button>
+        ) : null}
+        <button type="button" aria-label="Dismiss" onClick={onDismiss}>
+          <XIcon size={14} />
+        </button>
+      </div>
+    </div>
   );
 }
 

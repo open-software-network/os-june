@@ -2086,19 +2086,42 @@ input:focus-visible,
 }
 
 /* Why a rejected send didn't go through — sits on the composer because that's
- * where the user just acted, and clears itself when the turn finishes. */
+ * where the user just acted, and clears itself when the turn finishes. A
+ * content-sized pill (not another full-width box, which read as a second
+ * composer) with the rolling pangolin tying it to the working state. */
 .agent-composer-notice {
   pointer-events: auto;
-  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: fit-content;
   max-width: var(--content-max);
-  margin: 0 0 var(--sp-2);
+  margin: 0 auto var(--sp-3);
   padding: var(--sp-2) var(--sp-4);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-pill);
   background: var(--card);
   box-shadow: var(--shadow-sm);
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+  animation: agent-composer-notice-in 240ms var(--ease-out);
+}
+
+.agent-composer-notice .pangolin-spinner {
+  flex-shrink: 0;
+}
+
+@keyframes agent-composer-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-notice {
+    animation: none;
+  }
 }
 
 .app-shell[data-sidebar="collapsed"] .agent-composer {
@@ -5310,6 +5333,49 @@ input:focus-visible,
   background: var(--destructive-soft);
   color: color-mix(in oklch, var(--destructive) 60%, var(--foreground));
   font-size: var(--fs-md);
+}
+
+/* Agent variant: actions on the right, and breathing room below the sticky
+ * session bar instead of sitting on its bottom edge. */
+.agent-main > .agent-error-banner {
+  margin-top: var(--sp-5);
+}
+
+.agent-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.agent-error-banner p {
+  margin: 0;
+  min-width: 0;
+}
+
+.agent-error-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+.agent-error-banner-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.agent-error-banner-actions button:hover {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
 }
 
 /* Inline notice — shared shape used by NoteRecoveryPrompt and the

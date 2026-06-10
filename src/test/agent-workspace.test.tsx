@@ -1426,6 +1426,37 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayEventHandlers.size).toBe(1);
   });
 
+  it("offers retry and dismiss on a connection-shaped error banner", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(new Error("Hermes gateway is not connected."));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText("Hermes gateway is not connected."),
+    ).toBeInTheDocument();
+    // Connection-shaped failures are the retryable ones — reconnecting can fix
+    // them, unlike one-off action failures which only offer dismiss.
+    expect(
+      screen.getByRole("button", { name: "Try again" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
+  });
+
   it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {
     const user = userEvent.setup();
     mocks.osAccountsTopUp.mockResolvedValue(undefined);
@@ -1475,6 +1506,9 @@ describe("AgentWorkspace", () => {
       // …plus the forced chrome samples the turn gallery can't represent.
       expect(
         screen.getByText("Could not connect to Hermes gateway."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Try again" }),
       ).toBeInTheDocument();
       expect(
         screen.getByText(/June is still working on the previous message/),
