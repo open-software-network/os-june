@@ -7916,6 +7916,31 @@ input:focus-visible,
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
+.agent-session-list-status {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--warm-strong);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-session-list-status[data-status="waitingForUser"] {
+  color: var(--primary);
+}
+
+.agent-session-list-status > span {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 14%, transparent);
+}
+
 .folder-note-row[data-has-actions="true"]:hover .folder-note-time,
 .folder-note-row[data-has-actions="true"]:focus-within .folder-note-time,
 .folder-note-row[data-has-actions="true"][data-menu-open="true"]
