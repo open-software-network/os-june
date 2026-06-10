@@ -1652,6 +1652,9 @@ impl Repositories {
             .iter()
             .map(|(source, turn_index)| (source.as_str(), *turn_index))
             .collect();
+        // All-or-nothing: a partially pruned session would let the surviving
+        // provisional rows be re-matched differently on retry.
+        let mut tx = self.pool.begin().await?;
         let mut pruned = 0_u64;
         for row in rows {
             let source: Option<String> = row.get("source");
@@ -1666,10 +1669,11 @@ impl Repositories {
             let id: String = row.get("id");
             sqlx::query("DELETE FROM transcripts WHERE id = ?")
                 .bind(&id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             pruned += 1;
         }
+        tx.commit().await?;
         Ok(pruned)
     }
 

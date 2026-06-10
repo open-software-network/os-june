@@ -617,7 +617,16 @@ pub async fn finish_recording(
 ) -> Result<FinishRecordingResponse, AppError> {
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
-    let finished = finish_capture(&request.session_id)?;
+    let finished = match finish_capture(&request.session_id) {
+        Ok(finished) => finished,
+        Err(error) => {
+            // Capture failed to finalize, so finish_recording_session (which
+            // normally stops the live loop) never runs; stop the loop here or
+            // it would keep scanning the abandoned partial files forever.
+            let _ = crate::domain::live_transcription::signal_stop(&request.session_id);
+            return Err(error);
+        }
+    };
     finish_recording_session(&repos, finished, finalization_started).await
 }
 
@@ -1016,6 +1025,9 @@ pub async fn recover_recording(
         ));
     };
     if request.action == "discard" {
+        // Normally a no-op (recovery implies a fresh app start), but never
+        // delete recording files out from under a still-running live loop.
+        crate::domain::live_transcription::stop_and_drain(&request.session_id).await;
         for artifact in repos
             .source_artifact_paths_for_session(&request.session_id)
             .await?

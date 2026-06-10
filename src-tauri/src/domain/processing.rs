@@ -69,13 +69,25 @@ fn source_transcript_input_from_row(row: &TranscriptDto) -> SourceTranscriptInpu
 /// Tolerances for reusing a transcript persisted during the live recording
 /// (or a previous retry) for a final-detection turn. Live boundaries can
 /// drift slightly from final ones because the dynamic noise floor is computed
-/// over a shorter prefix of the audio.
+/// over a shorter prefix of the audio. Both are clamped per source to the
+/// detection merge gap: two final turns of one source are always at least
+/// that far apart, so a clamped tolerance can never admit a row that overlaps
+/// a neighboring turn's speech.
 const REUSE_START_TOLERANCE_MS: i64 = 1_200;
 const REUSE_END_TOLERANCE_MS: i64 = 1_500;
 /// Persisted rows must cover at least this share of the final turn's range;
 /// anything less means part of the turn was never transcribed, so it is
 /// transcribed fresh from the saved audio.
 const REUSE_MIN_COVERAGE: f64 = 0.8;
+/// ...and regardless of share, they may leave at most this much of the turn
+/// uncovered. The relative threshold alone would let a long turn silently
+/// drop many seconds of speech that no one ever transcribed.
+const REUSE_MAX_UNCOVERED_MS: i64 = 2_000;
+/// A row whose effective start lies this far (or more) behind the join cursor
+/// mostly repeats audio an earlier row already covered; joining its text
+/// would duplicate that speech, so the row is skipped instead (dropping
+/// coverage and, if that matters, falling back to fresh transcription).
+const REUSE_JOIN_MAX_OVERLAP_MS: i64 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReusedTranscript {
@@ -110,6 +122,9 @@ pub(crate) fn reuse_persisted_transcript_text(
                 language: row.language.clone(),
             });
     }
+    let merge_gap_ms = crate::audio::turns::config_for_source(source).merge_gap_ms();
+    let start_tolerance = REUSE_START_TOLERANCE_MS.min(merge_gap_ms);
+    let end_tolerance = REUSE_END_TOLERANCE_MS.min(merge_gap_ms);
     let mut candidates = existing
         .iter()
         .filter_map(|row| {
@@ -119,8 +134,8 @@ pub(crate) fn reuse_persisted_transcript_text(
             let row_start = row.start_ms?;
             let row_end = row.end_ms?;
             (row_end > row_start
-                && row_start >= start_ms - REUSE_START_TOLERANCE_MS
-                && row_end <= end_ms + REUSE_END_TOLERANCE_MS)
+                && row_start >= start_ms - start_tolerance
+                && row_end <= end_ms + end_tolerance)
                 .then_some((row_start, row_end, row))
         })
         .collect::<Vec<_>>();
@@ -130,30 +145,36 @@ pub(crate) fn reuse_persisted_transcript_text(
     candidates.sort_by_key(|(row_start, row_end, _)| (*row_start, *row_end));
     let mut covered = 0_i64;
     let mut cursor = start_ms;
-    for (row_start, row_end, _) in &candidates {
-        let overlap_start = (*row_start).max(cursor);
+    let mut language = None;
+    let mut parts: Vec<&str> = Vec::new();
+    for (row_start, row_end, row) in &candidates {
+        let overlap_start = (*row_start).max(start_ms);
         let overlap_end = (*row_end).min(end_ms);
-        if overlap_end > overlap_start {
-            covered += overlap_end - overlap_start;
-            cursor = cursor.max(overlap_end);
+        if overlap_end <= overlap_start || overlap_start + REUSE_JOIN_MAX_OVERLAP_MS <= cursor {
+            // The row adds nothing, or mostly repeats audio already covered
+            // by an earlier row; its text would duplicate that speech.
+            continue;
+        }
+        covered += overlap_end.max(cursor) - overlap_start.max(cursor);
+        cursor = cursor.max(overlap_end);
+        let text = row.text.trim();
+        if !text.is_empty() {
+            parts.push(text);
+        }
+        if language.is_none() {
+            language = row.language.clone();
         }
     }
-    if (covered as f64) < (turn_len as f64) * REUSE_MIN_COVERAGE {
+    if (covered as f64) < (turn_len as f64) * REUSE_MIN_COVERAGE
+        || turn_len - covered > REUSE_MAX_UNCOVERED_MS
+    {
         return None;
     }
-    let text = candidates
-        .iter()
-        .map(|(_, _, row)| row.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let text = parts.join(" ");
     if text.is_empty() {
         return None;
     }
-    Some(ReusedTranscript {
-        text,
-        language: candidates[0].2.language.clone(),
-    })
+    Some(ReusedTranscript { text, language })
 }
 
 pub(crate) fn elapsed_ms(started: Instant) -> i64 {
@@ -370,6 +391,7 @@ pub async fn process_saved_audio(
             start_ms: None,
             end_ms: None,
             turn_index: None,
+            stop: None,
         },
     )
     .await
@@ -959,6 +981,11 @@ pub(crate) struct TranscribePreparedAudioRequest {
     pub(crate) start_ms: Option<i64>,
     pub(crate) end_ms: Option<i64>,
     pub(crate) turn_index: Option<i64>,
+    /// When set (live transcription), checked between chunk requests so a
+    /// stopped recording abandons the remaining chunks instead of holding up
+    /// the final pass; the final pass re-transcribes the turn from the saved
+    /// audio. `None` for final processing, which must always run to the end.
+    pub(crate) stop: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 pub(crate) async fn transcribe_prepared_audio(
@@ -989,6 +1016,16 @@ pub(crate) async fn transcribe_prepared_audio(
     let mut language = None;
     let mut provider_name = request.provider.clone();
     for (index, audio_path) in audio_paths.into_iter().enumerate() {
+        if request
+            .stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(AppError::new(
+                "live_transcription_stopped",
+                "Recording stopped; remaining live chunks are left for final processing.",
+            ));
+        }
         let context = merge_transcription_context(
             request.base_context.as_deref(),
             build_transcription_context(&previous).as_deref(),
@@ -1243,6 +1280,7 @@ async fn transcribe_one_turn_job(
             start_ms: Some(job.start_ms),
             end_ms: Some(job.end_ms),
             turn_index: Some(job.turn_index),
+            stop: None,
         },
     )
     .await
@@ -2124,6 +2162,48 @@ mod tests {
         let reused = reuse_persisted_transcript_text(&existing, "microphone", 1_000, 8_000)
             .expect("covering rows should be joined");
         assert_eq!(reused.text, "First part. second part.");
+    }
+
+    #[test]
+    fn does_not_reuse_when_the_uncovered_span_is_long_even_at_high_relative_coverage() {
+        // 50s of a 60s turn is 83% — above the relative threshold — but the
+        // missing 10s were never transcribed by anyone; reusing would
+        // silently drop that speech from the note.
+        let existing = vec![persisted_row(
+            "microphone",
+            0,
+            50_000,
+            "first fifty seconds",
+        )];
+        assert!(reuse_persisted_transcript_text(&existing, "microphone", 0, 60_000).is_none());
+    }
+
+    #[test]
+    fn does_not_join_rows_that_mostly_repeat_already_covered_audio() {
+        // The second row re-covers the tail of the first (boundary drift
+        // across ticks); joining both texts would duplicate that speech, and
+        // skipping the second row leaves a 3s hole — so no reuse at all.
+        let existing = vec![
+            persisted_row("microphone", 0, 60_000, "long first row."),
+            persisted_row("microphone", 58_000, 63_000, "drifted overlap."),
+        ];
+        assert!(reuse_persisted_transcript_text(&existing, "microphone", 0, 63_000).is_none());
+    }
+
+    #[test]
+    fn start_tolerance_is_clamped_to_the_source_merge_gap() {
+        // Two uncoalesced microphone turns can be as little as ~900ms apart
+        // (the mic merge gap), so a row starting 1s early may contain the
+        // previous turn's tail. The clamped tolerance must reject it for the
+        // microphone source while the wider system gap still admits it.
+        let row = |source: &str| vec![persisted_row(source, 9_000, 15_000, "early start")];
+        assert!(
+            reuse_persisted_transcript_text(&row("microphone"), "microphone", 10_000, 15_000)
+                .is_none()
+        );
+        assert!(
+            reuse_persisted_transcript_text(&row("system"), "system", 10_000, 15_000).is_some()
+        );
     }
 
     #[test]

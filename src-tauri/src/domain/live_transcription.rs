@@ -15,7 +15,7 @@
 
 use crate::{
     audio::{
-        live::detect_partial_turns,
+        live::{detect_partial_turns, RmsWindowCache},
         turns::{coalesce_turns_for_transcription, normalize_wav_for_transcription, AudioTurn},
     },
     db::repositories::Repositories,
@@ -41,6 +41,7 @@ use std::{
 
 /// Set to `0`, `false`, or `off` to disable live transcription.
 const LIVE_TRANSCRIPTION_ENV: &str = "OS_SCRIBE_LIVE_TRANSCRIPTION";
+const LIVE_TEMP_PREFIX: &str = "os-scribe-live";
 const LIVE_TICK_INTERVAL: Duration = Duration::from_secs(15);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// A live turn is only transcribed once this much audio exists after it.
@@ -50,6 +51,10 @@ const LIVE_EDGE_PADDING_MS: i64 = 4_000;
 /// Overlap (relative to the shorter interval) above which a detected turn is
 /// considered already attempted in an earlier tick.
 const ATTEMPTED_OVERLAP: f64 = 0.6;
+/// How long [`drain`] waits for a signalled loop to finish its in-flight turn
+/// before aborting it. Final processing re-transcribes whatever the aborted
+/// turn would have produced, so waiting longer only delays the note.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct LiveSourceInput {
@@ -59,6 +64,7 @@ pub struct LiveSourceInput {
 }
 
 pub struct LiveSessionHandle {
+    session_id: String,
     stop: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -109,7 +115,20 @@ pub fn start_live_transcription(
     let mut sessions = LIVE_SESSIONS
         .lock()
         .expect("live transcription registry poisoned");
-    sessions.insert(session_id, LiveSessionHandle { stop, task });
+    if let Some(previous) = sessions.insert(
+        session_id.clone(),
+        LiveSessionHandle {
+            session_id,
+            stop,
+            task,
+        },
+    ) {
+        // Should be unreachable (capture is single-instance and session ids
+        // are fresh UUIDs), but never leave a loop without a reachable stop
+        // flag: a dropped handle would detach the task and let it tick
+        // forever.
+        previous.stop.store(true, Ordering::Release);
+    }
 }
 
 /// Signals the session's live loop to stop and removes it from the registry.
@@ -124,9 +143,25 @@ pub fn signal_stop(session_id: &str) -> Option<LiveSessionHandle> {
     Some(handle)
 }
 
-/// Waits for a signalled live loop to finish its in-flight work.
-pub async fn drain(handle: LiveSessionHandle) {
-    let _ = handle.task.await;
+/// Waits for a signalled live loop to finish its in-flight work, aborting it
+/// after [`DRAIN_TIMEOUT`] so one hung provider request can never hold up the
+/// final pass indefinitely. The loop must be fully terminated when this
+/// returns: a still-running task could persist a provisional row *after*
+/// reconciliation pruned the session, leaving a stale row behind.
+pub async fn drain(mut handle: LiveSessionHandle) {
+    if tokio::time::timeout(DRAIN_TIMEOUT, &mut handle.task)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            session_id = %handle.session_id,
+            "live transcription did not stop in time; aborting it"
+        );
+        handle.task.abort();
+        let _ = handle.task.await;
+        // The aborted loop never reached its own cleanup.
+        let _ = std::fs::remove_dir_all(session_temp_dir(LIVE_TEMP_PREFIX, &handle.session_id));
+    }
 }
 
 pub async fn stop_and_drain(session_id: &str) {
@@ -140,6 +175,9 @@ pub(crate) struct LiveSessionState {
     attempted: Vec<(String, i64, i64)>,
     /// Successful transcripts in completion order, used as rolling context.
     completed: Vec<SourceTranscriptInput>,
+    /// Per-source RMS windows accumulated across ticks, so each tick reads
+    /// only the audio appended since the previous one.
+    rms_caches: HashMap<String, RmsWindowCache>,
     transcribed_turns: usize,
     failed_turns: usize,
 }
@@ -149,6 +187,7 @@ impl LiveSessionState {
         Self {
             attempted: Vec::new(),
             completed: Vec::new(),
+            rms_caches: HashMap::new(),
             transcribed_turns: 0,
             failed_turns: 0,
         }
@@ -193,7 +232,7 @@ async fn run_live_session(
     sources: Vec<LiveSourceInput>,
     stop: Arc<AtomicBool>,
 ) {
-    let temp_dir = session_temp_dir("os-scribe-live", &session_id);
+    let temp_dir = session_temp_dir(LIVE_TEMP_PREFIX, &session_id);
     let _ = std::fs::remove_dir_all(&temp_dir);
     if std::fs::create_dir_all(&temp_dir).is_err() {
         return;
@@ -262,7 +301,7 @@ pub(crate) async fn run_live_tick(
     context: &LiveTickContext,
     state: &mut LiveSessionState,
     transcriber: &TurnTranscriber,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(), AppError> {
     let mut detected = Vec::new();
     let mut source_durations: HashMap<String, i64> = HashMap::new();
@@ -270,11 +309,14 @@ pub(crate) async fn run_live_tick(
         let artifact_id = source.artifact_id.clone();
         let source_name = source.source.clone();
         let path = source.partial_path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            detect_partial_turns(&artifact_id, &source_name, &path)
+        let mut cache = state.rms_caches.remove(&source.source).unwrap_or_default();
+        let (result, cache) = tokio::task::spawn_blocking(move || {
+            let result = detect_partial_turns(&artifact_id, &source_name, &path, &mut cache);
+            (result, cache)
         })
         .await
         .map_err(|error| AppError::new("audio_live_read_failed", error.to_string()))?;
+        state.rms_caches.insert(source.source.clone(), cache);
         match result {
             Ok((info, mut turns)) => {
                 source_durations.insert(source.source.clone(), info.duration_ms());
@@ -311,7 +353,7 @@ pub(crate) async fn run_live_tick(
             continue;
         }
         state.mark_attempted(&turn);
-        transcribe_live_turn(repos, context, state, transcriber, &turn).await;
+        transcribe_live_turn(repos, context, state, transcriber, &turn, stop).await;
     }
     Ok(())
 }
@@ -322,9 +364,10 @@ async fn transcribe_live_turn(
     state: &mut LiveSessionState,
     transcriber: &TurnTranscriber,
     turn: &AudioTurn,
+    stop: &Arc<AtomicBool>,
 ) {
     let started = Instant::now();
-    let result = prepare_and_transcribe_live_turn(context, state, transcriber, turn).await;
+    let result = prepare_and_transcribe_live_turn(context, state, transcriber, turn, stop).await;
     let status = if result.is_ok() {
         "succeeded"
     } else {
@@ -422,6 +465,7 @@ async fn prepare_and_transcribe_live_turn(
     state: &LiveSessionState,
     transcriber: &TurnTranscriber,
     turn: &AudioTurn,
+    stop: &Arc<AtomicBool>,
 ) -> Result<crate::scribe_api::TranscriptionProviderResult, AppError> {
     let segment_path = context.temp_dir.join(format!(
         "live-{}-{}-{}.wav",
@@ -431,9 +475,54 @@ async fn prepare_and_transcribe_live_turn(
         "live-{}-{}-{}-normalized.wav",
         turn.source, turn.start_ms, turn.end_ms
     ));
+    let chunk_stem = format!("live-{}-{}", turn.source, turn.start_ms);
+    let result = transcribe_extracted_live_turn(
+        context,
+        state,
+        transcriber,
+        turn,
+        stop,
+        &segment_path,
+        &normalized_path,
+        &chunk_stem,
+    )
+    .await;
+    // The session temp dir is only removed when the loop ends; clean this
+    // turn's files (on success *and* failure) so they don't pile up over a
+    // long recording.
+    let _ = std::fs::remove_file(&segment_path);
+    let _ = std::fs::remove_file(&normalized_path);
+    remove_turn_chunks(&context.temp_dir.join("chunks"), &chunk_stem);
+    result
+}
+
+/// Removes the split-chunk WAVs a long turn may have produced.
+fn remove_turn_chunks(chunk_dir: &std::path::Path, chunk_stem: &str) {
+    let Ok(entries) = std::fs::read_dir(chunk_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(chunk_stem) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_extracted_live_turn(
+    context: &LiveTickContext,
+    state: &LiveSessionState,
+    transcriber: &TurnTranscriber,
+    turn: &AudioTurn,
+    stop: &Arc<AtomicBool>,
+    segment_path: &std::path::Path,
+    normalized_path: &std::path::Path,
+    chunk_stem: &str,
+) -> Result<crate::scribe_api::TranscriptionProviderResult, AppError> {
     let source_path = turn.source_path.clone();
     let (start_ms, end_ms) = (turn.start_ms, turn.end_ms);
-    let extract_segment = segment_path.clone();
+    let extract_segment = segment_path.to_path_buf();
+    let normalize_target = normalized_path.to_path_buf();
     let audio_path = tokio::task::spawn_blocking(move || {
         crate::audio::live::extract_partial_turn_wav(
             &source_path,
@@ -441,7 +530,7 @@ async fn prepare_and_transcribe_live_turn(
             end_ms,
             &extract_segment,
         )?;
-        normalize_wav_for_transcription(&extract_segment, &normalized_path)
+        normalize_wav_for_transcription(&extract_segment, &normalize_target)
     })
     .await
     .map_err(|error| AppError::new("audio_live_read_failed", error.to_string()))??;
@@ -456,7 +545,7 @@ async fn prepare_and_transcribe_live_turn(
             provider: context.provider.clone(),
             audio_path,
             temp_dir: context.temp_dir.clone(),
-            chunk_stem: format!("live-{}-{}", turn.source, turn.start_ms),
+            chunk_stem: chunk_stem.to_string(),
             title: context.title.clone(),
             base_context: base_context.clone(),
             operation_id: format!(
@@ -467,10 +556,10 @@ async fn prepare_and_transcribe_live_turn(
             start_ms: Some(turn.start_ms),
             end_ms: Some(turn.end_ms),
             turn_index: None,
+            stop: Some(Arc::clone(stop)),
         },
     )
     .await?;
-    let _ = std::fs::remove_file(&segment_path);
     Ok(
         maybe_post_process_note_transcript(&context.provider, transcript, base_context.as_deref())
             .await,
@@ -607,7 +696,7 @@ mod tests {
         let (context, mut state) = tick_fixture(&repos, dir.path(), &eligible_turn_samples()).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let transcriber = counting_transcriber(Arc::clone(&calls));
-        let stop = AtomicBool::new(false);
+        let stop = Arc::new(AtomicBool::new(false));
 
         run_live_tick(&repos, &context, &mut state, &transcriber, &stop)
             .await
@@ -651,7 +740,7 @@ mod tests {
         let (context, mut state) = tick_fixture(&repos, dir.path(), &samples).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let transcriber = counting_transcriber(Arc::clone(&calls));
-        let stop = AtomicBool::new(false);
+        let stop = Arc::new(AtomicBool::new(false));
 
         run_live_tick(&repos, &context, &mut state, &transcriber, &stop)
             .await
@@ -682,7 +771,7 @@ mod tests {
                 }) as TranscriptionFuture
             })
         };
-        let stop = AtomicBool::new(false);
+        let stop = Arc::new(AtomicBool::new(false));
 
         run_live_tick(&repos, &context, &mut state, &failing, &stop)
             .await
@@ -711,7 +800,7 @@ mod tests {
         let (context, mut state) = tick_fixture(&repos, dir.path(), &eligible_turn_samples()).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let transcriber = counting_transcriber(Arc::clone(&calls));
-        let stop = AtomicBool::new(true);
+        let stop = Arc::new(AtomicBool::new(true));
 
         run_live_tick(&repos, &context, &mut state, &transcriber, &stop)
             .await

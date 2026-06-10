@@ -42,6 +42,16 @@ pub(crate) struct SourceDetectionConfig {
     noise_multiplier: f32,
 }
 
+impl SourceDetectionConfig {
+    /// Same-source turns closer than this are coalesced into one, so two
+    /// distinct final turns of a source are always at least this far apart.
+    /// Transcript-reuse tolerances must stay below it to never admit a row
+    /// that overlaps a neighboring turn's speech.
+    pub(crate) fn merge_gap_ms(&self) -> i64 {
+        self.merge_gap_ms
+    }
+}
+
 pub fn detect_turns(sources: &[DetectionSource]) -> Result<Vec<AudioTurn>, AppError> {
     let mut turns = Vec::new();
     for source in sources {

@@ -163,17 +163,65 @@ pub fn rms_windows_from_partial(path: &Path) -> Result<(PartialWavInfo, Vec<f32>
     Ok((info, windows))
 }
 
+/// RMS windows accumulated across live ticks so each tick only reads the
+/// audio appended since the previous one, instead of re-reading the whole
+/// in-progress file (which grows without bound during long meetings).
+#[derive(Debug, Default)]
+pub struct RmsWindowCache {
+    windows: Vec<f32>,
+    frames_consumed: u64,
+}
+
+/// Extends the cache with complete RMS windows from frames appended since the
+/// last tick. Only whole windows are cached: the trailing partial window
+/// changes as the file grows, and the live-edge padding keeps anything that
+/// close to the edge out of transcription anyway.
+fn extend_window_cache(
+    path: &Path,
+    info: &PartialWavInfo,
+    cache: &mut RmsWindowCache,
+) -> Result<(), AppError> {
+    let channels = info.channels.max(1) as u64;
+    let frames_per_window =
+        ((info.sample_rate.max(1) as i64 * turns::WINDOW_MS) / 1000).max(1) as u64;
+    if info.frame_count < cache.frames_consumed {
+        // The file shrank (recreated source); start over from scratch.
+        cache.windows.clear();
+        cache.frames_consumed = 0;
+    }
+    let new_windows = (info.frame_count - cache.frames_consumed) / frames_per_window;
+    if new_windows == 0 {
+        return Ok(());
+    }
+    let new_frames = new_windows * frames_per_window;
+    let samples = open_samples(path, info, cache.frames_consumed, new_frames)?;
+    let mut windows = turns::rms_windows_from_samples(
+        samples,
+        channels as usize,
+        info.sample_rate.max(1) as usize,
+    );
+    // A short read (torn tail) would yield a partial final window that the
+    // next tick must recompute; keep only the complete ones.
+    windows.truncate(new_windows as usize);
+    cache.frames_consumed += windows.len() as u64 * frames_per_window;
+    cache.windows.append(&mut windows);
+    Ok(())
+}
+
 /// Detects speech turns in an in-progress source recording using the same
-/// per-source thresholds as finalized detection. Returned turns carry the
-/// partial file as their source path; `turn_index` is left at 0.
+/// per-source thresholds as finalized detection, reading only the audio
+/// appended since the previous call with the same cache. Returned turns carry
+/// the partial file as their source path; `turn_index` is left at 0.
 pub fn detect_partial_turns(
     artifact_id: &str,
     source: &str,
     path: &Path,
+    cache: &mut RmsWindowCache,
 ) -> Result<(PartialWavInfo, Vec<AudioTurn>), AppError> {
-    let (info, windows) = rms_windows_from_partial(path)?;
+    let info = read_partial_wav_info(path)?;
+    extend_window_cache(path, &info, cache)?;
     let intervals =
-        turns::active_intervals_from_windows(&windows, turns::config_for_source(source));
+        turns::active_intervals_from_windows(&cache.windows, turns::config_for_source(source));
     let turns = intervals
         .into_iter()
         .map(|(start_ms, end_ms)| AudioTurn {
@@ -366,13 +414,64 @@ mod tests {
         write_wav(&partial, 1, 16_000, &samples);
         zero_header_sizes(&partial);
 
-        let (info, turns) =
-            detect_partial_turns("artifact", "microphone", &partial).expect("detection");
+        let (info, turns) = detect_partial_turns(
+            "artifact",
+            "microphone",
+            &partial,
+            &mut RmsWindowCache::default(),
+        )
+        .expect("detection");
         assert_eq!(info.duration_ms(), 6_000);
         assert_eq!(turns.len(), 2, "expected two distinct turns: {turns:?}");
         assert!(turns[0].start_ms < 500);
         assert!((1_000..=2_500).contains(&turns[0].end_ms));
         assert!((4_000..=5_100).contains(&turns[1].start_ms));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cached_detection_across_ticks_matches_detection_from_scratch() {
+        let dir = temp_dir("live-cache");
+        let partial = dir.join("partial.wav");
+        // First tick sees speech then silence; the file then grows by another
+        // silence + speech stretch before the second tick.
+        let first = tone(24_000, 12_000.0)
+            .into_iter()
+            .chain(std::iter::repeat(0).take(48_000))
+            .collect::<Vec<_>>();
+        let mut full = first.clone();
+        full.extend(std::iter::repeat(0).take(8_000));
+        full.extend(tone(24_000, 12_000.0));
+
+        write_wav(&partial, 1, 16_000, &first);
+        zero_header_sizes(&partial);
+        let mut cache = RmsWindowCache::default();
+        let (_, first_turns) = detect_partial_turns("artifact", "microphone", &partial, &mut cache)
+            .expect("first tick");
+        assert_eq!(first_turns.len(), 1);
+
+        write_wav(&partial, 1, 16_000, &full);
+        zero_header_sizes(&partial);
+        let (_, cached_turns) =
+            detect_partial_turns("artifact", "microphone", &partial, &mut cache)
+                .expect("second tick");
+        let (_, fresh_turns) = detect_partial_turns(
+            "artifact",
+            "microphone",
+            &partial,
+            &mut RmsWindowCache::default(),
+        )
+        .expect("from scratch");
+
+        let ranges = |turns: &[AudioTurn]| {
+            turns
+                .iter()
+                .map(|turn| (turn.start_ms, turn.end_ms))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranges(&cached_turns), ranges(&fresh_turns));
+        assert_eq!(cached_turns.len(), 2);
 
         let _ = std::fs::remove_dir_all(dir);
     }
