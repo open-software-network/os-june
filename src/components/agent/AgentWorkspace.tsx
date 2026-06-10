@@ -1,17 +1,15 @@
-import {
-  CheckIcon,
-  CircleStopIcon,
-  DownloadIcon,
-  FileIcon,
-  FolderIcon,
-  FolderTreeIcon,
-  MessageSquareIcon,
-  RotateCwIcon,
-  ShieldCheckIcon,
-  WrenchIcon,
-  XIcon,
-} from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
+import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconBubbleWide } from "central-icons/IconBubbleWide";
+import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCrossMedium } from "central-icons/IconCrossMedium";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconFolders } from "central-icons/IconFolders";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
+import { IconStopCircle } from "central-icons/IconStopCircle";
+import { IconToolbox } from "central-icons/IconToolbox";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
@@ -2488,7 +2486,7 @@ export function AgentWorkspace({
                       aria-hidden="true"
                     />
                   ) : (
-                    <FileIcon size={14} />
+                    <IconFileText size={14} />
                   )}
                   <span className="agent-attachment-name">
                     {attachment.name}
@@ -2498,7 +2496,7 @@ export function AgentWorkspace({
                     aria-label={`Remove ${attachment.name}`}
                     onClick={() => removeAttachment(attachment.id)}
                   >
-                    <XIcon size={12} />
+                    <IconCrossSmall size={12} />
                   </button>
                 </span>
               ))}
@@ -2644,7 +2642,7 @@ export function AgentWorkspace({
               aria-label="Cancel task"
               onClick={() => void cancelTask(selectedTask.id)}
             >
-              <CircleStopIcon size={15} />
+              <IconStopCircle size={15} />
             </button>
           ) : null}
           {selectedTask.status === "failed" ||
@@ -2655,7 +2653,7 @@ export function AgentWorkspace({
               aria-label="Retry task"
               onClick={() => void retryTask(selectedTask.id)}
             >
-              <RotateCwIcon size={15} />
+              <IconArrowRotateClockwise size={15} />
             </button>
           ) : null}
         </div>
@@ -3305,7 +3303,7 @@ function PanelTabs({
         aria-selected={activePanel === "skills"}
         onClick={() => onChange("skills")}
       >
-        <WrenchIcon size={14} />
+        <IconToolbox size={14} />
         Skills
       </button>
       <button
@@ -3313,7 +3311,7 @@ function PanelTabs({
         aria-selected={activePanel === "messaging"}
         onClick={() => onChange("messaging")}
       >
-        <MessageSquareIcon size={14} />
+        <IconBubbleWide size={14} />
         Messaging
       </button>
     </div>
@@ -3584,7 +3582,7 @@ export function FilesystemPanel({
       ) : (
         <div className="agent-loading">
           <EmptyState
-            icon={<FolderTreeIcon size={24} />}
+            icon={<IconFolders size={24} />}
             title="No files"
             description="No matching agent files were found."
           />
@@ -3610,7 +3608,7 @@ function FilesystemEntryRow({
         style={{ "--agent-file-depth": level } as CSSProperties}
       >
         <span className="agent-files-entry-icon" aria-hidden="true">
-          {isDirectory ? <FolderIcon size={14} /> : <FileIcon size={14} />}
+          {isDirectory ? <IconFolder1 size={14} /> : <IconFileText size={14} />}
         </span>
         <span className="agent-files-entry-name">{entry.name}</span>
         <span className="agent-files-entry-meta">
@@ -3653,7 +3651,7 @@ function MessagingPlatformDetail({
     return (
       <div className="agent-messaging-detail">
         <EmptyState
-          icon={<MessageSquareIcon size={24} />}
+          icon={<IconBubbleWide size={24} />}
           title="No messaging platform"
           description="No matching Hermes messaging platform is available."
         />
@@ -3830,7 +3828,7 @@ function ManagementToolbar({
         placeholder={placeholder}
       />
       <button type="button" disabled={loading} onClick={onRefresh}>
-        <RotateCwIcon size={14} />
+        <IconArrowRotateClockwise size={14} />
         Refresh
       </button>
     </div>
@@ -3998,7 +3996,7 @@ function AgentResponseGallery({
           aria-label="Close gallery"
           onClick={onClose}
         >
-          <XIcon size={15} />
+          <IconCrossMedium size={15} />
         </button>
       </div>
       {sections.map((section) => (
@@ -4203,7 +4201,7 @@ function ClarifyPart({
   return (
     <article className="agent-clarify-card" data-status={part.status}>
       <span className="agent-tool-icon">
-        <MessageSquareIcon size={14} />
+        <IconBubbleWide size={14} />
       </span>
       <div>
         <div className="agent-tool-title">
@@ -4319,7 +4317,7 @@ function ApprovalPart({
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
-        <ShieldCheckIcon size={14} />
+        <IconShieldCheck size={14} />
       </span>
       <div>
         <div className="agent-tool-title">
@@ -4336,9 +4334,9 @@ function ApprovalPart({
         {resolved ? (
           <p className="agent-approval-result" data-choice={activeChoice}>
             {activeChoice === "deny" ? (
-              <XIcon size={14} />
+              <IconCrossMedium size={14} />
             ) : (
-              <CheckIcon size={14} />
+              <IconCheckmark1Small size={14} />
             )}
             {approvalChoiceLabel(
               activeChoice,
@@ -4615,7 +4613,7 @@ function AgentArtifactCard({
           title="Download"
           onClick={() => onDownload(artifact)}
         >
-          <DownloadIcon size={16} />
+          <IconArrowInbox size={16} />
         </button>
       ) : null}
     </article>
@@ -4738,7 +4736,7 @@ function AgentArtifactPanel({
               title="Download"
               onClick={() => onDownload(artifact)}
             >
-              <DownloadIcon size={15} />
+              <IconArrowInbox size={15} />
             </button>
           ) : null}
           <button
@@ -4748,7 +4746,7 @@ function AgentArtifactPanel({
             title="Close"
             onClick={onClose}
           >
-            <XIcon size={15} />
+            <IconCrossMedium size={15} />
           </button>
         </header>
         {markdown ? (
@@ -4793,7 +4791,7 @@ function AgentArtifactPanel({
                   className="btn btn-secondary"
                   onClick={() => onDownload(artifact)}
                 >
-                  <DownloadIcon size={14} />
+                  <IconArrowInbox size={14} />
                   Download
                 </button>
               </div>
