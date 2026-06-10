@@ -377,7 +377,11 @@ describe("AgentWorkspace", () => {
   it("stops a working session from the composer", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ prompt: "summarize the current page" }),
+      // Markers must carry a fresh createdAt or the TTL check discards them.
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
     );
     mocks.listHermesSessions.mockResolvedValue([
       {
@@ -467,6 +471,104 @@ describe("AgentWorkspace", () => {
       await screen.findByText("Summarize Current Page"),
     ).toBeInTheDocument();
     expect(screen.getByText("open the release notes")).toBeInTheDocument();
+  });
+
+  it("clears a working session the runtime is no longer running", async () => {
+    // A recent trailing user message with no reply resumes the session as
+    // working on mount — the exact state a dead run (provider failure, app
+    // quit mid-turn) leaves behind.
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "still waiting on this",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    // The whole flow runs under fake timers so the working-gated poll's
+    // interval is created on the fake clock and can be advanced.
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+      // Two reconcile polls: the first miss is tolerated (a fresh submit can
+      // race the runtime registering), the second clears the activity.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.active_list",
+        {},
+      );
+      expect(screen.queryByText("Thinking…")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a session working while the runtime reports it live", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "long running task",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "working",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.active_list",
+        {},
+      );
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps polling when a follow-up user message is still only pending locally", async () => {
