@@ -3014,6 +3014,7 @@ dependencies = [
  "tracing",
  "urlencoding",
  "uuid",
+ "window-vibrancy",
  "zeroize",
 ]
 

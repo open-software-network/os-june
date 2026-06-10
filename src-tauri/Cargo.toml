@@ -54,6 +54,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSGeometry",
     "objc2-core-foundation",
 ] }
+window-vibrancy = "0.6"
 
 [dev-dependencies]
 tempfile = "3.14"

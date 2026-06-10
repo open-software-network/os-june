@@ -48,9 +48,6 @@ let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
 let hideRequestId = 0;
-// Mirrors Rust's HudOrient: true while the listening pill stands upright in a
-// side screen third (the native contentView is rotated a quarter turn).
-let hudVertical = false;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -89,33 +86,7 @@ const HUD_WHISPER_FLOOR = 0.06;
 // The idle pulse + speech wave live in the shared meter (IDLE_PULSE_*,
 // SPEECH_WAVE_*, withWaveLayers) so the HUD and recorder move identically.
 
-// State changes funnel through a FIFO chain: leaving the upright listening
-// pill lays it flat FIRST — while the DOM still shows the listening bars —
-// because every other state carries braille/text that can't read sideways
-// (swapping it in mid-turn is what made completing-while-upright glitch:
-// sideways braille growing past the frost, then rotating back). The chain
-// also keeps racing events (stop click, then finalizing_transcript, then
-// final_transcript) applying in order even when one waited ~350ms for the
-// turn; `skipIf` re-checks staleness at apply time for queued level events.
-let hudStateChain: Promise<void> = Promise.resolve();
-
-function setHud(
-  state: string,
-  status: string,
-  options?: { skipIf?: () => boolean },
-): Promise<void> {
-  const apply = async () => {
-    if (options?.skipIf?.()) return;
-    if (hudVertical && hud?.dataset.state !== state && state !== "listening") {
-      await invoke("dictation_hud_flatten").catch(() => {});
-    }
-    applyHudState(state, status);
-  };
-  hudStateChain = hudStateChain.then(apply, apply);
-  return hudStateChain;
-}
-
-function applyHudState(state: string, status: string) {
+function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
   const previous = hud.dataset.state;
   const widthBefore = hud.getBoundingClientRect().width;
@@ -276,30 +247,6 @@ function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
 }
 
-// Upright (parked in a side screen third while listening) the native
-// contentView is rotated a quarter turn by Rust — pixels turn, DOM geometry
-// doesn't. This maps a DOM rect into the window coordinates the cursor
-// actually reports: the pill turns visually clockwise about the (square)
-// window's center, so DOM (x, y) lands at (cx + cy - y, cy - cx + x).
-function visualRect(rect: DOMRect) {
-  if (!hudVertical) {
-    const { left, right, top, bottom } = rect;
-    return { left, right, top, bottom };
-  }
-  const cx = window.innerWidth / 2;
-  const cy = window.innerHeight / 2;
-  const x1 = cx + cy - rect.top;
-  const x2 = cx + cy - rect.bottom;
-  const y1 = cy - cx + rect.left;
-  const y2 = cy - cx + rect.right;
-  return {
-    left: Math.min(x1, x2),
-    right: Math.max(x1, x2),
-    top: Math.min(y1, y2),
-    bottom: Math.max(y1, y2),
-  };
-}
-
 // Hover + click pass-through are computed in Rust against rects we push from
 // here. WebKit throttles JS timers on the non-key HUD panel, so any polling
 // done in JS only fires reliably during a mouse-down.
@@ -310,8 +257,9 @@ function pushStopBoundsToNative() {
     );
     return;
   }
+  const { left, right, top, bottom } = stopButton.getBoundingClientRect();
   void invoke("dictation_hud_set_stop_bounds", {
-    rect: visualRect(stopButton.getBoundingClientRect()),
+    rect: { left, right, top, bottom },
   }).catch(() => {});
 }
 
@@ -323,10 +271,6 @@ function pushStopBoundsToNative() {
 // the native motion finishes).
 async function syncWindowToPill(options?: { morph?: boolean }) {
   if (!hud) return;
-  // Flatten first: an upright pill (side-parked listening) must turn back and
-  // give the window its pill-sized frame before any horizontal layout math —
-  // resolves immediately when already flat.
-  await invoke("dictation_hud_flatten").catch(() => {});
   hud.offsetWidth;
   const { width, height } = hud.getBoundingClientRect();
   if (options?.morph) hud.classList.add("is-morphing");
@@ -438,42 +382,13 @@ async function hideHud() {
 }
 
 async function showHud() {
-  const requestId = ++hideRequestId;
+  hideRequestId += 1;
   clearHideTimer();
-  let wasVisible = false;
-  try {
-    wasVisible = await appWindow.isVisible();
-  } catch {
-    // Absent in the jsdom test mock — treat as a fresh show.
-  }
-  // Reveal gate: while the window is ordered out WebKit suspends compositing,
-  // so show() first presents whatever frame was committed before the last
-  // hide — a flash of stale content, worst when the pill re-appears upright
-  // in a side zone. Hold the native alpha near zero across show(), give the
-  // webview a beat to commit the state applied below, then reveal. Already
-  // visible, just make sure an interrupted exit didn't leave the alpha low.
-  setWindowAlpha(wasVisible ? 1 : 0.01);
+  // Size the window to the pill before it appears (an interrupted exit may
+  // also have left the native alpha low — restore it first).
+  setWindowAlpha(1);
   await syncWindowToPill();
-  // Parked in a side third, the listening pill should pop into view already
-  // upright (a snap while hidden) — not flash flat and turn once the settle
-  // tracker notices it.
-  if (hud?.dataset.state === "listening") {
-    await invoke("dictation_hud_apply_zone").catch(() => {});
-  }
   await appWindow.show();
-  if (!wasVisible) {
-    // Fire-and-forget: nothing downstream depends on the reveal, rAF can be
-    // throttled on the non-key panel (hence the timeout race), and the tests
-    // advance fake timers only after handlers resolve.
-    let revealed = false;
-    const reveal = () => {
-      if (revealed) return;
-      revealed = true;
-      if (requestId === hideRequestId) setWindowAlpha(1);
-    };
-    window.requestAnimationFrame(() => window.requestAnimationFrame(reveal));
-    window.setTimeout(reveal, 80);
-  }
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
@@ -496,7 +411,7 @@ async function handleDictationEventPayload(payload: unknown) {
 
   if (dictationEvent.type === "listening_started") {
     resetBars();
-    await setHud("listening", "Listening");
+    setHud("listening", "Listening");
     await showHud();
     return;
   }
@@ -506,42 +421,37 @@ async function handleDictationEventPayload(payload: unknown) {
     // arrives AFTER finalizing_transcript. Once we've moved past listening, that
     // stray level must NOT pull the HUD back to "listening" — otherwise it kills
     // the transcribing braille and the pill looks stuck until the paste lands.
-    // Checked again at apply time (skipIf): a level event queued behind a
-    // leaving-listening turn is stale by the time the chain reaches it.
-    const pastListening = () => {
-      const state = hud?.dataset.state;
-      return (
-        state === "idle" ||
-        state === "transcribing" ||
-        state === "pasting" ||
-        state === "error" ||
-        state === "silent-error" ||
-        state === "exiting"
-      );
-    };
-    if (pastListening()) {
+    const state = hud?.dataset.state;
+    if (
+      state === "idle" ||
+      state === "transcribing" ||
+      state === "pasting" ||
+      state === "error" ||
+      state === "silent-error" ||
+      state === "exiting"
+    ) {
       return;
     }
     const level = Number(dictationEvent.payload?.level || 0);
     renderAudioLevel(level);
-    await setHud("listening", "Listening", { skipIf: pastListening });
+    setHud("listening", "Listening");
     return;
   }
 
   if (dictationEvent.type === "finalizing_transcript") {
-    await setHud("transcribing", "Transcribing");
+    setHud("transcribing", "Transcribing");
     await showHud();
     return;
   }
 
   if (dictationEvent.type === "final_transcript") {
-    await setHud("pasting", "Pasting");
+    setHud("pasting", "Pasting");
     await showHud();
     return;
   }
 
   if (dictationEvent.type === "paste_target") {
-    await setHud(
+    setHud(
       "pasting",
       `Pasting into ${dictationEvent.payload?.app || "previous app"}`,
     );
@@ -563,7 +473,7 @@ async function handleDictationEventPayload(payload: unknown) {
     // Rust pre-classifies via payload.silent so the HUD has one source of
     // truth for what counts as a "Nothing recorded" case.
     if (dictationEvent.payload?.silent === true) {
-      await setHud("silent-error", "Nothing recorded");
+      setHud("silent-error", "Nothing recorded");
       await showHud();
       hideSoon(900);
       return;
@@ -571,7 +481,7 @@ async function handleDictationEventPayload(payload: unknown) {
     const message = String(
       dictationEvent.payload?.message ?? "Dictation failed.",
     ).trim();
-    await setHud("error", message || "Dictation failed.");
+    setHud("error", message || "Dictation failed.");
     await showHud();
     triggerShake();
     // Hold long enough for the shake to finish and the message to read.
@@ -586,7 +496,7 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   if (meetingEvent.type === "meeting_detected") {
     if (meetingPromptSuppressed) return;
     if (!canShowMeetingPrompt(hud?.dataset.state)) return;
-    await setHud("meeting", "Meeting detected");
+    setHud("meeting", "Meeting detected");
     await showHud();
     startMeetingPromptTimer();
     return;
@@ -619,7 +529,7 @@ async function handleAgentStatusEventPayload(payload: unknown) {
   clearMeetingPromptTimer();
   clearHideTimer();
   playAgentStartTone();
-  await setHud("agent-received", event.summary || "June is starting");
+  setHud("agent-received", event.summary || "June is starting");
   await showHud();
   hideSoon(AGENT_HANDOFF_TIMEOUT_MS);
 }
@@ -645,55 +555,11 @@ dragHandle?.addEventListener("pointerdown", (event) => {
   void appWindow.startDragging().catch(() => {});
 });
 
-// Upright, DOM hit-testing no longer matches what's on screen, so the
-// per-element handlers above/below go quiet (raw coordinates miss their
-// elements) and these document-level handlers take over: a press on the stop
-// button's visual rect clicks stop; a press anywhere else drags, the same
-// immediate grab the handle gives when flat. Capture-phase + preventDefault
-// keeps stray raw hits (e.g. the DOM stop button's unrotated spot out in the
-// gutter) from reaching the real handlers.
-function pointInVisualStop(x: number, y: number) {
-  if (!stopButton || hud?.dataset.state !== "listening") return false;
-  const rect = visualRect(stopButton.getBoundingClientRect());
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-}
-
-let uprightStopPress = false;
-
-document.addEventListener(
-  "pointerdown",
-  (event) => {
-    if (!hudVertical || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    uprightStopPress = pointInVisualStop(event.clientX, event.clientY);
-    if (!uprightStopPress) {
-      void appWindow.startDragging().catch(() => {});
-    }
-  },
-  true,
-);
-
-document.addEventListener(
-  "pointerup",
-  (event) => {
-    if (!hudVertical || event.button !== 0) return;
-    event.stopPropagation();
-    if (uprightStopPress && pointInVisualStop(event.clientX, event.clientY)) {
-      stopButton?.click();
-    }
-    uprightStopPress = false;
-  },
-  true,
-);
-
 stopButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   setStopHover(false);
   if (hud?.dataset.state === "listening") {
-    // Not awaited: upright, the state lands only after the lay-flat turn —
-    // the recorder must stop now, not 350ms from now.
-    void setHud("transcribing", "Transcribing");
+    setHud("transcribing", "Transcribing");
   }
   try {
     await invoke("dictation_helper_command", {
@@ -737,36 +603,6 @@ void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
 void listen<boolean>("hud-stop-hover", (event) => {
   setStopHover(Boolean(event.payload));
 });
-
-// Orientation: Rust turns the native contentView (frost + tint + this DOM as
-// one unit) and tells us on the same beat; our only moves are the bar
-// counter-rotation (hud.css, same duration/curve, so the waveform keeps
-// reading left-to-right) and re-aiming the stop rect at rotated geometry.
-void listen<{ vertical: boolean; animate: boolean }>(
-  "dictation-hud-orient",
-  (event) => {
-    if (!event.payload || !hud) return;
-    hudVertical = event.payload.vertical;
-    if (!event.payload.animate) hud.classList.add("hud-orient-snap");
-    hud.dataset.orient = event.payload.vertical ? "vertical" : "horizontal";
-    if (!event.payload.animate) {
-      // Let the snapped state paint before the transition comes back.
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() =>
-          hud?.classList.remove("hud-orient-snap"),
-        );
-      });
-    }
-    // The orientation flip moves the stop button's visual rect even when the
-    // window frame doesn't change (e.g. a pre-show snap) — re-aim the native
-    // hover/click math here too, not just on window resize.
-    pushStopBoundsToNative();
-  },
-);
-
-// Window geometry changes (the upright square snap, resize morphs) shift the
-// stop button's window-space rect; re-aim the native hover/click math.
-window.addEventListener("resize", () => pushStopBoundsToNative());
 
 void invoke<string | undefined>("latest_dictation_event")
   .then((payload) => {
