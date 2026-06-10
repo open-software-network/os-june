@@ -1,4 +1,5 @@
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
+import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBrain2 } from "central-icons/IconBrain2";
@@ -58,6 +59,7 @@ export type SidebarView =
   | "settings"
   | "folders"
   | "dictation"
+  | "routines"
   | "agent";
 
 type SidebarProps = {
@@ -507,6 +509,18 @@ export function Sidebar({
                 <IconMicrophone size={16} />
               </span>
               <span className="sidebar-nav-label">Dictation</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "routines"}
+              aria-current={activeView === "routines" ? "page" : undefined}
+              onClick={() => onChangeView("routines")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconArrowsRepeat size={16} />
+              </span>
+              <span className="sidebar-nav-label">Routines</span>
             </button>
           </nav>
 
