@@ -3007,26 +3007,11 @@ input:focus-visible,
   grid-row: 1;
 }
 
-/* Fade the title's tail instead of ellipsizing so long titles tuck under the
- * timestamp / trash can. The mask only bites when text actually reaches the
- * trailing zone; short titles render untouched. Text must hit fully
- * transparent BEFORE the meta slot ("May 28" right-aligned 8px in ≈ 48px) so
- * overflowing titles never butt against the timestamp. flex: 1 makes the box
- * fill the column — without it the flex item hugs its text and the mask
- * fades the tail of every title, however short. */
-.agent-sidebar-row .note-row-title-text {
-  flex: 1;
-  text-overflow: clip;
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - 84px),
-    transparent calc(100% - 40px)
-  );
-  mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - 84px),
-    transparent calc(100% - 40px)
-  );
+/* Titles ellipsize short of the trailing slot so they never collide with the
+ * timestamp / dot ("May 28" right-aligned 8px into the row ≈ 48px; the title
+ * box already ends 12px in, leaving 36px to reserve). */
+.agent-sidebar-row .note-row-title {
+  padding-right: 36px;
 }
 
 /* Running agent sessions show the rolling pangolin; idle rows show nothing.
@@ -3060,7 +3045,7 @@ input:focus-visible,
 }
 
 .agent-session-time {
-  color: var(--muted-foreground);
+  color: color-mix(in oklch, var(--muted-foreground) 65%, transparent);
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -3101,6 +3086,12 @@ input:focus-visible,
 .agent-sidebar-working[data-status="waitingForUser"] {
   background: var(--warm-strong);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 18%, transparent);
+}
+
+/* Unread variant: a finished turn the user hasn't looked at yet. Plain dot —
+ * the halo stays reserved for "needs you". */
+.agent-sidebar-working[data-status="unread"] {
+  background: var(--warm-strong);
 }
 
 /* A session awaiting your input reads a touch heavier so it stands out in the

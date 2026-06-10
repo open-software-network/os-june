@@ -183,6 +183,29 @@ export function Sidebar({
   const [waitingAgentSessionIds, setWaitingAgentSessionIds] = useState<
     Set<string>
   >(() => new Set());
+  // Sessions that finished a turn while the user wasn't looking — shown as a
+  // terracotta dot in place of the timestamp until the session is opened.
+  const [unreadAgentSessionIds, setUnreadAgentSessionIds] = useState<
+    Set<string>
+  >(() => new Set());
+  // Refs for the mount-once sessions-changed listener: the previous working
+  // set (to spot sessions that just finished) and which session is open in
+  // front of the user (those never go unread).
+  const workingAgentSessionIdsRef = useRef<Set<string>>(new Set());
+  const openAgentSessionIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    const openId = activeView === "agent" ? selectedAgentSessionId : undefined;
+    openAgentSessionIdRef.current = openId;
+    if (!openId) return;
+    // Opening a session reads it.
+    setUnreadAgentSessionIds((current) => {
+      if (!current.has(openId)) return current;
+      const next = new Set(current);
+      next.delete(openId);
+      return next;
+    });
+  }, [activeView, selectedAgentSessionId]);
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return notes;
@@ -276,8 +299,25 @@ export function Sidebar({
       if (!detail) return;
       setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_LIMIT));
       setSelectedAgentSessionId(detail.selectedSessionId);
-      setWorkingAgentSessionIds(new Set(detail.workingSessionIds));
-      setWaitingAgentSessionIds(new Set(detail.waitingSessionIds ?? []));
+      const nextWorking = new Set(detail.workingSessionIds);
+      const nextWaiting = new Set(detail.waitingSessionIds ?? []);
+      // A session that left the working set without pausing for input just
+      // finished a turn — mark it unread unless it's open in front of the
+      // user.
+      const openId = openAgentSessionIdRef.current;
+      const finished = Array.from(workingAgentSessionIdsRef.current).filter(
+        (id) => !nextWorking.has(id) && !nextWaiting.has(id) && id !== openId,
+      );
+      workingAgentSessionIdsRef.current = nextWorking;
+      if (finished.length > 0) {
+        setUnreadAgentSessionIds((current) => {
+          const next = new Set(current);
+          for (const id of finished) next.add(id);
+          return next;
+        });
+      }
+      setWorkingAgentSessionIds(nextWorking);
+      setWaitingAgentSessionIds(nextWaiting);
     }
 
     window.addEventListener(
@@ -328,6 +368,11 @@ export function Sidebar({
         return next;
       });
       setWaitingAgentSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(session.id);
+        return next;
+      });
+      setUnreadAgentSessionIds((current) => {
         const next = new Set(current);
         next.delete(session.id);
         return next;
@@ -467,6 +512,7 @@ export function Sidebar({
                       }
                       working={workingAgentSessionIds.has(session.id)}
                       waiting={waitingAgentSessionIds.has(session.id)}
+                      unread={unreadAgentSessionIds.has(session.id)}
                       deleting={deletingAgentSessionIds.has(session.id)}
                       onSelect={() => {
                         setSelectedAgentSessionId(session.id);
@@ -781,6 +827,7 @@ function AgentSessionRow({
   selected,
   working,
   waiting,
+  unread,
   deleting,
   onSelect,
   onDelete,
@@ -789,6 +836,7 @@ function AgentSessionRow({
   selected: boolean;
   working: boolean;
   waiting: boolean;
+  unread: boolean;
   deleting: boolean;
   onSelect: () => void;
   onDelete: () => void;
@@ -837,6 +885,18 @@ function AgentSessionRow({
             className="agent-sidebar-working"
             data-status="waitingForUser"
             title="Needs you"
+          />
+        </span>
+      ) : unread ? (
+        <span
+          className="agent-session-meta"
+          role="status"
+          aria-label="New reply"
+        >
+          <span
+            className="agent-sidebar-working"
+            data-status="unread"
+            title="New reply"
           />
         </span>
       ) : time ? (
