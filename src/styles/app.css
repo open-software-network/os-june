@@ -248,7 +248,16 @@ input:focus-visible,
   padding-bottom: 0;
 }
 
+.main-panel-body[data-note-detail-scroller="true"] {
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
 .main-panel-body[data-active-view="agent"] .workspace {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.main-panel-body[data-note-detail-scroller="true"] .workspace {
   grid-template-rows: minmax(0, 1fr);
 }
 
@@ -261,6 +270,12 @@ input:focus-visible,
     scroll-timeline: none;
   }
   .main-panel-body[data-active-view="agent"] .agent-scroll {
+    scroll-timeline: --main-panel-scroll block;
+  }
+  .main-panel-body[data-note-detail-scroller="true"] {
+    scroll-timeline: none;
+  }
+  .main-panel-body[data-note-detail-scroller="true"] .note-detail-scroll {
     scroll-timeline: --main-panel-scroll block;
   }
 }
@@ -3571,12 +3586,39 @@ input:focus-visible,
   height: 100%;
 }
 
-.note-shell > .note-editor {
+.note-detail-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 calc(-1 * var(--sp-8));
+  padding: 0 var(--sp-8) var(--sp-5);
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.note-detail-scroll[data-has-detail-bar="true"] {
+  margin-top: calc(-1 * var(--detail-bar-h));
+  padding-top: var(--detail-bar-h);
+}
+
+.note-detail-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.note-detail-scroll[data-has-detail-bar="true"]::-webkit-scrollbar-track {
+  margin-top: var(--detail-bar-h);
+}
+
+.note-detail-scroll > .note-editor {
   flex: 1;
   min-height: 0;
 }
 
-.note-shell > .detail-bar + .note-editor {
+.note-detail-scroll[data-has-detail-bar="true"] > .note-editor {
   padding-top: var(--sp-7);
 }
 
@@ -6205,12 +6247,14 @@ input:focus-visible,
  * transparent borders clip the painted pill back to the usual 4px, inset 2px
  * from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
+.note-detail-scroll::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: 8px;
   background: transparent;
 }
 
 .agent-scroll::-webkit-scrollbar-thumb,
+.note-detail-scroll::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   background: transparent;
@@ -6218,6 +6262,7 @@ input:focus-visible,
 }
 
 .agent-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
+.note-detail-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
   background: color-mix(
     in oklch,
@@ -6228,6 +6273,7 @@ input:focus-visible,
 }
 
 .agent-scroll::-webkit-scrollbar-thumb:hover,
+.note-detail-scroll::-webkit-scrollbar-thumb:hover,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   background-clip: padding-box;
