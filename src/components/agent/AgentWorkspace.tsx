@@ -675,6 +675,11 @@ export function AgentWorkspace({
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(false);
+  // True only while a brand-new thread is being started from the hero. The
+  // hero→dock composer FLIP keys off this so it glides *only* when the empty
+  // chat hands over to a fresh thread — not when the hero is dismissed by
+  // selecting an existing chat from the sidebar (that should swap instantly).
+  const heroExitViaThreadRef = useRef(false);
   const sessionTitleOverridesRef = useRef<Record<string, string>>({});
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -849,6 +854,11 @@ export function AgentWorkspace({
   const heroMode =
     !gallerySections &&
     (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+  // Holds the prior render's heroMode. Read by both the composer auto-grow
+  // effect (to skip its glide across a hero transition) and the hero→dock FLIP
+  // below (to detect the hero handoff); the FLIP effect, which runs last, is
+  // what advances it each render.
+  const prevHeroModeRef = useRef(heroMode);
 
   // Full mode is an opt-in made per new session, so the toggle re-arms to off
   // every time the hero is entered — it never carries over from the last one.
@@ -1300,6 +1310,14 @@ export function AgentWorkspace({
     ) {
       return;
     }
+    // The height is already applied above; only the glide is conditional. On a
+    // hero transition the composer changes shape (hero is full-width/taller),
+    // but we don't want to grow-animate that: entering the hero or swapping it
+    // for an existing chat should be instant, and on thread-start the hero→dock
+    // FLIP below owns the box animation — running both leaves two height
+    // animations fighting over the same box. prevHeroModeRef holds the prior
+    // render's heroMode (the FLIP effect updates it, and runs after this one).
+    if (prevHeroModeRef.current !== heroMode) return;
     // Animate the box open/closed. Its content is bottom-anchored
     // (justify-content: flex-end) and clipped (overflow: hidden), so the
     // toolbar stays pinned to the bottom edge while the top edge glides up to
@@ -1635,6 +1653,10 @@ export function AgentWorkspace({
     if (!runtimeSessionId)
       throw new Error("Hermes did not resume the session.");
     const createdAt = new Date().toISOString();
+    // A new session (no target id) means the hero is handing over to a fresh
+    // thread — arm the composer glide. Sending into an existing session leaves
+    // the flag alone so a later hero dismissal via the sidebar stays instant.
+    if (!targetSessionId) heroExitViaThreadRef.current = true;
     newSessionModeRef.current = false;
     setNewSessionMode(false);
     setRuntimeSessionIds((current) => ({
@@ -2628,7 +2650,6 @@ export function AgentWorkspace({
   // While the hero is up, every render snapshots the box; the first render
   // after leaving measures the docked position and animates the delta.
   const heroExitRectRef = useRef<DOMRect | null>(null);
-  const prevHeroModeRef = useRef(heroMode);
   useLayoutEffect(() => {
     const wasHero = prevHeroModeRef.current;
     prevHeroModeRef.current = heroMode;
@@ -2636,11 +2657,19 @@ export function AgentWorkspace({
     if (!box) return;
     if (heroMode) {
       heroExitRectRef.current = box.getBoundingClientRect();
+      // Clear any stale intent while the hero is up so a sidebar dismissal
+      // can't inherit a glide armed by an earlier (failed) submit.
+      heroExitViaThreadRef.current = false;
       return;
     }
     const prev = heroExitRectRef.current;
     heroExitRectRef.current = null;
     if (!wasHero || !prev) return;
+    // Only glide when the hero handed over to a fresh thread. Leaving the hero
+    // because the user opened an existing chat should swap in place.
+    const viaThread = heroExitViaThreadRef.current;
+    heroExitViaThreadRef.current = false;
+    if (!viaThread) return;
     if (
       typeof box.animate !== "function" ||
       (typeof window.matchMedia === "function" &&
@@ -2944,6 +2973,7 @@ export function AgentWorkspace({
       className="agent-workspace"
       aria-label="Agent"
       data-artifact-panel={artifactPanel ? "open" : undefined}
+      data-hero={heroMode ? "true" : undefined}
     >
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
         <AgentSessionBar

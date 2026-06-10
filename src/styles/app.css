@@ -264,6 +264,12 @@ input:focus-visible,
  * see .agent-scroll. This means filling the card exactly — not growing past it —
  * so .agent-scroll has a bounded height to scroll within. */
 .agent-workspace {
+  position: relative;
+  /* Own stacking context so the warm fade below (z-index:-1) stays local —
+   * above this element's own (transparent) background, beneath the hero
+   * content. Without it the negative layer falls behind the opaque .main-panel
+   * card and never shows. */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -272,6 +278,36 @@ input:focus-visible,
   min-width: 0;
   min-height: 0;
   margin: 0 auto;
+}
+
+/* New-session warmth: a whisper of brand orange welling up from the bottom of
+ * the intro screen, clear at the top so the greeting and bar stay neutral.
+ * Full-bleed behind the centered hero column (z-index:-1 keeps it above the
+ * white card but under the content), and it fades on opacity so the warmth
+ * dissolves as the composer glides to its dock on thread handoff. */
+.agent-workspace::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 30%,
+    color-mix(in oklch, var(--brand) 11%, transparent) 100%
+  );
+  transition: opacity 280ms var(--ease-out);
+}
+
+.agent-workspace[data-hero="true"]::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-workspace::before {
+    transition: none;
+  }
 }
 
 /* Agent view: stop the card body from scrolling (the breadcrumb would scroll
