@@ -44,6 +44,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type DragEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -748,6 +749,21 @@ export function AgentWorkspace({
     setArtifactPanel(null);
     setDevArtifacts([]);
   }, [selectedHermesSessionId, selectedTaskId]);
+
+  // Esc dismisses the file viewer. The card slides away from the toggle pill
+  // when the panel opens, so the keyboard is the close affordance that never
+  // moves; the panel's filter input claims the first Esc to clear itself.
+  const artifactPanelOpen = artifactPanel !== null;
+  useEffect(() => {
+    if (!artifactPanelOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        setArtifactPanel(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [artifactPanelOpen]);
 
   // Dev-tools sample file seeder (window.__agentFiles, registered at module
   // scope above): imports one file per preview path into the real workspace
@@ -4628,6 +4644,26 @@ type AgentArtifactPreview =
   | { kind: "text"; text: string }
   | { kind: "none" };
 
+// Files panel width — user-resizable between these bounds (and never past
+// roughly half the window), remembered across sessions. The live value is
+// the --agent-files-w custom property on .app-shell, which the panel, the
+// main card's margin, and the composer all share.
+const AGENT_FILES_WIDTH_KEY = "scribe:agent:files-panel-width";
+const FILES_PANEL_MIN_W = 300;
+const FILES_PANEL_MAX_W = 600;
+
+function clampFilesPanelWidth(width: number) {
+  const viewportCap =
+    typeof window === "undefined"
+      ? FILES_PANEL_MAX_W
+      : Math.round(window.innerWidth * 0.55);
+  const max = Math.max(
+    FILES_PANEL_MIN_W,
+    Math.min(FILES_PANEL_MAX_W, viewportCap),
+  );
+  return Math.min(Math.max(Math.round(width), FILES_PANEL_MIN_W), max);
+}
+
 function AgentArtifactPanel({
   artifacts,
   state,
@@ -4648,6 +4684,53 @@ function AgentArtifactPanel({
     kind: "loading",
   });
   const [showSource, setShowSource] = useState(false);
+  const [query, setQuery] = useState("");
+  const panelRef = useRef<HTMLElement>(null);
+
+  // Restore the remembered width once per panel mount. The property lives on
+  // .app-shell (not this element) because the main card's slide-over margin
+  // and the composer's right inset consume it too.
+  useEffect(() => {
+    const shell = panelRef.current?.closest(".app-shell");
+    if (!(shell instanceof HTMLElement)) return;
+    const stored = Number.parseInt(
+      window.localStorage.getItem(AGENT_FILES_WIDTH_KEY) ?? "",
+      10,
+    );
+    if (Number.isFinite(stored)) {
+      shell.style.setProperty(
+        "--agent-files-w",
+        `${clampFilesPanelWidth(stored)}px`,
+      );
+    }
+  }, []);
+
+  // Drag-resize from the panel's left edge, mirroring the sidebar handle:
+  // the var tracks the cursor with transitions suppressed (the
+  // data-files-resizing attribute), and the final width persists on release.
+  const startResize = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const shell = event.currentTarget.closest(".app-shell");
+    const startWidth = panelRef.current?.offsetWidth;
+    if (!(shell instanceof HTMLElement) || !startWidth) return;
+    shell.setAttribute("data-files-resizing", "true");
+    const startX = event.clientX;
+    const onMove = (move: PointerEvent) => {
+      const next = clampFilesPanelWidth(startWidth + (startX - move.clientX));
+      shell.style.setProperty("--agent-files-w", `${next}px`);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      shell.removeAttribute("data-files-resizing");
+      const finalWidth = panelRef.current?.offsetWidth;
+      if (finalWidth) {
+        window.localStorage.setItem(AGENT_FILES_WIDTH_KEY, `${finalWidth}`);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }, []);
 
   const artifactPath = artifact?.path;
   useEffect(() => {
@@ -4710,126 +4793,167 @@ function AgentArtifactPanel({
     return () => cancelAnimationFrame(id);
   }, [updateFade, preview, state.view]);
 
+  const q = query.trim().toLowerCase();
+  const visibleArtifacts = q
+    ? artifacts.filter((item) => item.name.toLowerCase().includes(q))
+    : artifacts;
+
   return (
-    <aside className="agent-artifact-panel" aria-label="Files">
-      <header className="agent-artifact-panel-bar">
-        {artifact ? (
+    <>
+      <div
+        className="agent-files-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize files panel"
+        onPointerDown={startResize}
+      />
+      <aside ref={panelRef} className="agent-artifact-panel" aria-label="Files">
+        <header className="agent-artifact-panel-bar">
+          {artifact ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="All files"
+              title="All files"
+              onClick={onShowList}
+            >
+              <IconChevronLeftSmall size={16} />
+            </button>
+          ) : null}
+          <h2 className="agent-artifact-panel-title">
+            {artifact ? artifact.name : "Files"}
+          </h2>
+          {artifact ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={`Download ${artifact.name}`}
+              title="Download"
+              onClick={() => onDownload(artifact)}
+            >
+              <IconArrowInbox size={15} />
+            </button>
+          ) : null}
           <button
             type="button"
             className="icon-button"
-            aria-label="All files"
-            title="All files"
-            onClick={onShowList}
+            aria-label="Close files"
+            title="Close"
+            onClick={onClose}
           >
-            <IconChevronLeftSmall size={16} />
+            <IconCrossMedium size={15} />
           </button>
-        ) : null}
-        <h2 className="agent-artifact-panel-title">
-          {artifact ? artifact.name : "Files"}
-        </h2>
-        {artifact ? (
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={`Download ${artifact.name}`}
-            title="Download"
-            onClick={() => onDownload(artifact)}
-          >
-            <IconArrowInbox size={15} />
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Close files"
-          title="Close"
-          onClick={onClose}
-        >
-          <IconCrossMedium size={15} />
-        </button>
-      </header>
-      {markdown ? (
-        <div className="agent-artifact-panel-mode">
-          <SegmentedControl
-            aria-label="File view"
-            value={showSource ? "source" : "preview"}
-            onValueChange={(value) => setShowSource(value === "source")}
-            options={[
-              { value: "preview", label: "Preview" },
-              { value: "source", label: "Source" },
-            ]}
-          />
-        </div>
-      ) : null}
-      {artifact ? (
-        <div
-          ref={bodyRef}
-          className="agent-artifact-panel-body"
-          data-kind={preview.kind}
-          data-fade-top={fade.top || undefined}
-          data-fade-bottom={fade.bottom || undefined}
-          onScroll={updateFade}
-        >
-          {preview.kind === "loading" ? (
-            <Spinner />
-          ) : preview.kind === "image" ? (
-            <img
-              className="agent-artifact-panel-image"
-              src={preview.dataUrl}
-              alt={artifact.name}
+        </header>
+        {markdown ? (
+          <div className="agent-artifact-panel-mode">
+            <SegmentedControl
+              aria-label="File view"
+              value={showSource ? "source" : "preview"}
+              onValueChange={(value) => setShowSource(value === "source")}
+              options={[
+                { value: "preview", label: "Preview" },
+                { value: "source", label: "Source" },
+              ]}
             />
-          ) : preview.kind === "text" && markdown && !showSource ? (
-            <MarkdownContent markdown={preview.text} />
-          ) : preview.kind === "text" ? (
-            <pre className="agent-artifact-source">{preview.text}</pre>
-          ) : (
-            <div className="agent-artifact-panel-empty">
-              <p>No preview for this file.</p>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onDownload(artifact)}
-              >
-                <IconArrowInbox size={14} />
-                Download
-              </button>
+          </div>
+        ) : null}
+        {artifact ? (
+          <div
+            ref={bodyRef}
+            className="agent-artifact-panel-body"
+            data-kind={preview.kind}
+            data-fade-top={fade.top || undefined}
+            data-fade-bottom={fade.bottom || undefined}
+            onScroll={updateFade}
+          >
+            {preview.kind === "loading" ? (
+              <Spinner />
+            ) : preview.kind === "image" ? (
+              <img
+                className="agent-artifact-panel-image"
+                src={preview.dataUrl}
+                alt={artifact.name}
+              />
+            ) : preview.kind === "text" && markdown && !showSource ? (
+              <MarkdownContent markdown={preview.text} />
+            ) : preview.kind === "text" ? (
+              <pre className="agent-artifact-source">{preview.text}</pre>
+            ) : (
+              <div className="agent-artifact-panel-empty">
+                <p>No preview for this file.</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => onDownload(artifact)}
+                >
+                  <IconArrowInbox size={14} />
+                  Download
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <label className="agent-artifact-search">
+              <IconMagnifyingGlass size={14} />
+              <input
+                type="search"
+                value={query}
+                placeholder="Filter files"
+                aria-label="Filter files"
+                autoFocus
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  // First Esc clears the filter; a second one bubbles up to
+                  // the workspace listener and closes the panel.
+                  if (event.key === "Escape" && query) {
+                    event.stopPropagation();
+                    setQuery("");
+                  }
+                }}
+              />
+            </label>
+            <div
+              ref={bodyRef}
+              className="agent-artifact-panel-body"
+              data-kind="list"
+              data-fade-top={fade.top || undefined}
+              data-fade-bottom={fade.bottom || undefined}
+              onScroll={updateFade}
+            >
+              {visibleArtifacts.length ? (
+                <ul className="agent-artifact-panel-list">
+                  {visibleArtifacts.map((item) => {
+                    const FileTypeIcon = artifactIcon(item.path);
+                    return (
+                      <li key={item.path}>
+                        <button
+                          type="button"
+                          className="agent-artifact-row"
+                          onClick={() => onOpen(item)}
+                        >
+                          <span className="agent-artifact-icon">
+                            <FileTypeIcon size={18} />
+                          </span>
+                          <span className="agent-artifact-row-name">
+                            {item.name}
+                          </span>
+                          <span className="agent-artifact-row-meta">
+                            {formatBytes(item.size)}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="agent-artifact-search-empty">No files match.</p>
+              )}
             </div>
-          )}
-        </div>
-      ) : (
-        <div
-          ref={bodyRef}
-          className="agent-artifact-panel-body"
-          data-kind="list"
-          data-fade-top={fade.top || undefined}
-          data-fade-bottom={fade.bottom || undefined}
-          onScroll={updateFade}
-        >
-          <ul className="agent-artifact-panel-list">
-            {artifacts.map((item) => {
-              const FileTypeIcon = artifactIcon(item.path);
-              return (
-                <li key={item.path}>
-                  <button
-                    type="button"
-                    className="agent-artifact-row"
-                    onClick={() => onOpen(item)}
-                  >
-                    <span className="agent-artifact-icon">
-                      <FileTypeIcon size={18} />
-                    </span>
-                    <span className="agent-artifact-row-name">{item.name}</span>
-                    <span className="agent-artifact-row-meta">
-                      {formatBytes(item.size)}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-    </aside>
+          </>
+        )}
+      </aside>
+    </>
   );
 }
 

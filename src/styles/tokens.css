@@ -69,6 +69,9 @@
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */
   --detail-bar-h: 46px;
+  /* Visible grabber pill on drag-resize handles (sidebar, files panel). The
+   * full-height strip stays draggable; only the indicator is this tall. */
+  --resize-grabber-h: 200px;
 
   /* Sidebar dimensions ---------------------------------------------- */
   --sidebar-w: 240px;

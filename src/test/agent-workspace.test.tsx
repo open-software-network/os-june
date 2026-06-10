@@ -870,6 +870,20 @@ describe("AgentWorkspace", () => {
     // Back returns to the list of every surfaced file.
     await user.click(within(panel).getByRole("button", { name: "All files" }));
     expect(within(panel).getByText("report.md")).toBeInTheDocument();
+
+    // Filtering narrows the list; the first Esc clears the filter and the
+    // second closes the panel.
+    const filter = within(panel).getByLabelText("Filter files");
+    await user.type(filter, "notes");
+    expect(within(panel).queryByText("report.md")).not.toBeInTheDocument();
+    expect(within(panel).getByText("notes.txt")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(within(panel).getByText("report.md")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("complementary", { name: "Files" }),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render download cards for files the user attached", async () => {
