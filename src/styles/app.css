@@ -6050,6 +6050,32 @@ input:focus-visible,
   -webkit-backdrop-filter: saturate(140%) blur(14px);
 }
 
+/* The card's scroll lives in .main-panel-body, and this full-bleed bar overlaps
+ * the gutter where that scroller's thin scrollbar sits. The sticky bar paints
+ * over the scrollbar, but its translucent frost lets the thumb show through at
+ * the top — so it reads as a sliver poking above the bar while you scroll.
+ * Opaque chips at the scrollbar gutters clip the thumb to start below the bar.
+ * They sit at the very edges, well inside the sp-8 (24px) content inset, so
+ * they never touch the crumb or actions, and the frosted middle is untouched. */
+.detail-bar::before,
+.detail-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  background: var(--card);
+  pointer-events: none;
+}
+
+.detail-bar::before {
+  left: 0;
+}
+
+.detail-bar::after {
+  right: 0;
+}
+
 .detail-breadcrumb {
   min-width: 0;
   color: var(--muted-foreground);
