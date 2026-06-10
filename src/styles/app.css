@@ -8532,9 +8532,10 @@ input:focus-visible,
   justify-content: center;
   align-self: center;
   border-radius: var(--r-xl);
-  background: linear-gradient(135deg, #dbc1a3 0%, #9d7355 100%);
-  /* Mark sits on the fixed tan gradient in both themes, so keep it white
-     rather than inheriting --primary-foreground (which inverts in dark). */
+  background: linear-gradient(135deg, #e2a78b 0%, #c25a33 100%);
+  /* Mark sits on the fixed terracotta gradient in both themes, so keep it
+     white rather than inheriting --primary-foreground (which inverts in
+     dark). */
   color: #fff;
   line-height: 0;
   margin-bottom: var(--sp-2);

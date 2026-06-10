@@ -125,7 +125,7 @@ where
 {
     let menu = Menu::new(manager)?;
 
-    let show_item = MenuItem::with_id(manager, MENU_SHOW_ID, "Open OS June", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(manager, MENU_SHOW_ID, "Open June", true, None::<&str>)?;
     let new_session_item = MenuItem::with_id(
         manager,
         MENU_NEW_SESSION_ID,
@@ -192,7 +192,7 @@ where
 
     menu.append(&PredefinedMenuItem::separator(manager)?)?;
 
-    let quit_item = MenuItem::with_id(manager, MENU_QUIT_ID, "Quit OS June", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(manager, MENU_QUIT_ID, "Quit June", true, None::<&str>)?;
     menu.append(&quit_item)?;
 
     Ok(menu)
@@ -229,7 +229,7 @@ fn tray_title(state: &AgentMenuBarState) -> Option<String> {
 
 fn tray_tooltip(state: &AgentMenuBarState) -> String {
     let status = status_label(state);
-    format!("OS June - {status}")
+    format!("June - {status}")
 }
 
 fn status_label(state: &AgentMenuBarState) -> String {

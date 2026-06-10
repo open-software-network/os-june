@@ -508,7 +508,7 @@ const SUCCESS_BODY: &str = r##"<!doctype html>
 <html lang=en>
 <meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>OS Scribe</title>
+<title>June</title>
 <style>
   :root{--bg:#f1f0ed;--card:#fff;--fg:#2b2a28;--muted:#8a8884;--border:#e7e4de;--mark-fg:#fff;--ok:#2c6747;--ok-soft:#e7efe9}
   @media (prefers-color-scheme:dark){:root{--bg:#181817;--card:#252423;--fg:#fafafa;--muted:#b2b0ac;--border:rgba(255,255,255,.10);--mark-fg:#181817;--ok:#6fbf94;--ok-soft:rgba(111,191,148,.16)}}
@@ -526,7 +526,7 @@ const SUCCESS_BODY: &str = r##"<!doctype html>
   <main class=card>
     <div class=mark>OS</div>
     <span class=check><svg viewBox="0 0 14 14" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round><path d="M3 7.5 6 10l5-6"/></svg>Signed in</span>
-    <h1 class=title>Signed in to OS Scribe</h1>
+    <h1 class=title>Signed in to June</h1>
     <p class=sub>You can close this tab and return to the app.</p>
   </main>
 </body>

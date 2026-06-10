@@ -326,7 +326,7 @@ export function App() {
           setUpdateProgress(null);
           setPendingUpdate(payload);
         },
-        reportNoUpdate: () => setUpdateStatus("OS June is up to date."),
+        reportNoUpdate: () => setUpdateStatus("June is up to date."),
         reportFailure: (message) =>
           setUpdateStatus(`Update check failed: ${message}`),
       },
@@ -1974,7 +1974,7 @@ function UpdateDialog({
     <Dialog
       open={!!payload || !!status}
       onClose={onClose}
-      title={payload ? `OS June ${payload.version}` : "Software update"}
+      title={payload ? `June ${payload.version}` : "Software update"}
       description={
         payload
           ? "A new version is available."
