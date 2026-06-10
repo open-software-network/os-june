@@ -732,14 +732,18 @@ export function AgentWorkspace({
   // measurements below straddle the reflow without a visible jump.
   useLayoutEffect(() => {
     const el = composerRef.current;
-    if (!el) return;
     const box = composerBoxRef.current;
+    if (!el || !box) return;
     // FLIP "first": where things sit before this growth step reflows them.
-    const prevBoxHeight = box?.offsetHeight ?? 0;
+    const prevBoxHeight = box.offsetHeight;
     const prevRect = el.getBoundingClientRect();
+    // The toolbar drops below the input once the text can't fit on one line
+    // beside the buttons — so probe that at the narrow single-line width.
+    // Deciding at the *current* width feeds back into itself: text that
+    // overflows the narrow slot can fit on one full-width line, so the modes
+    // would flip-flop on every keystroke right at the wrap boundary.
+    box.dataset.multiline = "false";
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-    // Once the input wraps to a second line, the toolbar drops below it.
     const styles = getComputedStyle(el);
     const lineHeight = parseFloat(styles.lineHeight) || 20;
     const padding =
@@ -747,10 +751,14 @@ export function AgentWorkspace({
     const lines = Math.round((el.scrollHeight - padding) / lineHeight);
     const multiline = lines >= 2;
     setComposerMultiline(multiline);
-    if (!box) return;
     // Flip the layout attribute now rather than waiting for the re-render so
-    // the FLIP "last" measurement sees the final layout in this same effect.
+    // the height below and the FLIP "last" measurement both see the final
+    // layout in this same effect (none of the probe states ever paint).
     box.dataset.multiline = multiline ? "true" : "false";
+    // Size to the content at the final width, never the probe width — a
+    // narrow-width height on a full-width textarea leaves a phantom line.
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     const nextBoxHeight = box.offsetHeight;
     if (nextBoxHeight === prevBoxHeight) return;
     if (
