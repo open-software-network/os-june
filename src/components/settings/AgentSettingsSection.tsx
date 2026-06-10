@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import {
   FilesystemPanel,
@@ -71,11 +72,20 @@ export function AgentSettingsSection() {
       MASCOT_VISIBILITY_CHANGED_EVENT,
       handleVisibilityChanged,
     );
+    // Cross-window changes (e.g. "Hide pet" in the mascot's context menu)
+    // arrive as a Tauri event rather than a DOM event on this window.
+    const unlisten = listen<MascotVisibilityChangedDetail>(
+      MASCOT_VISIBILITY_CHANGED_EVENT,
+      (event) => {
+        if (event.payload) setMascotEnabledState(event.payload.enabled);
+      },
+    ).catch(() => undefined);
     return () => {
       window.removeEventListener(
         MASCOT_VISIBILITY_CHANGED_EVENT,
         handleVisibilityChanged,
       );
+      void unlisten.then((fn) => fn?.());
     };
   }, []);
 

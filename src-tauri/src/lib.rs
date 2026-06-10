@@ -56,6 +56,7 @@ pub fn run() {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
             }
+            mascot::handle_menu_event(app, &event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_app,
@@ -127,6 +128,7 @@ pub fn run() {
             mascot::mascot_hide,
             mascot::mascot_set_layout,
             mascot::mascot_open_agent,
+            mascot::mascot_show_context_menu,
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model,

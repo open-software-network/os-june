@@ -1,12 +1,23 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
 use tauri::{
+    menu::{Menu, MenuEvent, MenuItem},
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Size, WebviewWindow,
 };
 
 const MASCOT_WINDOW_LABEL: &str = "mascot";
 const MAIN_WINDOW_LABEL: &str = "main";
 const AGENT_OPEN_EVENT: &str = "scribe:agent:open";
+const MASCOT_CURSOR_EVENT: &str = "scribe:mascot:cursor";
+const MASCOT_HIDE_PET_EVENT: &str = "scribe:mascot:hide-pet";
+const MASCOT_HIDE_PET_MENU_ID: &str = "mascot_hide_pet";
+// macOS only delivers mouse-moved events to the key window, so the mascot
+// webview never sees hover until it is clicked. The tracker polls the global
+// cursor instead and streams window-relative positions to the webview, which
+// applies hover styling itself.
+const CURSOR_POLL_INSIDE: Duration = Duration::from_millis(66);
+const CURSOR_POLL_OUTSIDE: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +30,13 @@ pub struct MascotLayoutRequest {
 pub fn setup(app: &mut tauri::App) {
     if let Err(error) = configure_mascot_window(app.handle()) {
         tracing::warn!(%error, "failed to configure desktop mascot");
+    }
+    spawn_cursor_tracker(app.handle().clone());
+}
+
+pub fn handle_menu_event(app: &AppHandle, event: &MenuEvent) {
+    if event.id().as_ref() == MASCOT_HIDE_PET_MENU_ID {
+        let _ = app.emit_to(MASCOT_WINDOW_LABEL, MASCOT_HIDE_PET_EVENT, ());
     }
 }
 
@@ -58,6 +76,23 @@ pub fn mascot_set_layout(app: AppHandle, request: MascotLayoutRequest) -> Result
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
     let size = LogicalSize::new(width, height).to_physical::<u32>(scale);
     position_mascot_window_with_size(&window, size)
+}
+
+#[tauri::command]
+pub fn mascot_show_context_menu(app: AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(MASCOT_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    let hide_pet = MenuItem::with_id(
+        &app,
+        MASCOT_HIDE_PET_MENU_ID,
+        "Hide pet",
+        true,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(&app, &[&hide_pet]).map_err(|error| error.to_string())?;
+    window.popup_menu(&menu).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -144,6 +179,69 @@ fn position_mascot_window_with_size(
     window
         .set_position(PhysicalPosition::new(x, y))
         .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MascotCursorPayload {
+    inside: bool,
+    x: f64,
+    y: f64,
+}
+
+const CURSOR_OUTSIDE: MascotCursorPayload = MascotCursorPayload {
+    inside: false,
+    x: 0.0,
+    y: 0.0,
+};
+
+fn spawn_cursor_tracker(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut last = CURSOR_OUTSIDE;
+        loop {
+            let delay = if last.inside {
+                CURSOR_POLL_INSIDE
+            } else {
+                CURSOR_POLL_OUTSIDE
+            };
+            tokio::time::sleep(delay).await;
+            let next = sample_cursor(&app);
+            if next == last {
+                continue;
+            }
+            last = next;
+            let _ = app.emit_to(MASCOT_WINDOW_LABEL, MASCOT_CURSOR_EVENT, next);
+        }
+    });
+}
+
+fn sample_cursor(app: &AppHandle) -> MascotCursorPayload {
+    let Some(window) = app.get_webview_window(MASCOT_WINDOW_LABEL) else {
+        return CURSOR_OUTSIDE;
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return CURSOR_OUTSIDE;
+    }
+    let (Ok(cursor), Ok(position), Ok(size)) = (
+        app.cursor_position(),
+        window.outer_position(),
+        window.outer_size(),
+    ) else {
+        return CURSOR_OUTSIDE;
+    };
+    let x = cursor.x - position.x as f64;
+    let y = cursor.y - position.y as f64;
+    if x < 0.0 || y < 0.0 || x >= size.width as f64 || y >= size.height as f64 {
+        return CURSOR_OUTSIDE;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+    MascotCursorPayload {
+        inside: true,
+        // Rounded CSS pixels: precise enough for elementFromPoint hit-testing
+        // while letting sub-pixel jitter dedupe against the previous sample.
+        x: (x / scale).round(),
+        y: (y / scale).round(),
+    }
 }
 
 fn show_main_window(app: &AppHandle) {

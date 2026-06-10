@@ -672,6 +672,10 @@ export async function mascotOpenAgent(session?: HermesSessionInfo) {
   return invoke<void>("mascot_open_agent", { session });
 }
 
+export async function mascotShowContextMenu() {
+  return invoke<void>("mascot_show_context_menu");
+}
+
 export async function createAgentTask(input: {
   prompt: string;
   title?: string;

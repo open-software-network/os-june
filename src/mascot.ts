@@ -14,6 +14,7 @@ import {
   getMascotEnabled,
   MASCOT_ENABLED_KEY,
   MASCOT_VISIBILITY_CHANGED_EVENT,
+  setMascotEnabled,
   type MascotVisibilityChangedDetail,
 } from "./lib/mascot-settings";
 import {
@@ -21,6 +22,7 @@ import {
   mascotOpenAgent,
   mascotSetLayout,
   mascotShow,
+  mascotShowContextMenu,
 } from "./lib/tauri";
 import type { HermesSessionInfo } from "./lib/tauri";
 import "./styles/mascot.css";
@@ -41,7 +43,19 @@ type MascotEntry = {
 };
 
 const EXPANDED_KEY = "scribe:mascot:expanded";
+// macOS only delivers mouse-moved events to the key window, so CSS :hover is
+// dead in this webview until it is clicked. The Rust side polls the global
+// cursor and streams window-relative positions over this event; hover styling
+// is applied here via the `mascot-card--hover` class instead.
+const MASCOT_CURSOR_EVENT = "scribe:mascot:cursor";
+const MASCOT_HIDE_PET_EVENT = "scribe:mascot:hide-pet";
 const MAX_VISIBLE_CARDS = 3;
+
+type MascotCursorDetail = {
+  inside: boolean;
+  x: number;
+  y: number;
+};
 const COMPLETED_STATUS_TTL_MS = 12 * 1000;
 const FAILED_STATUS_TTL_MS = 8 * 1000;
 
@@ -68,6 +82,17 @@ const state = {
 let lastLayoutKey = "";
 let lastStackKey = "";
 let pruneTimer: number | undefined;
+let lastCursor: MascotCursorDetail | undefined;
+
+function applyCursor(detail?: MascotCursorDetail) {
+  lastCursor = detail;
+  const hovered = detail?.inside
+    ? document.elementFromPoint(detail.x, detail.y)?.closest(".mascot-card")
+    : null;
+  for (const card of document.querySelectorAll(".mascot-card")) {
+    card.classList.toggle("mascot-card--hover", card === hovered);
+  }
+}
 
 function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   if (!detail) return;
@@ -202,6 +227,9 @@ function render() {
     if (expanded) {
       for (const entry of entries) stack.appendChild(renderCard(entry));
     }
+    // Rebuilding drops the hover class from the previous nodes; restore it
+    // from the last cursor sample instead of waiting for the next poll tick.
+    applyCursor(lastCursor);
   }
   stack.setAttribute("aria-hidden", expanded ? "false" : "true");
   toggle.hidden = !hasEntries;
@@ -668,6 +696,14 @@ avatar?.addEventListener("click", () => {
   void openAgent(entry?.session);
 });
 
+document.addEventListener("contextmenu", (event) => {
+  const target = event.target as HTMLElement | null;
+  // Keep the native menu on the reply input (cut/copy/paste).
+  if (target?.closest(".mascot-reply-input")) return;
+  event.preventDefault();
+  void mascotShowContextMenu().catch(() => {});
+});
+
 window.addEventListener(MASCOT_VISIBILITY_CHANGED_EVENT, (event) => {
   const detail = (event as CustomEvent<MascotVisibilityChangedDetail>).detail;
   if (detail) applyVisibility(detail.enabled);
@@ -701,6 +737,14 @@ void listen<MascotVisibilityChangedDetail>(
   MASCOT_VISIBILITY_CHANGED_EVENT,
   (event) => applyVisibility(event.payload.enabled),
 ).catch(() => {});
+
+void listen<MascotCursorDetail>(MASCOT_CURSOR_EVENT, (event) =>
+  applyCursor(event.payload),
+).catch(() => {});
+
+void listen(MASCOT_HIDE_PET_EVENT, () => setMascotEnabled(false)).catch(
+  () => {},
+);
 
 render();
 applyVisibility(state.enabled);

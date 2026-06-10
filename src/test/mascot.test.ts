@@ -185,6 +185,51 @@ describe("desktop mascot", () => {
     expect(stackElement()).toBeEmptyDOMElement();
   });
 
+  it("reveals card actions from tracked cursor positions without a click", async () => {
+    await loadMascot();
+
+    emitStatus({
+      status: "waitingForUser",
+      title: "Need approval",
+      summary: "Review this step.",
+    });
+    await flushPromises();
+
+    const card = document.querySelector<HTMLElement>(".mascot-card");
+    expect(card).toBeTruthy();
+    document.elementFromPoint = vi.fn(() => card);
+
+    emitCursor({ inside: true, x: 40, y: 20 });
+    expect(card?.classList.contains("mascot-card--hover")).toBe(true);
+
+    emitCursor({ inside: false, x: 0, y: 0 });
+    expect(card?.classList.contains("mascot-card--hover")).toBe(false);
+  });
+
+  it("shows the native context menu on right click", async () => {
+    await loadMascot();
+
+    const avatar = document.querySelector<HTMLButtonElement>("#mascot-avatar");
+    const event = new Event("contextmenu", { bubbles: true, cancelable: true });
+    avatar?.dispatchEvent(event);
+    await flushPromises();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledWith("mascot_show_context_menu");
+  });
+
+  it("disables and hides the pet when the context menu requests it", async () => {
+    await loadMascot();
+
+    const hide = mocks.listeners.get("scribe:mascot:hide-pet");
+    expect(hide).toBeTruthy();
+    hide?.({ payload: null });
+    await flushPromises();
+
+    expect(localStorage.getItem("scribe:mascot:enabled")).toBe("false");
+    expect(mocks.invoke).toHaveBeenCalledWith("mascot_hide");
+  });
+
   it("opens a compact reply form and requests the taller reply layout", async () => {
     await loadMascot();
 
@@ -217,9 +262,7 @@ function emitStatus(detail: {
   title: string;
   summary: string;
 }) {
-  window.dispatchEvent(
-    new CustomEvent(AGENT_SESSION_STATUS_EVENT, { detail }),
-  );
+  window.dispatchEvent(new CustomEvent(AGENT_SESSION_STATUS_EVENT, { detail }));
 }
 
 function emitSessionsChanged(detail: {
@@ -237,6 +280,12 @@ function emitSessionsChanged(detail: {
   window.dispatchEvent(
     new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, { detail }),
   );
+}
+
+function emitCursor(detail: { inside: boolean; x: number; y: number }) {
+  const listener = mocks.listeners.get("scribe:mascot:cursor");
+  expect(listener).toBeTruthy();
+  listener?.({ payload: detail });
 }
 
 async function flushPromises() {

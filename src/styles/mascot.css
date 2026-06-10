@@ -174,7 +174,11 @@ body {
   transition: opacity 120ms var(--ease-out);
 }
 
+/* `mascot-card--hover` mirrors :hover. macOS delivers mouse-moved events only
+   to the key window, so :hover alone stays dead until the mascot is clicked;
+   the Rust cursor tracker drives this class instead (see mascot.ts). */
 .mascot-card:hover .mascot-status,
+.mascot-card--hover .mascot-status,
 .mascot-card:focus-within .mascot-status {
   opacity: 0;
 }
@@ -209,6 +213,7 @@ body {
 }
 
 .mascot-card:hover .mascot-reply,
+.mascot-card--hover .mascot-reply,
 .mascot-card:focus-within .mascot-reply {
   opacity: 1;
   pointer-events: auto;
@@ -298,6 +303,7 @@ body {
 }
 
 .mascot-card:not([data-status="waitingForUser"]):hover .mascot-dismiss,
+.mascot-card--hover:not([data-status="waitingForUser"]) .mascot-dismiss,
 .mascot-card:not([data-status="waitingForUser"]) .mascot-dismiss:focus-visible {
   opacity: 1;
   pointer-events: auto;
