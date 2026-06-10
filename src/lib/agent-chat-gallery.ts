@@ -220,7 +220,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Context compacted",
       description:
-        "System summary inserted when earlier turns are compacted. Two preview variants.",
+        "System summary inserted when earlier turns are compacted. Collapsed to one quiet line; hover swaps the glyph for +/−, expand reveals the summary. Two body variants (LLM summary / deterministic fallback).",
       turns: [
         {
           id: "gallery:context-normal",

@@ -1499,54 +1499,78 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
-.agent-context-summary summary {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  align-items: baseline;
+.agent-context-summary > summary {
+  display: flex;
+  align-items: center;
   gap: var(--sp-2);
   cursor: pointer;
   list-style: none;
 }
 
-.agent-context-summary summary::-webkit-details-marker {
+.agent-context-summary > summary::-webkit-details-marker {
   display: none;
 }
 
-.agent-context-summary svg {
-  align-self: center;
-  color: var(--muted-foreground);
+/* Whole row firms up on hover, same quiet treatment as the tool disclosures. */
+.agent-context-summary > summary:hover {
+  color: var(--foreground);
 }
 
-.agent-context-summary span {
-  font-weight: 650;
+/* Flat icon cell shared with the tool rows: the glyph and the "+"/"−" hints
+ * stack in one pinned cell so the hover swap is pure opacity — no layout, no
+ * WKWebView compositing hitch. */
+.agent-context-summary .agent-tool-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
 }
 
-.agent-context-summary p {
-  overflow: hidden;
-  margin: 0;
-  color: var(--muted-foreground);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.agent-context-summary .agent-tool-icon > * {
+  grid-area: 1 / 1;
 }
 
+/* Thin the concise glyph toward a 1px stroke. The icon ships at stroke-2, so we
+ * override the path width here rather than pull in a second icon weight. */
+.agent-context-icon-glyph path {
+  stroke-width: 1.5;
+}
+
+.agent-context-summary > summary:hover .agent-context-icon-glyph {
+  opacity: 0;
+}
+
+.agent-context-summary:not([open]) > summary:hover .agent-tool-icon-expand,
+.agent-context-summary[open] > summary:hover .agent-tool-icon-minimize {
+  opacity: 1;
+}
+
+/* Label sits at the row's weight — not bold; the muted color alone keeps it
+ * subordinate to the answer text. */
+.agent-context-label {
+  font-weight: 400;
+}
+
+/* Timestamp pins to the right edge and matches the row's body size. */
 .agent-context-summary time {
+  margin-left: auto;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-lg);
 }
 
 .agent-context-summary > .agent-markdown {
   overflow: auto;
   max-height: 320px;
-  margin: var(--sp-2) 0 0 calc(var(--control-sm) + var(--sp-2));
+  margin: var(--sp-2) 0 0 calc(15px + var(--sp-2));
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
 }
 
 .agent-context-summary:not([open]) > .agent-markdown {
-  display: none;
-}
-
-.agent-context-summary[open] summary p {
   display: none;
 }
 
@@ -1741,103 +1765,70 @@ input:focus-visible,
   gap: var(--sp-3);
   max-width: 440px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: var(--sp-3);
+  border-radius: var(--r-lg);
+  padding: var(--sp-2);
   background: var(--surface-subtle);
 }
 
-.agent-artifact-card[data-has-preview="true"] {
-  max-width: 520px;
+/* File-type glyph in a soft tile — mirrors the boxed tool-icon treatment so the
+ * card reads as one object, not an icon floating beside text. */
+.agent-artifact-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xl);
+  height: var(--control-xl);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
-.agent-artifact-preview {
-  width: 64px;
-  height: 64px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  object-fit: cover;
-  background: var(--background);
-}
-
-.agent-artifact-title {
+.agent-artifact-meta {
   display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
+  flex-direction: column;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
-.agent-artifact-title span {
+.agent-artifact-name {
   overflow: hidden;
   color: var(--foreground);
-  font-weight: 650;
+  font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-artifact-title em {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-style: normal;
-}
-
-.agent-artifact-card p {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
-  margin: var(--sp-1) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-/* Size is fixed-width and never wraps; the path takes the slack and
- * truncates so "31 KB" can't break onto its own line. */
 .agent-artifact-size {
-  flex: none;
-  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
-.agent-artifact-path {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-artifact-path::before {
-  content: "";
-  flex: none;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.45;
-}
-
-.agent-artifact-card button {
+/* Download stays out of sight until the card is hovered (or the button takes
+ * keyboard focus), so the resting card is just icon · name · size. */
+.agent-artifact-download {
   display: inline-grid;
   place-items: center;
-  width: var(--control-sm);
-  min-height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
+  width: var(--control-md);
+  min-height: var(--control-md);
+  border: 0;
   border-radius: var(--r-sm);
   padding: 0;
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
   transition:
-    background var(--t-fast) var(--ease-out),
+    opacity var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
+    background var(--t-fast) var(--ease-out);
 }
 
-.agent-artifact-card button:hover {
+.agent-artifact-card:hover .agent-artifact-download,
+.agent-artifact-download:focus-visible {
+  opacity: 1;
+}
+
+.agent-artifact-download:hover {
   background: var(--muted);
-  border-color: var(--border);
   color: var(--foreground);
 }
 

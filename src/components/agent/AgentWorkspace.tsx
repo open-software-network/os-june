@@ -18,11 +18,16 @@ import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
-import { IconLayersTwo } from "central-icons/IconLayersTwo";
+import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
+import { IconFileChart } from "central-icons/IconFileChart";
+import { IconFileJpg } from "central-icons/IconFileJpg";
+import { IconFilePdf } from "central-icons/IconFilePdf";
+import { IconFilePng } from "central-icons/IconFilePng";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconFileZip } from "central-icons/IconFileZip";
 import { IconFolderSparkle } from "central-icons/IconFolderSparkle";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -58,7 +63,6 @@ import {
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
-  hermesBridgeFilePreview,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
@@ -3766,11 +3770,15 @@ function ContextCompactionPart({
   return (
     <details className="agent-context-summary">
       <summary>
-        {/* Layers, not the pangolin — the pangolin is the brand mark and the
-         * working loader, so it shouldn't also mark compaction. */}
-        <IconLayersTwo size={14} />
-        <span>Context compacted</span>
-        <p>{part.preview}</p>
+        {/* Same hover affordance as the tool rows: the glyph cross-fades to a
+         * plain-text "+"/"−" so the row reads as one quiet, expandable line.
+         * IconConcise (thinned via CSS) marks the squeeze of compaction. */}
+        <span className="agent-tool-icon">
+          <IconConcise size={15} className="agent-context-icon-glyph" />
+          <span className="agent-tool-icon-expand">+</span>
+          <span className="agent-tool-icon-minimize">−</span>
+        </span>
+        <span className="agent-context-label">Context compacted</span>
         <time>{relativeDate(createdAt)}</time>
       </summary>
       <MarkdownContent markdown={part.text} />
@@ -4142,6 +4150,22 @@ function AgentArtifactList({
   );
 }
 
+// File-type glyphs come straight from the icon set — no hand-drawn fallbacks.
+// Anything we don't have a dedicated glyph for reads as a generic text file.
+const ARTIFACT_ICONS: Record<string, typeof IconFileText> = {
+  pdf: IconFilePdf,
+  png: IconFilePng,
+  jpg: IconFileJpg,
+  jpeg: IconFileJpg,
+  zip: IconFileZip,
+  csv: IconFileChart,
+};
+
+function artifactIcon(path: string): typeof IconFileText {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return ARTIFACT_ICONS[ext] ?? IconFileText;
+}
+
 function AgentArtifactCard({
   artifact,
   onDownload,
@@ -4149,61 +4173,24 @@ function AgentArtifactCard({
   artifact: AgentArtifact;
   onDownload?: (artifact: AgentArtifact) => void;
 }) {
-  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(
-    artifact.previewDataUrl ?? null,
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    if (artifact.previewDataUrl || !isPreviewableImagePath(artifact.path)) {
-      setPreviewDataUrl(artifact.previewDataUrl ?? null);
-      return;
-    }
-    hermesBridgeFilePreview(artifact.path)
-      .then((preview) => {
-        if (!cancelled) setPreviewDataUrl(preview);
-      })
-      .catch(() => {
-        if (!cancelled) setPreviewDataUrl(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [artifact.path, artifact.previewDataUrl]);
-
+  const FileTypeIcon = artifactIcon(artifact.path);
   return (
-    <article
-      className="agent-artifact-card"
-      data-has-preview={previewDataUrl ? "true" : undefined}
-    >
-      {previewDataUrl ? (
-        <img
-          className="agent-artifact-preview"
-          src={previewDataUrl}
-          alt={artifact.name}
-        />
-      ) : (
-        <span className="agent-tool-icon">
-          <FileIcon size={14} />
-        </span>
-      )}
-      <div>
-        <div className="agent-artifact-title">
-          <span>{artifact.name}</span>
-          <em>{artifact.rootLabel}</em>
-        </div>
-        <p>
+    <article className="agent-artifact-card">
+      <span className="agent-artifact-icon">
+        <FileTypeIcon size={18} />
+      </span>
+      <div className="agent-artifact-meta">
+        <span className="agent-artifact-name">{artifact.name}</span>
+        {artifact.size != null ? (
           <span className="agent-artifact-size">
             {formatBytes(artifact.size)}
           </span>
-          <span className="agent-artifact-path">
-            {compactPath(artifact.path)}
-          </span>
-        </p>
+        ) : null}
       </div>
       {onDownload ? (
         <button
           type="button"
+          className="agent-artifact-download"
           aria-label={`Download ${artifact.name}`}
           title="Download"
           onClick={() => onDownload(artifact)}
@@ -4709,10 +4696,6 @@ function artifactsMentionedInText(
     seen.add(artifact.path);
     return true;
   });
-}
-
-function isPreviewableImagePath(path: string) {
-  return /\.(png|jpe?g|gif|webp)$/i.test(path);
 }
 
 function includesQuery(value: unknown, query: string) {
