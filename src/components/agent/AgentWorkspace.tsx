@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { AnimatePresence, motion } from "framer-motion";
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
@@ -2439,12 +2440,24 @@ export function AgentWorkspace({
         onDragLeave={() => setDropActive(false)}
         onDrop={handleComposerDrop}
       >
-        {busyNotice || galleryErrors ? (
-          <p className="agent-composer-notice" role="status">
-            <PangolinSpinner />
-            {busyNotice ?? SESSION_BUSY_NOTICE}
-          </p>
-        ) : null}
+        <AnimatePresence>
+          {busyNotice || galleryErrors ? (
+            // Same fade as the recording-consent note, so the pill dissolves
+            // when the turn finishes instead of vanishing.
+            <motion.p
+              key="busy-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <PangolinSpinner />
+              {busyNotice ?? SESSION_BUSY_NOTICE}
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
         <div
           ref={composerBoxRef}
           className="agent-composer-box"
