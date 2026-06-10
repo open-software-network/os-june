@@ -194,6 +194,18 @@ export function Sidebar({
   const workingAgentSessionIdsRef = useRef<Set<string>>(new Set());
   const openAgentSessionIdRef = useRef<string | undefined>(undefined);
 
+  // formatSessionTime reads the clock at render time, so re-render once a
+  // minute to keep the relative timestamps ("5m", "3h") advancing instead of
+  // waiting for an unrelated session event.
+  const [, bumpTimeClock] = useState(0);
+  useEffect(() => {
+    const interval = window.setInterval(
+      () => bumpTimeClock((tick) => tick + 1),
+      60_000,
+    );
+    return () => window.clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     const openId = activeView === "agent" ? selectedAgentSessionId : undefined;
     openAgentSessionIdRef.current = openId;
@@ -309,13 +321,26 @@ export function Sidebar({
         (id) => !nextWorking.has(id) && !nextWaiting.has(id) && id !== openId,
       );
       workingAgentSessionIdsRef.current = nextWorking;
-      if (finished.length > 0) {
-        setUnreadAgentSessionIds((current) => {
-          const next = new Set(current);
-          for (const id of finished) next.add(id);
-          return next;
-        });
-      }
+      setUnreadAgentSessionIds((current) => {
+        let changed = false;
+        const next = new Set(current);
+        for (const id of finished) {
+          if (!next.has(id)) {
+            next.add(id);
+            changed = true;
+          }
+        }
+        // A session that starts a new turn (or pauses for input) before the
+        // user opened it drops its unread mark — the spinner / needs-you dot
+        // is the fresher signal, and the dot would double-signal beside it.
+        for (const id of Array.from(next)) {
+          if (nextWorking.has(id) || nextWaiting.has(id)) {
+            next.delete(id);
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
       setWorkingAgentSessionIds(nextWorking);
       setWaitingAgentSessionIds(nextWaiting);
     }
