@@ -6229,6 +6229,20 @@ input:focus-visible,
   background-clip: padding-box;
 }
 
+.agent-scroll:hover::-webkit-scrollbar-thumb,
+.agent-scroll:focus-within::-webkit-scrollbar-thumb,
+.main-panel-body:has(.detail-bar):hover::-webkit-scrollbar-thumb,
+.main-panel-body:has(.detail-bar):focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  background-clip: padding-box;
+}
+
+.agent-scroll::-webkit-scrollbar-thumb:hover,
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  background-clip: padding-box;
+}
+
 .detail-bar {
   position: sticky;
   top: 0;
