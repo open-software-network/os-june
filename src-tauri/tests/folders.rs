@@ -113,3 +113,55 @@ async fn renaming_missing_folder_returns_descriptive_error() {
         "Folder was not found or has already been deleted."
     );
 }
+
+#[tokio::test]
+async fn assigning_and_removing_session_folders_round_trips() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Launch", None).await.expect("folder");
+
+    repos
+        .assign_session_to_folder("hermes-session-1", &folder.id)
+        .await
+        .expect("assign session");
+    // Re-assigning is a no-op rather than an error.
+    repos
+        .assign_session_to_folder("hermes-session-1", &folder.id)
+        .await
+        .expect("assign session twice");
+
+    let assignments = repos.list_session_folders().await.expect("list");
+    assert_eq!(assignments.len(), 1);
+    assert_eq!(assignments[0].session_id, "hermes-session-1");
+    assert_eq!(assignments[0].folder_id, folder.id);
+
+    repos
+        .remove_session_from_folder("hermes-session-1", &folder.id)
+        .await
+        .expect("remove session");
+    assert!(repos
+        .list_session_folders()
+        .await
+        .expect("list after remove")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn deleting_folder_drops_its_session_assignments() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Launch", None).await.expect("folder");
+    repos
+        .assign_session_to_folder("hermes-session-1", &folder.id)
+        .await
+        .expect("assign session");
+
+    repos
+        .delete_folder(&folder.id, false)
+        .await
+        .expect("delete folder");
+
+    assert!(repos
+        .list_session_folders()
+        .await
+        .expect("list after folder delete")
+        .is_empty());
+}

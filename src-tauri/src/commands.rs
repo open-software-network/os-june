@@ -21,16 +21,18 @@ use crate::{
         types::{
             AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
             AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
-            AssignNoteToFolderRequest, BootstrapResponse, CheckRecordingSourceReadinessRequest,
-            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
-            CreateNoteRequest, DeleteDictionaryEntryRequest, DeleteFolderRequest,
-            DeleteNoteRequest, DictionaryEntryDto, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource,
+            AssignNoteToFolderRequest, AssignSessionToFolderRequest, BootstrapResponse,
+            CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
+            CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
+            DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
+            DictionaryEntryDto, FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest,
+            ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
+            OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource,
             RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
-            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
-            SendAgentMessageRequest, SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
+            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
+            SessionRequest, SourceReadinessDto, StartRecordingRequest,
             SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
             UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
@@ -212,6 +214,33 @@ pub async fn remove_note_from_folder(
     Ok(repositories(&app)
         .await?
         .remove_note_from_folder(&request.note_id, &request.folder_id)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn list_session_folders(app: AppHandle) -> Result<Vec<SessionFolderDto>, AppError> {
+    Ok(repositories(&app).await?.list_session_folders().await?)
+}
+
+#[tauri::command]
+pub async fn assign_session_to_folder(
+    app: AppHandle,
+    request: AssignSessionToFolderRequest,
+) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .assign_session_to_folder(&request.session_id, &request.folder_id)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn remove_session_from_folder(
+    app: AppHandle,
+    request: RemoveSessionFromFolderRequest,
+) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .remove_session_from_folder(&request.session_id, &request.folder_id)
         .await?)
 }
 

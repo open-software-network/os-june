@@ -60,6 +60,9 @@ vi.mock("../lib/tauri", () => ({
   deleteFolder: mocks.deleteFolder,
   renameFolder: mocks.renameFolder,
   assignNoteToFolder: mocks.assignNoteToFolder,
+  listSessionFolders: vi.fn(async () => []),
+  assignSessionToFolder: vi.fn(async () => undefined),
+  removeSessionFromFolder: vi.fn(async () => undefined),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
   getNote: mocks.getNote,
@@ -207,7 +210,7 @@ describe("App shortcuts", () => {
     );
 
     expect(
-      await screen.findByRole("button", { name: /Rename folder/ }),
+      await screen.findByRole("button", { name: /Rename project/ }),
     ).toHaveTextContent("Testing folder");
 
     await user.click(

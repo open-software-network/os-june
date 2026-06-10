@@ -18,6 +18,13 @@ export type FolderDto = {
   updatedAt: string;
 };
 
+/** Which project (folder) an agent session is filed under. Sessions live in
+ * Hermes, so only the assignment is stored locally. */
+export type SessionFolderDto = {
+  sessionId: string;
+  folderId: string;
+};
+
 export type DictionaryEntryDto = {
   id: string;
   phrase: string;
@@ -620,6 +627,28 @@ export async function assignNoteToFolder(noteId: string, folderId: string) {
 export async function removeNoteFromFolder(noteId: string, folderId: string) {
   return invoke<NoteDto>("remove_note_from_folder", {
     request: { noteId, folderId },
+  });
+}
+
+export async function listSessionFolders() {
+  return invoke<SessionFolderDto[]>("list_session_folders");
+}
+
+export async function assignSessionToFolder(
+  sessionId: string,
+  folderId: string,
+) {
+  return invoke<void>("assign_session_to_folder", {
+    request: { sessionId, folderId },
+  });
+}
+
+export async function removeSessionFromFolder(
+  sessionId: string,
+  folderId: string,
+) {
+  return invoke<void>("remove_session_from_folder", {
+    request: { sessionId, folderId },
   });
 }
 

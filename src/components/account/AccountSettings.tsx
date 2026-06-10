@@ -37,10 +37,7 @@ export function AccountSettings({
         onAccountChanged={onAccountChanged}
         onRefresh={onRefresh}
       />
-      <BillingSettingsSection
-        account={account}
-        onRefresh={onRefresh}
-      />
+      <BillingSettingsSection account={account} onRefresh={onRefresh} />
     </div>
   );
 }

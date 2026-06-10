@@ -50,6 +50,8 @@ function baseProps() {
   return {
     folders,
     notes,
+    sessions: [],
+    sessionFolderIds: {},
     selectedFolderId: undefined as string | undefined,
     onSelectFolder: vi.fn(),
     onCreateFolder: vi.fn(),
@@ -61,11 +63,15 @@ function baseProps() {
     onRemoveNoteFromFolder: vi.fn(),
     onOpenMoveDialog: vi.fn(),
     onDeleteNote: vi.fn(),
+    onSelectSession: vi.fn(),
+    onAssignSessionToFolder: vi.fn(async () => undefined),
+    onRemoveSessionFromFolder: vi.fn(),
+    onOpenSessionMoveDialog: vi.fn(),
   };
 }
 
 describe("Sidebar primary navigation", () => {
-  it("shows Notes instead of Folders in primary navigation", async () => {
+  it("shows Notes and Projects in primary navigation", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
     render(
@@ -85,6 +91,8 @@ describe("Sidebar primary navigation", () => {
     expect(screen.queryByRole("button", { name: /Folders/ })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Notes" }));
     expect(onChangeView).toHaveBeenCalledWith("notes");
+    await user.click(screen.getByRole("button", { name: "Projects" }));
+    expect(onChangeView).toHaveBeenCalledWith("folders");
   });
 
   it("renders settings as a sidebar footer action", async () => {
@@ -193,7 +201,7 @@ describe("FoldersWorkspace — list view", () => {
     render(<FoldersWorkspace {...baseProps()} />);
 
     expect(
-      screen.getByRole("heading", { name: "Folders" }),
+      screen.getByRole("heading", { name: "Projects" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("All notes")).toBeNull();
     expect(screen.getByRole("button", { name: /Notes/ })).toBeInTheDocument();
@@ -230,14 +238,14 @@ describe("FoldersWorkspace — list view", () => {
     const props = baseProps();
     render(<FoldersWorkspace {...props} />);
 
-    await user.click(screen.getByRole("button", { name: /New folder/ }));
+    await user.click(screen.getByRole("button", { name: /New project/ }));
     expect(
-      screen.getByRole("dialog", { name: /Create folder/ }),
+      screen.getByRole("dialog", { name: /Create project/ }),
     ).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Name"), "Personal");
     await user.type(screen.getByLabelText("Description"), "Side projects");
-    await user.click(screen.getByRole("button", { name: /Create folder/ }));
+    await user.click(screen.getByRole("button", { name: /Create project/ }));
 
     expect(props.onCreateFolder).toHaveBeenCalledWith(
       "Personal",
@@ -318,7 +326,7 @@ describe("FoldersWorkspace — list view", () => {
 
     await user.click(screen.getByRole("button", { name: /Actions for Ideas/ }));
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    await user.click(screen.getByRole("button", { name: "Delete folder" }));
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
 
     expect(
       screen.getByRole("dialog", { name: /Delete "Ideas"/ }),
@@ -343,7 +351,7 @@ describe("FoldersWorkspace — list view", () => {
 
     await user.click(screen.getByRole("button", { name: /Actions for Ideas/ }));
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    await user.click(screen.getByRole("button", { name: "Delete folder" }));
+    await user.click(screen.getByRole("button", { name: "Delete project" }));
 
     expect(
       screen.getByRole("dialog", { name: /Delete "Ideas"/ }),
@@ -357,7 +365,7 @@ describe("FoldersWorkspace — detail view", () => {
 
     // Folder name shows as the editable title.
     expect(
-      screen.getByRole("button", { name: /Rename folder/ }),
+      screen.getByRole("button", { name: /Rename project/ }),
     ).toHaveTextContent("Work");
     expect(screen.getByText("Client projects in flight")).toBeInTheDocument();
     expect(screen.getByText("Roadmap")).toBeInTheDocument();
@@ -367,7 +375,7 @@ describe("FoldersWorkspace — detail view", () => {
     const user = userEvent.setup();
     render(<FoldersWorkspace {...baseProps()} selectedFolderId="folder-1" />);
 
-    await user.click(screen.getByRole("button", { name: /Rename folder/ }));
+    await user.click(screen.getByRole("button", { name: /Rename project/ }));
     // The serif title is replaced by an input that auto-selects its value.
     expect(document.activeElement).toBeInstanceOf(HTMLInputElement);
     expect((document.activeElement as HTMLInputElement).value).toBe("Ideas");
@@ -378,7 +386,7 @@ describe("FoldersWorkspace — detail view", () => {
     const props = baseProps();
     render(<FoldersWorkspace {...props} selectedFolderId="folder-1" />);
 
-    await user.click(screen.getByRole("button", { name: /back to folders/i }));
+    await user.click(screen.getByRole("button", { name: /back to projects/i }));
     expect(props.onSelectFolder).toHaveBeenCalledWith(undefined);
   });
 
@@ -418,7 +426,7 @@ describe("FoldersWorkspace — detail view", () => {
       screen.getByRole("button", { name: /Actions for Roadmap/ }),
     );
     await user.click(
-      screen.getByRole("menuitem", { name: /Remove from folder/ }),
+      screen.getByRole("menuitem", { name: /Remove from project/ }),
     );
     expect(props.onRemoveNoteFromFolder).toHaveBeenCalledWith(
       "note-1",

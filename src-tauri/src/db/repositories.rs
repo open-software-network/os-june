@@ -3,7 +3,7 @@ use crate::domain::types::{
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     DictationHistoryItemDto, DictionaryEntryDto, FolderDto, ListDictationHistoryResponse,
     ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus, RecordingSourceMode,
-    TranscriptDto,
+    SessionFolderDto, TranscriptDto,
 };
 use chrono::{Duration, SecondsFormat, Utc};
 use sqlx::{Row, SqlitePool};
@@ -259,6 +259,54 @@ impl Repositories {
             .execute(&self.pool)
             .await?;
         self.get_note(note_id).await
+    }
+
+    pub async fn list_session_folders(&self) -> Result<Vec<SessionFolderDto>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT sf.session_id, sf.folder_id
+             FROM session_folders sf
+             INNER JOIN folders f ON f.id = sf.folder_id
+             WHERE f.deleted_at IS NULL
+             ORDER BY sf.assigned_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SessionFolderDto {
+                session_id: row.get("session_id"),
+                folder_id: row.get("folder_id"),
+            })
+            .collect())
+    }
+
+    pub async fn assign_session_to_folder(
+        &self,
+        session_id: &str,
+        folder_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO session_folders (session_id, folder_id, assigned_at) VALUES (?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(folder_id)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_session_from_folder(
+        &self,
+        session_id: &str,
+        folder_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM session_folders WHERE session_id = ? AND folder_id = ?")
+            .bind(session_id)
+            .bind(folder_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn list_dictionary_entries(&self) -> Result<Vec<DictionaryEntryDto>, sqlx::Error> {
@@ -922,6 +970,10 @@ impl Repositories {
         }
 
         sqlx::query("DELETE FROM note_folders WHERE folder_id = ?")
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM session_folders WHERE folder_id = ?")
             .bind(folder_id)
             .execute(&mut *tx)
             .await?;

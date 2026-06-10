@@ -137,9 +137,7 @@ describe("HermesGatewayClient", () => {
     const pending = client.request("ping");
     socket.close();
 
-    await expect(pending).rejects.toThrow(
-      "Hermes gateway connection closed.",
-    );
+    await expect(pending).rejects.toThrow("Hermes gateway connection closed.");
   });
 
   it("notifies close listeners on unexpected drops but not on explicit close", async () => {

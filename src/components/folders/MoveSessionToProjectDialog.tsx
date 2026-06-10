@@ -1,22 +1,25 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
-import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useState } from "react";
-import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
+import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  note: NoteListItemDto | null;
+  session: HermesSessionInfo | null;
+  /** Project ids the session is currently filed under (first one wins). */
+  currentFolderIds: string[];
   folders: FolderDto[];
-  onSetFolder: (noteId: string, folderId: string) => Promise<unknown> | void;
+  onSetFolder: (sessionId: string, folderId: string) => Promise<unknown> | void;
 };
 
-export function MoveNoteToFolderDialog({
+export function MoveSessionToProjectDialog({
   open,
   onClose,
-  note,
+  session,
+  currentFolderIds,
   folders,
   onSetFolder,
 }: Props) {
@@ -31,7 +34,7 @@ export function MoveNoteToFolderDialog({
     setSubmitting(false);
   }, [open]);
 
-  const currentFolderId = note?.folderIds[0];
+  const currentFolderId = currentFolderIds[0];
   const currentFolder = folders.find((f) => f.id === currentFolderId);
   const hasCurrent = Boolean(currentFolder);
 
@@ -51,20 +54,20 @@ export function MoveNoteToFolderDialog({
   }, [folders, currentFolderId, query]);
 
   async function handleCommit() {
-    if (!note || !selectedId || submitting) return;
+    if (!session || !selectedId || submitting) return;
     setSubmitting(true);
     try {
-      await onSetFolder(note.id, selectedId);
+      await onSetFolder(session.id, selectedId);
       onClose();
     } finally {
       setSubmitting(false);
     }
   }
 
-  const title = hasCurrent ? "Move note" : "Add note to project";
+  const title = hasCurrent ? "Move session" : "Add session to project";
   const description = hasCurrent
-    ? `This note is in "${currentFolder?.name}". Pick another project to move it to.`
-    : "Pick a project for this note.";
+    ? `This session is in "${currentFolder?.name}". Pick another project to move it to.`
+    : "Pick a project for this session.";
   const commitLabel = hasCurrent ? "Move" : "Add";
 
   return (
@@ -76,7 +79,7 @@ export function MoveNoteToFolderDialog({
       }}
       title={title}
       description={description}
-      initialFocusSelector='input[name="move-note-search"]'
+      initialFocusSelector='input[name="move-session-search"]'
       footer={
         <>
           <button
@@ -103,7 +106,7 @@ export function MoveNoteToFolderDialog({
           <IconMagnifyingGlass size={14} />
           <input
             type="search"
-            name="move-note-search"
+            name="move-session-search"
             placeholder="Search projects"
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
@@ -127,7 +130,7 @@ export function MoveNoteToFolderDialog({
                     onDoubleClick={() => void handleCommit()}
                   >
                     <span className="add-notes-icon" aria-hidden>
-                      <IconFolder1 size={14} />
+                      <IconProjects size={14} />
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">{folder.name}</span>

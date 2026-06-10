@@ -141,6 +141,15 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
             }
         }
     }
+    for statement in include_str!("../../migrations/009_session_folders.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            sqlx::query(statement)
+                .execute(_pool)
+                .await
+                .map_err(sqlx::migrate::MigrateError::Execute)?;
+        }
+    }
     Ok(())
 }
 

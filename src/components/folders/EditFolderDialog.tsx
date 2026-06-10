@@ -49,8 +49,8 @@ export function EditFolderDialog({
         if (submitting) return;
         onClose();
       }}
-      title="Edit folder"
-      description="Update the folder’s name or description."
+      title="Edit project"
+      description="Update the project’s name or description."
       initialFocusSelector='input[name="edit-folder-name"]'
       footer={
         <>
@@ -94,7 +94,7 @@ export function EditFolderDialog({
             id="edit-folder-description"
             name="edit-folder-description"
             className="dialog-textarea"
-            placeholder="What kind of notes belong here?"
+            placeholder="What belongs in this project?"
             value={description}
             onChange={(event) => setDescription(event.currentTarget.value)}
             rows={3}

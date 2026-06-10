@@ -67,10 +67,7 @@ export function titleFromPrompt(prompt: string) {
   return `${title.slice(0, 69).trim()}...`;
 }
 
-function extractList(
-  response: unknown,
-  preferredKey: "sessions" | "messages",
-) {
+function extractList(response: unknown, preferredKey: "sessions" | "messages") {
   if (!response || typeof response !== "object") return [];
   const record = response as Record<string, unknown>;
   const candidates = [

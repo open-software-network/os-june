@@ -15,6 +15,7 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconProjects } from "central-icons/IconProjects";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
@@ -60,7 +61,8 @@ export type SidebarView =
   | "folders"
   | "dictation"
   | "routines"
-  | "agent";
+  | "agent"
+  | "agent-sessions";
 
 type SidebarProps = {
   notes: NoteListItemDto[];
@@ -501,6 +503,18 @@ export function Sidebar({
             <button
               type="button"
               className="sidebar-nav-item"
+              data-active={activeView === "folders"}
+              aria-current={activeView === "folders" ? "page" : undefined}
+              onClick={() => onChangeView("folders")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconProjects size={15} />
+              </span>
+              <span className="sidebar-nav-label">Projects</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
               data-active={activeView === "dictation"}
               aria-current={activeView === "dictation" ? "page" : undefined}
               onClick={() => onChangeView("dictation")}
@@ -527,13 +541,16 @@ export function Sidebar({
           <section
             className="sidebar-section sidebar-agent-section"
             aria-label="Agent sessions"
-            data-active={activeView === "agent"}
+            data-active={
+              activeView === "agent" || activeView === "agent-sessions"
+            }
           >
             <div className="section-title section-title-with-action">
               <button
                 type="button"
                 className="section-title-label section-title-open"
-                onClick={() => onChangeView("agent")}
+                title="View all sessions"
+                onClick={() => onChangeView("agent-sessions")}
               >
                 Agent
               </button>
@@ -1022,7 +1039,7 @@ function NoteContextMenu({
         ) : (
           <IconFolderAddRight size={14} />
         )}
-        {hasFolder ? "Change folder" : "Add to folder"}
+        {hasFolder ? "Change project" : "Add to project"}
       </button>
       {hasFolder && currentFolderId ? (
         <button
@@ -1034,7 +1051,7 @@ function NoteContextMenu({
           }}
         >
           <IconFolderDelete size={14} />
-          Remove from folder
+          Remove from project
         </button>
       ) : null}
       <div className="context-menu-separator" role="separator" />

@@ -20,10 +20,12 @@ import {
   type AgentNewSessionDetail,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
+import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
+import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { NotesList } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
@@ -36,6 +38,7 @@ import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
+  assignSessionToFolder,
   bootstrapApp,
   checkRecordingSourceReadiness,
   createFolder,
@@ -47,11 +50,13 @@ import {
   getRecordingStatus,
   getNote,
   listNotes,
+  listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
   osAccountsTopUp,
   pauseRecording,
   removeNoteFromFolder,
+  removeSessionFromFolder,
   recoverRecording,
   renameFolder,
   resumeRecording,
@@ -153,6 +158,18 @@ export function App() {
     useState<HermesSessionInfo>();
   const [pendingAgentReply, setPendingAgentReply] =
     useState<AgentReplyDetail>();
+  // Reactive copy of the known agent sessions for the "view all" list and
+  // project (folder) surfaces; the menu-bar refs below stay the source for
+  // native menu state.
+  const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  // sessionId -> project (folder) ids. Sessions live in Hermes, so their
+  // project assignments are tracked separately from the notes state.
+  const [sessionFolders, setSessionFolders] = useState<
+    Record<string, string[]>
+  >({});
+  const [moveDialogSessionId, setMoveDialogSessionId] = useState<string | null>(
+    null,
+  );
   const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
@@ -414,6 +431,7 @@ export function App() {
         .then((sessions) => {
           if (cancelled) return;
           agentMenuBarSessionsRef.current = sessions;
+          setAgentSessions(sessions);
           publishAgentMenuBarState();
         })
         .catch(() => {
@@ -437,11 +455,33 @@ export function App() {
     };
   }, [appBlocked, bootstrapped, publishAgentMenuBarState]);
 
+  // Project assignments for agent sessions, loaded once storage is up.
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let cancelled = false;
+    void listSessionFolders()
+      .then((assignments) => {
+        if (cancelled) return;
+        const next: Record<string, string[]> = {};
+        for (const assignment of assignments) {
+          (next[assignment.sessionId] ??= []).push(assignment.folderId);
+        }
+        setSessionFolders(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [appBlocked, bootstrapped]);
+
   useEffect(() => {
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
       agentMenuBarSessionsRef.current = detail.sessions;
+      setAgentSessions(detail.sessions);
       agentMenuBarWorkingSessionIdsRef.current = new Set(
         detail.workingSessionIds,
       );
@@ -470,6 +510,9 @@ export function App() {
       if (!sessionId) return;
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
         (session) => session.id !== sessionId,
+      );
+      setAgentSessions((current) =>
+        current.filter((session) => session.id !== sessionId),
       );
       agentMenuBarWorkingSessionIdsRef.current.delete(sessionId);
       agentMenuBarWaitingSessionIdsRef.current.delete(sessionId);
@@ -952,10 +995,18 @@ export function App() {
 
   async function handleDeleteFolder(folderId: string) {
     try {
-      // Deleting a folder strips its association from any notes but
-      // never deletes the notes themselves — they stay in your library.
+      // Deleting a project strips its association from any notes and agent
+      // sessions but never deletes them — they stay in your library.
       await deleteFolder(folderId, false);
       dispatch({ type: "folderDeleted", folderId });
+      setSessionFolders((prev) => {
+        const next: Record<string, string[]> = {};
+        for (const [sessionId, folderIds] of Object.entries(prev)) {
+          const remaining = folderIds.filter((id) => id !== folderId);
+          if (remaining.length > 0) next[sessionId] = remaining;
+        }
+        return next;
+      });
     } catch (err) {
       setError(messageFromError(err));
       throw err;
@@ -996,6 +1047,64 @@ export function App() {
       setError(messageFromError(err));
       if (options?.rethrow) throw err;
     }
+  }
+
+  // Single-project semantics for agent sessions, mirroring notes: a session
+  // belongs to at most one project, so any existing assignment is stripped
+  // before adding the target.
+  async function handleSetSessionFolder(
+    sessionId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
+    const current = sessionFolders[sessionId] ?? [];
+    if (current.length === 1 && current[0] === folderId) return;
+    try {
+      for (const existing of current) {
+        if (existing === folderId) continue;
+        await removeSessionFromFolder(sessionId, existing);
+      }
+      if (!current.includes(folderId)) {
+        await assignSessionToFolder(sessionId, folderId);
+      }
+      setSessionFolders((prev) => ({ ...prev, [sessionId]: [folderId] }));
+    } catch (err) {
+      setError(messageFromError(err));
+      if (options?.rethrow) throw err;
+    }
+  }
+
+  async function handleRemoveSessionFromFolder(
+    sessionId: string,
+    folderId: string,
+  ) {
+    try {
+      await removeSessionFromFolder(sessionId, folderId);
+      setSessionFolders((prev) => {
+        const next = { ...prev };
+        const remaining = (next[sessionId] ?? []).filter(
+          (id) => id !== folderId,
+        );
+        if (remaining.length > 0) next[sessionId] = remaining;
+        else delete next[sessionId];
+        return next;
+      });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  // Mirrors the sidebar's "New session" button so the agent sessions list
+  // can start a fresh chat with the same pending-session handshake.
+  function handleNewAgentSession() {
+    markAgentNewSessionPending();
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+      );
+    }, 0);
   }
 
   async function handleSelectNote(noteId: string) {
@@ -1407,6 +1516,23 @@ export function App() {
                 initialSession={activeAgentSession}
                 pendingReply={pendingAgentReply}
               />
+            ) : activeView === "agent-sessions" ? (
+              <AgentSessionsList
+                sessions={agentSessions}
+                folders={state.folders}
+                sessionFolderIds={sessionFolders}
+                onSelectSession={(session) => {
+                  setActiveAgentSession(session);
+                  setActiveView("agent");
+                }}
+                onNewSession={handleNewAgentSession}
+                onOpenMoveDialog={(sessionId) =>
+                  setMoveDialogSessionId(sessionId)
+                }
+                onRemoveFromProject={(sessionId, folderId) =>
+                  void handleRemoveSessionFromFolder(sessionId, folderId)
+                }
+              />
             ) : activeView === "notes" || activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}
@@ -1422,6 +1548,8 @@ export function App() {
               <FoldersWorkspace
                 folders={state.folders}
                 notes={state.notes}
+                sessions={agentSessions}
+                sessionFolderIds={sessionFolders}
                 selectedFolderId={state.selectedFolderId}
                 folderBackTarget={
                   folderReturnTarget
@@ -1459,6 +1587,21 @@ export function App() {
                 }
                 onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+                onSelectSession={(session) => {
+                  setActiveAgentSession(session);
+                  setActiveView("agent");
+                }}
+                onAssignSessionToFolder={(sessionId, folderId) =>
+                  handleSetSessionFolder(sessionId, folderId, {
+                    rethrow: true,
+                  })
+                }
+                onRemoveSessionFromFolder={(sessionId, folderId) =>
+                  void handleRemoveSessionFromFolder(sessionId, folderId)
+                }
+                onOpenSessionMoveDialog={(sessionId) =>
+                  setMoveDialogSessionId(sessionId)
+                }
               />
             ) : selectedNote ? (
               <div className="note-shell">
@@ -1607,6 +1750,22 @@ export function App() {
         folders={state.folders}
         onSetFolder={(noteId, folderId) =>
           handleSetNoteFolder(noteId, folderId)
+        }
+      />
+      <MoveSessionToProjectDialog
+        open={moveDialogSessionId !== null}
+        onClose={() => setMoveDialogSessionId(null)}
+        session={
+          moveDialogSessionId
+            ? (agentSessions.find((s) => s.id === moveDialogSessionId) ?? null)
+            : null
+        }
+        currentFolderIds={
+          moveDialogSessionId ? (sessionFolders[moveDialogSessionId] ?? []) : []
+        }
+        folders={state.folders}
+        onSetFolder={(sessionId, folderId) =>
+          handleSetSessionFolder(sessionId, folderId)
         }
       />
       <UpdateDialog

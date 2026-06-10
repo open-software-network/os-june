@@ -49,8 +49,8 @@ export function CreateFolderDialog({
         if (submitting) return;
         onClose();
       }}
-      title="Create folder"
-      description="Group notes by project, client, or topic."
+      title="Create project"
+      description="Group notes and agent sessions by project, client, or topic."
       initialFocusSelector='input[name="folder-name"]'
       footer={
         <>
@@ -68,7 +68,7 @@ export function CreateFolderDialog({
             className="primary-action primary-solid"
             disabled={submitting || name.trim().length === 0}
           >
-            {submitting ? "Creating…" : "Create folder"}
+            {submitting ? "Creating…" : "Create project"}
           </button>
         </>
       }
@@ -95,7 +95,7 @@ export function CreateFolderDialog({
             id="folder-description"
             name="folder-description"
             className="dialog-textarea"
-            placeholder="What kind of notes belong here?"
+            placeholder="What belongs in this project?"
             value={description}
             onChange={(event) => setDescription(event.currentTarget.value)}
             rows={3}

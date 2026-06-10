@@ -168,6 +168,29 @@ pub struct RemoveNoteFromFolderRequest {
     pub folder_id: String,
 }
 
+// Agent sessions are owned by Hermes; this only records which project
+// (folder) a session was filed under, keyed by the Hermes session id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFolderDto {
+    pub session_id: String,
+    pub folder_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignSessionToFolderRequest {
+    pub session_id: String,
+    pub folder_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveSessionFromFolderRequest {
+    pub session_id: String,
+    pub folder_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DictionaryEntryDto {

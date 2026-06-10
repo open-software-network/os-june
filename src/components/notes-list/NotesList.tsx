@@ -204,7 +204,7 @@ function AllNoteRow({
               }}
             >
               <IconMoveFolder size={14} />
-              Move to folder
+              Move to project
             </button>
             <div className="context-menu-separator" role="separator" />
             <button
