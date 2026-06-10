@@ -108,6 +108,7 @@ import {
   type ScribeUpdate,
 } from "../lib/updater";
 import { shouldPollProcessingStatus } from "./processing-polling";
+import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
   checkForScribeUpdate,
@@ -184,6 +185,7 @@ export function App() {
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
+  const mainPanelBodyRef = useRef<HTMLDivElement | null>(null);
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] =
@@ -304,6 +306,15 @@ export function App() {
 
   useEffect(() => {
     preloadRecordingSounds();
+  }, []);
+
+  // The card scroller's thumb fades in with scroll activity and back out when
+  // idle (native-overlay feel; the CSS only listens on breadcrumb views —
+  // see scroll-thumb-fade.ts).
+  useEffect(() => {
+    const el = mainPanelBodyRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
   }, []);
 
   // installingUpdate is read through a ref so runUpdateCheck keeps a stable
@@ -1545,7 +1556,11 @@ export function App() {
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
-        <div className="main-panel-body" data-active-view={activeView}>
+        <div
+          ref={mainPanelBodyRef}
+          className="main-panel-body"
+          data-active-view={activeView}
+        >
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
             {activeView === "settings" ? (

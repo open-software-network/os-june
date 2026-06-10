@@ -6110,16 +6110,17 @@ input:focus-visible,
 /* The opt-out also moves the thumb off scrollbar-color (which is what painted
  * it) onto the webkit pseudo path, whose base style is transparent-until-hover
  * — and WKWebView doesn't repaint scrollbar parts on hover, so the thumb would
- * never show. Paint these scrollers' thumb statically in the same quiet color,
- * with the usual brighten-on-hover where the engine supports it. */
+ * never show. Scrollbar parts can't be transitioned either, so the native
+ * show-while-scrolling fade is recreated by stepping --thumb-alpha from JS
+ * (attachScrollThumbFade in src/lib/scroll-thumb-fade.ts) — engines DO repaint
+ * the thumb when a custom property changes. */
 .agent-scroll::-webkit-scrollbar-thumb,
 .main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb {
-  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
-}
-
-.agent-scroll::-webkit-scrollbar-thumb:hover,
-.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  background: color-mix(
+    in oklch,
+    var(--muted-foreground) calc(var(--thumb-alpha, 0) * 1%),
+    transparent
+  );
 }
 
 .detail-bar {

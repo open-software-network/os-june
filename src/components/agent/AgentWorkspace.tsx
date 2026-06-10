@@ -126,6 +126,7 @@ import {
   buildAgentChatGallery,
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
+import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 
 const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "queued",
@@ -429,9 +430,18 @@ export function AgentWorkspace({
   const sessionTitleOverridesRef = useRef<Record<string, string>>({});
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
+  const agentScrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [composerMultiline, setComposerMultiline] = useState(false);
+
+  // The conversation scroller's thumb fades in with scroll activity and back
+  // out when idle (native-overlay feel; see scroll-thumb-fade.ts).
+  useEffect(() => {
+    const el = agentScrollRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, []);
 
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
@@ -1925,7 +1935,7 @@ export function AgentWorkspace({
           }
         />
       )}
-      <div className="agent-scroll">
+      <div ref={agentScrollRef} className="agent-scroll">
         <section className="agent-main" aria-label="Agent task details">
           {error ? <p className="error-banner">{error}</p> : null}
           {gallerySections ? (
