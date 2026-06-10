@@ -38,11 +38,11 @@ export function NotesList({
   }, [notes, query]);
 
   return (
-    <section className="all-notes-workspace" aria-label="Notes">
+    <section className="all-notes-workspace" aria-label="Meetings">
       <header className="folders-header">
         <div className="folders-heading">
           <h1>
-            Notes
+            Meetings
             {notes.length > 0 ? (
               <span className="folders-count">{notes.length}</span>
             ) : null}
@@ -55,7 +55,7 @@ export function NotesList({
           onClick={onCreateNote}
         >
           <IconPlusMedium size={13} />
-          New note
+          New meeting
           <kbd className="primary-action-kbd" aria-hidden>
             ⌘N
           </kbd>
@@ -78,19 +78,19 @@ export function NotesList({
 
       {notes.length === 0 ? (
         <div className="folders-empty">
-          <p>No notes yet.</p>
+          <p>No meetings yet.</p>
           <button
             type="button"
             className="primary-action primary-solid"
             onClick={onCreateNote}
           >
             <IconPlusMedium size={13} />
-            Create your first note
+            Create your first meeting
           </button>
         </div>
       ) : filteredNotes.length === 0 ? (
         <div className="folders-empty">
-          <p>No notes match “{query.trim()}”.</p>
+          <p>No meetings match “{query.trim()}”.</p>
         </div>
       ) : (
         <ul className="folder-notes all-notes-list" role="list">
@@ -123,7 +123,7 @@ function AllNoteRow({
   onOpenMove: () => void;
   onDelete: () => void;
 }) {
-  const title = note.title.trim() || "New note";
+  const title = note.title.trim() || "New meeting";
   const preview = note.preview.trim() || statusLabel(note.processingStatus);
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -217,7 +217,7 @@ function AllNoteRow({
               }}
             >
               <IconTrashCan size={14} />
-              Delete note
+              Delete meeting
             </button>
           </div>
         ) : null}
@@ -228,7 +228,7 @@ function AllNoteRow({
         onConfirm={onDelete}
         title={`Delete "${title}"?`}
         description="This cannot be undone."
-        confirmLabel="Delete note"
+        confirmLabel="Delete meeting"
         destructive
       />
     </li>

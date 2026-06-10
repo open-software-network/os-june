@@ -61,10 +61,10 @@ export function MoveNoteToFolderDialog({
     }
   }
 
-  const title = hasCurrent ? "Move note" : "Add note to project";
+  const title = hasCurrent ? "Move meeting" : "Add meeting to project";
   const description = hasCurrent
-    ? `This note is in "${currentFolder?.name}". Pick another project to move it to.`
-    : "Pick a project for this note.";
+    ? `This meeting is in "${currentFolder?.name}". Pick another project to move it to.`
+    : "Pick a project for this meeting.";
   const commitLabel = hasCurrent ? "Move" : "Add";
 
   return (

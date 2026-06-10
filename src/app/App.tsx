@@ -1200,7 +1200,7 @@ export function App() {
 
   async function handleDeleteNote(noteId: string) {
     if (state.recordingStatus) {
-      setError("Stop the current recording before deleting a note.");
+      setError("Stop the current recording before deleting a meeting.");
       return;
     }
     try {
@@ -1741,25 +1741,25 @@ export function App() {
                           setOriginFolderId(undefined);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New note" },
+                      { label: selectedNote.title.trim() || "New meeting" },
                     ]}
                   />
                 ) : originAllNotes ? (
                   <BreadcrumbBar
-                    backLabel="Back to Notes"
+                    backLabel="Back to meetings"
                     onBack={() => {
                       setActiveView("all-notes");
                       setOriginAllNotes(false);
                     }}
                     items={[
                       {
-                        label: "Notes",
+                        label: "Meetings",
                         onClick: () => {
                           setActiveView("all-notes");
                           setOriginAllNotes(false);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New note" },
+                      { label: selectedNote.title.trim() || "New meeting" },
                     ]}
                   />
                 ) : null}
@@ -1832,7 +1832,7 @@ export function App() {
                     dispatch({ type: "folderSelected", folderId });
                     setFolderReturnTarget({
                       noteId: selectedNote.id,
-                      label: selectedNote.title.trim() || "New note",
+                      label: selectedNote.title.trim() || "New meeting",
                     });
                     setOriginFolderId(undefined);
                   }}

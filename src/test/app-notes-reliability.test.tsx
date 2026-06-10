@@ -231,7 +231,7 @@ describe("notes recording reliability", () => {
 
     // Browse to another note while the recording keeps running on note-1.
     await userEvent.click(
-      screen.getByRole("button", { name: "Notes", current: "page" }),
+      screen.getByRole("button", { name: "Meetings", current: "page" }),
     );
     await userEvent.click(
       screen.getByRole("button", { name: /Second note Preview/ }),

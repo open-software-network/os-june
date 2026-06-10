@@ -90,7 +90,7 @@ describe("Sidebar primary navigation", () => {
     );
 
     expect(screen.queryByRole("button", { name: /Folders/ })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Notes" }));
+    await user.click(screen.getByRole("button", { name: "Meetings" }));
     expect(onChangeView).toHaveBeenCalledWith("notes");
     await user.click(screen.getByRole("button", { name: "Projects" }));
     expect(onChangeView).toHaveBeenCalledWith("folders");
@@ -221,7 +221,7 @@ describe("FoldersWorkspace — list view", () => {
     ).toBeInTheDocument();
     const ideasCard = screen.getByText("Ideas").closest("article");
     expect(
-      within(ideasCard as HTMLElement).getByText(/0 notes/),
+      within(ideasCard as HTMLElement).getByText(/0 meetings/),
     ).toBeInTheDocument();
   });
 
@@ -405,7 +405,7 @@ describe("FoldersWorkspace — detail view", () => {
 
     // The empty surface is visual-only — no helper text — just the
     // primary action and "Add existing note" when other notes exist.
-    await user.click(screen.getByRole("button", { name: /^New note$/ }));
+    await user.click(screen.getByRole("button", { name: /^New meeting$/ }));
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-1");
   });
 
@@ -419,7 +419,7 @@ describe("FoldersWorkspace — detail view", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("folder-2");
 
     await user.click(screen.getByRole("button", { name: "Add to project" }));
-    await user.click(screen.getByRole("menuitem", { name: "New note" }));
+    await user.click(screen.getByRole("menuitem", { name: "New meeting" }));
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-2");
   });
 

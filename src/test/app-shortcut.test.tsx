@@ -233,7 +233,7 @@ describe("App shortcuts", () => {
       await screen.findByRole("heading", { name: "Welcome to OS June" }),
     ).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New meeting" })).toBeNull();
 
     await user.click(
       screen.getByRole("button", { name: "Continue with OpenSoftware" }),
@@ -244,7 +244,7 @@ describe("App shortcuts", () => {
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("Note title")).toHaveValue(""),
+      expect(screen.getByLabelText("Meeting title")).toHaveValue(""),
     );
   });
 
@@ -274,7 +274,7 @@ describe("App shortcuts", () => {
     });
 
     expect(
-      await screen.findByRole("heading", { name: "Notes" }),
+      await screen.findByRole("heading", { name: "Meetings" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /^First note/ }),

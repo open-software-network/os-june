@@ -72,11 +72,13 @@ describe("folders UI", () => {
     );
 
     expect(screen.getByText("OS June")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Notes" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Meetings" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
     expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Notes" }));
+    await user.click(screen.getByRole("button", { name: "Meetings" }));
     await user.click(screen.getByRole("button", { name: "New session" }));
 
     expect(onChangeView).toHaveBeenCalledWith("notes");
@@ -387,9 +389,9 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByText("No notes yet.")).toBeInTheDocument();
+    expect(screen.getByText("No meetings yet.")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Create your first note" }),
+      screen.getByRole("button", { name: "Create your first meeting" }),
     ).toBeInTheDocument();
   });
 });

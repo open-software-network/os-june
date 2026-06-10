@@ -498,7 +498,7 @@ export function Sidebar({
               <span className="sidebar-nav-icon">
                 <IconNoteText size={15} />
               </span>
-              <span className="sidebar-nav-label">Notes</span>
+              <span className="sidebar-nav-label">Meetings</span>
             </button>
             <button
               type="button"
@@ -671,7 +671,7 @@ function NoteRow({
   onSelect: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
 }) {
-  const title = note.title.trim() || "New note";
+  const title = note.title.trim() || "New meeting";
   const menuRef = useRef<HTMLButtonElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -1071,7 +1071,7 @@ function NoteContextMenu({
         }}
       >
         <IconTrashCan size={14} />
-        Delete note
+        Delete meeting
       </button>
     </div>
   );

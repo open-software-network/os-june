@@ -230,7 +230,7 @@ function FolderList({
         <div className="folders-heading">
           <h1>Projects</h1>
           <p className="folders-subtitle">
-            Group notes and agent sessions around the work they belong to.
+            Group meetings and agent sessions around the work they belong to.
           </p>
         </div>
         <button
@@ -248,7 +248,7 @@ function FolderList({
           <IconMagnifyingGlass size={14} />
           <input
             type="search"
-            aria-label="Search projects and notes"
+            aria-label="Search projects"
             placeholder="Search"
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
@@ -287,7 +287,7 @@ function FolderList({
           return onDeleteFolder(deleteFolderTarget.id, false);
         }}
         title={`Delete "${deleteFolderTarget?.name ?? ""}"?`}
-        description="Notes and sessions in this project stay in your library."
+        description="Meetings and sessions in this project stay in your library."
         confirmLabel="Delete project"
         destructive
       />
@@ -493,7 +493,8 @@ function FolderCard({
             <IconNoteText size={11} />
           </span>
           <span>
-            {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
+            {folderNotes.length}{" "}
+            {folderNotes.length === 1 ? "meeting" : "meetings"}
           </span>
           {folderSessions.length > 0 ? (
             <>
@@ -772,7 +773,8 @@ function FolderDetail({
             <span className="folder-detail-meta-pill" aria-hidden>
               <IconNoteText size={12} />
             </span>
-            {folderNotes.length} {folderNotes.length === 1 ? "note" : "notes"}
+            {folderNotes.length}{" "}
+            {folderNotes.length === 1 ? "meeting" : "meetings"}
             {folderSessions.length > 0 ? (
               <>
                 <span className="metadata-dot" aria-hidden />
@@ -809,7 +811,7 @@ function FolderDetail({
             {folderNotes.length > 0 ? (
               <>
                 <div className="folder-actions-row">
-                  <h2 className="folder-notes-title">Notes</h2>
+                  <h2 className="folder-notes-title">Meetings</h2>
                 </div>
                 <FolderNoteList
                   folder={folder}
@@ -890,7 +892,7 @@ function FolderDetail({
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => onDeleteFolder(folder.id, false)}
         title={`Delete "${folder.name}"?`}
-        description="Notes and sessions in this project stay in your library."
+        description="Meetings and sessions in this project stay in your library."
         confirmLabel="Delete project"
         destructive
       />
@@ -1156,7 +1158,7 @@ function FolderAddMenu({
             }}
           >
             <IconNoteText size={14} />
-            New note
+            New meeting
           </button>
           {hasNotesElsewhere || hasSessionsElsewhere ? (
             <div className="context-menu-separator" role="separator" />
@@ -1171,7 +1173,7 @@ function FolderAddMenu({
               }}
             >
               <IconPageSearch size={14} />
-              Add existing note
+              Add existing meeting
             </button>
           ) : null}
           {hasSessionsElsewhere ? (
@@ -1210,7 +1212,7 @@ function FolderEmptyActions({
           className="primary-action"
           onClick={onAddExisting}
         >
-          Add existing note
+          Add existing meeting
         </button>
       ) : null}
       <button
@@ -1219,7 +1221,7 @@ function FolderEmptyActions({
         onClick={onCreateNote}
       >
         <IconPlusMedium size={13} />
-        New note
+        New meeting
       </button>
     </div>
   );
@@ -1272,7 +1274,7 @@ function FolderNoteRow({
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">
-              {note.title.trim() || "New note"}
+              {note.title.trim() || "New meeting"}
             </span>
             <span className="folder-note-subtitle">
               {note.preview.trim()
@@ -1288,7 +1290,7 @@ function FolderNoteRow({
           <button
             type="button"
             className="folder-note-menu"
-            aria-label={`Actions for ${note.title.trim() || "this note"}`}
+            aria-label={`Actions for ${note.title.trim() || "this meeting"}`}
             aria-haspopup="menu"
             aria-expanded={menu !== null}
             onClick={(event) => {
@@ -1348,7 +1350,7 @@ function FolderNoteRow({
               }}
             >
               <IconTrashCan size={14} />
-              Delete note
+              Delete meeting
             </button>
           </div>
         ) : null}
@@ -1357,9 +1359,9 @@ function FolderNoteRow({
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         onConfirm={onDelete}
-        title={`Delete "${note.title.trim() || "New note"}"?`}
+        title={`Delete "${note.title.trim() || "New meeting"}"?`}
         description="This cannot be undone."
-        confirmLabel="Delete note"
+        confirmLabel="Delete meeting"
         destructive
       />
     </li>
