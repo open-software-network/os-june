@@ -405,14 +405,16 @@ input:focus-visible,
 
 /* The conversation scroller, below the breadcrumb. Full-bleed (cancelling the
  * card body's gutter, then re-adding it inside) so its scrollbar hugs the card
- * edge like the shared scroller did — only now it starts beneath the bar. */
+ * edge like the shared scroller did — only now it starts beneath the bar.
+ * No explicit width: the stretched flex item grows by the negative margins
+ * (like .detail-bar does); width:100% would resolve to the container width and
+ * leave the right edge — and the scrollbar — a gutter short of the card edge. */
 .agent-scroll {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  width: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
   margin: 0 calc(-1 * var(--sp-8));
