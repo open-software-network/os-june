@@ -873,6 +873,15 @@ fn set_window_alpha(hud: &WebviewWindow, alpha: f64) {
 #[cfg(not(target_os = "macos"))]
 fn set_window_alpha(_hud: &WebviewWindow, _alpha: f64) {}
 
+/// Show the HUD window. Invoked by the webview from showHud() once it has
+/// measured the pill and resized the window to match — the window must never
+/// become visible before that resize, or it flashes up at a stale frame
+/// (bare frost, then a clipped pill) until the next visible-state resize.
+#[tauri::command]
+pub fn dictation_hud_show(app: AppHandle) {
+    show_hud_window(&app);
+}
+
 /// Error-state shake. Pre-vibrancy this was a CSS translateX on the pill, but
 /// the pill now fills the window — a CSS nudge would slide the tint off the
 /// stationary frost. Wobble the window itself instead, tracing the same
@@ -2077,13 +2086,16 @@ fn annotate_silent_error(event: &mut serde_json::Value) {
 
 fn update_hud_window(app: &AppHandle, event_type: Option<&str>, event: Option<&serde_json::Value>) {
     match dictation_event_visibility(event_type) {
-        DictationEventVisibility::Show if should_show_hud_window_for_type(event_type) => {
-            show_hud_window(app)
-        }
+        // The webview owns showing for dictation events: hud.ts resizes the
+        // window to the measured pill, then invokes dictation_hud_show.
+        // Showing eagerly from here raced that resize — the window came up at
+        // a stale frame as a gray bar, then a clipped pill, until the next
+        // visible-state resize healed it.
+        DictationEventVisibility::Show => {}
         DictationEventVisibility::Hide => {
             schedule_hud_hide(app, hud_hide_delay_for_event(event_type, event))
         }
-        DictationEventVisibility::Show | DictationEventVisibility::Ignore => {}
+        DictationEventVisibility::Ignore => {}
     }
 }
 
@@ -2120,10 +2132,6 @@ fn dictation_event_visibility(event_type: Option<&str>) -> DictationEventVisibil
         }
         _ => DictationEventVisibility::Ignore,
     }
-}
-
-fn should_show_hud_window_for_type(event_type: Option<&str>) -> bool {
-    !matches!(event_type, Some("audio_level"))
 }
 
 fn hud_hide_delay_for_event(

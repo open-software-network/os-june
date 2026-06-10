@@ -127,6 +127,7 @@ pub fn run() {
             dictation::dictation_hud_set_stop_bounds,
             dictation::dictation_hud_set_size,
             dictation::dictation_hud_set_alpha,
+            dictation::dictation_hud_show,
             dictation::dictation_hud_shake,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,

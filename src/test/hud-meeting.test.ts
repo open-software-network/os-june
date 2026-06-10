@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
     mocks.listeners.set(event, listener);
     return Promise.resolve(vi.fn());
   }),
-  show: vi.fn().mockResolvedValue(undefined),
   startDragging: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -28,7 +27,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     hide: mocks.hide,
-    show: mocks.show,
     startDragging: mocks.startDragging,
   }),
 }));
@@ -37,6 +35,10 @@ describe("meeting detection HUD", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.hide.mockResolvedValue(undefined);
+    mocks.emit.mockResolvedValue(undefined);
+    mocks.invoke.mockResolvedValue(undefined);
+    mocks.startDragging.mockResolvedValue(undefined);
     mocks.listeners.clear();
     document.body.innerHTML = hudMarkup();
   });
@@ -60,7 +62,7 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-meeting-start")).toHaveTextContent(
       "Start transcription",
     );
-    expect(mocks.show).toHaveBeenCalledOnce();
+    expect(hudShowCalls()).toBe(1);
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
       rect: null,
     });
@@ -105,15 +107,15 @@ describe("meeting detection HUD", () => {
 
     // Detection heartbeats keep arriving while the same meeting is live; the
     // dismissed prompt must not come back for any of them.
-    mocks.show.mockClear();
+    mocks.invoke.mockClear();
     await emit("meeting-detection-event", { type: "meeting_detected" });
-    expect(mocks.show).not.toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(0);
 
     // The next meeting prompts again.
     await emit("meeting-detection-event", { type: "meeting_cleared" });
     await emit("meeting-detection-event", { type: "meeting_detected" });
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(mocks.show).toHaveBeenCalledOnce();
+    expect(hudShowCalls()).toBe(1);
   });
 
   it("ignores a dismiss click outside the meeting prompt state", async () => {
@@ -153,10 +155,10 @@ describe("meeting detection HUD", () => {
     await vi.advanceTimersByTimeAsync(220);
     expect(mocks.hide).toHaveBeenCalledOnce();
 
-    mocks.show.mockClear();
+    mocks.invoke.mockClear();
     await emit("meeting-detection-event", { type: "meeting_detected" });
 
-    expect(mocks.show).not.toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(0);
   });
 
   it("puts a re-shown window back down when a heartbeat arrives while suppressed", async () => {
@@ -170,11 +172,11 @@ describe("meeting detection HUD", () => {
     // window before this event arrives. The pill renders nothing, so the HUD
     // must answer by hiding the window — a bare frosted window is otherwise
     // stuck on screen as an undraggable gray bar.
-    mocks.show.mockClear();
+    mocks.invoke.mockClear();
     mocks.hide.mockClear();
     await emit("meeting-detection-event", { type: "meeting_detected" });
 
-    expect(mocks.show).not.toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(0);
     expect(mocks.hide).toHaveBeenCalledOnce();
     expect(hudElement().dataset.state).not.toBe("meeting");
   });
@@ -205,22 +207,22 @@ describe("meeting detection HUD", () => {
     await vi.advanceTimersByTimeAsync(30_160);
     await emit("meeting-detection-event", { type: "meeting_cleared" });
 
-    mocks.show.mockClear();
+    mocks.invoke.mockClear();
     await emit("meeting-detection-event", { type: "meeting_detected" });
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(mocks.show).toHaveBeenCalledOnce();
+    expect(hudShowCalls()).toBe(1);
   });
 
   it("does not override an active dictation HUD state", async () => {
     await loadHud();
     hudElement().dataset.state = "transcribing";
-    mocks.show.mockClear();
+    mocks.invoke.mockClear();
 
     await emit("meeting-detection-event", { type: "meeting_detected" });
 
     expect(hudElement().dataset.state).toBe("transcribing");
-    expect(mocks.show).not.toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(0);
   });
 
   it("surfaces silent dictation failures as nothing recorded", async () => {
@@ -240,7 +242,7 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-error-text")).toHaveTextContent(
       "Nothing recorded",
     );
-    expect(mocks.show).toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(1);
 
     await vi.advanceTimersByTimeAsync(900);
     expect(hudElement().dataset.state).toBe("exiting");
@@ -274,7 +276,7 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
       "June is starting.",
     );
-    expect(mocks.show).toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(1);
 
     await vi.advanceTimersByTimeAsync(4000);
     expect(hudElement().dataset.state).toBe("exiting");
@@ -311,7 +313,7 @@ describe("meeting detection HUD", () => {
     });
 
     expect(hudElement().dataset.state).toBe("idle");
-    expect(mocks.show).not.toHaveBeenCalled();
+    expect(hudShowCalls()).toBe(0);
   });
 });
 
@@ -326,6 +328,14 @@ async function emit(event: string, payload: unknown) {
   await listener?.({
     payload: JSON.stringify(payload),
   });
+}
+
+// The pill shows itself via the dictation_hud_show command (Rust positions
+// the hidden window, then makes it visible) rather than appWindow.show().
+function hudShowCalls() {
+  return mocks.invoke.mock.calls.filter(
+    ([command]) => command === "dictation_hud_show",
+  ).length;
 }
 
 function hudElement() {

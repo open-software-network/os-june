@@ -61,6 +61,25 @@ const EXIT_TRANSITION_MS = 160;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 const AGENT_HANDOFF_TIMEOUT_MS = 4_000;
 
+function invokeBestEffort(command: string, args?: Record<string, unknown>) {
+  try {
+    void Promise.resolve(invoke(command, args)).catch(() => {});
+  } catch {
+    // Native HUD commands are opportunistic; the visible state still advances.
+  }
+}
+
+async function invokeBestEffortAsync(
+  command: string,
+  args?: Record<string, unknown>,
+) {
+  try {
+    await Promise.resolve(invoke(command, args));
+  } catch {
+    // Native HUD commands are opportunistic; the visible state still advances.
+  }
+}
+
 // Bar synthesis + ballistics live in the shared meter so the recorder waveform
 // moves identically. The meter holds the level history and the displayed bars.
 // Sized to the actual bar count so meter.displayed always matches bars.length.
@@ -255,15 +274,13 @@ function setStopHover(isHovered: boolean) {
 // done in JS only fires reliably during a mouse-down.
 function pushStopBoundsToNative() {
   if (!stopButton || hud?.dataset.state !== "listening") {
-    void invoke("dictation_hud_set_stop_bounds", { rect: null }).catch(
-      () => {},
-    );
+    invokeBestEffort("dictation_hud_set_stop_bounds", { rect: null });
     return;
   }
   const { left, right, top, bottom } = stopButton.getBoundingClientRect();
-  void invoke("dictation_hud_set_stop_bounds", {
+  invokeBestEffort("dictation_hud_set_stop_bounds", {
     rect: { left, right, top, bottom },
-  }).catch(() => {});
+  });
 }
 
 // Resize the native window to the pill's measured size (Rust re-anchors so
@@ -277,11 +294,11 @@ async function syncWindowToPill(options?: { morph?: boolean }) {
   hud.offsetWidth;
   const { width, height } = hud.getBoundingClientRect();
   if (options?.morph) hud.classList.add("is-morphing");
-  await invoke("dictation_hud_set_size", {
+  await invokeBestEffortAsync("dictation_hud_set_size", {
     width: Math.ceil(width),
     height: Math.ceil(height),
     animate: !prefersReducedMotion(),
-  }).catch(() => {});
+  });
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       hud?.classList.remove("is-morphing");
@@ -293,7 +310,7 @@ async function syncWindowToPill(options?: { morph?: boolean }) {
 // The native window alpha drives the exit dissolve — CSS opacity can't fade
 // the vibrancy frost or the native shadow behind the webview.
 function setWindowAlpha(alpha: number) {
-  void invoke("dictation_hud_set_alpha", { alpha }).catch(() => {});
+  invokeBestEffort("dictation_hud_set_alpha", { alpha });
 }
 
 function fadeWindowAlpha(requestId: number) {
@@ -329,12 +346,12 @@ function prefersReducedMotion() {
 // stationary vibrancy view).
 function triggerShake() {
   if (prefersReducedMotion()) return;
-  void invoke("dictation_hud_shake").catch(() => {});
+  invokeBestEffort("dictation_hud_shake");
 }
 
 function clearStopHover() {
   setStopHover(false);
-  void invoke("dictation_hud_set_stop_bounds", { rect: null }).catch(() => {});
+  invokeBestEffort("dictation_hud_set_stop_bounds", { rect: null });
 }
 
 function clearHideTimer() {
@@ -393,11 +410,13 @@ async function hideHud() {
 async function showHud() {
   hideRequestId += 1;
   clearHideTimer();
-  // Size the window to the pill before it appears (an interrupted exit may
-  // also have left the native alpha low — restore it first).
-  setWindowAlpha(1);
+  // Size the window to the pill before it appears, then let Rust position
+  // and show it (dictation_hud_show also restores the native alpha an
+  // interrupted exit fade may have left low). Showing only after the resize
+  // is what keeps the pill from flashing up as a bare gray bar, or clipped
+  // at a stale width from a previous state.
   await syncWindowToPill();
-  await appWindow.show();
+  await invokeBestEffortAsync("dictation_hud_show");
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
