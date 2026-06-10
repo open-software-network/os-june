@@ -64,6 +64,8 @@ type FoldersWorkspaceProps = {
     deleteNotes: boolean,
   ) => Promise<unknown> | void;
   onCreateNote: (folderId?: string) => void;
+  /** Start a fresh agent session that gets filed into this project. */
+  onCreateSession: (folderId: string) => void;
   onSelectNote: (noteId: string) => void;
   onAssignNoteToFolder: (noteId: string, folderId: string) => Promise<unknown>;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
@@ -496,6 +498,9 @@ function FolderCard({
           {folderSessions.length > 0 ? (
             <>
               <span className="metadata-dot" aria-hidden />
+              <span className="folder-card-footer-icon" aria-hidden>
+                <IconPangolin size={11} />
+              </span>
               <span>
                 {folderSessions.length}{" "}
                 {folderSessions.length === 1 ? "session" : "sessions"}
@@ -590,6 +595,7 @@ function FolderDetail({
   onRenameFolder,
   onDeleteFolder,
   onCreateNote,
+  onCreateSession,
   onSelectNote,
   onAssignNoteToFolder,
   onRemoveNoteFromFolder,
@@ -710,6 +716,16 @@ function FolderDetail({
 
       <div className="folder-detail-content">
         <header className="folder-detail-header">
+          <FolderAddMenu
+            onCreateSession={() => onCreateSession(folder.id)}
+            onCreateNote={() => onCreateNote(folder.id)}
+            onAddExisting={() => setAddOpen(true)}
+            onAddSessions={() => setAddSessionsOpen(true)}
+            hasNotesElsewhere={notes.some(
+              (note) => !note.folderIds.includes(folder.id),
+            )}
+            hasSessionsElsewhere={hasSessionsElsewhere}
+          />
           {editingTitle ? (
             <form
               onSubmit={(event) => {
@@ -760,6 +776,9 @@ function FolderDetail({
             {folderSessions.length > 0 ? (
               <>
                 <span className="metadata-dot" aria-hidden />
+                <span className="folder-detail-meta-pill" aria-hidden>
+                  <IconPangolin size={12} />
+                </span>
                 {folderSessions.length}{" "}
                 {folderSessions.length === 1 ? "session" : "sessions"}
               </>
@@ -771,52 +790,45 @@ function FolderDetail({
 
         {folderNotes.length > 0 || folderSessions.length > 0 ? (
           <>
-            {/* Agents lead the project; the add popover rides the first
-                section's heading either way. */}
-            <FolderActions
-              title={folderSessions.length > 0 ? "Agents" : "Notes"}
-              onCreateNote={() => onCreateNote(folder.id)}
-              onAddExisting={() => setAddOpen(true)}
-              onAddSessions={() => setAddSessionsOpen(true)}
-              hasNotesElsewhere={notes.some(
-                (note) => !note.folderIds.includes(folder.id),
-              )}
-              hasSessionsElsewhere={hasSessionsElsewhere}
-            />
+            {/* Agents lead the project; the add menu lives up in the
+                header, so the section rows are plain headings. */}
             {folderSessions.length > 0 ? (
-              <FolderSessionList
-                folder={folder}
-                sessions={folderSessions}
-                onSelectSession={onSelectSession}
-                onOpenSessionMoveDialog={onOpenSessionMoveDialog}
-                onRemoveSessionFromFolder={onRemoveSessionFromFolder}
-              />
-            ) : null}
-            {folderSessions.length > 0 && folderNotes.length > 0 ? (
-              <div className="folder-actions-row">
-                <h2 className="folder-notes-title">Notes</h2>
-              </div>
+              <>
+                <div className="folder-actions-row">
+                  <h2 className="folder-notes-title">Agents</h2>
+                </div>
+                <FolderSessionList
+                  folder={folder}
+                  sessions={folderSessions}
+                  onSelectSession={onSelectSession}
+                  onOpenSessionMoveDialog={onOpenSessionMoveDialog}
+                  onRemoveSessionFromFolder={onRemoveSessionFromFolder}
+                />
+              </>
             ) : null}
             {folderNotes.length > 0 ? (
-              <FolderNoteList
-                folder={folder}
-                notes={folderNotes}
-                onSelectNote={onSelectNote}
-                onOpenMoveDialog={onOpenMoveDialog}
-                onRemoveNoteFromFolder={onRemoveNoteFromFolder}
-                onDeleteNote={onDeleteNote}
-              />
+              <>
+                <div className="folder-actions-row">
+                  <h2 className="folder-notes-title">Notes</h2>
+                </div>
+                <FolderNoteList
+                  folder={folder}
+                  notes={folderNotes}
+                  onSelectNote={onSelectNote}
+                  onOpenMoveDialog={onOpenMoveDialog}
+                  onRemoveNoteFromFolder={onRemoveNoteFromFolder}
+                  onDeleteNote={onDeleteNote}
+                />
+              </>
             ) : null}
           </>
         ) : (
           <FolderEmptyState
             onCreateNote={() => onCreateNote(folder.id)}
             onAddExisting={() => setAddOpen(true)}
-            onAddSessions={() => setAddSessionsOpen(true)}
             hasNotesElsewhere={notes.some(
               (note) => !note.folderIds.includes(folder.id),
             )}
-            hasSessionsElsewhere={hasSessionsElsewhere}
           />
         )}
       </div>
@@ -1068,15 +1080,17 @@ function FolderSessionRow({
   );
 }
 
-function FolderActions({
-  title,
+/** Single "+" up in the project header — one menu for everything that can
+ * land in the project, mirroring the sidebar's new-session entry point. */
+function FolderAddMenu({
+  onCreateSession,
   onCreateNote,
   onAddExisting,
   onAddSessions,
   hasNotesElsewhere,
   hasSessionsElsewhere,
 }: {
-  title: string;
+  onCreateSession: () => void;
   onCreateNote: () => void;
   onAddExisting: () => void;
   onAddSessions: () => void;
@@ -1102,8 +1116,7 @@ function FolderActions({
   }, [open]);
 
   return (
-    <div className="folder-actions-row">
-      <h2 className="folder-notes-title">{title}</h2>
+    <div className="folder-detail-add">
       <button
         type="button"
         className="folder-add-trigger"
@@ -1123,6 +1136,31 @@ function FolderActions({
           role="menu"
           onClick={(event) => event.stopPropagation()}
         >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onCreateSession();
+            }}
+          >
+            <IconPangolin size={14} />
+            New session
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onCreateNote();
+            }}
+          >
+            <IconNoteText size={14} />
+            New note
+          </button>
+          {hasNotesElsewhere || hasSessionsElsewhere ? (
+            <div className="context-menu-separator" role="separator" />
+          ) : null}
           {hasNotesElsewhere ? (
             <button
               type="button"
@@ -1145,21 +1183,10 @@ function FolderActions({
                 onAddSessions();
               }}
             >
-              <IconPangolin size={14} />
+              <IconMoveFolder size={14} />
               Add agent session
             </button>
           ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onCreateNote();
-            }}
-          >
-            <IconPlusMedium size={14} />
-            New note
-          </button>
         </div>
       ) : null}
     </div>
@@ -1169,15 +1196,11 @@ function FolderActions({
 function FolderEmptyActions({
   onCreateNote,
   onAddExisting,
-  onAddSessions,
   hasNotesElsewhere,
-  hasSessionsElsewhere,
 }: {
   onCreateNote: () => void;
   onAddExisting: () => void;
-  onAddSessions: () => void;
   hasNotesElsewhere: boolean;
-  hasSessionsElsewhere: boolean;
 }) {
   return (
     <div className="folder-empty-actions">
@@ -1188,15 +1211,6 @@ function FolderEmptyActions({
           onClick={onAddExisting}
         >
           Add existing note
-        </button>
-      ) : null}
-      {hasSessionsElsewhere ? (
-        <button
-          type="button"
-          className="primary-action"
-          onClick={onAddSessions}
-        >
-          Add agent session
         </button>
       ) : null}
       <button
@@ -1355,27 +1369,21 @@ function FolderNoteRow({
 function FolderEmptyState({
   onCreateNote,
   onAddExisting,
-  onAddSessions,
   hasNotesElsewhere,
-  hasSessionsElsewhere,
 }: {
   onCreateNote: () => void;
   onAddExisting: () => void;
-  onAddSessions: () => void;
   hasNotesElsewhere: boolean;
-  hasSessionsElsewhere: boolean;
 }) {
   return (
     <div className="folder-empty-surface" role="group">
       <p className="folder-empty-hint">
-        Collect the notes and agent sessions this project lives on
+        Capture a meeting, a phone call, or a half-formed thought
       </p>
       <FolderEmptyActions
         onCreateNote={onCreateNote}
         onAddExisting={onAddExisting}
-        onAddSessions={onAddSessions}
         hasNotesElsewhere={hasNotesElsewhere}
-        hasSessionsElsewhere={hasSessionsElsewhere}
       />
     </div>
   );

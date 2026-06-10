@@ -58,6 +58,7 @@ function baseProps() {
     onRenameFolder: vi.fn(),
     onDeleteFolder: vi.fn(),
     onCreateNote: vi.fn(),
+    onCreateSession: vi.fn(),
     onSelectNote: vi.fn(),
     onAssignNoteToFolder: vi.fn(async () => undefined),
     onRemoveNoteFromFolder: vi.fn(),
@@ -406,6 +407,20 @@ describe("FoldersWorkspace — detail view", () => {
     // primary action and "Add existing note" when other notes exist.
     await user.click(screen.getByRole("button", { name: /^New note$/ }));
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-1");
+  });
+
+  it("starts a project session from the header add menu", async () => {
+    const user = userEvent.setup();
+    const props = baseProps();
+    render(<FoldersWorkspace {...props} selectedFolderId="folder-2" />);
+
+    await user.click(screen.getByRole("button", { name: "Add to project" }));
+    await user.click(screen.getByRole("menuitem", { name: "New session" }));
+    expect(props.onCreateSession).toHaveBeenCalledWith("folder-2");
+
+    await user.click(screen.getByRole("button", { name: "Add to project" }));
+    await user.click(screen.getByRole("menuitem", { name: "New note" }));
+    expect(props.onCreateNote).toHaveBeenCalledWith("folder-2");
   });
 
   it("removes a note from the folder via its row overflow menu", async () => {

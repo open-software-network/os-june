@@ -170,6 +170,15 @@ export function App() {
   const [moveDialogSessionId, setMoveDialogSessionId] = useState<string | null>(
     null,
   );
+  // The project an open agent session was drilled into from — drives the
+  // breadcrumb above the agent workspace, mirroring notes-from-folder.
+  const [agentOriginFolderId, setAgentOriginFolderId] = useState<string>();
+  // Set when "New session" is started from a project: the next brand-new
+  // session AgentWorkspace selects gets filed into that project.
+  const pendingSessionProjectRef = useRef<{
+    folderId: string;
+    knownSessionIds: Set<string>;
+  } | null>(null);
   const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
@@ -241,6 +250,9 @@ export function App() {
   const selectedNoteId = selectedNote?.id;
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
+    : undefined;
+  const agentOriginFolder = agentOriginFolderId
+    ? state.folders.find((folder) => folder.id === agentOriginFolderId)
     : undefined;
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
@@ -349,6 +361,7 @@ export function App() {
 
   useEffect(() => {
     function openAgentWorkspace(session?: HermesSessionInfo) {
+      setAgentOriginFolderId(undefined);
       setActiveAgentSession(session);
       setActiveView("agent");
     }
@@ -379,6 +392,7 @@ export function App() {
   useEffect(() => {
     function handleReply(detail?: AgentReplyDetail) {
       if (!detail?.text.trim()) return;
+      setAgentOriginFolderId(undefined);
       setActiveAgentSession(detail.session);
       setPendingAgentReply(detail);
       setActiveView("agent");
@@ -482,6 +496,24 @@ export function App() {
       if (!detail) return;
       agentMenuBarSessionsRef.current = detail.sessions;
       setAgentSessions(detail.sessions);
+      // "New session" started from a project: file the first brand-new
+      // session that gets selected; switching to a known session instead
+      // abandons the intent.
+      const pendingProject = pendingSessionProjectRef.current;
+      if (pendingProject && detail.selectedSessionId) {
+        pendingSessionProjectRef.current = null;
+        const sessionId = detail.selectedSessionId;
+        if (!pendingProject.knownSessionIds.has(sessionId)) {
+          void assignSessionToFolder(sessionId, pendingProject.folderId)
+            .then(() =>
+              setSessionFolders((prev) => ({
+                ...prev,
+                [sessionId]: [pendingProject.folderId],
+              })),
+            )
+            .catch(() => {});
+        }
+      }
       agentMenuBarWorkingSessionIdsRef.current = new Set(
         detail.workingSessionIds,
       );
@@ -567,6 +599,8 @@ export function App() {
     }
 
     void installMenuBarListener<void>(AGENT_MENU_BAR_NEW_SESSION_EVENT, () => {
+      pendingSessionProjectRef.current = null;
+      setAgentOriginFolderId(undefined);
       markAgentNewSessionPending();
       setActiveAgentSession(undefined);
       setActiveView("agent");
@@ -580,6 +614,7 @@ export function App() {
     void installMenuBarListener<string>(
       AGENT_MENU_BAR_OPEN_SESSION_EVENT,
       (sessionId) => {
+        setAgentOriginFolderId(undefined);
         if (!sessionId) {
           setActiveView("agent");
           return;
@@ -1097,6 +1132,8 @@ export function App() {
   // Mirrors the sidebar's "New session" button so the agent sessions list
   // can start a fresh chat with the same pending-session handshake.
   function handleNewAgentSession() {
+    pendingSessionProjectRef.current = null;
+    setAgentOriginFolderId(undefined);
     markAgentNewSessionPending();
     setActiveAgentSession(undefined);
     setActiveView("agent");
@@ -1105,6 +1142,33 @@ export function App() {
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
       );
     }, 0);
+  }
+
+  // "New session" from inside a project: same fresh-chat handshake, but the
+  // session gets filed into the project once Hermes hands back its id.
+  function handleNewAgentSessionInProject(folderId: string) {
+    pendingSessionProjectRef.current = {
+      folderId,
+      knownSessionIds: new Set(agentSessions.map((session) => session.id)),
+    };
+    setAgentOriginFolderId(folderId);
+    markAgentNewSessionPending();
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+      );
+    }, 0);
+  }
+
+  // Leaves the agent workspace for the project it was entered from.
+  function handleReturnToAgentOriginFolder() {
+    if (!agentOriginFolderId) return;
+    setActiveView("folders");
+    dispatch({ type: "folderSelected", folderId: agentOriginFolderId });
+    setActiveAgentSession(undefined);
+    setAgentOriginFolderId(undefined);
   }
 
   async function handleSelectNote(noteId: string) {
@@ -1398,8 +1462,10 @@ export function App() {
             setSettingsReturnView(activeView);
           }
           setActiveView(view);
+          setAgentOriginFolderId(undefined);
           if (view !== "agent") {
             setActiveAgentSession(undefined);
+            pendingSessionProjectRef.current = null;
           }
           if (view === "folders") {
             setFolderReturnTarget(undefined);
@@ -1420,10 +1486,13 @@ export function App() {
           void handleRemoveNoteFromFolder(noteId, folderId)
         }
         onNewAgentSession={() => {
+          pendingSessionProjectRef.current = null;
+          setAgentOriginFolderId(undefined);
           setActiveAgentSession(undefined);
           setActiveView("agent");
         }}
         onSelectAgentSession={(session) => {
+          setAgentOriginFolderId(undefined);
           setActiveAgentSession(session);
           setActiveView("agent");
         }}
@@ -1512,16 +1581,54 @@ export function App() {
                 }}
               />
             ) : activeView === "agent" ? (
-              <AgentWorkspace
-                initialSession={activeAgentSession}
-                pendingReply={pendingAgentReply}
-              />
+              agentOriginFolder ? (
+                <div className="note-shell agent-project-shell">
+                  <BreadcrumbBar
+                    backLabel={`Back to ${agentOriginFolder.name}`}
+                    onBack={handleReturnToAgentOriginFolder}
+                    items={[
+                      {
+                        label: "Projects",
+                        onClick: () => {
+                          setActiveView("folders");
+                          dispatch({
+                            type: "folderSelected",
+                            folderId: undefined,
+                          });
+                          setActiveAgentSession(undefined);
+                          setAgentOriginFolderId(undefined);
+                        },
+                      },
+                      {
+                        label: agentOriginFolder.name,
+                        onClick: handleReturnToAgentOriginFolder,
+                      },
+                      {
+                        label:
+                          activeAgentSession?.title?.trim() ||
+                          activeAgentSession?.preview?.trim() ||
+                          "New session",
+                      },
+                    ]}
+                  />
+                  <AgentWorkspace
+                    initialSession={activeAgentSession}
+                    pendingReply={pendingAgentReply}
+                  />
+                </div>
+              ) : (
+                <AgentWorkspace
+                  initialSession={activeAgentSession}
+                  pendingReply={pendingAgentReply}
+                />
+              )
             ) : activeView === "agent-sessions" ? (
               <AgentSessionsList
                 sessions={agentSessions}
                 folders={state.folders}
                 sessionFolderIds={sessionFolders}
                 onSelectSession={(session) => {
+                  setAgentOriginFolderId(undefined);
                   setActiveAgentSession(session);
                   setActiveView("agent");
                 }}
@@ -1587,7 +1694,13 @@ export function App() {
                 }
                 onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+                onCreateSession={(folderId) =>
+                  handleNewAgentSessionInProject(folderId)
+                }
                 onSelectSession={(session) => {
+                  // Remember the project so the agent view can breadcrumb
+                  // back to it.
+                  setAgentOriginFolderId(state.selectedFolderId);
                   setActiveAgentSession(session);
                   setActiveView("agent");
                 }}
