@@ -225,21 +225,40 @@ input:focus-visible,
 
 /* Agent ------------------------------------------------------------- */
 
-/* The conversation flows in the main card scroller (like a note's body), so the
- * agent surface grows with its content rather than owning an inner scrollbar.
- * min-height keeps a short/empty session filling the card so the pinned
- * composer still lands at the bottom. */
+/* The breadcrumb is a fixed header and the conversation scrolls in .agent-scroll
+ * below it, so the scrollbar starts under the bar instead of riding up over it
+ * (the shared .main-panel-body scrollbar sits in the gutter past the bar's edge,
+ * so the bar can't cover it). This means filling the card exactly — not growing
+ * past it — so .agent-scroll has a bounded height to scroll within. */
 .agent-workspace {
   display: flex;
   flex-direction: column;
   width: 100%;
-  /* align-self:start stops the fixed-height .workspace grid from stretching us
-   * to exactly one viewport — that capped the sticky breadcrumb's range so it
-   * scrolled away after a screenful. Growing with content keeps it pinned. */
-  align-self: start;
-  min-height: 100%;
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
 }
+
+/* Agent view: stop the card body from scrolling (the breadcrumb would scroll
+ * with it) and give the grid row a definite height so .agent-workspace fills
+ * the card exactly. Scoped so every other view keeps the shared scroller. */
+.main-panel-body[data-active-view="agent"] {
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.main-panel-body[data-active-view="agent"] .workspace {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* The card-edge fades animate off .main-panel-body's scroll; with that frozen in
+ * the agent view, switch them off so the bottom fade doesn't stick on. */
+.main-panel:has(> .main-panel-body[data-active-view="agent"])::before,
+.main-panel:has(> .main-panel-body[data-active-view="agent"])::after {
+  content: none;
+}
+
 /* The agent already lives inside the floating .main-panel card, so it draws
  * no card of its own — that card-in-a-card read busier than any Notes view.
  * The rail surface (kept for any rail-mode reuse) is the only bordered box. */
@@ -384,13 +403,27 @@ input:focus-visible,
   -webkit-line-clamp: 2;
 }
 
+/* The conversation scroller, below the breadcrumb. Full-bleed (cancelling the
+ * card body's gutter, then re-adding it inside) so its scrollbar hugs the card
+ * edge like the shared scroller did — only now it starts beneath the bar. */
+.agent-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 calc(-1 * var(--sp-8));
+  padding: 0 var(--sp-8) var(--sp-5);
+}
+
 .agent-main {
   display: flex;
   flex-direction: column;
-  /* flex:1 with the default (auto) min-height fills the space under the sticky
-   * breadcrumb when the conversation is short, AND grows with the content when
-   * it's long — so the whole .agent-workspace (and thus the breadcrumb's sticky
-   * range) spans the full scroll height and the bar persists the entire way. */
+  /* flex:1 fills the scroller when the conversation is short and grows with it
+   * when long; max-width keeps the column centred inside the full-bleed scroller. */
   flex: 1;
   width: 100%;
   max-width: var(--content-max);
@@ -6048,32 +6081,6 @@ input:focus-visible,
   background: color-mix(in oklch, var(--card) 78%, transparent);
   backdrop-filter: saturate(140%) blur(14px);
   -webkit-backdrop-filter: saturate(140%) blur(14px);
-}
-
-/* The card's scroll lives in .main-panel-body, and this full-bleed bar overlaps
- * the gutter where that scroller's thin scrollbar sits. The sticky bar paints
- * over the scrollbar, but its translucent frost lets the thumb show through at
- * the top — so it reads as a sliver poking above the bar while you scroll.
- * Opaque chips at the scrollbar gutters clip the thumb to start below the bar.
- * They sit at the very edges, well inside the sp-8 (24px) content inset, so
- * they never touch the crumb or actions, and the frosted middle is untouched. */
-.detail-bar::before,
-.detail-bar::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 8px;
-  background: var(--card);
-  pointer-events: none;
-}
-
-.detail-bar::before {
-  left: 0;
-}
-
-.detail-bar::after {
-  right: 0;
 }
 
 .detail-breadcrumb {
