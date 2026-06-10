@@ -164,6 +164,12 @@ export function App() {
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const [agentWaitingSessionIds, setAgentWaitingSessionIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   // sessionId -> project (folder) ids. Sessions live in Hermes, so their
   // project assignments are tracked separately from the notes state.
   const [sessionFolders, setSessionFolders] = useState<
@@ -541,12 +547,12 @@ export function App() {
           setAgentOriginFolderId(undefined);
         }
       }
-      agentMenuBarWorkingSessionIdsRef.current = new Set(
-        detail.workingSessionIds,
-      );
-      agentMenuBarWaitingSessionIdsRef.current = new Set(
-        detail.waitingSessionIds ?? [],
-      );
+      const nextWorkingSessionIds = new Set(detail.workingSessionIds);
+      const nextWaitingSessionIds = new Set(detail.waitingSessionIds ?? []);
+      agentMenuBarWorkingSessionIdsRef.current = nextWorkingSessionIds;
+      agentMenuBarWaitingSessionIdsRef.current = nextWaitingSessionIds;
+      setAgentWorkingSessionIds(new Set(nextWorkingSessionIds));
+      setAgentWaitingSessionIds(new Set(nextWaitingSessionIds));
       publishAgentMenuBarState();
     }
 
@@ -559,6 +565,12 @@ export function App() {
           working: agentMenuBarWorkingSessionIdsRef.current,
           waiting: agentMenuBarWaitingSessionIdsRef.current,
         });
+        setAgentWorkingSessionIds(
+          new Set(agentMenuBarWorkingSessionIdsRef.current),
+        );
+        setAgentWaitingSessionIds(
+          new Set(agentMenuBarWaitingSessionIdsRef.current),
+        );
       }
       publishAgentMenuBarState();
     }
@@ -575,6 +587,12 @@ export function App() {
       );
       agentMenuBarWorkingSessionIdsRef.current.delete(sessionId);
       agentMenuBarWaitingSessionIdsRef.current.delete(sessionId);
+      setAgentWorkingSessionIds(
+        new Set(agentMenuBarWorkingSessionIdsRef.current),
+      );
+      setAgentWaitingSessionIds(
+        new Set(agentMenuBarWaitingSessionIdsRef.current),
+      );
       publishAgentMenuBarState();
     }
 
@@ -1674,6 +1692,8 @@ export function App() {
                 sessions={agentSessions}
                 folders={state.folders}
                 sessionFolderIds={sessionFolders}
+                workingSessionIds={agentWorkingSessionIds}
+                waitingSessionIds={agentWaitingSessionIds}
                 onSelectSession={(session) => {
                   setAgentOriginFolderId(undefined);
                   setActiveAgentSession(session);

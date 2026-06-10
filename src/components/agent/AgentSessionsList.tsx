@@ -21,6 +21,8 @@ type AgentSessionsListProps = {
   folders: FolderDto[];
   /** sessionId -> project (folder) ids the session is filed under. */
   sessionFolderIds: Record<string, string[]>;
+  workingSessionIds?: ReadonlySet<string>;
+  waitingSessionIds?: ReadonlySet<string>;
   onSelectSession: (session: HermesSessionInfo) => void;
   onNewSession: () => void;
   onOpenMoveDialog: (sessionId: string) => void;
@@ -31,6 +33,8 @@ export function AgentSessionsList({
   sessions,
   folders,
   sessionFolderIds,
+  workingSessionIds = new Set(),
+  waitingSessionIds = new Set(),
   onSelectSession,
   onNewSession,
   onOpenMoveDialog,
@@ -39,16 +43,22 @@ export function AgentSessionsList({
   const [query, setQuery] = useState("");
   const filteredSessions = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const sorted = [...sessions].sort((a, b) =>
-      sessionTimestamp(b).localeCompare(sessionTimestamp(a)),
-    );
+    const sorted = [...sessions].sort((a, b) => {
+      const statusDelta =
+        sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
+        sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
+      if (statusDelta !== 0) return statusDelta;
+      return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
+    });
     if (!normalized) return sorted;
     return sorted.filter((session) =>
-      `${session.title ?? ""} ${session.preview ?? ""}`
+      `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
+        sessionStatus(session.id, workingSessionIds, waitingSessionIds),
+      )}`
         .toLowerCase()
         .includes(normalized),
     );
-  }, [sessions, query]);
+  }, [sessions, query, waitingSessionIds, workingSessionIds]);
 
   return (
     <section
@@ -119,6 +129,11 @@ export function AgentSessionsList({
                 folders,
               )}
               currentFolderId={sessionFolderIds[session.id]?.[0]}
+              status={sessionStatus(
+                session.id,
+                workingSessionIds,
+                waitingSessionIds,
+              )}
               onSelect={() => onSelectSession(session)}
               onOpenMove={() => onOpenMoveDialog(session.id)}
               onRemoveFromProject={(folderId) =>
@@ -142,10 +157,39 @@ function projectNameFor(
   return folders.find((folder) => folder.id === folderId)?.name;
 }
 
+type AgentSessionListStatus = "running" | "waitingForUser" | undefined;
+
+function sessionStatus(
+  sessionId: string,
+  workingSessionIds: ReadonlySet<string>,
+  waitingSessionIds: ReadonlySet<string>,
+): AgentSessionListStatus {
+  if (waitingSessionIds.has(sessionId)) return "waitingForUser";
+  if (workingSessionIds.has(sessionId)) return "running";
+  return undefined;
+}
+
+function sessionStatusPriority(
+  sessionId: string,
+  workingSessionIds: ReadonlySet<string>,
+  waitingSessionIds: ReadonlySet<string>,
+) {
+  if (waitingSessionIds.has(sessionId)) return 2;
+  if (workingSessionIds.has(sessionId)) return 1;
+  return 0;
+}
+
+function sessionStatusLabel(status: AgentSessionListStatus) {
+  if (status === "waitingForUser") return "Needs you";
+  if (status === "running") return "Working";
+  return "";
+}
+
 function AgentSessionListRow({
   session,
   projectName,
   currentFolderId,
+  status,
   onSelect,
   onOpenMove,
   onRemoveFromProject,
@@ -153,6 +197,7 @@ function AgentSessionListRow({
   session: HermesSessionInfo;
   projectName?: string;
   currentFolderId?: string;
+  status?: AgentSessionListStatus;
   onSelect: () => void;
   onOpenMove: () => void;
   onRemoveFromProject: (folderId: string) => void;
@@ -160,6 +205,7 @@ function AgentSessionListRow({
   const title =
     session.title?.trim() || session.preview?.trim() || "Untitled session";
   const preview = session.preview?.trim() || "No messages yet";
+  const statusLabel = sessionStatusLabel(status);
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -208,6 +254,7 @@ function AgentSessionListRow({
         className="folder-note-row all-notes-row"
         data-has-actions="true"
         data-menu-open={menu !== null}
+        data-status={status}
       >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
@@ -220,9 +267,21 @@ function AgentSessionListRow({
             </span>
           </span>
         </button>
-        <span className="folder-note-time">
-          {formatSessionTime(sessionTimestamp(session))}
-        </span>
+        {status ? (
+          <span
+            className="folder-note-time agent-session-list-status"
+            data-status={status}
+            role="status"
+            aria-label={statusLabel}
+          >
+            <span aria-hidden />
+            {statusLabel}
+          </span>
+        ) : (
+          <span className="folder-note-time">
+            {formatSessionTime(sessionTimestamp(session))}
+          </span>
+        )}
         <span className="folder-note-actions">
           <button
             type="button"
