@@ -484,6 +484,22 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   const last = textParts[textParts.length - 1] as AgentChatTextPart;
   const earlier = textParts.slice(0, -1);
   const earlierText = earlier.map((part) => part.text).join("");
+  const streamed = earlierText + last.text;
+  // The gateway builds the authoritative complete text by concatenating its
+  // internal chunks, which can trim each chunk (dropping a boundary space the
+  // live stream delivered correctly — "explore it." -> "exploreit.") or lag
+  // behind the stream. The streamed deltas are appended verbatim, so when the
+  // two agree apart from whitespace — or `text` is just a shorter prefix of
+  // what already streamed — keep the verbatim stream instead of overwriting it
+  // with the lossy/truncated payload.
+  const sansWhitespace = (value: string) => value.replace(/\s+/g, "");
+  if (
+    sansWhitespace(streamed) === sansWhitespace(text) ||
+    streamed.startsWith(text)
+  ) {
+    for (const part of textParts) part.status = "complete";
+    return;
+  }
   if (!earlier.length) {
     last.text = text;
   } else if (text.startsWith(earlierText)) {
