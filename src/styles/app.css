@@ -2086,6 +2086,12 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+/* When the chip leads with an image thumb, drop the text-oriented left
+ * padding so the thumb sits flush at 2px on all sides, like the button. */
+.agent-attachment-chip:has(> img) {
+  padding-left: 2px;
+}
+
 .agent-attachment-chip > img {
   flex: 0 0 auto;
   width: 20px;
@@ -2119,6 +2125,11 @@ input:focus-visible,
    * but only 2px off the right edge, reading as off-center. */
   width: 20px;
   height: 20px;
+  /* The app never resets UA button padding globally — WebKit's default
+   * (2px 6px 3px) squeezes the content box to 8px, and the overflowing 12px
+   * icon gets safe-aligned to the start instead of centered: the x sat 2px
+   * right and 0.5px high of true center. */
+  padding: 0;
   border: 0;
   /* Concentric with the chip: r-sm (6px) minus the 2px padding. */
   border-radius: var(--r-xs);
