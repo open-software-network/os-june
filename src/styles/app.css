@@ -2139,6 +2139,9 @@ input:focus-visible,
   color: inherit;
 }
 
+/* Lives on the gray pill, so contrast comes from the glyph (foreground-
+ * leaning) and a darkening hover wash — a --muted circle would vanish into
+ * the fill. */
 .agent-artifact-filter-clear {
   display: inline-grid;
   place-items: center;
@@ -2148,11 +2151,11 @@ input:focus-visible,
   border-radius: var(--r-pill);
   padding: 0;
   background: transparent;
-  color: var(--muted-foreground);
+  color: var(--body-copy);
 }
 
 .agent-artifact-filter-clear:hover {
-  background: var(--muted);
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
   color: var(--foreground);
 }
 
@@ -7649,6 +7652,7 @@ input:focus-visible,
 .folders-search input::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
+  display: none;
 }
 
 /* The magnifier reads a step lighter than the placeholder — it's decoration,
