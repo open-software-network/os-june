@@ -736,8 +736,18 @@ export function AgentWorkspace({
     const box = composerBoxRef.current;
     if (!el || !box) return;
     // FLIP "first": where things sit before this growth step reflows them.
+    // On rapid typing a previous step's 160ms animation may still be in
+    // flight, so these reads are mid-animation values — where the element
+    // visually is right now. Cancel the stale animations afterwards so the
+    // "last" measurement below is pure layout: the delta between the two then
+    // starts the new glide exactly where the old one left off, instead of
+    // double-applying a residual offset (jitter).
     const prevBoxHeight = box.offsetHeight;
     const prevRect = el.getBoundingClientRect();
+    if (typeof el.getAnimations === "function") {
+      for (const animation of el.getAnimations()) animation.cancel();
+      for (const animation of box.getAnimations()) animation.cancel();
+    }
     // The toolbar drops below the input once the text can't fit on one line
     // beside the buttons — so probe that at the narrow single-line width.
     // Deciding at the *current* width feeds back into itself: text that
@@ -928,7 +938,13 @@ export function AgentWorkspace({
     if (!items.length) return;
     setImportingFiles(true);
     try {
-      const imported = await Promise.all(items.map((item) => importItem(item)));
+      // One at a time on purpose: a dropped file's bytes can be 50 MB, so
+      // interleave read and upload to keep at most one buffer alive instead
+      // of staging the whole batch (up to ~400 MB) in memory at once.
+      const imported: ImportedHermesFile[] = [];
+      for (const item of items) {
+        imported.push(await importItem(item));
+      }
       setAttachments((current) => [
         ...current,
         ...imported.map((file) => ({
