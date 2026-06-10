@@ -1,4 +1,4 @@
-# OS Scribe
+# June
 
 macOS-first Tauri MVP for local notes, reliable local audio recording, saved audio validation, batch transcription, and generated notes.
 
@@ -65,7 +65,7 @@ The app data directory is resolved by Tauri at runtime. In development, inspect 
 
 ## Dictation
 
-Dictation is paste-only: it does not create notes or store transcript records. Choose a dictation shortcut and an activation mode in Settings. Push-to-talk records while the shortcut is held and stops when it is released. Toggle starts or stops dictation each time the shortcut is pressed. OS Scribe transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
+Dictation is paste-only: it does not create notes or store transcript records. Choose a dictation shortcut and an activation mode in Settings. Push-to-talk records while the shortcut is held and stops when it is released. Toggle starts or stops dictation each time the shortcut is pressed. June transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
 
 Dictation requires a reachable Scribe API and a signed-in OS Accounts user.
 The selected transcription and cleanup models are executed server-side through
@@ -97,7 +97,7 @@ The macOS bundle includes:
 
 The `Microphone only` mode is the default. The `Microphone + system audio` mode uses a small macOS helper built by `src-tauri/build.rs` into `.tauri-helper/` during `pnpm tauri:dev`, `pnpm test:rust`, or `pnpm tauri:build`. Generated helper binaries are ignored by git and kept outside `src-tauri` so Tauri dev does not restart on its own generated files.
 
-Dictation uses a separate macOS helper built into `.tauri-helper/OS Scribe Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
+Dictation uses a separate macOS helper built into `.tauri-helper/June Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
 
 Local `pnpm tauri:build` output is ad-hoc signed unless a signing identity is configured. To build a downloadable, Developer ID-signed and notarized DMG, set the signing environment and run:
 
@@ -151,16 +151,16 @@ PRODUCTION_SCRIBE_API_URL=https://scribe-api.opensoftware.co
 ```
 
 `PRODUCTION_OS_ACCOUNTS_CLIENT_ID` is the production OS Accounts OAuth client id
-for OS Scribe. Provider keys such as OpenAI, Venice, and the OS Accounts App API
+for June. Provider keys such as OpenAI, Venice, and the OS Accounts App API
 key remain server-side in Scribe API/Phala env; they do not belong in the desktop
 DMG workflow.
 
 The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. The `production-desktop-dmg` workflow is manual-only. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
 
 ```sh
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app"
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app/Contents/Resources/native/bin/OS Scribe.app"
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/OS Scribe.app/Contents/Resources/native/bin/OS Scribe Dictation Helper.app"
+codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app"
+codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app/Contents/Resources/native/bin/June.app"
+codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app/Contents/Resources/native/bin/June Dictation Helper.app"
 ```
 
 If permission is denied during local testing, reset it from macOS Privacy & Security settings or with:
@@ -169,7 +169,7 @@ If permission is denied during local testing, reset it from macOS Privacy & Secu
 tccutil reset Microphone co.opensoftware.scribe
 ```
 
-System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for OS Scribe or the OS Scribe Audio Capture helper, then restart the app.
+System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for June or the June audio capture helper, then restart the app.
 
 ## Verification
 

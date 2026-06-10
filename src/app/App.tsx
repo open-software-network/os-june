@@ -817,7 +817,7 @@ export function App() {
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
-  // returns to OS Scribe. The helper poll is what surfaces fresh mic /
+  // returns to June. The helper poll is what surfaces fresh mic /
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
