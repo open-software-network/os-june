@@ -58,13 +58,29 @@ export function DataSharingStep({
   return (
     <section className="onboarding-step">
       <StepHeading
-        title="Choose your data sharing preference"
-        subtitle="Off by default. June works exactly the same either way."
+        title="June doesn't collect your data"
+        subtitle="We store only what it takes to run the service. Everything else stays yours."
       />
+      <div className="onboarding-card-grid">
+        <article className="onboarding-info-card">
+          <h2>What we store</h2>
+          <p>Your account, login, and billing records. That's the list.</p>
+        </article>
+        <article className="onboarding-info-card">
+          <h2>What we never store</h2>
+          <p>
+            Your prompts, transcripts, files, and memory. They stay on your
+            Mac, and inference runs through zero-retention models.
+          </p>
+        </article>
+      </div>
       <div className="onboarding-setting-card">
         <div className="onboarding-setting-copy">
-          <h2 id="onboarding-data-sharing-label">Usage analytics</h2>
-          <p>Share anonymized usage data to help improve June.</p>
+          <h2 id="onboarding-data-sharing-label">Usage analytics — optional</h2>
+          <p>
+            The one exception, and it's your call: share anonymized usage data
+            to help improve June. Off by default.
+          </p>
         </div>
         <Switch
           checked={enabled}
@@ -73,9 +89,8 @@ export function DataSharingStep({
         />
       </div>
       <p className="onboarding-footnote">
-        Either way: we store only your account, login, and billing records. Your
-        prompts, transcripts, files, and memory are not on that list. Change
-        this anytime in Settings.
+        June works exactly the same either way. Change this anytime in
+        Settings.
       </p>
       <StepActions onContinue={onContinue} />
     </section>

@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, vi } from "vitest";
+import { markOnboardingComplete } from "../lib/onboarding";
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
   check: vi.fn(async () => null),
@@ -72,9 +73,9 @@ if (!HTMLElement.prototype.getBoundingClientRect) {
 
 // Existing App tests exercise the signed-in main shell; pre-complete the
 // first-run onboarding so the wizard doesn't gate them. Onboarding tests
-// opt back in by clearing this key.
+// opt back in by clearing localStorage.
 beforeEach(() => {
-  window.localStorage.setItem("june.onboarding.completedVersion", "1");
+  markOnboardingComplete();
 });
 
 afterEach(() => cleanup());

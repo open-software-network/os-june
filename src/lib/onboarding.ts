@@ -6,7 +6,7 @@
  * everyone after a flow redesign.
  */
 
-const ONBOARDING_VERSION = 1;
+const ONBOARDING_VERSION = 2;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const PROFILE_KEY = "june.onboarding.profile";
 const DATA_SHARING_KEY = "june.privacy.shareUsageData";
