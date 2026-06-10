@@ -283,9 +283,9 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
 // shove the footnote around every cycle.
 const HERO_SHORTCUT_COUNT = 3;
 // Idle cadence for cycling the hand, and how long the cascade-out runs before
-// the deck advances (240ms fade + 2 × 70ms stagger, see .agent-hero-chip).
+// the deck advances (300ms fade + 2 × 90ms stagger, see .agent-hero-chip).
 const HERO_ROTATE_MS = 8000;
-const HERO_CHIP_SWAP_MS = 400;
+const HERO_CHIP_SWAP_MS = 500;
 
 // Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
 // is the identity permutation: tests that mock Math.random get the curated
@@ -299,26 +299,6 @@ function shuffleAgentShortcuts(): AgentShortcut[] {
   return pool;
 }
 
-// First-run border beam: the hero composer wears an animated glint until the
-// user has ever started a session, then never again (persisted, not per-run).
-const AGENT_FIRST_SESSION_KEY = "scribe:agent:first-session-done";
-
-function isFirstAgentSession(): boolean {
-  try {
-    return localStorage.getItem(AGENT_FIRST_SESSION_KEY) === null;
-  } catch {
-    // localStorage can throw in sandboxed contexts — skip the flourish.
-    return false;
-  }
-}
-
-function markAgentSessionStarted() {
-  try {
-    localStorage.setItem(AGENT_FIRST_SESSION_KEY, "1");
-  } catch {
-    // Worst case the beam shows again next launch.
-  }
-}
 
 export {
   AGENT_DELETE_SESSION_EVENT,
@@ -411,7 +391,10 @@ export function AgentWorkspace({
   const [heroDeckStart, setHeroDeckStart] = useState(0);
   const [heroChipPhase, setHeroChipPhase] = useState<"in" | "out">("in");
   const heroChipsHoverRef = useRef(false);
-  const [firstRunBeam, setFirstRunBeam] = useState(isFirstAgentSession);
+  // True while a shortcut/submit is tearing the hero down — drives the exit
+  // transition (greeting drifts up, chips drift down) during session-create
+  // latency, before the conversation view takes over.
+  const [heroLeaving, setHeroLeaving] = useState(false);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
@@ -590,6 +573,14 @@ export function AgentWorkspace({
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
   );
+
+  // New-session hero: greeting + centered composer + suggestion chips, shown
+  // whenever nothing is selected — the same condition as the conversation
+  // fall-through in the render, minus the dev gallery. Computed up here
+  // because the composer auto-grow effect below needs it as a dependency.
+  const heroMode =
+    !gallerySections &&
+    (newSessionMode || (!selectedHermesSessionId && !selectedTask));
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
@@ -987,7 +978,11 @@ export function AgentWorkspace({
         grow,
       );
     }
-  }, [draft, attachments.length]);
+    // heroMode is a dependency because the hero composer is a different shape
+    // (full-width textarea, taller min-height): leaving the hero must re-probe
+    // the line count and clear the stale inline height, or the docked
+    // composer keeps the hero's 76px textarea and multiline toolbar.
+  }, [draft, attachments.length, heroMode]);
 
   useEffect(() => {
     let disposed = false;
@@ -1368,9 +1363,6 @@ export function AgentWorkspace({
         session_id: runtimeSessionId,
         text: content,
       });
-      // A session has been started at least once — retire the first-run beam.
-      markAgentSessionStarted();
-      setFirstRunBeam(false);
       await loadHermesSessions();
     } catch (err) {
       unlisten();
@@ -1642,9 +1634,42 @@ export function AgentWorkspace({
     }
   }
 
+  // Run shortcuts fire the session directly — the prompt never touches the
+  // composer, so there's no flash of text + send button before the submit.
+  // The hero plays its exit transition during the session-create latency.
+  async function launchShortcutSession(prompt: string) {
+    if (submitting || importingFiles) return;
+    setHeroLeaving(true);
+    dispatchAgentSessionStatus({
+      prompt,
+      title: titleFromPrompt(prompt),
+      status: "starting",
+      summary: "Starting June.",
+    });
+    setSubmitting(true);
+    try {
+      await submitHermesSession(prompt);
+      setError(null);
+    } catch (err) {
+      // Bring the hero back and park the prompt in the composer so the user
+      // can see what would have run and retry it.
+      setDraft((current) => (current.trim() ? current : prompt));
+      setError(messageFromError(err));
+      dispatchAgentSessionStatus({
+        prompt,
+        title: titleFromPrompt(prompt),
+        status: "failed",
+        summary: messageFromError(err),
+      });
+    } finally {
+      setSubmitting(false);
+      setHeroLeaving(false);
+    }
+  }
+
   function runShortcut(shortcut: AgentShortcut) {
     if (shortcut.action === "run") {
-      void startNewTask(shortcut.prompt);
+      void launchShortcutSession(shortcut.prompt);
       return;
     }
     setDraft(shortcut.prompt);
@@ -1958,13 +1983,6 @@ export function AgentWorkspace({
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
   }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
 
-  // New-session hero: greeting + centered composer + suggestion chips, shown
-  // whenever nothing is selected — the same condition as the conversation
-  // fall-through below, minus the dev gallery.
-  const heroMode =
-    !gallerySections &&
-    (newSessionMode || (!selectedHermesSessionId && !selectedTask));
-
   // Reshuffle the deck each time the hero comes back, so repeat visits start
   // from a fresh hand instead of wherever the last rotation left off.
   useEffect(() => {
@@ -2019,6 +2037,53 @@ export function AgentWorkspace({
     [heroDeck, heroDeckStart],
   );
 
+  // FLIP the composer from its hero spot (centered, big) down to the bottom
+  // dock when the hero hands over to a conversation — the same form stays
+  // mounted, so this glide is what sells the transition instead of a teleport.
+  // While the hero is up, every render snapshots the box; the first render
+  // after leaving measures the docked position and animates the delta.
+  const heroExitRectRef = useRef<DOMRect | null>(null);
+  const prevHeroModeRef = useRef(heroMode);
+  useLayoutEffect(() => {
+    const wasHero = prevHeroModeRef.current;
+    prevHeroModeRef.current = heroMode;
+    const box = composerBoxRef.current;
+    if (!box) return;
+    if (heroMode) {
+      heroExitRectRef.current = box.getBoundingClientRect();
+      return;
+    }
+    const prev = heroExitRectRef.current;
+    heroExitRectRef.current = null;
+    if (!wasHero || !prev) return;
+    if (
+      typeof box.animate !== "function" ||
+      (typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+    ) {
+      return;
+    }
+    const next = box.getBoundingClientRect();
+    const dx = prev.left - next.left;
+    const dy = prev.top - next.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    box.animate(
+      [
+        {
+          transform: `translate(${dx}px, ${dy}px)`,
+          width: `${prev.width}px`,
+          height: `${prev.height}px`,
+        },
+        {
+          transform: "translate(0, 0)",
+          width: `${next.width}px`,
+          height: `${next.height}px`,
+        },
+      ],
+      { duration: 360, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }, // --ease-spring
+    );
+  });
+
   return (
     <section className="agent-workspace" aria-label="Agent">
       {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
@@ -2045,6 +2110,7 @@ export function AgentWorkspace({
         className="agent-main"
         aria-label="Agent task details"
         data-hero={heroMode ? "true" : undefined}
+        data-hero-leaving={heroMode && heroLeaving ? "true" : undefined}
       >
         {error ? <p className="error-banner">{error}</p> : null}
         {gallerySections ? (
@@ -2186,9 +2252,6 @@ export function AgentWorkspace({
               data-dirty={draft.trim() || attachments.length ? "true" : "false"}
               data-multiline={composerMultiline ? "true" : "false"}
             >
-              {heroMode && firstRunBeam ? (
-                <div className="agent-composer-beam" aria-hidden />
-              ) : null}
               {attachments.length ? (
                 <div className="agent-composer-attachments">
                   {attachments.map((attachment) => (

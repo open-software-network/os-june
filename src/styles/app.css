@@ -1985,8 +1985,6 @@ input:focus-visible,
  * stay pinned to the bottom edge. Quiet by default; the border firms up and the
  * surface lifts on focus. */
 .agent-composer-box {
-  /* Containing block for the first-run .agent-composer-beam overlay. */
-  position: relative;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
@@ -2291,6 +2289,22 @@ input:focus-visible,
   align-items: center;
   justify-content: center;
   margin-bottom: var(--sp-8);
+  transition:
+    opacity 280ms var(--ease-out),
+    transform 280ms var(--ease-out);
+}
+
+/* Teardown while the session is being created: greeting up, suggestions down,
+ * clearing the stage for the composer's glide to the dock. */
+.agent-main[data-hero-leaving="true"] .agent-hero-heading {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+.agent-main[data-hero-leaving="true"] .agent-hero-suggestions {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
 }
 
 .agent-hero-title {
@@ -2334,6 +2348,9 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-6);
   margin-top: var(--sp-6);
+  transition:
+    opacity 280ms var(--ease-out),
+    transform 280ms var(--ease-out);
 }
 
 .agent-hero-chips {
@@ -2357,23 +2374,35 @@ input:focus-visible,
   font-size: var(--fs-md);
   white-space: nowrap;
   /* Hover stays instant (no delay); only the cascade fade/drift staggers by
-   * chip index, so the wave reads left-to-right in both directions. */
+   * chip index, so the wave reads left-to-right in both directions. This
+   * transition is the wave IN (long, easing out to a soft landing); the
+   * [data-phase="out"] rule below carries its own gentler exit timing. */
   transition:
     background-color var(--t-fast) var(--ease-out),
     border-color var(--t-fast) var(--ease-out),
-    opacity var(--t-slow) var(--ease-out),
-    transform var(--t-slow) var(--ease-out);
+    opacity 460ms var(--ease-out),
+    transform 460ms var(--ease-out);
   transition-delay:
     0s,
     0s,
-    calc(var(--chip-i, 0) * 70ms),
-    calc(var(--chip-i, 0) * 70ms);
+    calc(var(--chip-i, 0) * 90ms),
+    calc(var(--chip-i, 0) * 90ms);
 }
 
 .agent-hero-chips[data-phase="out"] .agent-hero-chip {
   opacity: 0;
-  transform: translateY(5px);
+  transform: translateY(4px);
   pointer-events: none;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    opacity 300ms var(--ease-in-out),
+    transform 300ms var(--ease-in-out);
+  transition-delay:
+    0s,
+    0s,
+    calc(var(--chip-i, 0) * 90ms),
+    calc(var(--chip-i, 0) * 90ms);
 }
 
 .agent-hero-chip:hover:not(:disabled) {
@@ -2398,59 +2427,25 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-/* First-run border beam: a terracotta comet that travels the hero composer's
- * border until the first session is ever started. The overlay is masked down
- * to a thin ring just inside the border; its ::after is a gradient square
- * whose center rides the border rectangle via offset-path (offset-rotate's
- * default keeps the tail trailing the direction of travel), so only the slice
- * crossing the ring lights up. offset-distance is a real animatable property
- * — unlike the registered-custom-property conic trick, which WKWebView
- * renders as a frozen smear. */
-.agent-composer-beam {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
+/* Hero teardown: while a shortcut/submit is creating the session, the
+ * greeting drifts up and the suggestions drift down out of the way
+ * ([data-hero-leaving] below); when the conversation mounts, the composer
+ * FLIPs from its hero spot to the bottom dock (WAAPI in AgentWorkspace) and
+ * the timeline fades up to meet it. */
+.agent-timeline {
+  animation: agent-timeline-enter 280ms var(--ease-out) backwards;
 }
 
-/* Older WebKit can't run offset-path over a rect() — the square would just sit
- * frozen in the top-left corner, so the comet only exists where it can move. */
-@supports (offset-path: rect(0 0 auto auto)) {
-  .agent-composer-beam::after {
-    content: "";
-    position: absolute;
-    width: 130px;
-    height: 130px;
-    offset-path: rect(0 auto auto 0 round var(--r-xl));
-    /* Bright head at the leading edge, tail fading off behind. */
-    background: linear-gradient(
-      to left,
-      var(--brand),
-      color-mix(in oklch, var(--brand) 55%, transparent) 40%,
-      transparent 80%
-    );
-    animation: agent-beam-travel 6s linear infinite;
-  }
-}
-
-@keyframes agent-beam-travel {
-  to {
-    offset-distance: 100%;
+@keyframes agent-timeline-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-composer-beam {
-    display: none;
+  .agent-timeline {
+    animation: none;
   }
 }
 
