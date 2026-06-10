@@ -2112,28 +2112,6 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
-/* Stop reads as a quiet text link beside the message (the same recipe as the
- * recording-consent dismiss), not a boxed button inside a pill. */
-.agent-composer-notice button {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--primary);
-  font-size: inherit;
-  font-weight: 500;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.agent-composer-notice button:hover {
-  color: var(--foreground);
-}
-
-.agent-composer-notice button:disabled {
-  color: var(--muted-foreground);
-  cursor: default;
-}
-
 @keyframes agent-composer-notice-in {
   from {
     opacity: 0;
@@ -2394,9 +2372,10 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-/* Stop control — appears while June is working on the open session. Same
- * squircle as the mic so the actions row doesn't shift when it comes and
- * goes; the destructive tint marks it as an interrupt. */
+/* Stop control — takes over the send slot while June is working on the open
+ * session. Same filled brand-terracotta squircle as send (it's "the primary
+ * action right now", not a destructive alarm), so the swap reads as the one
+ * button changing jobs rather than a new control appearing. */
 .agent-composer-stop {
   display: inline-grid;
   place-items: center;
@@ -2406,16 +2385,13 @@ input:focus-visible,
   padding: 0;
   border: 0;
   border-radius: var(--r-lg);
-  background: transparent;
-  color: var(--muted-foreground);
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
+  background: var(--brand);
+  color: oklch(100% 0 none);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-composer-stop:hover {
-  background: color-mix(in oklch, var(--destructive) 12%, transparent);
-  color: var(--destructive);
+  background: color-mix(in oklch, var(--brand) 88%, black);
 }
 
 .agent-composer-stop:disabled {

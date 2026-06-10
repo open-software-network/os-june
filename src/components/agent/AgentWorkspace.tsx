@@ -156,8 +156,9 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
 
-// What the user reads instead of the gateway's "session busy" rejection. The
-// pill carries its own Stop action, so the copy doesn't have to explain one.
+// What the user reads instead of the gateway's "session busy" rejection. No
+// action in the pill — the composer's send slot already shows stop while
+// June works.
 const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
 
 // Connection-shaped failures get a "Try again" on the error banner — these are
@@ -2442,25 +2443,6 @@ export function AgentWorkspace({
           <p className="agent-composer-notice" role="status">
             <PangolinSpinner />
             {busyNotice ?? SESSION_BUSY_NOTICE}
-            {galleryErrors || selectedHermesSessionId ? (
-              <button
-                type="button"
-                onClick={
-                  galleryErrors
-                    ? galleryNoop
-                    : () =>
-                        selectedHermesSessionId &&
-                        void stopHermesSession(selectedHermesSessionId)
-                }
-                disabled={
-                  !galleryErrors &&
-                  !!selectedHermesSessionId &&
-                  stoppingSessionIds.has(selectedHermesSessionId)
-                }
-              >
-                Stop
-              </button>
-            ) : null}
           </p>
         ) : null}
         <div
@@ -2534,8 +2516,19 @@ export function AgentWorkspace({
               }}
             />
             <div className="agent-composer-actions">
+              <button
+                type="button"
+                className="agent-composer-mic"
+                aria-label="Dictate"
+                title="Start dictation"
+                onClick={() => void startDictation()}
+              >
+                <IconMicrophone size={18} />
+              </button>
               {selectedHermesSessionId &&
               workingSessionIds.has(selectedHermesSessionId) ? (
+                // While June works, stop owns the send slot — sending would
+                // only bounce off the gateway's busy guard anyway.
                 <button
                   type="button"
                   className="agent-composer-stop"
@@ -2548,36 +2541,28 @@ export function AgentWorkspace({
                 >
                   <IconStop size={16} />
                 </button>
-              ) : null}
-              <button
-                type="button"
-                className="agent-composer-mic"
-                aria-label="Dictate"
-                title="Start dictation"
-                onClick={() => void startDictation()}
-              >
-                <IconMicrophone size={18} />
-              </button>
-              <button
-                type="submit"
-                className="agent-composer-send"
-                disabled={
-                  submitting ||
-                  importingFiles ||
-                  (!draft.trim() && !attachments.length)
-                }
-                tabIndex={draft.trim() || attachments.length ? 0 : -1}
-                aria-hidden={
-                  draft.trim() || attachments.length ? undefined : true
-                }
-                aria-label={
-                  selectedHermesSessionId || selectedTask
-                    ? "Send message"
-                    : "Start session"
-                }
-              >
-                {submitting ? <Spinner /> : <IconArrowUp size={16} />}
-              </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="agent-composer-send"
+                  disabled={
+                    submitting ||
+                    importingFiles ||
+                    (!draft.trim() && !attachments.length)
+                  }
+                  tabIndex={draft.trim() || attachments.length ? 0 : -1}
+                  aria-hidden={
+                    draft.trim() || attachments.length ? undefined : true
+                  }
+                  aria-label={
+                    selectedHermesSessionId || selectedTask
+                      ? "Send message"
+                      : "Start session"
+                  }
+                >
+                  {submitting ? <Spinner /> : <IconArrowUp size={16} />}
+                </button>
+              )}
             </div>
           </div>
         </div>
