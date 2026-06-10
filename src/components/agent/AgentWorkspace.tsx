@@ -1911,11 +1911,7 @@ export function AgentWorkspace({
                         : "Start session"
                     }
                   >
-                    {submitting ? (
-                      <Spinner size={15} />
-                    ) : (
-                      <IconArrowUp size={16} />
-                    )}
+                    {submitting ? <Spinner /> : <IconArrowUp size={16} />}
                   </button>
                 </div>
               </div>
@@ -2439,7 +2435,7 @@ export function SkillsToolsPanel({
       />
       {loading && !skills && !toolsets ? (
         <div className="agent-loading">
-          <Spinner size={16} />
+          <Spinner />
         </div>
       ) : (
         <div className="agent-management-scroll">
@@ -2531,7 +2527,7 @@ export function MessagingPanel({
       />
       {loading && !platforms ? (
         <div className="agent-loading">
-          <Spinner size={16} />
+          <Spinner />
         </div>
       ) : (
         <div className="agent-messaging-layout">
@@ -2627,7 +2623,7 @@ export function FilesystemPanel({
       />
       {loading && !snapshot ? (
         <div className="agent-loading">
-          <Spinner size={16} />
+          <Spinner />
         </div>
       ) : roots.length ? (
         <div className="agent-management-scroll">
@@ -3049,7 +3045,10 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
 // Dev-only catalog of every agent response part type, rendered through the real
 // <AgentChatTurnRow> so the styling shown is exactly what ships. Toggled from the
 // console via window.__agentGallery(). Handlers are no-ops — it's a static
-// styling reference, not a live conversation.
+// styling reference, not a live conversation. Module-level so the reference is
+// stable across renders.
+const galleryNoop = () => {};
+
 function AgentResponseGallery({
   sections,
   onClose,
@@ -3057,7 +3056,6 @@ function AgentResponseGallery({
   sections: AgentChatGallerySection[];
   onClose: () => void;
 }) {
-  const noop = () => {};
   return (
     <div className="agent-timeline agent-gallery">
       <div className="agent-gallery-banner">
@@ -3089,8 +3087,8 @@ function AgentResponseGallery({
               turn={turn}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
-              onApproval={noop}
-              onClarify={noop}
+              onApproval={galleryNoop}
+              onClarify={galleryNoop}
             />
           ))}
         </section>

@@ -1,9 +1,10 @@
 // The pangolin spinner, drawn rather than typeset: a 2×2 grid of perfect
 // circles with a dim spot rolling clockwise around it — the curled pangolin.
 // (The earlier braille-glyph version left dot shape/spacing to the font;
-// real circles stay crisp at any size.) Sized in em so wrappers scale it via
-// font-size and color it via currentColor. The roll is pure CSS — see
-// .pangolin-spinner in app.css — and rests under prefers-reduced-motion.
+// real circles stay crisp.) The mark is a fixed-size square — integer px,
+// deliberately not font-scaled — and wrappers color it via currentColor.
+// The roll is pure CSS — see .pangolin-spinner in app.css — and rests under
+// prefers-reduced-motion.
 type PangolinSpinnerProps = {
   className?: string;
 };

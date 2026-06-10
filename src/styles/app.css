@@ -1612,16 +1612,14 @@ input:focus-visible,
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling pangolin (wrappers only
- * set color and font-size; the dots scale in em). */
+/* Running rows trade the status word for the rolling pangolin (fixed-size
+ * mark; wrappers only set color). */
 .agent-tool-spinner {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   color: var(--warm-strong);
-  font-size: var(--fs-sm);
-  line-height: 1;
 }
 
 /* Name inherits the row's muted color (the whole line darkens on hover). */
@@ -3006,7 +3004,6 @@ input:focus-visible,
  * The glyph is decorative (aria-hidden inside PangolinSpinner) — the wrapping
  * status span carries "Working" for assistive tech. */
 .agent-sidebar-spinner {
-  font-size: var(--fs-sm);
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
@@ -5279,9 +5276,9 @@ input:focus-visible,
 }
 
 /* The pangolin spinner: a perfectly square 2×2 grid of tiny real circles with
- * a dim spot rolling clockwise — drawn, not typeset, so the dots are crisp at
- * any size (à la Conductor's timer dots). Fixed px so the mark stays uniform
- * everywhere regardless of the wrapper's font-size; color via currentColor.
+ * a dim spot rolling clockwise — drawn, not typeset, so the dots are crisp
+ * (à la Conductor's timer dots). The mark is one fixed size everywhere by
+ * design — wrappers set only color (currentColor), there is no size knob.
  * Dot and gap MUST stay integer px: fractional sizes put the second column on
  * a different subpixel phase and its circles rasterize ovular. */
 .pangolin-spinner {
@@ -8244,7 +8241,6 @@ input:focus-visible,
 }
 
 .welcome-spinner {
-  font-size: 15px;
   color: var(--foreground);
 }
 
