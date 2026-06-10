@@ -4191,8 +4191,12 @@ function AgentArtifactCard({
           <em>{artifact.rootLabel}</em>
         </div>
         <p>
-          {formatBytes(artifact.size)}
-          <span>{compactPath(artifact.path)}</span>
+          <span className="agent-artifact-size">
+            {formatBytes(artifact.size)}
+          </span>
+          <span className="agent-artifact-path">
+            {compactPath(artifact.path)}
+          </span>
         </p>
       </div>
       {onDownload ? (
