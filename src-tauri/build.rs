@@ -10,9 +10,30 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=SCRIBE_API_URL");
+    clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();
     tauri_build::build();
+}
+
+/// Remove pre-rename ("OS Scribe") helper bundles from `.tauri-helper` so
+/// stale copies don't linger next to the renamed June bundles.
+fn clean_legacy_helper_bundles() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let Some(helper_dir) = manifest_dir
+        .parent()
+        .map(|repo_dir| repo_dir.join(".tauri-helper"))
+    else {
+        return;
+    };
+    for legacy in ["OS Scribe.app", "OS Scribe Dictation Helper.app"] {
+        let _ = std::fs::remove_dir_all(helper_dir.join(legacy));
+    }
 }
 
 fn build_system_audio_helper() {
@@ -35,11 +56,11 @@ fn build_system_audio_helper() {
         .parent()
         .expect("src-tauri should have a repository parent")
         .join(".tauri-helper");
-    let app_dir = helper_dir.join("OS Scribe.app");
+    let app_dir = helper_dir.join("June.app");
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     std::fs::create_dir_all(&macos_dir).expect("system audio helper app dir should be created");
-    let executable = macos_dir.join("os-scribe-system-audio-recorder");
+    let executable = macos_dir.join("june-system-audio-recorder");
 
     let source_modified = std::fs::metadata(&source)
         .and_then(|metadata| metadata.modified())
@@ -87,15 +108,15 @@ fn build_system_audio_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>OS Scribe</string>
+  <string>June</string>
   <key>CFBundleExecutable</key>
-  <string>os-scribe-system-audio-recorder</string>
+  <string>june-system-audio-recorder</string>
   <key>CFBundleIdentifier</key>
   <string>co.opensoftware.scribe.audio-capture</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>OS Scribe</string>
+  <string>June</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -107,7 +128,7 @@ fn build_system_audio_helper() {
   <key>LSUIElement</key>
   <true/>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>OS Scribe records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
+  <string>June records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
 </dict>
 </plist>
 "#;
@@ -144,14 +165,14 @@ fn build_dictation_helper() {
         .parent()
         .expect("src-tauri should have a repository parent")
         .join(".tauri-helper");
-    let app_dir = helper_dir.join("OS Scribe Dictation Helper.app");
+    let app_dir = helper_dir.join("June Dictation Helper.app");
     let contents_dir = app_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     let resources_dir = contents_dir.join("Resources");
     std::fs::create_dir_all(&macos_dir).expect("dictation helper app dir should be created");
     std::fs::create_dir_all(&resources_dir)
         .expect("dictation helper resources dir should be created");
-    let executable = macos_dir.join("os-scribe-dictation-helper");
+    let executable = macos_dir.join("june-dictation-helper");
 
     let source_modified = std::fs::metadata(&source)
         .and_then(|metadata| metadata.modified())
@@ -201,15 +222,15 @@ fn build_dictation_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>OS Scribe Dictation Helper</string>
+  <string>June Dictation Helper</string>
   <key>CFBundleExecutable</key>
-  <string>os-scribe-dictation-helper</string>
+  <string>june-dictation-helper</string>
   <key>CFBundleIdentifier</key>
   <string>co.opensoftware.scribe.dictation-helper</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>OS Scribe Dictation Helper</string>
+  <string>June Dictation Helper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -221,7 +242,7 @@ fn build_dictation_helper() {
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>OS Scribe needs microphone access to turn your speech into text.</string>
+  <string>June needs microphone access to turn your speech into text.</string>
 </dict>
 </plist>
 "#;

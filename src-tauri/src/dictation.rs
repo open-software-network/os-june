@@ -1330,38 +1330,38 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
             paths.push(
                 repo_dir
                     .join(".tauri-helper")
-                    .join("OS Scribe Dictation Helper.app")
+                    .join("June Dictation Helper.app")
                     .join("Contents")
                     .join("MacOS")
-                    .join("os-scribe-dictation-helper"),
+                    .join("june-dictation-helper"),
             );
         }
     }
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            paths.push(exe_dir.join("os-scribe-dictation-helper"));
-            paths.push(exe_dir.join("../Resources/os-scribe-dictation-helper"));
+            paths.push(exe_dir.join("june-dictation-helper"));
+            paths.push(exe_dir.join("../Resources/june-dictation-helper"));
         }
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        paths.push(resource_dir.join("os-scribe-dictation-helper"));
+        paths.push(resource_dir.join("june-dictation-helper"));
         paths.push(
             resource_dir
                 .join("native")
                 .join("bin")
-                .join("OS Scribe Dictation Helper.app")
+                .join("June Dictation Helper.app")
                 .join("Contents")
                 .join("MacOS")
-                .join("os-scribe-dictation-helper"),
+                .join("june-dictation-helper"),
         );
         paths.push(
             resource_dir
-                .join("OS Scribe Dictation Helper.app")
+                .join("June Dictation Helper.app")
                 .join("Contents")
                 .join("MacOS")
-                .join("os-scribe-dictation-helper"),
+                .join("june-dictation-helper"),
         );
     }
 
@@ -2334,7 +2334,7 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
 /// `NSWindowStyleMaskNonactivatingPanel` style bit, so clicking the drag
 /// handle or stop button doesn't steal focus from whichever app the user is
 /// dictating into. Without this, every interaction with the HUD activates
-/// OS Scribe and yanks the text cursor out of the user's document.
+/// June and yanks the text cursor out of the user's document.
 #[cfg(target_os = "macos")]
 fn make_hud_nonactivating(hud: &WebviewWindow) {
     use objc2::msg_send;

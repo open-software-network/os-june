@@ -229,8 +229,8 @@ jobs:
           owner: open-software-network
           repo: os-scribe-releases
           tagName: v${{ env.VERSION }}
-          releaseName: OS Scribe v${{ env.VERSION }}
-          releaseBody: "Stable OS Scribe release v${{ env.VERSION }}."
+          releaseName: June v${{ env.VERSION }}
+          releaseBody: "Stable June release v${{ env.VERSION }}."
           releaseCommitish: main
           # Plain notes only: the in-app update dialog renders latest.json's
           # `notes` as plain text, so GitHub's auto-generated markdown would show

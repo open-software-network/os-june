@@ -733,9 +733,7 @@ describe("AgentWorkspace", () => {
       const composer = screen.getByPlaceholderText(
         "Describe a task for June…",
       ) as HTMLTextAreaElement;
-      await waitFor(() =>
-        expect(composer.value).toContain("Research <topic>"),
-      );
+      await waitFor(() => expect(composer.value).toContain("Research <topic>"));
       expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
         "prompt.submit",
         expect.anything(),

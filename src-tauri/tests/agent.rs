@@ -83,7 +83,7 @@ async fn pauses_active_agent_tasks_on_launch() {
     assert_eq!(loaded.status, AgentTaskStatus::Paused);
     assert_eq!(
         loaded.progress_summary.as_deref(),
-        Some("Paused when OS Scribe restarted.")
+        Some("Paused when June restarted.")
     );
 }
 

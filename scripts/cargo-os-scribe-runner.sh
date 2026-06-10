@@ -60,8 +60,8 @@ else
 fi
 
 binary="$bin_dir/os-scribe"
-launcher="$bin_dir/OS Scribe"
-tmp_launcher="$bin_dir/.OS Scribe.tmp"
+launcher="$bin_dir/June"
+tmp_launcher="$bin_dir/.June.tmp"
 
 rm -f "$tmp_launcher"
 cp "$binary" "$tmp_launcher"

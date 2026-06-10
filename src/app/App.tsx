@@ -108,6 +108,7 @@ import {
   type ScribeUpdate,
 } from "../lib/updater";
 import { shouldPollProcessingStatus } from "./processing-polling";
+import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
   checkForScribeUpdate,
@@ -184,6 +185,7 @@ export function App() {
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
+  const mainPanelBodyRef = useRef<HTMLDivElement | null>(null);
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] =
@@ -306,6 +308,15 @@ export function App() {
     preloadRecordingSounds();
   }, []);
 
+  // The card scroller's thumb fades in with scroll activity and back out when
+  // idle (native-overlay feel; the CSS only listens on breadcrumb views —
+  // see scroll-thumb-fade.ts).
+  useEffect(() => {
+    const el = mainPanelBodyRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, []);
+
   // installingUpdate is read through a ref so runUpdateCheck keeps a stable
   // identity across installs. Otherwise the launch effect and the manual-check
   // listener below would tear down and re-fire every time installingUpdate
@@ -326,7 +337,7 @@ export function App() {
           setUpdateProgress(null);
           setPendingUpdate(payload);
         },
-        reportNoUpdate: () => setUpdateStatus("OS June is up to date."),
+        reportNoUpdate: () => setUpdateStatus("June is up to date."),
         reportFailure: (message) =>
           setUpdateStatus(`Update check failed: ${message}`),
       },
@@ -817,7 +828,7 @@ export function App() {
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
-  // returns to OS Scribe. The helper poll is what surfaces fresh mic /
+  // returns to June. The helper poll is what surfaces fresh mic /
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
@@ -1545,7 +1556,11 @@ export function App() {
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
-        <div className="main-panel-body" data-active-view={activeView}>
+        <div
+          ref={mainPanelBodyRef}
+          className="main-panel-body"
+          data-active-view={activeView}
+        >
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
             {activeView === "settings" ? (
@@ -1974,7 +1989,7 @@ function UpdateDialog({
     <Dialog
       open={!!payload || !!status}
       onClose={onClose}
-      title={payload ? `OS June ${payload.version}` : "Software update"}
+      title={payload ? `June ${payload.version}` : "Software update"}
       description={
         payload
           ? "A new version is available."

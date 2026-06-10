@@ -170,7 +170,7 @@ describe("Sidebar primary navigation", () => {
       />,
     );
 
-    expect(screen.queryByLabelText("OS June")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("June")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Back to app" }));
     expect(onExitSettings).toHaveBeenCalledTimes(1);

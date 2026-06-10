@@ -163,7 +163,7 @@ pub fn run() {
             Ok(())
         })
         .build(context)
-        .expect("failed to build OS Scribe")
+        .expect("failed to build June")
         .run(|app, event| match event {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);

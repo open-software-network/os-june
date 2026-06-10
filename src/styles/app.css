@@ -225,21 +225,46 @@ input:focus-visible,
 
 /* Agent ------------------------------------------------------------- */
 
-/* The conversation flows in the main card scroller (like a note's body), so the
- * agent surface grows with its content rather than owning an inner scrollbar.
- * min-height keeps a short/empty session filling the card so the pinned
- * composer still lands at the bottom. */
+/* The breadcrumb is a fixed header and the conversation scrolls in .agent-scroll,
+ * whose box reaches up behind the bar (so the frost blurs passing content) while
+ * its scrollbar track is inset below the bar (so the thumb can't ride over it) —
+ * see .agent-scroll. This means filling the card exactly — not growing past it —
+ * so .agent-scroll has a bounded height to scroll within. */
 .agent-workspace {
   display: flex;
   flex-direction: column;
   width: 100%;
-  /* align-self:start stops the fixed-height .workspace grid from stretching us
-   * to exactly one viewport — that capped the sticky breadcrumb's range so it
-   * scrolled away after a screenful. Growing with content keeps it pinned. */
-  align-self: start;
-  min-height: 100%;
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
 }
+
+/* Agent view: stop the card body from scrolling (the breadcrumb would scroll
+ * with it) and give the grid row a definite height so .agent-workspace fills
+ * the card exactly. Scoped so every other view keeps the shared scroller. */
+.main-panel-body[data-active-view="agent"] {
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.main-panel-body[data-active-view="agent"] .workspace {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* The card-edge fades animate off .main-panel-body's scroll, but in the agent
+ * view that body is frozen and the conversation scrolls in .agent-scroll. Drive
+ * the named timeline off that inner scroller instead so the bottom fade still
+ * dissolves the conversation into the fixed composer, rather than sticking on. */
+@supports (animation-timeline: scroll()) {
+  .main-panel-body[data-active-view="agent"] {
+    scroll-timeline: none;
+  }
+  .main-panel-body[data-active-view="agent"] .agent-scroll {
+    scroll-timeline: --main-panel-scroll block;
+  }
+}
+
 /* The agent already lives inside the floating .main-panel card, so it draws
  * no card of its own — that card-in-a-card read busier than any Notes view.
  * The rail surface (kept for any rail-mode reuse) is the only bordered box. */
@@ -384,13 +409,47 @@ input:focus-visible,
   -webkit-line-clamp: 2;
 }
 
+/* The conversation scroller. Full-bleed (cancelling the card body's gutter,
+ * then re-adding it inside) so its scrollbar hugs the card edge like the
+ * shared scroller did. No explicit width: the stretched flex item grows by
+ * the negative margins (like .detail-bar does); width:100% would resolve to
+ * the container width and leave the right edge — and the scrollbar — a
+ * gutter short of the card edge.
+ *
+ * The negative top margin slides the scroller's box up BEHIND the frosted
+ * breadcrumb (the matching top padding keeps the conversation itself starting
+ * below it), so scrolling content passes under the bar's backdrop blur — the
+ * frost actually frosts. The scrollbar would then span that band too, so the
+ * track is inset by the same height below: the thumb physically can't ride up
+ * over the breadcrumb. */
+.agent-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
+  padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
+  /* The global standard props (scrollbar-width/color, top of file) make the
+   * engine IGNORE all ::-webkit-scrollbar styling and draw a native overlay
+   * scrollbar instead — which offers no way to start the track below the bar.
+   * Opt this scroller out so the app's quiet 4px webkit scrollbar rules
+   * actually engage here, including the track inset below. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.agent-scroll::-webkit-scrollbar-track {
+  margin-top: var(--detail-bar-h);
+}
+
 .agent-main {
   display: flex;
   flex-direction: column;
-  /* flex:1 with the default (auto) min-height fills the space under the sticky
-   * breadcrumb when the conversation is short, AND grows with the content when
-   * it's long — so the whole .agent-workspace (and thus the breadcrumb's sticky
-   * range) spans the full scroll height and the bar persists the entire way. */
+  /* flex:1 fills the scroller when the conversation is short and grows with it
+   * when long; max-width keeps the column centred inside the full-bleed scroller. */
   flex: 1;
   width: 100%;
   max-width: var(--content-max);
@@ -2383,10 +2442,7 @@ input:focus-visible,
     opacity 460ms var(--ease-out),
     transform 460ms var(--ease-out);
   transition-delay:
-    0s,
-    0s,
-    calc(var(--chip-i, 0) * 90ms),
-    calc(var(--chip-i, 0) * 90ms);
+    0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
 }
 
 .agent-hero-chips[data-phase="out"] .agent-hero-chip {
@@ -2399,10 +2455,7 @@ input:focus-visible,
     opacity 300ms var(--ease-in-out),
     transform 300ms var(--ease-in-out);
   transition-delay:
-    0s,
-    0s,
-    calc(var(--chip-i, 0) * 90ms),
-    calc(var(--chip-i, 0) * 90ms);
+    0s, 0s, calc(var(--chip-i, 0) * 90ms), calc(var(--chip-i, 0) * 90ms);
 }
 
 .agent-hero-chip:hover:not(:disabled) {
@@ -6132,6 +6185,50 @@ input:focus-visible,
 
 /* Sticky detail bar — quiet back affordance on folder and note detail */
 
+/* When a breadcrumb is present, the card scroller's content passes behind the
+ * translucent bar — but so would the scrollbar thumb, showing through the
+ * frost. Same treatment as .agent-scroll: the standard scrollbar props (set
+ * globally) make engines ignore ::-webkit-scrollbar styling, so opt the
+ * scroller out to re-engage the quiet 4px webkit scrollbar, then inset its
+ * track below the bar so the thumb can't ride up over it. Scoped with :has()
+ * so bar-less views keep the native overlay scrollbar. */
+.main-panel-body:has(.detail-bar) {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar-track {
+  margin-top: var(--detail-bar-h);
+}
+
+/* The opt-out also moves the thumb off scrollbar-color (which is what painted
+ * it) onto the webkit pseudo path, whose base style is transparent-until-hover
+ * — and WKWebView doesn't repaint scrollbar parts on hover, so the thumb would
+ * never show. Scrollbar parts can't be transitioned either, so the native
+ * show-while-scrolling fade is recreated by stepping --thumb-alpha from JS
+ * (attachScrollThumbFade in src/lib/scroll-thumb-fade.ts) — engines DO repaint
+ * the thumb when a custom property changes. */
+/* Native overlay thumbs float a couple px off the window edge; match that on
+ * the custom scrollbar so breadcrumb views don't read flush against the card
+ * edge next to the bar-less views' native thumb. The region widens to 8px and
+ * transparent borders clip the painted pill back to the usual 4px, inset 2px
+ * from the card edge and the content alike. */
+.agent-scroll::-webkit-scrollbar,
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar {
+  width: 8px;
+}
+
+.agent-scroll::-webkit-scrollbar-thumb,
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background: color-mix(
+    in oklch,
+    var(--muted-foreground) calc(var(--thumb-alpha, 0) * 1%),
+    transparent
+  );
+  background-clip: padding-box;
+}
+
 .detail-bar {
   position: sticky;
   top: 0;
@@ -6139,7 +6236,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  min-height: 46px;
+  min-height: var(--detail-bar-h);
   margin: 0 calc(-1 * var(--sp-8));
   /* Full-bleed bar, but the crumb lines up with the content gutter (sp-8)
    * rather than hugging the sidebar edge. */
@@ -8632,9 +8729,10 @@ input:focus-visible,
   justify-content: center;
   align-self: center;
   border-radius: var(--r-xl);
-  background: linear-gradient(135deg, #dbc1a3 0%, #9d7355 100%);
-  /* Mark sits on the fixed tan gradient in both themes, so keep it white
-     rather than inheriting --primary-foreground (which inverts in dark). */
+  background: linear-gradient(135deg, #e2a78b 0%, #c25a33 100%);
+  /* Mark sits on the fixed terracotta gradient in both themes, so keep it
+     white rather than inheriting --primary-foreground (which inverts in
+     dark). */
   color: #fff;
   line-height: 0;
   margin-bottom: var(--sp-2);

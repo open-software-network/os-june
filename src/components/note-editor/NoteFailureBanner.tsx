@@ -93,8 +93,7 @@ export function NoteFailureBanner({
             ? audioPreserved
               ? "Your recording is saved locally. Add funds and retry to transcribe."
               : "Your balance is too low. Add funds to continue."
-            : (displayMessage ??
-              "Scribe couldn't finish processing this note.")}
+            : (displayMessage ?? "June couldn't finish processing this note.")}
           {!isBalanceIssue && audioPreserved
             ? " Your recording is saved locally — you can retry."
             : null}

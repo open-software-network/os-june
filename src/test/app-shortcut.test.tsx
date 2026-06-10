@@ -230,7 +230,7 @@ describe("App shortcuts", () => {
     render(<App />);
 
     expect(
-      await screen.findByRole("heading", { name: "Welcome to OS June" }),
+      await screen.findByRole("heading", { name: "Welcome to June" }),
     ).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New meeting" })).toBeNull();
@@ -259,7 +259,7 @@ describe("App shortcuts", () => {
     render(<App />);
 
     expect(
-      screen.queryByRole("heading", { name: "Welcome to OS June" }),
+      screen.queryByRole("heading", { name: "Welcome to June" }),
     ).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Continue with OpenSoftware" }),

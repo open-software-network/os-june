@@ -149,6 +149,8 @@ final class SystemAudioRecorder {
             try? FileManager.default.removeItem(at: outputURL)
             try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
+        cleanupStaleAggregateDevices(named: "June System Audio")
+        // Also sweep aggregates left behind by pre-rename "OS Scribe" builds.
         cleanupStaleAggregateDevices(named: "OS Scribe System Audio")
         if !checkOnly {
             acquirePowerAssertion()
@@ -179,7 +181,7 @@ final class SystemAudioRecorder {
         let tapDescription = CATapDescription(excludingProcesses: [], deviceUID: outputUID, stream: 0)
         tapDescription.uuid = UUID()
         tapDescription.muteBehavior = .unmuted
-        tapDescription.name = "OS Scribe System Audio"
+        tapDescription.name = "June System Audio"
 
         var tapID = AudioObjectID.unknown
         var err = AudioHardwareCreateProcessTap(tapDescription, &tapID)
@@ -209,7 +211,7 @@ final class SystemAudioRecorder {
 
         let aggregateUID = UUID().uuidString
         let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "OS Scribe System Audio",
+            kAudioAggregateDeviceNameKey: "June System Audio",
             kAudioAggregateDeviceUIDKey: aggregateUID,
             kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
@@ -442,7 +444,7 @@ final class SystemAudioRecorder {
     private func acquirePowerAssertion() {
         guard powerAssertionID == 0 else { return }
         var assertionID = IOPMAssertionID(0)
-        let reason = "OS Scribe recording in progress" as CFString
+        let reason = "June recording in progress" as CFString
         let result = IOPMAssertionCreateWithName(
             kIOPMAssertionTypeNoDisplaySleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
@@ -615,7 +617,7 @@ private func ensureSystemAudioPermission(logURL: URL?) throws {
     case .authorized:
         return
     case .denied:
-        throw "System Audio Recording permission is denied. Enable OS Scribe in System Settings > Privacy & Security > Screen & System Audio Recording."
+        throw "System Audio Recording permission is denied. Enable June in System Settings > Privacy & Security > Screen & System Audio Recording."
     case .unknown:
         break
     }
@@ -645,7 +647,7 @@ private func ensureSystemAudioPermission(logURL: URL?) throws {
     }
     writeLog("system audio permission request granted=\(granted)", logURL: logURL)
     guard granted else {
-        throw "System Audio Recording permission was not granted. Enable OS Scribe in System Settings > Privacy & Security > Screen & System Audio Recording."
+        throw "System Audio Recording permission was not granted. Enable June in System Settings > Privacy & Security > Screen & System Audio Recording."
     }
 }
 
@@ -719,7 +721,7 @@ let pidPath = argumentValue("--pid", from: CommandLine.arguments)
 let timelineOffsetMs = argumentValue("--timeline-offset-ms", from: CommandLine.arguments).flatMap(Double.init) ?? 0
 if !checkOnly && outputPath == nil {
     writeLog("missing output argument", logURL: logPath.map { URL(fileURLWithPath: $0) })
-    emitProcessStatus(["event": "error", "message": "Usage: os-scribe-system-audio-recorder --output /path/to/recording.wav"], statusPath: statusPath)
+    emitProcessStatus(["event": "error", "message": "Usage: june-system-audio-recorder --output /path/to/recording.wav"], statusPath: statusPath)
     exit(2)
 }
 

@@ -343,7 +343,7 @@ pub fn helper_app_path() -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
         .join(".tauri-helper")
-        .join("OS Scribe.app");
+        .join("June.app");
     if dev_path.exists() {
         return dev_path;
     }
@@ -356,7 +356,7 @@ pub fn helper_app_path() -> PathBuf {
                 .join("Resources")
                 .join("native")
                 .join("bin")
-                .join("OS Scribe.app");
+                .join("June.app");
             if resource_path.exists() {
                 return resource_path;
             }
@@ -388,15 +388,23 @@ fn send_signal(pid: u32, signal: &str) {
 }
 
 fn terminate_existing_helpers() {
-    let helper_name = "os-scribe-system-audio-recorder";
-    let Ok(output) = Command::new("pgrep").arg("-f").arg(helper_name).output() else {
-        return;
-    };
-    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse::<u32>().ok())
-        .filter(|pid| *pid != std::process::id())
-        .collect();
+    // Also match the pre-rename helper so a recorder left over from an older
+    // "OS Scribe" build still gets cleaned up.
+    let helper_names = ["june-system-audio-recorder", "os-scribe-system-audio-recorder"];
+    let mut pids: Vec<u32> = Vec::new();
+    for helper_name in helper_names {
+        let Ok(output) = Command::new("pgrep").arg("-f").arg(helper_name).output() else {
+            continue;
+        };
+        pids.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| line.trim().parse::<u32>().ok())
+                .filter(|pid| *pid != std::process::id()),
+        );
+    }
+    pids.sort_unstable();
+    pids.dedup();
     if pids.is_empty() {
         return;
     }

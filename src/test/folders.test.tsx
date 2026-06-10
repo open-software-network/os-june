@@ -71,7 +71,7 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByText("OS June")).toBeInTheDocument();
+    expect(screen.getByText("June")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Meetings" }),
     ).toBeInTheDocument();

@@ -1,6 +1,6 @@
 # Auto-updates via Tauri updater, hosted on a separate public releases repo
 
-OS Scribe ships in-app auto-updates using `tauri-plugin-updater` (single stable
+June ships in-app auto-updates using `tauri-plugin-updater` (single stable
 track). Because the source repo is private and the Tauri updater fetches its
 manifest over an **unauthenticated** GET, the signed + notarized artifacts and
 `latest.json` are published to a **separate public repo**

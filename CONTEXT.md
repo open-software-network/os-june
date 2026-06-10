@@ -1,6 +1,6 @@
-# OS Scribe
+# June
 
-OS Scribe is a Tauri desktop app that records meetings/dictation, transcribes
+June (formerly OS Scribe) is a Tauri desktop app that records meetings/dictation, transcribes
 the audio, and turns the transcript into structured notes. It depends on the
 **OS Accounts** identity-and-credits platform for sign-in and for billing
 metered AI usage.

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OS Scribe",
+  "productName": "June",
   "version": "0.0.3",
   "identifier": "co.opensoftware.scribe",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "OS June",
+        "title": "June",
         "width": 1180,
         "height": 780,
         "minWidth": 900,
@@ -27,7 +27,7 @@
       {
         "label": "hud",
         "url": "/hud.html",
-        "title": "OS June Dictation",
+        "title": "June Dictation",
         "width": 124,
         "height": 32,
         "resizable": false,
@@ -44,7 +44,7 @@
       {
         "label": "mascot",
         "url": "/mascot.html",
-        "title": "OS June Mascot",
+        "title": "June Mascot",
         "width": 72,
         "height": 72,
         "resizable": false,
@@ -61,7 +61,7 @@
       {
         "label": "meeting-hud",
         "url": "/meeting-hud.html",
-        "title": "OS Scribe Recording",
+        "title": "June Recording",
         "width": 76,
         "height": 76,
         "resizable": false,
@@ -112,11 +112,11 @@
     ],
     "targets": ["app", "dmg"],
     "resources": {
-      "../.tauri-helper/OS Scribe.app": "native/bin/OS Scribe.app",
-      "../.tauri-helper/OS Scribe Dictation Helper.app": "native/bin/OS Scribe Dictation Helper.app"
+      "../.tauri-helper/June.app": "native/bin/June.app",
+      "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app"
     },
     "macOS": {
-      "bundleName": "OS Scribe",
+      "bundleName": "June",
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],

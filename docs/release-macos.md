@@ -1,6 +1,6 @@
-# Releasing OS Scribe for macOS
+# Releasing June for macOS
 
-OS Scribe ships signed, notarized macOS builds with in-app auto-updates through
+June ships signed, notarized macOS builds with in-app auto-updates through
 `tauri-plugin-updater`. The source repo stays private; update artifacts,
 signatures, the DMG, and `latest.json` are published to the public
 `open-software-network/os-scribe-releases` repo.
@@ -100,8 +100,8 @@ After the workflow publishes a release, download the DMG from
 
 ```sh
 VERSION="0.2.0"
-APP="/Applications/OS Scribe.app"
-DMG="$HOME/Downloads/OS Scribe_${VERSION}_aarch64.dmg"
+APP="/Applications/June.app"
+DMG="$HOME/Downloads/June_${VERSION}_aarch64.dmg"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose "$APP"
@@ -114,7 +114,7 @@ plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 Confirm `osscribe` appears in `CFBundleURLSchemes`.
 
 For the first updater-to-updater validation, install an older updater-capable
-build, run **OS Scribe -> Check for updates…**, confirm the prompt shows the
+build, run **June -> Check for updates…**, confirm the prompt shows the
 new version and release notes, install, and verify the app relaunches without
 Gatekeeper warnings. Also confirm microphone and Accessibility permissions are
 still granted after relaunch.
