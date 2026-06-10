@@ -738,6 +738,15 @@ export function Sidebar({
               >
                 Agent
               </button>
+              {/* Same destination as the header — the hover affordance just
+               * makes the "this opens a list" behavior legible. */}
+              <button
+                type="button"
+                className="section-view-all"
+                onClick={() => onChangeView("agent-sessions")}
+              >
+                View all
+              </button>
             </div>
             <div className="notes-nav-wrap">
               <div className="notes-nav">
