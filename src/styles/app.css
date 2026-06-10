@@ -252,11 +252,27 @@ input:focus-visible,
   grid-template-rows: minmax(0, 1fr);
 }
 
-/* The card-edge fades animate off .main-panel-body's scroll; with that frozen in
- * the agent view, switch them off so the bottom fade doesn't stick on. */
-.main-panel:has(> .main-panel-body[data-active-view="agent"])::before,
-.main-panel:has(> .main-panel-body[data-active-view="agent"])::after {
-  content: none;
+/* The card-edge fades animate off .main-panel-body's scroll, but in the agent
+ * view that body is frozen and the conversation scrolls in .agent-scroll. Drive
+ * the named timeline off that inner scroller instead so the bottom fade still
+ * dissolves the conversation into the fixed composer (and reads at the top edge
+ * under the breadcrumb), rather than sticking on. */
+@supports (animation-timeline: scroll()) {
+  .main-panel-body[data-active-view="agent"] {
+    scroll-timeline: none;
+  }
+  .main-panel-body[data-active-view="agent"] .agent-scroll {
+    scroll-timeline: --main-panel-scroll block;
+  }
+}
+
+/* The conversation scrolls in a pane below the breadcrumb (not behind it), so
+ * the frosted bar has nothing passing under it to blur. Drop the top fade to
+ * the bar's bottom edge (its 46px min-height) so the conversation softly
+ * dissolves into the breadcrumb as it scrolls up — the seam the frost used to
+ * read from content moving behind it. */
+.main-panel:has(> .main-panel-body[data-active-view="agent"])::before {
+  top: 46px;
 }
 
 /* The agent already lives inside the floating .main-panel card, so it draws
