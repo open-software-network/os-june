@@ -149,6 +149,13 @@
    * "live/recording" primary action that wants a warmer feel. */
   --warm-soft: oklch(90% 0.07 55);
   --warm-strong: oklch(52% 0.16 38);
+  /* New-session hero wash — the warm gradient pooling at the bottom of the
+   * intro screen, with a 1px inset rim that keeps its edge crisp against the
+   * shell. The brand tint works over both cards (a subtle glow in dark), but
+   * the rim flips: card-white hairline in light, faint white inner highlight
+   * in dark — a card-derived line goes near-black there and muddies the rim. */
+  --hero-wash: color-mix(in oklch, var(--brand) 11%, transparent);
+  --hero-wash-rim: color-mix(in oklch, var(--card) 70%, transparent);
   /* Focus ring lives in the warm-grey family so it never reads as a cool
    * macOS-blue glow next to the rest of the palette. */
   --focus-ring: oklch(60% 0.03 84.59 / 22%);
@@ -241,6 +248,9 @@
   --popover-border: color-mix(in oklch, white 12%, transparent);
   --warm-soft: oklch(0.42 0.12 50);
   --warm-strong: oklch(0.86 0.16 60);
+  /* See the light-theme note: the wash tint carries over, the rim becomes a
+   * faint white inner highlight (kin to this theme's --shadow-inset). */
+  --hero-wash-rim: oklch(100% 0 none / 8%);
   --focus-ring: oklch(0.78 0.025 84.59 / 22%);
   --scrim: oklch(0% 0 none / 55%);
   /* Selection keeps the foreground white (no contrast flip) and lays a

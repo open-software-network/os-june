@@ -282,10 +282,16 @@ input:focus-visible,
 
 /* New-session warmth: a whisper of brand orange welling up from the bottom of
  * the intro screen, clear at the top so the greeting and bar stay neutral.
- * Full-bleed behind the centered hero column (z-index:-1 keeps it above the
- * white card but under the content), and it fades on opacity so the warmth
- * dissolves as the composer glides to its dock on thread handoff. */
-.agent-workspace::before {
+ * Two stacked layers share the same bounds and fade: ::before paints the wash
+ * gradient, ::after paints the 1px inset rim that keeps the wash's edge crisp
+ * against the shell — a separate layer because the rim must dissolve toward
+ * the top alongside the wash (a bare hairline over the clear region reads as
+ * a stray border, most visibly in dark mode), and a box-shadow can only fade
+ * via a mask on its own element. Full-bleed behind the centered hero column
+ * (z-index:-1 keeps them above the card but under the content), fading on
+ * opacity as the composer glides to its dock on thread handoff. */
+.agent-workspace::before,
+.agent-workspace::after {
   content: "";
   position: absolute;
   /* Bleed past .main-panel-body's horizontal padding so the wash reaches the
@@ -298,27 +304,31 @@ input:focus-visible,
   z-index: -1;
   pointer-events: none;
   opacity: 0;
-  background: linear-gradient(
-    to bottom,
-    transparent 30%,
-    color-mix(in oklch, var(--brand) 11%, transparent) 100%
-  );
-  /* Hairline of card-white inset around the wash: keeps a crisp rim where the
-   * terracotta meets the card edge instead of smearing into the grey shell
-   * (and the card's faint dark inset ring) behind it. Card-derived rather
-   * than literal white so it stays a quiet inner highlight in dark mode.
-   * Rides this layer so it shares the fade's radius, bounds, and opacity. */
-  border-radius: var(--r-window);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--card) 70%, transparent);
   transition: opacity 280ms var(--ease-out);
 }
 
-.agent-workspace[data-hero="true"]::before {
+.agent-workspace::before {
+  background: linear-gradient(to bottom, transparent 30%, var(--hero-wash));
+}
+
+.agent-workspace::after {
+  /* Per-theme rim colors live in tokens.css (--hero-wash-rim). The mask
+   * mirrors the wash gradient's stops so the rim emerges exactly where the
+   * warmth does. */
+  border-radius: var(--r-window);
+  box-shadow: inset 0 0 0 1px var(--hero-wash-rim);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 30%, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 30%, #000 100%);
+}
+
+.agent-workspace[data-hero="true"]::before,
+.agent-workspace[data-hero="true"]::after {
   opacity: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-workspace::before {
+  .agent-workspace::before,
+  .agent-workspace::after {
     transition: none;
   }
 }
@@ -4330,21 +4340,25 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
-  /* Keep the hero handoff smooth in the no-scroll-timeline fallback: without
-   * this, the overlay snaps to full opacity the frame the hero's :has() rule
-   * below stops matching, flashing white over the warm wash mid-fade. Matches
-   * the wash's 280ms fade; lives here (not on the :has() rule) because the
-   * exit transition must survive the rule un-matching. In the @supports path
-   * the scroll-driven animation overrides this, as animations beat
-   * transitions. */
+  /* Soften any static opacity flip (e.g. leaving the agent view, where the
+   * :has() rule below holds the dissolve at 0) so the veil never pops in a
+   * single frame over content. Matches the warm wash's 280ms fade. Lives
+   * here, not on the :has() rule, because an exit transition must survive
+   * the rule un-matching; scroll-driven animation values are unaffected, as
+   * animations beat transitions. */
   transition: opacity 280ms var(--ease-out);
 }
 
-/* New-session hero: no scrolling content to dissolve, and the scroll timeline
- * that would otherwise fade this overlay is inactive (no .agent-scroll), so it
- * sits at full opacity and bleaches the bottom of the hero's warm wash back to
- * white. Hide it for the hero; it returns with the conversation scroller. */
-.main-panel:has(.agent-workspace[data-hero="true"])::after {
+/* Agent view: the dissolve is hidden at rest and only the scroll-driven
+ * animation reveals it. Whenever nothing scrolls — the hero (no .agent-scroll
+ * at all) or a conversation still too short to overflow — the scroll timeline
+ * is inactive, the keyframes don't apply, and the static opacity 1 would
+ * otherwise pin the veil over the hero's warm wash and the docked composer.
+ * With scrollable content the timeline activates and the animation overrides
+ * this (animations beat static declarations). In browsers without
+ * scroll-timeline support the agent view simply never shows the dissolve —
+ * a safe degradation, since it exists to dissolve scrolling content. */
+.main-panel:has(.main-panel-body[data-active-view="agent"])::after {
   opacity: 0;
 }
 
