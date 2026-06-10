@@ -89,7 +89,16 @@ describe("Hermes adapter", () => {
         last_active: 1_780_603_200 as unknown as string,
       }),
     ).toBe("2026-06-04T20:00:00.000Z");
-    expect(titleFromPrompt("  Write   a note  ")).toBe("Write a note");
+    expect(titleFromPrompt("  Write   a note  ")).toBe("Write a Note");
+    expect(titleFromPrompt("I want you to keep this running in my CLI")).toBe(
+      "Keep This Running in My CLI",
+    );
+    expect(titleFromPrompt("Help me to organize files")).toBe("Organize Files");
+    expect(
+      titleFromPrompt(
+        "please summarize the key points from today's standup\n\n--- Attached Context ---\n{}",
+      ),
+    ).toBe("Summarize the Key Points from Today's");
     expect(titleFromPrompt("")).toBe("Untitled session");
   });
 });

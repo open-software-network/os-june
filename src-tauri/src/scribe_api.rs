@@ -497,7 +497,7 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
         "messages": [
             {
                 "role": "system",
-                "content": "Create a concise title for an agent session from the user's first request. Return only the title. Use 2 to 6 words. No quotes, punctuation wrappers, markdown, or explanations."
+                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations."
             },
             {
                 "role": "user",
@@ -561,9 +561,35 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .trim()
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
         .replace(['\r', '\n'], " ");
-    for prefix in ["Title:", "Session title:", "Request:"] {
-        if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
-            title = title[prefix.len()..].trim_start().to_string();
+    let prefixes = [
+        "Title:",
+        "Session title:",
+        "Request:",
+        "Please ",
+        "Can you ",
+        "Could you ",
+        "Would you ",
+        "Help me to ",
+        "Help me ",
+        "I want you to ",
+        "I want to ",
+        "I need you to ",
+        "I need to ",
+        "I'd like you to ",
+        "I'd like to ",
+        "Ask June to ",
+        "Have June ",
+    ];
+    loop {
+        let mut changed = false;
+        for prefix in prefixes {
+            if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                title = title[prefix.len()..].trim_start().to_string();
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
         }
     }
     title = title
@@ -734,6 +760,14 @@ mod tests {
         assert_eq!(
             clean_agent_session_title("Title: \"Open GarageBand\"").as_deref(),
             Some("Open GarageBand")
+        );
+        assert_eq!(
+            clean_agent_session_title("I want you to Keep this CLI run organized.").as_deref(),
+            Some("Keep this CLI run organized")
+        );
+        assert_eq!(
+            clean_agent_session_title("Help me to organize files").as_deref(),
+            Some("organize files")
         );
         assert_eq!(
             clean_agent_session_title(
