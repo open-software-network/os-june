@@ -734,10 +734,12 @@ export function Sidebar({
               <button
                 type="button"
                 className="section-title-label section-title-open"
-                onClick={() => onChangeView("agent")}
+                onClick={() => onChangeView("agent-sessions")}
               >
                 Agent
               </button>
+              {/* Same destination as the header — the hover affordance just
+               * makes the "this opens a list" behavior legible. */}
               <button
                 type="button"
                 className="section-view-all"

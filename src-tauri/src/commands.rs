@@ -505,6 +505,11 @@ pub async fn check_recording_source_readiness(
 }
 
 #[tauri::command]
+pub fn scribe_verify_url() -> String {
+    crate::scribe_api::verify_url()
+}
+
+#[tauri::command]
 pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
     {

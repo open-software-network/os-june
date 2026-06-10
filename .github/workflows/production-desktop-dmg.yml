@@ -40,7 +40,10 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-scribe,os-scribe-releases
+          # Both repos were renamed (os-scribe -> os-june, os-scribe-releases
+          # -> os-june-releases); the token request rejects old names even
+          # though the App installation follows renames.
+          repositories: os-june,os-june-releases
 
       - uses: actions/checkout@v4
         with:
@@ -227,7 +230,7 @@ jobs:
           SCRIBE_API_URL: ${{ secrets.PRODUCTION_SCRIBE_API_URL }}
         with:
           owner: open-software-network
-          repo: os-scribe-releases
+          repo: os-june-releases
           tagName: v${{ env.VERSION }}
           releaseName: June v${{ env.VERSION }}
           releaseBody: "Stable June release v${{ env.VERSION }}."
@@ -265,6 +268,6 @@ jobs:
           {
             echo "### Production macOS release"
             echo "- Version: \`$VERSION\`"
-            echo "- Release repo: \`open-software-network/os-scribe-releases\`"
-            echo "- Update manifest: \`https://github.com/open-software-network/os-scribe-releases/releases/latest/download/latest.json\`"
+            echo "- Release repo: \`open-software-network/os-june-releases\`"
+            echo "- Update manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

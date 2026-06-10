@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use scribe_api::{ApiLimits, ApiState, ApiStateParams};
+use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 use scribe_config::{AppConfig, ModelPriceConfig, ModelProvider};
 use scribe_providers::{
     JwksTokenVerifier, MultiFormatDurationProbe, OsAccountsHttpClient, RoutingTranscriber,
@@ -151,6 +151,12 @@ fn build_router(
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
             request_timeout_secs: config.server.request_timeout_secs,
+        },
+        attestation: AttestationInfo {
+            source_commit: config.attestation.source_commit.clone(),
+            source_repo_url: config.attestation.source_repo_url.clone(),
+            image_repo: config.attestation.image_repo.clone(),
+            trust_center_url: config.attestation.trust_center_url.clone(),
         },
     });
     scribe_api::router(state)

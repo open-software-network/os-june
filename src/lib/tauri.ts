@@ -593,6 +593,10 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
+export async function scribeVerifyUrl() {
+  return invoke<string>("scribe_verify_url");
+}
+
 export async function createNote(folderId?: string) {
   return invoke<NoteDto>("create_note", { request: { folderId } });
 }

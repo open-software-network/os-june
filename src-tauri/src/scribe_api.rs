@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
-const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.network";
+// The deployed production API (Phala dstack; see scribe-api/deploy/
+// docker-compose.production.yml). NOT .network — that hostname has no DNS
+// record, and the v0.0.3 DMG shipped pointing at it.
+const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.co";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -534,6 +537,12 @@ pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
 
 pub fn configured() -> bool {
     !scribe_api_url().is_empty()
+}
+
+/// Public URL of the attestation walkthrough the backend serves from inside
+/// its confidential VM — same origin every metered request already goes to.
+pub fn verify_url() -> String {
+    format!("{}/verify", scribe_api_url())
 }
 
 fn extract_chat_completion_text(value: &serde_json::Value) -> Option<String> {

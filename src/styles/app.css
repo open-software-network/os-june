@@ -1365,6 +1365,10 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-lg);
   line-height: 1.6;
+  /* Workspace paths and bare URLs are unbroken strings — wrap them rather
+   * than letting them push past the bubble or column. Only kicks in when a
+   * word would actually overflow. */
+  overflow-wrap: anywhere;
 }
 
 .agent-markdown > :first-child {
@@ -1499,54 +1503,79 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
-.agent-context-summary summary {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  align-items: baseline;
+.agent-context-summary > summary {
+  display: flex;
+  align-items: center;
   gap: var(--sp-2);
   cursor: pointer;
   list-style: none;
 }
 
-.agent-context-summary summary::-webkit-details-marker {
+.agent-context-summary > summary::-webkit-details-marker {
   display: none;
 }
 
-.agent-context-summary svg {
-  align-self: center;
-  color: var(--muted-foreground);
+/* Whole row firms up on hover, same quiet treatment as the tool disclosures. */
+.agent-context-summary > summary:hover {
+  color: var(--foreground);
 }
 
-.agent-context-summary span {
-  font-weight: 650;
+/* Flat icon cell shared with the tool rows: the glyph and the "+"/"−" hints
+ * stack in one pinned cell so the hover swap is pure opacity — no layout, no
+ * WKWebView compositing hitch. */
+.agent-context-summary .agent-tool-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
 }
 
-.agent-context-summary p {
-  overflow: hidden;
-  margin: 0;
-  color: var(--muted-foreground);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.agent-context-summary .agent-tool-icon > * {
+  grid-area: 1 / 1;
 }
 
+/* Thin the concise glyph toward a 1px stroke. The icon ships at stroke-2, so we
+ * override the path width here rather than pull in a second icon weight. */
+.agent-context-icon-glyph path {
+  stroke-width: 1.5;
+}
+
+.agent-context-summary > summary:hover .agent-context-icon-glyph {
+  opacity: 0;
+}
+
+.agent-context-summary:not([open]) > summary:hover .agent-tool-icon-expand,
+.agent-context-summary[open] > summary:hover .agent-tool-icon-minimize {
+  opacity: 1;
+}
+
+/* Label sits at the row's weight — not bold; the muted color alone keeps it
+ * subordinate to the answer text. */
+.agent-context-label {
+  font-weight: 400;
+}
+
+/* Timestamp pins to the right edge and matches the row's body size. */
 .agent-context-summary time {
+  margin-left: auto;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-lg);
 }
 
+/* Expanded summary reads at body size, same as the row above it. */
 .agent-context-summary > .agent-markdown {
   overflow: auto;
   max-height: 320px;
-  margin: var(--sp-2) 0 0 calc(var(--control-sm) + var(--sp-2));
+  margin: var(--sp-2) 0 0 calc(15px + var(--sp-2));
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
 }
 
 .agent-context-summary:not([open]) > .agent-markdown {
-  display: none;
-}
-
-.agent-context-summary[open] summary p {
   display: none;
 }
 
@@ -1734,6 +1763,8 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
+/* White card, 4px inset all around the icon tile — the tile fills the card's
+ * height so it reads as perfectly nested, not floating. */
 .agent-artifact-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1741,14 +1772,16 @@ input:focus-visible,
   gap: var(--sp-3);
   max-width: 440px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: var(--sp-3);
-  background: var(--surface-subtle);
-  transition: background var(--t-fast) var(--ease-out);
+  border-radius: var(--r-lg);
+  padding: var(--sp-1);
+  padding-right: var(--sp-3);
+  background: var(--card);
 }
 
-/* The icon/preview + name region — a quiet button when the card can open in
- * the viewer panel, a plain div in read-only contexts (dev gallery). */
+/* The icon tile + name region — a quiet button when the card can open in
+ * the viewer panel, a plain div in read-only contexts (dev gallery). The
+ * border picks up the hover emphasis (no fill swap: the card is white on
+ * white, a fill would fight the inset tile). */
 .agent-artifact-open {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1764,80 +1797,87 @@ input:focus-visible,
 }
 
 .agent-artifact-card:has(button.agent-artifact-open):hover {
-  background: color-mix(in oklch, var(--muted) 85%, transparent);
+  border-color: var(--border);
 }
 
-.agent-artifact-card[data-has-preview="true"] {
-  max-width: 520px;
+/* Inner radius = outer radius − inset, so the tile's corners track the card's. */
+.agent-artifact-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xl);
+  height: var(--control-xl);
+  border-radius: calc(var(--r-lg) - var(--sp-1));
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
-.agent-artifact-preview {
-  width: 64px;
-  height: 64px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  object-fit: cover;
-  background: var(--background);
-}
-
-.agent-artifact-title {
+.agent-artifact-meta {
   display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
+  flex-direction: column;
+  gap: calc(var(--sp-1) / 2);
   min-width: 0;
 }
 
-.agent-artifact-title span {
+.agent-artifact-name {
   overflow: hidden;
-  color: var(--foreground);
-  font-weight: 650;
+  color: var(--body-copy);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-artifact-title em {
+.agent-artifact-size {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-style: normal;
+  line-height: 1.3;
 }
 
-.agent-artifact-card p {
-  display: flex;
-  gap: var(--sp-2);
-  margin: var(--sp-1) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-.agent-artifact-card p span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* Download stays out of sight until the card is hovered (or the button takes
+ * keyboard focus), so the resting card is just icon · name · size. The reveal
+ * is intentionally INSTANT — transitioning opacity promotes the button to a
+ * compositing layer in WKWebView, which rasterizes off the text pixel grid and
+ * reads as a hover glitch (same rule as the tool-icon swap). */
 .agent-artifact-download {
   display: inline-grid;
   place-items: center;
-  width: var(--control-sm);
-  min-height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
+  width: var(--control-md);
+  min-height: var(--control-md);
+  border: 0;
   border-radius: var(--r-sm);
   padding: 0;
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+}
+
+.agent-artifact-card:hover .agent-artifact-download,
+.agent-artifact-download:focus-visible {
+  opacity: 1;
 }
 
 .agent-artifact-download:hover {
-  background: var(--tertiary);
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 /* Artifact viewer ----------------------------------------------------
  * Opening a file splits the conversation area: the chat column compresses
- * left and the viewer takes a fixed-width column on the right, separated by
- * a hairline — the Claude-artifacts / Gemini-canvas pattern. The split
- * wrapper inherits .agent-scroll's full-bleed negative margins (up behind
- * the frosted breadcrumb, out to the card edges) so the chat scroller keeps
- * its frost-and-scrollbar behavior whether or not the panel is open. */
+ * left and the viewer rides along as a floating white card — a popover-like
+ * surface docked to the right edge, the Claude-artifacts / Gemini-canvas
+ * pattern. The split wrapper inherits .agent-scroll's full-bleed negative
+ * margins (up behind the frosted breadcrumb, out to the card edges) so the
+ * chat scroller keeps its frost-and-scrollbar behavior whether or not the
+ * panel is open. The dock turns those bleeds back into padding so the card
+ * sits inset below the breadcrumb without fighting flex-stretch margins.
+ *
+ * --agent-files-w is shared with the fixed-position composer (below), which
+ * must shrink to the chat column while the panel is out. */
+.agent-workspace {
+  --agent-files-w: clamp(320px, 36vw, 460px);
+}
+
 .agent-split {
   display: flex;
   flex: 1;
@@ -1850,16 +1890,25 @@ input:focus-visible,
   margin: 0;
 }
 
+.agent-artifact-dock {
+  display: flex;
+  flex: 0 0 var(--agent-files-w);
+  min-width: 0;
+  min-height: 0;
+  padding: calc(var(--detail-bar-h) + var(--sp-1)) var(--sp-5) var(--sp-5) 0;
+}
+
 .agent-artifact-panel {
   display: flex;
   flex-direction: column;
-  flex: 0 0 clamp(320px, 42%, 480px);
+  flex: 1;
   min-width: 0;
   min-height: 0;
-  /* Starts below the frosted breadcrumb the split wrapper slides under. */
-  margin-top: var(--detail-bar-h);
-  border-left: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xl);
   background: var(--card);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
   animation: agent-artifact-panel-in var(--t-slow) var(--ease-out);
 }
 
@@ -1876,63 +1925,92 @@ input:focus-visible,
   }
 }
 
+/* While the panel is out, the fixed composer hands its right side over to
+ * the panel column instead of spanning the whole window. */
+.agent-workspace[data-artifact-panel="open"] .agent-composer {
+  right: calc(var(--sp-3) + var(--sp-5) + var(--agent-files-w) + var(--sp-8));
+}
+
+/* No divider under the header — the body's top scroll fade is what signals
+ * content passing underneath (same trick as the dictation history dialog). */
 .agent-artifact-panel-bar {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-5) var(--sp-5) var(--sp-2) var(--sp-6);
 }
 
+/* Document titles read in the serif, like note titles — the panel is a
+ * reading surface, not chrome. */
 .agent-artifact-panel-title {
-  display: flex;
   flex: 1;
-  align-items: baseline;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-.agent-artifact-panel-title span {
   overflow: hidden;
+  margin: 0;
   color: var(--foreground);
-  font-size: var(--fs-md);
-  font-weight: 650;
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-artifact-panel-title em {
-  flex: none;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-style: normal;
+/* When the back chevron leads, it supplies the left inset. */
+.agent-artifact-panel-bar > .icon-button:first-child {
+  margin-left: calc(-1 * var(--sp-2));
 }
 
-.agent-artifact-source-toggle {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 2px var(--sp-4);
-  background: none;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 550;
-}
-
-.agent-artifact-source-toggle:hover {
-  background: var(--surface-subtle);
-  color: var(--foreground);
+.agent-artifact-panel-mode {
+  display: flex;
+  padding: var(--sp-1) var(--sp-6) 0;
 }
 
 .agent-artifact-panel-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--sp-6) var(--sp-7) var(--sp-8);
+  padding: var(--sp-5) var(--sp-6) var(--sp-7);
   overscroll-behavior: contain;
+  --fade: 28px;
+}
+
+.agent-artifact-panel-body[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--fade),
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+}
+
+.agent-artifact-panel-body[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade));
+}
+
+.agent-artifact-panel-body:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--fade)),
+    transparent
+  );
 }
 
 .agent-artifact-panel-body[data-kind="list"] {
-  padding: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4) var(--sp-4);
 }
 
 .agent-artifact-panel-body[data-kind="loading"],
@@ -1979,6 +2057,8 @@ input:focus-visible,
   list-style: none;
 }
 
+/* List rows echo the chat's file cards — same icon tile, same quiet type —
+ * minus the card border, so the list reads as one surface. */
 .agent-artifact-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1987,7 +2067,8 @@ input:focus-visible,
   width: 100%;
   border: 0;
   border-radius: var(--r-md);
-  padding: var(--sp-3);
+  padding: var(--sp-1);
+  padding-right: var(--sp-3);
   background: none;
   color: inherit;
   font: inherit;
@@ -2000,8 +2081,9 @@ input:focus-visible,
 
 .agent-artifact-row-name {
   overflow: hidden;
-  color: var(--foreground);
-  font-weight: 550;
+  color: var(--body-copy);
+  font-size: var(--fs-md);
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2011,24 +2093,27 @@ input:focus-visible,
   font-size: var(--fs-xs);
 }
 
-/* Session bar files toggle — icon + count pill in the breadcrumb actions. */
+/* Session bar files toggle — sized and shaped like the safety badge beside
+ * it, with the glyph a step lighter than the count so the number carries. */
 .agent-session-files {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  min-height: var(--control-md);
   border: 0;
   border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: none;
+  padding: 2px var(--sp-2);
+  background: var(--surface-subtle);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 550;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
+.agent-session-files svg {
+  color: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
+}
+
 .agent-session-files:hover {
-  background: var(--surface-subtle);
+  background: var(--muted);
   color: var(--foreground);
 }
 
@@ -2037,6 +2122,10 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+.agent-session-files:hover svg,
+.agent-session-files[aria-pressed="true"] svg {
+  color: var(--muted-foreground);
+}
 /* The whole thinking layer sits at body size — muted color (not a size
  * step-down) is what separates it from the answer. */
 .agent-reasoning {
@@ -3422,6 +3511,7 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* Hover-revealed companion to the section header (same destination). */
 .section-view-all {
   display: inline-flex;
   align-items: center;
@@ -6236,6 +6326,8 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-md);
   font-weight: 500;
+  /* Anchors styled as buttons keep the UA underline otherwise. */
+  text-decoration: none;
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),

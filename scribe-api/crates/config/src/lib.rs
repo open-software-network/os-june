@@ -16,6 +16,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub os_accounts: OsAccountsConfig,
     pub upstreams: UpstreamsConfig,
+    pub attestation: AttestationConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
 }
 
@@ -26,9 +27,23 @@ impl Debug for AppConfig {
             .field("server", &self.server)
             .field("os_accounts", &self.os_accounts)
             .field("upstreams", &self.upstreams)
+            .field("attestation", &self.attestation)
             .field("pricing", &self.pricing)
             .finish()
     }
+}
+
+/// Public facts the `/verify` attestation page reports. Nothing here is a
+/// secret; all fields have working defaults so local builds need no setup.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AttestationConfig {
+    /// Full git commit the running image was built from. Stamped into the
+    /// image env by the Docker build (`ARG GIT_SHA`); empty for local builds.
+    #[serde(default)]
+    pub source_commit: String,
+    pub source_repo_url: String,
+    pub image_repo: String,
+    pub trust_center_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -287,6 +302,14 @@ impl Default for AppConfig {
                     api_key: String::new(),
                     base_url: "https://api.venice.ai/api/v1".to_string(),
                 },
+            },
+            attestation: AttestationConfig {
+                source_commit: String::new(),
+                source_repo_url: "https://github.com/open-software-network/os-scribe".to_string(),
+                image_repo: "ghcr.io/open-software-network/scribe-api".to_string(),
+                trust_center_url:
+                    "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
+                        .to_string(),
             },
             pricing,
         }

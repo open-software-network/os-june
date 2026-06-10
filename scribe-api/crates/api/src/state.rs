@@ -17,6 +17,7 @@ struct ApiStateInner {
     agent_chat: Arc<AgentChatService>,
     dictate: Arc<DictateService>,
     limits: ApiLimits,
+    attestation: AttestationInfo,
 }
 
 #[derive(Clone, Copy)]
@@ -24,6 +25,17 @@ pub struct ApiLimits {
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
     pub request_timeout_secs: u64,
+}
+
+/// Public deployment facts rendered by the `/verify` attestation page.
+#[derive(Clone)]
+pub struct AttestationInfo {
+    /// Full git commit the running image was built from; empty when the
+    /// build did not stamp one (local/dev builds).
+    pub source_commit: String,
+    pub source_repo_url: String,
+    pub image_repo: String,
+    pub trust_center_url: String,
 }
 
 pub struct ApiStateParams {
@@ -34,6 +46,7 @@ pub struct ApiStateParams {
     pub agent_chat: Arc<AgentChatService>,
     pub dictate: Arc<DictateService>,
     pub limits: ApiLimits,
+    pub attestation: AttestationInfo,
 }
 
 impl ApiState {
@@ -47,6 +60,7 @@ impl ApiState {
                 agent_chat: params.agent_chat,
                 dictate: params.dictate,
                 limits: params.limits,
+                attestation: params.attestation,
             }),
         }
     }
@@ -77,5 +91,9 @@ impl ApiState {
 
     pub(crate) fn limits(&self) -> ApiLimits {
         self.inner.limits
+    }
+
+    pub(crate) fn attestation(&self) -> &AttestationInfo {
+        &self.inner.attestation
     }
 }

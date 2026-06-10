@@ -7,10 +7,24 @@ import type { AgentChatPart, AgentChatTurn } from "./agent-chat-runtime";
 //
 // Each section is rendered through the real <AgentChatTurnRow>, so what you see
 // here is exactly what ships.
+// Mirrors the AgentArtifact shape in AgentWorkspace.tsx. Kept structural (not
+// imported) so this catalog stays dependency-free; the fields must match.
+export type AgentGalleryArtifact = {
+  name: string;
+  path: string;
+  rootLabel: string;
+  size?: number | null;
+};
+
 export type AgentChatGallerySection = {
   label: string;
   description?: string;
   turns: AgentChatTurn[];
+  // Generated-file cards hang off the turn, not its parts. When present they're
+  // passed to <AgentChatTurnRow> so the artifact card renders in the catalog.
+  // The turn text must name each file for it to surface (see
+  // artifactsMentionedInText).
+  artifacts?: AgentGalleryArtifact[];
 };
 
 // Fixed timestamps keep the gallery deterministic (no churn from relativeDate).
@@ -86,6 +100,40 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
         assistantTurn("text", [
           { type: "text", text: MARKDOWN_SAMPLE, status: "complete" },
         ]),
+      ],
+    },
+    {
+      label: "Generated files",
+      description:
+        "Download cards for files the agent produced. The icon is keyed off the file extension; the download button only shows on hover.",
+      turns: [
+        assistantTurn("artifacts", [
+          {
+            type: "text",
+            text: "Done — I exported three files: the chart as `revenue-chart.png`, the write-up in `summary.md`, and the raw run output in `build-log.txt`.",
+            status: "complete",
+          },
+        ]),
+      ],
+      artifacts: [
+        {
+          name: "revenue-chart.png",
+          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/revenue-chart.png",
+          rootLabel: "Workspace",
+          size: 31_000,
+        },
+        {
+          name: "summary.md",
+          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/summary.md",
+          rootLabel: "Workspace",
+          size: 4_200,
+        },
+        {
+          name: "build-log.txt",
+          path: "~/Library/Application Support/co.opensoftware.scribe/hermes/workspace/2026-06-09/run-4821/artifacts/logs/build-log.txt",
+          rootLabel: "Home",
+          size: 1_280_000,
+        },
       ],
     },
     {
@@ -165,7 +213,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
     {
       label: "Context compacted",
       description:
-        "System summary inserted when earlier turns are compacted. Two preview variants.",
+        "System summary inserted when earlier turns are compacted. Collapsed to one quiet line; hover swaps the glyph for +/−, expand reveals the summary. Two body variants (LLM summary / deterministic fallback).",
       turns: [
         {
           id: "gallery:context-normal",

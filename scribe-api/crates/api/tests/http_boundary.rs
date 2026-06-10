@@ -5,7 +5,7 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use pretty_assertions::assert_eq;
-use scribe_api::{ApiLimits, ApiState, ApiStateParams, router};
+use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
 use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use scribe_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
@@ -161,11 +161,72 @@ async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), 
     Ok(())
 }
 
+#[tokio::test]
+async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
+    let response = send(get_request("/verify")?).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("text/html"),
+        "unexpected content type: {content_type}"
+    );
+    let body = response_text(response).await?;
+    assert!(body.contains("Verify this server"));
+    assert!(body.contains("ghcr.io/open-software-network/scribe-api:0123abc"));
+    assert!(body.contains(&format!(
+        "https://github.com/open-software-network/os-scribe/commit/{TEST_COMMIT}"
+    )));
+    assert!(body.contains("https://trust.phala.com/app/test-app-id"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_verify_page_without_commit_reports_unstamped_build()
+-> Result<(), Box<dyn Error>> {
+    let attestation = AttestationInfo {
+        source_commit: String::new(),
+        ..test_attestation()
+    };
+    let response = match router(test_state_with_attestation(attestation))
+        .oneshot(get_request("/verify")?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await?;
+    assert!(body.contains("not stamped"));
+    Ok(())
+}
+
 fn test_router() -> Router {
     router(test_state())
 }
 
+const TEST_COMMIT: &str = "0123abc4567890def0123abc4567890def012345";
+
+fn test_attestation() -> AttestationInfo {
+    AttestationInfo {
+        source_commit: TEST_COMMIT.to_string(),
+        source_repo_url: "https://github.com/open-software-network/os-scribe".to_string(),
+        image_repo: "ghcr.io/open-software-network/scribe-api".to_string(),
+        trust_center_url: "https://trust.phala.com/app/test-app-id".to_string(),
+    }
+}
+
 fn test_state() -> ApiState {
+    test_state_with_attestation(test_attestation())
+}
+
+fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
     let transcriber = Arc::new(FakeTranscriber);
@@ -214,6 +275,7 @@ fn test_state() -> ApiState {
             max_json_bytes: 1024 * 1024,
             request_timeout_secs: 5,
         },
+        attestation,
     })
 }
 
@@ -283,6 +345,13 @@ fn json_request(
     builder.body(Body::from(value.to_string()))
 }
 
+fn get_request(uri: &str) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())
+}
+
 fn multipart_request(uri: &str, body: Vec<u8>) -> Result<Request<Body>, axum::http::Error> {
     Request::builder()
         .method(Method::POST)
@@ -300,6 +369,11 @@ async fn response_json(
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     let bytes = to_bytes(response.into_body(), usize::MAX).await?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn response_text(response: axum::response::Response) -> Result<String, Box<dyn Error>> {
+    let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+    Ok(String::from_utf8(bytes.to_vec())?)
 }
 
 fn boundary() -> &'static str {

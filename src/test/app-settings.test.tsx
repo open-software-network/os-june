@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
   deleteDictionaryEntry: vi.fn(),
+  scribeVerifyUrl: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -67,6 +68,7 @@ vi.mock("../lib/tauri", () => ({
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
+  scribeVerifyUrl: mocks.scribeVerifyUrl,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -129,6 +131,9 @@ describe("AppSettings", () => {
       language,
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
+    mocks.scribeVerifyUrl.mockResolvedValue(
+      "https://scribe-api.example.test/verify",
+    );
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
@@ -912,22 +917,19 @@ describe("AppSettings", () => {
     );
 
     await waitFor(() =>
-      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
-        "push_to_talk",
-        {
-          keyCode: 0x02,
-          code: "KeyD",
-          label: "Ctrl+Opt+D",
-          pressCount: 1,
-          modifiers: {
-            command: false,
-            control: true,
-            option: true,
-            shift: false,
-            function: false,
-          },
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith("push_to_talk", {
+        keyCode: 0x02,
+        code: "KeyD",
+        label: "Ctrl+Opt+D",
+        pressCount: 1,
+        modifiers: {
+          command: false,
+          control: true,
+          option: true,
+          shift: false,
+          function: false,
         },
-      ),
+      }),
     );
 
     await waitFor(() =>
@@ -1060,6 +1062,30 @@ describe("AppSettings", () => {
     expect(screen.getByText(APP_VERSION)).toBeInTheDocument();
     expect(screen.getByText("Commit")).toBeInTheDocument();
     expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
+  });
+
+  it("links to the server attestation page from About", async () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+    const link = await screen.findByRole("link", { name: "Verify server" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://scribe-api.example.test/verify",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
   });
 
   it("shows agent workspace and memory files inside Agent settings", async () => {
