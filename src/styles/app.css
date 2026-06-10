@@ -6107,6 +6107,21 @@ input:focus-visible,
   margin-top: var(--detail-bar-h);
 }
 
+/* The opt-out also moves the thumb off scrollbar-color (which is what painted
+ * it) onto the webkit pseudo path, whose base style is transparent-until-hover
+ * — and WKWebView doesn't repaint scrollbar parts on hover, so the thumb would
+ * never show. Paint these scrollers' thumb statically in the same quiet color,
+ * with the usual brighten-on-hover where the engine supports it. */
+.agent-scroll::-webkit-scrollbar-thumb,
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+}
+
+.agent-scroll::-webkit-scrollbar-thumb:hover,
+.main-panel-body:has(.detail-bar)::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+}
+
 .detail-bar {
   position: sticky;
   top: 0;
