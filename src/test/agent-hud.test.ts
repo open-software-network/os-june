@@ -4,6 +4,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
 } from "../lib/agent-events";
+import { AGENT_HUD_VISIBILITY_CHANGED_EVENT } from "../lib/agent-hud-settings";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -62,6 +63,26 @@ describe("agent HUD", () => {
       request: { expanded: false, cardCount: 0, replying: false },
     });
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
+  });
+
+  it("shortens the collapsed label when multiple agents are running", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        sessionFixture("session-1", "Sweep typographic dashes"),
+        sessionFixture("session-2", "Refactor the trial gate copy"),
+        sessionFixture("session-3", "Fix the flaky shortcut test"),
+      ],
+      workingSessionIds: ["session-1", "session-2", "session-3"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.expanded).toBe("false");
+    expect(pillLabelElement()).toHaveTextContent("3");
+    expect(pillLabelElement()).not.toHaveTextContent("running");
+    expect(pillElement().dataset.countOnly).toBe("true");
   });
 
   it("hides the window when there is nothing to report", async () => {
@@ -169,7 +190,7 @@ describe("agent HUD", () => {
     expect(document.querySelector(".agent-hud-reply svg")).toBeTruthy();
   });
 
-  it("shows a running-count badge when sessions work behind a needs-input one", async () => {
+  it("shows an active-count badge when sessions work behind a needs-input one", async () => {
     await loadAgentHud();
 
     emitStatus({
@@ -183,6 +204,13 @@ describe("agent HUD", () => {
     expect(badge?.hidden).toBe(true);
 
     emitStatus({
+      status: "running",
+      title: "Refactor the trial gate copy",
+      summary: "Rewriting the paywall states.",
+    });
+    await flushPromises();
+
+    emitStatus({
       status: "waitingForUser",
       title: "Need approval",
       summary: "Review this step.",
@@ -191,8 +219,8 @@ describe("agent HUD", () => {
 
     expect(pillLabelElement()).toHaveTextContent("1 needs input");
     expect(badge?.hidden).toBe(false);
-    expect(badge).toHaveTextContent("1");
-    expect(badge).toHaveAttribute("aria-label", "1 running");
+    expect(badge).toHaveTextContent("3");
+    expect(badge).toHaveAttribute("aria-label", "3 active agents");
   });
 
   it("does not repeat generic status text in expanded rows", async () => {
@@ -515,7 +543,7 @@ describe("agent HUD", () => {
     });
   });
 
-  it("offers Hide agent HUD from the pill context menu", async () => {
+  it("hides the HUD from the pill context menu action", async () => {
     await loadAgentHud();
 
     emitStatus({
@@ -538,6 +566,13 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.emit).toHaveBeenCalledWith(
+      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+      {
+        enabled: false,
+      },
+    );
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
 
@@ -587,6 +622,18 @@ function emitSessionsChanged(detail: {
   window.dispatchEvent(
     new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, { detail }),
   );
+}
+
+function sessionFixture(id: string, title: string) {
+  const now = new Date().toISOString();
+  return {
+    id,
+    title,
+    preview: title,
+    started_at: now,
+    last_active: now,
+    message_count: 2,
+  };
 }
 
 async function flushPromises() {

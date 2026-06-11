@@ -317,17 +317,21 @@ function flipSurfaceWidth(target: HTMLElement, fromWidth: number) {
 function renderPill(entries: HudEntry[], expanded: boolean) {
   if (!pill || !mark || !pillLabel) return;
   const { label, status, runningCount, waitingCount } = pillSummary(entries);
+  const activeCount = runningCount + waitingCount;
+  const countOnly =
+    status === "running" && runningCount > 1 && waitingCount === 0;
   mark.dataset.status = status;
+  pill.dataset.countOnly = countOnly ? "true" : "false";
   pillLabel.textContent = label;
   if (pillBadge) {
     // Mixed state: the label leads with what needs the user; the badge
-    // keeps the count of agents still working behind it.
+    // keeps the total active agent count visible at a glance.
     const showBadge = waitingCount > 0 && runningCount > 0;
     pillBadge.hidden = !showBadge;
     if (showBadge) {
-      pillBadge.textContent = String(runningCount);
-      pillBadge.setAttribute("aria-label", `${runningCount} running`);
-      pillBadge.title = `${runningCount} running`;
+      pillBadge.textContent = String(activeCount);
+      pillBadge.setAttribute("aria-label", `${activeCount} active agents`);
+      pillBadge.title = `${activeCount} active agents`;
     }
   }
   pill.setAttribute("aria-expanded", expanded ? "true" : "false");
@@ -363,7 +367,7 @@ function pillSummary(entries: HudEntry[]): {
   }
   if (runningCount > 0) {
     return {
-      label: `${runningCount} running`,
+      label: runningCount === 1 ? "1 running" : String(runningCount),
       status: "running",
       runningCount,
       waitingCount,
@@ -858,7 +862,7 @@ function nativeWindowHeight(
 ) {
   const height =
     !expanded || rowCount === 0
-      ? 48
+      ? 58
       : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + (replying ? 32 : 0) + 14;
   return menuOpen ? Math.max(height, 104) : height;
 }

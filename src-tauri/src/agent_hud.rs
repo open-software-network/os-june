@@ -8,6 +8,7 @@ const AGENT_HUD_WINDOW_LABEL: &str = "agent-hud";
 const MAIN_WINDOW_LABEL: &str = "main";
 const AGENT_OPEN_EVENT: &str = "scribe:agent:open";
 const AGENT_HUD_WINDOW_WIDTH: f64 = 304.0;
+const AGENT_HUD_COLLAPSED_WINDOW_HEIGHT: f64 = 58.0;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +100,7 @@ fn agent_hud_window_size(
     context_menu_open: bool,
 ) -> (f64, f64) {
     let height: f64 = if !expanded || card_count == 0 {
-        48.0
+        AGENT_HUD_COLLAPSED_WINDOW_HEIGHT
     } else {
         let rows = f64::from(card_count.min(3));
         let surface_height = 36.0 + rows * 46.0 + 6.0;
@@ -279,7 +280,7 @@ mod tests {
         let expanded = agent_hud_window_size(true, 1, false, false);
         let replying = agent_hud_window_size(true, 1, true, false);
 
-        assert_eq!(collapsed.1, 48.0);
+        assert_eq!(collapsed.1, AGENT_HUD_COLLAPSED_WINDOW_HEIGHT);
         assert!(expanded.1 > collapsed.1);
         assert!(replying.1 > expanded.1);
     }
