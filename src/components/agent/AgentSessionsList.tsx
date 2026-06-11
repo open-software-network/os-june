@@ -73,24 +73,6 @@ export const AgentSessionsList = forwardRef<
   const [exit, setExit] = useState<null | "slide" | "fade">(null);
   const exitCauseRef = useRef<"slide" | "fade">("fade");
 
-  const filteredSessions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const sorted = [...sessions].sort((a, b) => {
-      const statusDelta =
-        sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
-        sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
-      if (statusDelta !== 0) return statusDelta;
-      return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
-    });
-    if (!normalized) return sorted;
-    return sorted.filter((session) =>
-      `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
-        sessionStatus(session.id, workingSessionIds, waitingSessionIds),
-      )}`
-        .toLowerCase()
-        .includes(normalized),
-    );
-  }, [sessions, query, waitingSessionIds, workingSessionIds]);
   const sortedSessions = useMemo(
     () =>
       [...sessions].sort((a, b) => {
@@ -102,6 +84,17 @@ export const AgentSessionsList = forwardRef<
       }),
     [sessions, waitingSessionIds, workingSessionIds],
   );
+  const filteredSessions = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return sortedSessions;
+    return sortedSessions.filter((session) =>
+      `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
+        sessionStatus(session.id, workingSessionIds, waitingSessionIds),
+      )}`
+        .toLowerCase()
+        .includes(normalized),
+    );
+  }, [sortedSessions, query, waitingSessionIds, workingSessionIds]);
   const selectedSessionIds = useMemo(
     () =>
       sortedSessions
@@ -326,6 +319,7 @@ export const AgentSessionsList = forwardRef<
               type="button"
               className="meetings-bulk-action"
               onClick={selectAllVisibleSessions}
+              disabled={isExiting}
             >
               Select all
             </button>
@@ -334,6 +328,7 @@ export const AgentSessionsList = forwardRef<
             type="button"
             className="meetings-bulk-action"
             onClick={deselectAllVisibleSessions}
+            disabled={isExiting}
           >
             Deselect all
           </button>
@@ -341,6 +336,7 @@ export const AgentSessionsList = forwardRef<
             type="button"
             className="meetings-bulk-action"
             onClick={() => onOpenMoveSessions(selectedSessionIds)}
+            disabled={isExiting}
           >
             Move
           </button>
@@ -348,6 +344,7 @@ export const AgentSessionsList = forwardRef<
             type="button"
             className="meetings-bulk-action"
             onClick={() => setConfirmBulkDelete(true)}
+            disabled={isExiting}
           >
             Delete
           </button>
@@ -356,6 +353,7 @@ export const AgentSessionsList = forwardRef<
             className="meetings-bulk-dismiss"
             aria-label="Clear selection"
             onClick={resetSelection}
+            disabled={isExiting}
           >
             <IconCrossMedium size={14} />
           </button>
