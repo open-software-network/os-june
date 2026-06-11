@@ -368,6 +368,10 @@ pub async fn os_accounts_login(
     let code = await_authorization_code(&cfg, &flow, &login_url, &csrf).await?;
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
     store_tokens(&pair).await?;
+    // The identity may have changed (a sign-in is not always preceded by an
+    // app-mediated logout); a checkout minted for the previous identity must
+    // not survive into this one.
+    clear_prepared_checkout();
 
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     set_cached_signed_in(true);
@@ -408,6 +412,7 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
             .await;
     }
     clear_tokens().await;
+    clear_prepared_checkout();
     set_cached_signed_in(false);
     Ok(())
 }
@@ -484,6 +489,16 @@ fn take_fresh_prepared_checkout() -> Option<String> {
     let mut slot = PREPARED_CHECKOUT.lock().ok()?;
     let prepared = slot.take()?;
     (prepared.minted_at.elapsed() < PREPARED_CHECKOUT_TTL).then_some(prepared.url)
+}
+
+/// A prepared checkout is minted under the signed-in user's Stripe identity,
+/// so it must die at every identity boundary — logout and completed login.
+/// Left cached, the next user on this machine could consume it within the
+/// TTL and attach their payment to the previous user's subscription.
+fn clear_prepared_checkout() {
+    if let Ok(mut slot) = PREPARED_CHECKOUT.lock() {
+        *slot = None;
+    }
 }
 
 fn store_prepared_checkout(url: String) {
