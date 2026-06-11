@@ -2851,7 +2851,14 @@ export function AgentWorkspace({
         { opacity: 0, transform: "translateY(10px)" },
         { opacity: 1, transform: "translateY(0)" },
       ],
-      { duration: 280, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }, // --ease-out
+      // Backwards fill so a slow frame can't paint the timeline at rest
+      // before the first animation frame applies (the CSS original filled
+      // backwards for the same reason).
+      {
+        duration: 280,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
+        fill: "backwards",
+      },
     );
     const next = box.getBoundingClientRect();
     const dx = prev.left - next.left;

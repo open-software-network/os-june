@@ -2606,7 +2606,7 @@ input:focus-visible,
 /* Docked-chat bottom dissolve. It cannot live as .agent-scroll::after
  * (generated flex content participates in the scroll column and can show up
  * as a clipped patch at the content edge), so it hangs off the fixed composer
- * instead: full-bleed to the card edges minus the scrollbar's 8px lane,
+ * instead: full-bleed to the card edges minus the scrollbar's lane,
  * stretched down to the card's bottom edge, beneath the frosted box (z -1)
  * but over the conversation. Anchoring it here also scopes it for free —
  * chat panel only, gone in the hero — and leaves the workspace's ::before
@@ -2615,7 +2615,7 @@ input:focus-visible,
   content: "";
   position: absolute;
   left: calc(-1 * var(--sp-8));
-  right: calc(-1 * var(--sp-8) + 8px);
+  right: calc(-1 * var(--sp-8) + var(--scrollbar-w));
   bottom: calc(-1 * var(--sp-5));
   z-index: -1;
   /* Short on purpose: just the gap under the box plus its bottom edge. Any
@@ -4482,7 +4482,7 @@ input:focus-visible,
  * than washing through the transparent frosted breadcrumb surface. */
 .main-panel:has(.main-panel-body[data-active-view="agent"])::before {
   top: var(--detail-bar-h);
-  right: 8px;
+  right: var(--scrollbar-w);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -7308,13 +7308,14 @@ input:focus-visible,
 
 /* Native overlay thumbs float a couple px off the window edge; match that on
  * the custom scrollbar so breadcrumb views don't read flush against the card
- * edge next to the bar-less views' native thumb. The region widens to 8px and
- * transparent borders clip the painted pill back to the usual 4px, inset 2px
- * from the card edge and the content alike. */
+ * edge next to the bar-less views' native thumb. The region widens to
+ * --scrollbar-w (shared with the edge fades that stop short of this lane)
+ * and transparent borders clip the painted pill back to the usual 4px,
+ * inset 2px from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
-  width: 8px;
+  width: var(--scrollbar-w);
   background: transparent;
 }
 
