@@ -1032,6 +1032,8 @@ describe("AppSettings", () => {
       expect(
         await screen.findByRole("option", { name: /Parakeet/ }),
       ).toBeInTheDocument();
+      // The non-suggested catalog lives under the All tab.
+      await user.click(screen.getByRole("tab", { name: "All" }));
       expect(
         screen.getAllByText("$0.0001 per second audio").length,
       ).toBeGreaterThan(0);
@@ -1057,6 +1059,7 @@ describe("AppSettings", () => {
           name: "Change text model",
         }),
       );
+      await user.click(screen.getByRole("tab", { name: "All" }));
       expect(
         screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
       ).toBeGreaterThan(0);
@@ -1084,6 +1087,58 @@ describe("AppSettings", () => {
         modelChanged,
       );
     }
+  });
+
+  it("defaults the model picker to curated suggestions", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Change text model" }),
+    );
+
+    // Suggested is the default view: only the curated picks present in the
+    // catalog show, each with its recommendation reason.
+    expect(
+      await screen.findByRole("option", { name: /GLM 5/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /Venice Uncensored/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Best overall/)).toBeInTheDocument();
+
+    // All shows the full catalog, without recommendation copy.
+    await user.click(screen.getByRole("tab", { name: "All" }));
+    expect(
+      screen.getByRole("option", { name: /Venice Uncensored/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Best overall/)).not.toBeInTheDocument();
+
+    // Searching looks across the whole catalog even from Suggested, and a
+    // suggested pick stays selectable.
+    await user.click(screen.getByRole("tab", { name: "Suggested" }));
+    await user.type(screen.getByLabelText("Search models"), "uncensored");
+    expect(
+      screen.getByRole("option", { name: /Venice Uncensored/ }),
+    ).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Search models"));
+    await user.click(screen.getByRole("option", { name: /GLM 5/ }));
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "zai-org-glm-5",
+    );
   });
 
   it("shows app build metadata", async () => {
