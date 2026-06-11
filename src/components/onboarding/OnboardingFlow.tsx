@@ -9,14 +9,12 @@ import type { AccountStatus } from "../../lib/tauri";
 import { isSubscriptionActive } from "../../lib/trial-checkout";
 import { FinishStep } from "./steps/FinishStep";
 import {
-  AgentHonestyStep,
-  AgentIntroStep,
+  AgentStep,
   DictationPracticeStep,
   MeetingNotesStep,
 } from "./steps/LearnSteps";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { PrivacyStep } from "./steps/PrivacySteps";
-import { SetupStep } from "./steps/SetupStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TrialStep } from "./steps/TrialStep";
 import { usePermissionStatuses } from "./use-permission-status";
@@ -25,27 +23,23 @@ type StepId =
   | "sign-in"
   | "privacy"
   | "permissions"
-  | "setup"
   | "trial"
   | "dictation-practice"
   | "meeting-notes"
-  | "agent-intro"
-  | "agent-honesty"
+  | "agent"
   | "finish";
 
-// The trial sits after permissions/setup (the user has invested) and right
-// before the hands-on practice — which runs the real, metered pipeline and
+// The trial sits after permissions (the user has invested) and right before
+// the hands-on practice — which runs the real, metered pipeline and
 // therefore needs the trial's credits. Pay, then immediately feel the payoff.
 const STEPS: StepId[] = [
   "sign-in",
   "privacy",
   "permissions",
-  "setup",
   "trial",
   "dictation-practice",
   "meeting-notes",
-  "agent-intro",
-  "agent-honesty",
+  "agent",
   "finish",
 ];
 
@@ -169,14 +163,6 @@ export function OnboardingFlow({
           <PrivacyStep onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep statuses={permissionStatuses} onContinue={goNext} />
-        ) : stepId === "setup" ? (
-          <SetupStep
-            shortcutLabel={shortcutLabel}
-            onShortcutLabelChange={setShortcutLabel}
-            language={language}
-            onLanguageChange={setLanguage}
-            onContinue={goNext}
-          />
         ) : stepId === "trial" ? (
           <TrialStep
             account={account}
@@ -187,14 +173,15 @@ export function OnboardingFlow({
           <DictationPracticeStep
             name={firstName}
             shortcutLabel={shortcutLabel}
+            onShortcutLabelChange={setShortcutLabel}
+            language={language}
+            onLanguageChange={setLanguage}
             onContinue={goNext}
           />
         ) : stepId === "meeting-notes" ? (
           <MeetingNotesStep onContinue={goNext} />
-        ) : stepId === "agent-intro" ? (
-          <AgentIntroStep onContinue={goNext} />
-        ) : stepId === "agent-honesty" ? (
-          <AgentHonestyStep
+        ) : stepId === "agent" ? (
+          <AgentStep
             onAcknowledged={() => setAgentRiskAcknowledged(true)}
             onContinue={goNext}
           />

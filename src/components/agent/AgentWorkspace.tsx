@@ -43,7 +43,7 @@ import { IconShieldAi } from "central-icons/IconShieldAi";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { IconPangolin } from "../icons/IconPangolin";
+import { IconSparkle } from "central-icons/IconSparkle";
 import { PangolinSpinner } from "../PangolinSpinner";
 import {
   type CSSProperties,
@@ -3417,7 +3417,7 @@ function PanelTabs({
         aria-selected={activePanel === "chat"}
         onClick={() => onChange("chat")}
       >
-        <IconPangolin size={14} />
+        <IconSparkle size={14} />
         Chat
       </button>
       <button
@@ -3678,7 +3678,7 @@ export function FilesystemPanel({
               <header>
                 <div>
                   <h3 className="agent-files-root-title">
-                    <IconPangolin size={14} />
+                    <IconSparkle size={14} />
                     {root.label}
                   </h3>
                   <p>{root.description}</p>

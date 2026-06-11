@@ -87,8 +87,8 @@ export function PermissionsStep({
   return (
     <section className="onboarding-step">
       <StepHeading
-        title="Give June permissions on your Mac"
-        subtitle="Two permissions power dictation: the microphone to hear you, and accessibility to type your words into whatever app you're using."
+        title="Let June listen and type"
+        subtitle="Dictation needs two macOS permissions."
       />
       <div className="onboarding-permission-stack">
         <PermissionCard
@@ -98,10 +98,10 @@ export function PermissionsStep({
           }
           body={
             micGranted
-              ? "Only while you hold the dictation key or a meeting note is recording."
+              ? "Only while you hold the key or a meeting is recording."
               : micDenied
-                ? "Microphone access is turned off for June. Flip the toggle in System Settings, then come back. We'll notice."
-                : "June only listens while you hold the dictation key or while a meeting note is recording."
+                ? "Turned off in System Settings. Flip the toggle and June will notice."
+                : "June listens only while you hold the dictation key."
           }
           action={
             micDenied
@@ -127,8 +127,8 @@ export function PermissionsStep({
           }
           body={
             accessibilityGranted
-              ? "Your spoken words land at your cursor, in any app."
-              : "Turn on June in System Settings → Privacy & Security → Accessibility, then come back. We'll notice."
+              ? "Your words land at your cursor, in any app."
+              : "Types your words at your cursor. Flip the toggle, then come back."
           }
           action={{
             label: "Open System Settings",

@@ -14,7 +14,7 @@ import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { IconPangolin } from "../icons/IconPangolin";
+import { IconSparkle } from "central-icons/IconSparkle";
 
 type AgentSessionsListProps = {
   sessions: HermesSessionInfo[];
@@ -260,7 +260,7 @@ function AgentSessionListRow({
       >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconPangolin size={15} />
+            <IconSparkle size={15} />
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>

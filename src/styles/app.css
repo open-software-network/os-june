@@ -9934,32 +9934,30 @@ input:focus-visible,
 .onboarding-progress {
   display: flex;
   justify-content: center;
-  gap: var(--sp-7);
+  gap: var(--sp-2);
   padding: calc(var(--titlebar-h) + var(--sp-5)) var(--sp-8) var(--sp-5);
 }
 
-.onboarding-progress-stage {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  font-size: var(--fs-sm);
-  color: var(--muted-foreground);
-  padding-bottom: var(--sp-1);
-  border-bottom: 2px solid transparent;
-  transition: color var(--t-med) var(--ease-out);
+/* Wordless progress: small pills that fill with brand as steps complete.
+ * The current pill stretches, so the bar reads as a moving thumb rather
+ * than a row of labels competing with the step's own headline. */
+.onboarding-progress-seg {
+  width: 18px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--muted-foreground) 26%, transparent);
+  transition:
+    background var(--t-med) var(--ease-out),
+    width var(--t-med) var(--ease-out);
 }
 
-.onboarding-progress-check {
-  color: var(--brand);
+.onboarding-progress-seg[data-state="done"] {
+  background: color-mix(in oklch, var(--brand) 55%, transparent);
 }
 
-.onboarding-progress-stage[data-state="current"] {
-  color: var(--foreground);
-  border-bottom-color: var(--brand);
-}
-
-.onboarding-progress-stage[data-state="done"] {
-  color: var(--foreground);
+.onboarding-progress-seg[data-state="current"] {
+  width: 40px;
+  background: var(--brand);
 }
 
 .onboarding-body {
@@ -9998,8 +9996,14 @@ input:focus-visible,
      jump around between short and tall steps. */
   min-height: 420px;
   /* Every step is its own component, so advancing remounts the section and
-     replays this entrance — the same warm fade the intro screen uses. */
+     replays this entrance. The slide follows the direction of travel
+     (set as data-direction on the body), so steps read as one continuous
+     strip instead of pages blinking in place. */
   animation: onboarding-step-in var(--t-slow) var(--ease-out) backwards;
+}
+
+.onboarding-body[data-direction="back"] .onboarding-step {
+  animation-name: onboarding-step-in-back;
 }
 
 /* Celebration screens (signed-in greet, trial activated): just a heading and
@@ -10016,7 +10020,14 @@ input:focus-visible,
 @keyframes onboarding-step-in {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateX(28px);
+  }
+}
+
+@keyframes onboarding-step-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-28px);
   }
 }
 
@@ -10032,26 +10043,21 @@ input:focus-visible,
   text-align: center;
 }
 
-/* Spot art above a step headline: either the pangolin mascot or a StepSpot
- * badge. One visual anchor for steps whose body is all text. */
+/* Spot art above a step headline: a StepSpot badge holding one filled
+ * icon. Reserved for pitch and celebration screens; working screens lead
+ * with type and their own demo card instead. */
 .onboarding-heading-art {
   display: flex;
   justify-content: center;
   margin-bottom: var(--sp-2);
 }
 
-.onboarding-mascot {
-  width: 88px;
-  height: auto;
-  image-rendering: pixelated;
-}
-
 .onboarding-spot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
+  width: 56px;
+  height: 56px;
   border-radius: var(--r-pill);
   background: color-mix(in oklch, var(--warm-soft) 55%, transparent);
   color: var(--warm-strong);
@@ -10069,16 +10075,21 @@ input:focus-visible,
 .onboarding-title {
   margin: 0;
   font-family: var(--font-serif);
-  font-size: var(--fs-display);
+  /* A notch above --fs-display: with the copy cut down, the headline is
+     the screen and earns the size. */
+  font-size: clamp(var(--fs-display), 3.6vw, 38px);
   font-weight: 400;
   color: var(--foreground);
+  text-wrap: balance;
 }
 
 .onboarding-subtitle {
-  margin: 0;
+  margin: 0 auto;
+  max-width: 44ch;
   font-size: var(--fs-lg);
   line-height: 1.5;
   color: var(--muted-foreground);
+  text-wrap: balance;
 }
 
 .onboarding-actions {
@@ -10109,23 +10120,101 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.onboarding-feature-list {
+/* Welcome screen's three-word feature tour: quiet warm pills under the
+ * subtitle, in place of a card list that said the same thing in sentences. */
+.onboarding-chips {
   margin: 0;
   padding: 0;
   list-style: none;
-  display: grid;
-  gap: var(--sp-4);
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
 }
 
-.onboarding-feature-list li {
-  padding: var(--sp-5) var(--sp-6);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--card);
+.onboarding-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--warm-soft) 40%, transparent);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.onboarding-chip svg {
+  color: var(--warm-strong);
+}
+
+/* Borderless icon rows (privacy pillars): warm icon chip, bold lead-in,
+ * one supporting line. Content floats on the backdrop; no stacked boxes. */
+.onboarding-rows {
+  margin: 0;
+  padding: 0 var(--sp-3);
+  list-style: none;
+  display: grid;
+  gap: var(--sp-6);
+}
+
+.onboarding-rows li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-5);
+}
+
+.onboarding-row-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--warm-soft) 45%, transparent);
+  color: var(--warm-strong);
+}
+
+.onboarding-rows h2 {
+  margin: 0 0 2px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-rows p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* The agent screen's three honest things: brand-numbered single lines. */
+.onboarding-truths {
+  margin: 0;
+  padding: 0 var(--sp-3);
+  list-style: none;
+  display: grid;
+  gap: var(--sp-3);
+  counter-reset: truths;
+}
+
+.onboarding-truths li {
+  counter-increment: truths;
+  display: flex;
+  gap: var(--sp-3);
   font-size: var(--fs-md);
   line-height: 1.5;
   color: var(--body-copy);
-  box-shadow: var(--shadow-sm);
+}
+
+.onboarding-truths li::before {
+  content: counter(truths);
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--brand);
+  font-variant-numeric: tabular-nums;
 }
 
 /* The trial pitch's "today / during / when it ends" story as a vertical
@@ -10189,21 +10278,6 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.onboarding-card-grid {
-  display: grid;
-  gap: var(--sp-4);
-}
-
-.onboarding-info-card {
-  padding: var(--sp-6);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--card);
-  box-shadow: var(--shadow-sm);
-}
-
-.onboarding-info-card h2,
-.onboarding-setting-copy h2,
 .onboarding-permission-copy h2 {
   margin: 0 0 var(--sp-2);
   font-size: var(--fs-lg);
@@ -10211,8 +10285,6 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.onboarding-info-card p,
-.onboarding-setting-copy p,
 .onboarding-permission-copy p {
   margin: 0;
   font-size: var(--fs-md);
@@ -10262,16 +10334,16 @@ input:focus-visible,
   text-align: center;
 }
 
-.onboarding-setting-card {
+/* Language picker as a quiet row under the practice card, not a screen of
+ * its own. */
+.onboarding-language-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-6);
-  padding: var(--sp-6);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--card);
-  box-shadow: var(--shadow-sm);
+  gap: var(--sp-5);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
 }
 
 .onboarding-select {
@@ -10452,43 +10524,6 @@ input:focus-visible,
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-foreground);
-}
-
-.onboarding-honesty-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: var(--sp-4);
-  counter-reset: honesty;
-}
-
-.onboarding-honesty-list li {
-  counter-increment: honesty;
-  padding: var(--sp-6);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--card);
-  box-shadow: var(--shadow-sm);
-}
-
-.onboarding-honesty-list h2 {
-  margin: 0 0 var(--sp-2);
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-.onboarding-honesty-list h2::before {
-  content: counter(honesty) ". ";
-  color: var(--brand);
-}
-
-.onboarding-honesty-list p {
-  margin: 0;
-  font-size: var(--fs-md);
-  line-height: 1.5;
-  color: var(--muted-foreground);
 }
 
 .onboarding-ack {

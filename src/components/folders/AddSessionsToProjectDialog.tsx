@@ -3,7 +3,7 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useState } from "react";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
-import { IconPangolin } from "../icons/IconPangolin";
+import { IconSparkle } from "central-icons/IconSparkle";
 
 type AddSessionsToProjectDialogProps = {
   open: boolean;
@@ -135,7 +135,7 @@ export function AddSessionsToProjectDialog({
                     onClick={() => toggle(session.id)}
                   >
                     <span className="add-notes-icon" aria-hidden>
-                      <IconPangolin size={14} />
+                      <IconSparkle size={14} />
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">

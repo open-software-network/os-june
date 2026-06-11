@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 
 /**
- * Serif headline + optional supporting line, shared by every step. `art`
- * renders spot art above the headline — a StepSpot badge or the pangolin
- * mascot — so text-only steps get one visual anchor up top.
+ * Serif headline + optional one-line support, shared by every step. `art`
+ * renders spot art above the headline (a StepSpot badge) so pitch and
+ * celebration screens get one visual anchor up top.
  */
 export function StepHeading({
   art,
@@ -28,7 +28,7 @@ export function StepHeading({
 }
 
 /**
- * Warm circular badge around a single large icon — the house take on the
+ * Warm circular badge around a single filled icon — the house take on the
  * spot illustration, built from tokens instead of bespoke art.
  * `tone="success"` flips it green for the trial-activated moment.
  */
@@ -43,6 +43,33 @@ export function StepSpot({
     <span className="onboarding-spot" data-tone={tone}>
       {children}
     </span>
+  );
+}
+
+/**
+ * Borderless icon rows: a warm icon chip beside a bolded lead-in and one
+ * supporting line. Replaces the bordered prose cards so content floats on
+ * the backdrop instead of stacking boxes.
+ */
+export function StepRows({
+  items,
+}: {
+  items: { icon: ReactNode; title: string; body: string }[];
+}) {
+  return (
+    <ul className="onboarding-rows">
+      {items.map((item) => (
+        <li key={item.title}>
+          <span className="onboarding-row-icon" aria-hidden>
+            {item.icon}
+          </span>
+          <div>
+            <h2>{item.title}</h2>
+            <p>{item.body}</p>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

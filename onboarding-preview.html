@@ -13,12 +13,14 @@
   Console helpers once it's open:
     june.replayOnboarding()            restart the wizard from step 1
     june.replayOnboarding("trial")     jump to a step (sign-in, privacy,
-                                       data-practices, permissions, setup,
-                                       trial, dictation-practice,
-                                       meeting-notes, agent-intro,
-                                       agent-honesty, finish)
+                                       permissions, trial,
+                                       dictation-practice, meeting-notes,
+                                       agent, finish)
     __JUNE_STUB__.signOut()            see the signed-out welcome pitch
     localStorage.setItem("os-scribe:theme", "dark"); location.reload()
+
+  URL params (for scripted screenshots): ?signedOut=1, ?theme=dark,
+  ?step=<step id>
 -->
 <html lang="en">
   <head>
@@ -26,10 +28,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>June onboarding preview</title>
     <script>
-      // Pre-paint theme bootstrap, same as index.html.
+      // Pre-paint theme bootstrap, same as index.html (plus a ?theme=
+      // override so scripted screenshots can pick a theme per URL).
       (function () {
         try {
-          var stored = localStorage.getItem("os-scribe:theme");
+          var stored =
+            new URLSearchParams(location.search).get("theme") ||
+            localStorage.getItem("os-scribe:theme");
           var resolved =
             stored === "light" || stored === "dark"
               ? stored
@@ -60,14 +65,32 @@
         // The wizard always replays in the preview.
         try {
           localStorage.removeItem("june.onboarding.completedVersion");
+          // URL params, so scripted screenshots can address any state
+          // without a console round-trip.
+          const params = new URLSearchParams(location.search);
+          if (params.get("signedOut") === "1") {
+            localStorage.setItem("june.preview.signedOut", "true");
+          }
+          const step = params.get("step");
+          if (step) {
+            // Steps past sign-in need an account, so a step jump clears any
+            // signed-out flag left by an earlier ?signedOut=1 run.
+            localStorage.removeItem("june.preview.signedOut");
+            localStorage.setItem("june.onboarding.resumeStep", step);
+          }
         } catch (e) {}
 
-        let account = {
-          signedIn: true,
-          configured: true,
-          user: { id: "u1", handle: "you", displayName: "June Tester" },
-          subscription: { subscribed: false },
-        };
+        // signOut() must survive its own reload, so it persists a flag.
+        const SIGNED_OUT_KEY = "june.preview.signedOut";
+        let account =
+          localStorage.getItem(SIGNED_OUT_KEY) === "true"
+            ? { signedIn: false, configured: true }
+            : {
+                signedIn: true,
+                configured: true,
+                user: { id: "u1", handle: "you", displayName: "June Tester" },
+                subscription: { subscribed: false },
+              };
 
         window.__JUNE_STUB__ = {
           emitEvent,
@@ -78,7 +101,8 @@
             };
           },
           signOut() {
-            account = { signedIn: false, configured: true };
+            localStorage.setItem(SIGNED_OUT_KEY, "true");
+            localStorage.removeItem("june.onboarding.resumeStep");
             location.reload();
           },
         };
@@ -109,6 +133,7 @@
               case "os_accounts_status":
                 return account;
               case "os_accounts_login":
+                localStorage.removeItem(SIGNED_OUT_KEY);
                 account = {
                   signedIn: true,
                   configured: true,

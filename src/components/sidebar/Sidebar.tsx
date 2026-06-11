@@ -54,7 +54,7 @@ import type {
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PangolinSpinner } from "../PangolinSpinner";
-import { IconPangolin } from "../icons/IconPangolin";
+import { IconSparkle } from "central-icons/IconSparkle";
 
 export type SidebarView =
   | "notes"
@@ -154,7 +154,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
     title: "AI",
     items: [
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
-      { id: "agent", label: "Agent", icon: <IconPangolin size={16} /> },
+      { id: "agent", label: "Agent", icon: <IconSparkle size={16} /> },
     ],
   },
   {
@@ -285,7 +285,7 @@ export function Sidebar({
           id: `agent:${session.id}`,
           label: title,
           meta: "Agent",
-          icon: <IconPangolin size={15} />,
+          icon: <IconSparkle size={15} />,
           searchText: normalizeCommandQuery(
             `${title} ${session.preview ?? ""} agent session`,
           ),
@@ -1279,7 +1279,7 @@ function AgentSessionRow({
               <PangolinSpinner className="agent-sidebar-spinner" />
             </span>
           ) : (
-            <IconPangolin size={16} />
+            <IconSparkle size={16} />
           )}
         </span>
         <span className="note-row-title">

@@ -362,7 +362,6 @@ body {
   width: 60px;
   height: 59px;
   object-fit: contain;
-  image-rendering: pixelated;
   filter: drop-shadow(0 10px 14px oklch(0% 0 none / 32%))
     drop-shadow(0 2px 2px oklch(0% 0 none / 26%));
 }

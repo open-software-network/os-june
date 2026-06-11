@@ -140,63 +140,48 @@ describe("OnboardingFlow", () => {
     });
   }
 
-  async function walkToHonesty(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(
-      screen.getByRole("button", { name: "Let's get you set up" }),
-    );
-    // Privacy education + data practices.
-    await screen.findByRole("heading", {
-      name: "Private by architecture, not by promise",
-    });
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "June doesn't collect your data",
-    });
+  async function walkToAgent(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Set up June" }));
+    // Privacy education.
+    await screen.findByRole("heading", { name: "Private by design" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     // Permissions: continue stays locked until the helper reports both granted.
-    await screen.findByRole("heading", {
-      name: "Give June permissions on your Mac",
-    });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
     grantPermissions();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    // Set up: onboarding applies the fn dictation key.
-    await screen.findByRole("heading", { name: "Set up dictation" });
+    // Dictation practice: typing into the field stands in for dictation,
+    // and the step applies the fn dictation key on mount.
+    const input = await screen.findByPlaceholderText(/Hold Fn/i);
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
         "push_to_talk",
         expect.objectContaining({ code: "Fn" }),
       ),
     );
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    // Dictation practice: typing into the field stands in for dictation.
-    const input = await screen.findByPlaceholderText(/Hold Fn/i);
     await user.type(input, "hello there");
-    await screen.findByText(/Good work!/);
+    await screen.findByText(/That's it\./);
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    // Meeting notes, agent intro.
+    // Meeting notes.
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "Before you meet the agent, three honest things",
-    });
+    await screen.findByRole("heading", { name: "Meet the agent" });
   }
 
   it("walks the full flow and persists what the user chose", async () => {
     const user = userEvent.setup();
     const onComplete = await renderFlow();
 
-    await walkToHonesty(user);
+    await walkToAgent(user);
 
-    // The honesty screen gates on the acknowledgment checkbox.
-    const meetAgent = screen.getByRole("button", { name: "Meet the agent" });
-    expect(meetAgent).toBeDisabled();
+    // The agent screen gates on the acknowledgment checkbox.
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(continueButton).toBeDisabled();
     await user.click(screen.getByRole("checkbox"));
-    expect(meetAgent).toBeEnabled();
-    await user.click(meetAgent);
+    expect(continueButton).toBeEnabled();
+    await user.click(continueButton);
 
     await user.click(
       await screen.findByRole("button", { name: "Start using June" }),
@@ -209,28 +194,16 @@ describe("OnboardingFlow", () => {
   });
 
   async function walkToTrial(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(
-      screen.getByRole("button", { name: "Let's get you set up" }),
-    );
-    await screen.findByRole("heading", {
-      name: "Private by architecture, not by promise",
-    });
+    await user.click(screen.getByRole("button", { name: "Set up June" }));
+    await screen.findByRole("heading", { name: "Private by design" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "June doesn't collect your data",
-    });
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "Give June permissions on your Mac",
-    });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
     grantPermissions();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Set up dictation" });
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Start your free trial" });
+    await screen.findByRole("heading", { name: "Try June free" });
   }
 
   it("signs the user in from the first step", async () => {
@@ -269,14 +242,14 @@ describe("OnboardingFlow", () => {
     // portal command must not have fired.
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
     await screen.findByRole("heading", {
-      name: "Finish checkout in your browser",
+      name: "Finish in your browser",
     });
 
     // Checkout completes in the browser; the refreshed snapshot flips the
     // step to its success state and pulls the app forward.
     rerender(<OnboardingFlow {...props} account={account} />);
     await screen.findByRole("heading", {
-      name: "You're in! Your free trial is active",
+      name: "Your trial is live",
     });
     expect(mocks.focusMainWindow).toHaveBeenCalledOnce();
 
@@ -301,21 +274,17 @@ describe("OnboardingFlow", () => {
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
-    await screen.findByRole("heading", {
-      name: "Finish checkout in your browser",
-    });
+    await screen.findByRole("heading", { name: "Finish in your browser" });
 
     // Cancel: back to the pitch with a friendly note, not an error.
     emitBillingCallback?.({ payload: "cancel" });
-    await screen.findByRole("heading", { name: "Start your free trial" });
+    await screen.findByRole("heading", { name: "Try June free" });
     await screen.findByText(/Checkout canceled/);
 
     // Success: the deep link triggers an immediate status refresh.
     onRefreshAccount.mockClear();
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
-    await screen.findByRole("heading", {
-      name: "Finish checkout in your browser",
-    });
+    await screen.findByRole("heading", { name: "Finish in your browser" });
     emitBillingCallback?.({ payload: "success" });
     await waitFor(() => expect(onRefreshAccount).toHaveBeenCalled());
   });
@@ -339,22 +308,17 @@ describe("OnboardingFlow", () => {
   });
 
   it("resumes a half-finished run at the saved step", async () => {
-    setOnboardingResumeStep("setup");
+    setOnboardingResumeStep("meeting-notes");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Set up dictation" });
+    await screen.findByRole("heading", { name: "Never take notes again" });
   });
 
   it("requests the mic permission when the mic screen shows", async () => {
     const user = userEvent.setup();
     await renderFlow();
-    await user.click(
-      screen.getByRole("button", { name: "Let's get you set up" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Set up June" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "Give June permissions on your Mac",
-    });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "request_microphone_permission",

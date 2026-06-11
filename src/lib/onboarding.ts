@@ -6,7 +6,7 @@
  * everyone after a flow redesign.
  */
 
-const ONBOARDING_VERSION = 4;
+const ONBOARDING_VERSION = 5;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";

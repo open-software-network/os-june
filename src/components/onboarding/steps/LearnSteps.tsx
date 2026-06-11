@@ -1,33 +1,67 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { LANGUAGE_OPTIONS } from "../../../lib/dictation-languages";
+import { setDictationLanguage, setDictationShortcut } from "../../../lib/tauri";
 import { StepActions, StepHeading } from "../StepChrome";
+
+// The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
+// on the Rust side.
+const FN_SHORTCUT = {
+  code: "Fn",
+  modifiers: {
+    command: false,
+    control: false,
+    option: false,
+    shift: false,
+    function: true,
+  },
+  label: "Fn",
+  pressCount: 1 as const,
+};
 
 /**
  * Live dictation rep inside a fake chat card. The dictation pipeline types
  * into whichever field has focus — during onboarding that's our own
  * textarea, so the practice run exercises the real hotkey, mic, and paste
  * path end to end. Success is simply "words arrived".
+ *
+ * This step also owns dictation setup: it applies the fn default on mount
+ * (idempotent; rebind later in Settings) and offers the language picker in
+ * a quiet row under the card, so setup never needs a screen of its own.
  */
 export function DictationPracticeStep({
   name,
   shortcutLabel,
+  onShortcutLabelChange,
+  language,
+  onLanguageChange,
   onContinue,
 }: {
   name?: string;
   shortcutLabel: string;
+  onShortcutLabelChange: (label: string) => void;
+  language: string;
+  onLanguageChange: (language: string) => void;
   onContinue: () => void;
 }) {
   const [value, setValue] = useState("");
   const succeeded = value.trim().length >= 4;
 
+  useEffect(() => {
+    setDictationShortcut("push_to_talk", FN_SHORTCUT)
+      .then(() => onShortcutLabelChange(FN_SHORTCUT.label))
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <section className="onboarding-step">
       <StepHeading
-        title="Try it: reply by voice"
+        title="Now say something"
         subtitle={
           <>
-            Click into the message box, hold{" "}
-            <kbd className="onboarding-kbd">{shortcutLabel}</kbd>, say
-            something, then release.
+            Click the message box, hold{" "}
+            <kbd className="onboarding-kbd">{shortcutLabel}</kbd>, talk, then
+            let go.
           </>
         }
       />
@@ -46,9 +80,30 @@ export function DictationPracticeStep({
         />
         {succeeded ? (
           <p className="onboarding-practice-success" role="status">
-            Good work! That's all dictation is, anywhere on your Mac.
+            That's it. Dictation works like this in every app.
           </p>
         ) : null}
+      </div>
+      <div className="onboarding-language-row">
+        <label htmlFor="onboarding-language">
+          June understands 20+ languages
+        </label>
+        <select
+          id="onboarding-language"
+          className="onboarding-select"
+          value={language}
+          onChange={(event) => {
+            const next = event.target.value;
+            onLanguageChange(next);
+            void setDictationLanguage(next || undefined).catch(() => undefined);
+          }}
+        >
+          {LANGUAGE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
       <StepActions
         onContinue={onContinue}
@@ -70,7 +125,7 @@ export function MeetingNotesStep({ onContinue }: { onContinue: () => void }) {
     <section className="onboarding-step">
       <StepHeading
         title="Never take notes again"
-        subtitle="June listens to your meetings and writes the notes: decisions, action items, who said what."
+        subtitle="June listens to your meetings and writes the notes."
       />
       <div className="onboarding-practice-card">
         <div className="onboarding-practice-header">Meeting notes</div>
@@ -84,21 +139,41 @@ export function MeetingNotesStep({ onContinue }: { onContinue: () => void }) {
         </ul>
       </div>
       <p className="onboarding-footnote">
-        Transcripts and notes stay on your Mac. The first time you record a
-        meeting, macOS will ask for system audio. That's the permission we
-        mentioned earlier.
+        Notes stay on your Mac. macOS asks for system audio the first time you
+        record.
       </p>
       <StepActions onContinue={onContinue} />
     </section>
   );
 }
 
-export function AgentIntroStep({ onContinue }: { onContinue: () => void }) {
+// One line per honest thing. The full reasoning lives in the docs; the
+// screen's job is the gist plus the acknowledgment.
+const AGENT_TRUTHS = [
+  "It can make mistakes, so glance over its work before it ships.",
+  "It asks first. Edits, sends, and purchases all wait for your yes.",
+  "Private inference protects your data. What the agent does, you approve.",
+];
+
+/**
+ * Meet-the-agent screen: the approval card shows how the agent works
+ * (it proposes, you decide) and the acknowledgment gates the agent on the
+ * one distinction that matters — a seatbelt moment, not a EULA.
+ */
+export function AgentStep({
+  onAcknowledged,
+  onContinue,
+}: {
+  onAcknowledged: () => void;
+  onContinue: () => void;
+}) {
+  const [checked, setChecked] = useState(false);
+
   return (
     <section className="onboarding-step">
       <StepHeading
-        title="Hand off real work"
-        subtitle="Give June a task, not just a question. Draft the doc, dig through the files, pull the research together. The agent works on your Mac and comes back with it done."
+        title="Meet the agent"
+        subtitle="Hand June real work. It does the task on your Mac and asks before anything irreversible."
       />
       <div className="onboarding-practice-card">
         <div className="onboarding-practice-header">
@@ -115,63 +190,10 @@ export function AgentIntroStep({ onContinue }: { onContinue: () => void }) {
           <span className="onboarding-approval-button">Decline</span>
         </div>
       </div>
-      <p className="onboarding-footnote">
-        That approval card is how the agent works: it proposes, you decide.
-      </p>
-      <StepActions onContinue={onContinue} />
-    </section>
-  );
-}
-
-/**
- * The honesty screen. Gates the agent on an explicit acknowledgment — a
- * seatbelt moment, not a EULA. Copy encodes the load-bearing distinction:
- * inference privacy is a property of June (always on); action risk is a
- * property of what the user authorizes (scoped, approved, logged).
- */
-export function AgentHonestyStep({
-  onAcknowledged,
-  onContinue,
-}: {
-  onAcknowledged: () => void;
-  onContinue: () => void;
-}) {
-  const [checked, setChecked] = useState(false);
-
-  return (
-    <section className="onboarding-step">
-      <StepHeading title="Before you meet the agent, three honest things" />
-      <ol className="onboarding-honesty-list">
-        <li>
-          <h2>The agent can make mistakes.</h2>
-          <p>
-            It's powerful, and that means it can misread a file, take a wrong
-            step, or sound confident while being wrong. Treat its work like a
-            sharp new hire's: useful, fast, and worth a glance before it ships.
-          </p>
-        </li>
-        <li>
-          <h2>So nothing irreversible happens without you.</h2>
-          <p>
-            The agent asks before it edits or deletes files, sends anything, or
-            spends anything. Every session has a full activity log, and you can
-            stop it at any moment.
-          </p>
-        </li>
-        <li>
-          <h2>
-            Private inference protects your data. It doesn't approve the agent's
-            actions.
-          </h2>
-          <p>
-            When June thinks, your prompts go to zero-retention models: nothing
-            stored, nothing trained on. That's always on. When the agent acts
-            (visits a site, calls a tool, sends an email you approved), the
-            other side sees what it shares, exactly as if you'd done it
-            yourself. June keeps your data private; it can't make the rest of
-            the internet private. That's why you're the approval step.
-          </p>
-        </li>
+      <ol className="onboarding-truths">
+        {AGENT_TRUTHS.map((truth) => (
+          <li key={truth}>{truth}</li>
+        ))}
       </ol>
       <label className="onboarding-ack">
         <input
@@ -180,12 +202,10 @@ export function AgentHonestyStep({
           onChange={(event) => setChecked(event.target.checked)}
         />
         <span>
-          I understand the agent can make mistakes, and I stay in control of
-          what it does.
+          The agent can make mistakes, and I stay in control of what it does.
         </span>
       </label>
       <StepActions
-        continueLabel="Meet the agent"
         continueDisabled={!checked}
         onContinue={() => {
           onAcknowledged();

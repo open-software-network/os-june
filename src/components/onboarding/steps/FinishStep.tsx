@@ -1,4 +1,4 @@
-import { IconRocket } from "central-icons/IconRocket";
+import { IconRocket } from "central-icons-filled/IconRocket";
 import { StepActions, StepHeading, StepSpot } from "../StepChrome";
 
 export function FinishStep({
@@ -9,31 +9,21 @@ export function FinishStep({
   onComplete: () => void;
 }) {
   return (
-    <section className="onboarding-step">
+    <section className="onboarding-step onboarding-step-hero">
       <StepHeading
         art={
           <StepSpot>
-            <IconRocket size={28} aria-hidden />
+            <IconRocket size={26} aria-hidden />
           </StepSpot>
         }
         title="You're all set"
-        subtitle="Three ways to put June to work right now."
+        subtitle={
+          <>
+            Hold <kbd className="onboarding-kbd">{shortcutLabel}</kbd> in any
+            app and start talking.
+          </>
+        }
       />
-      <ul className="onboarding-feature-list">
-        <li>
-          <strong>Dictate anywhere</strong>: hold{" "}
-          <kbd className="onboarding-kbd">{shortcutLabel}</kbd> in any app and
-          speak.
-        </li>
-        <li>
-          <strong>Take meeting notes</strong>: start a recording from the
-          sidebar when your next meeting begins.
-        </li>
-        <li>
-          <strong>Hand off a task</strong>: open the agent and ask it to
-          summarize a folder or research a topic.
-        </li>
-      </ul>
       <StepActions continueLabel="Start using June" onContinue={onComplete} />
     </section>
   );

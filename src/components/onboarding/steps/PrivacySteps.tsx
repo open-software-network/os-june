@@ -1,19 +1,24 @@
-import { IconLock } from "central-icons/IconLock";
-import { IconShieldCheck } from "central-icons/IconShieldCheck";
-import { StepActions, StepHeading, StepSpot } from "../StepChrome";
+import { IconEyeSlash } from "central-icons-filled/IconEyeSlash";
+import { IconLock } from "central-icons-filled/IconLock";
+import { IconShieldCheck2 } from "central-icons-filled/IconShieldCheck2";
+import { IconShieldCode } from "central-icons-filled/IconShieldCode";
+import { StepActions, StepHeading, StepRows, StepSpot } from "../StepChrome";
 
-const PRIVACY_CARDS = [
+const PRIVACY_ROWS = [
   {
-    title: "Local by default",
-    body: "The agent runs on your Mac, built on open-source Hermes. Your files, sessions, and memory stay on your disk, never mirrored to a cloud.",
+    icon: <IconLock size={18} aria-hidden />,
+    title: "Stays on your Mac",
+    body: "Your files, notes, and memory live on your disk, nowhere else.",
   },
   {
-    title: "Private inference",
-    body: "Prompts leave your Mac only for model inference, routed to zero-retention models by default. Nothing stored, nothing trained on. Ever.",
+    icon: <IconEyeSlash size={18} aria-hidden />,
+    title: "Nothing stored, nothing trained on",
+    body: "Prompts route to zero-retention models by default.",
   },
   {
-    title: "Verifiable",
-    body: "Our code is open source and our backend runs in a secure enclave. You don't have to trust us. You can check.",
+    icon: <IconShieldCode size={18} aria-hidden />,
+    title: "Check for yourself",
+    body: "Open code, attested backend. You don't have to trust us.",
   },
 ];
 
@@ -23,60 +28,21 @@ export function PrivacyStep({ onContinue }: { onContinue: () => void }) {
       <StepHeading
         art={
           <StepSpot>
-            <IconShieldCheck size={28} aria-hidden />
+            <IconShieldCheck2 size={26} aria-hidden />
           </StepSpot>
         }
-        title="Private by architecture, not by promise"
-        subtitle="Every layer of June defaults to private. The ones that matter most, you can verify."
+        title="Private by design"
       />
-      <div className="onboarding-card-grid">
-        {PRIVACY_CARDS.map((card) => (
-          <article key={card.title} className="onboarding-info-card">
-            <h2>{card.title}</h2>
-            <p>{card.body}</p>
-          </article>
-        ))}
-      </div>
+      <StepRows items={PRIVACY_ROWS} />
       <p className="onboarding-footnote">
         <a
           href="https://opensoftware.network/privacy"
           target="_blank"
           rel="noreferrer"
         >
-          Verify it yourself
+          Read how it works
         </a>
-        : how routing, retention, and attestation work.
       </p>
-      <StepActions onContinue={onContinue} />
-    </section>
-  );
-}
-
-export function DataPracticesStep({ onContinue }: { onContinue: () => void }) {
-  return (
-    <section className="onboarding-step">
-      <StepHeading
-        art={
-          <StepSpot>
-            <IconLock size={28} aria-hidden />
-          </StepSpot>
-        }
-        title="June doesn't collect your data"
-        subtitle="We store only what it takes to run the service. Everything else stays yours."
-      />
-      <div className="onboarding-card-grid">
-        <article className="onboarding-info-card">
-          <h2>What we store</h2>
-          <p>Your account, login, and billing records. That's the list.</p>
-        </article>
-        <article className="onboarding-info-card">
-          <h2>What we never store</h2>
-          <p>
-            Your prompts, transcripts, files, and memory. They stay on your Mac,
-            and inference runs through zero-retention models.
-          </p>
-        </article>
-      </div>
       <StepActions onContinue={onContinue} />
     </section>
   );

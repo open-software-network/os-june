@@ -19,7 +19,7 @@ import {
   type NoteListItemDto,
 } from "../../lib/tauri";
 import { sessionTimestamp } from "../../lib/hermes-adapter";
-import { IconPangolin } from "../icons/IconPangolin";
+import { IconSparkle } from "central-icons/IconSparkle";
 import {
   type DragEvent,
   type ReactNode,
@@ -500,7 +500,7 @@ function FolderCard({
             <>
               <span className="metadata-dot" aria-hidden />
               <span className="folder-card-footer-icon" aria-hidden>
-                <IconPangolin size={11} />
+                <IconSparkle size={11} />
               </span>
               <span>
                 {folderSessions.length}{" "}
@@ -779,7 +779,7 @@ function FolderDetail({
               <>
                 <span className="metadata-dot" aria-hidden />
                 <span className="folder-detail-meta-pill" aria-hidden>
-                  <IconPangolin size={12} />
+                  <IconSparkle size={12} />
                 </span>
                 {folderSessions.length}{" "}
                 {folderSessions.length === 1 ? "session" : "sessions"}
@@ -1010,7 +1010,7 @@ function FolderSessionRow({
       >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconPangolin size={15} />
+            <IconSparkle size={15} />
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>
@@ -1146,7 +1146,7 @@ function FolderAddMenu({
               onCreateSession();
             }}
           >
-            <IconPangolin size={14} />
+            <IconSparkle size={14} />
             New session
           </button>
           <button

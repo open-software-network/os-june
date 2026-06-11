@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import mascotUrl from "../../../assets/june-pangolin.svg";
+import { IconMicrophone } from "central-icons-filled/IconMicrophone";
+import { IconNote1 } from "central-icons-filled/IconNote1";
+import { IconSparkle } from "central-icons-filled/IconSparkle";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { Spinner } from "../../ui/Spinner";
-import { StepActions, StepHeading } from "../StepChrome";
+import { StepActions, StepHeading, StepSpot } from "../StepChrome";
 
-const mascot = <img className="onboarding-mascot" src={mascotUrl} alt="" />;
+const FEATURE_CHIPS = [
+  { icon: <IconMicrophone size={15} aria-hidden />, label: "Dictate anywhere" },
+  { icon: <IconNote1 size={15} aria-hidden />, label: "Meeting notes" },
+  { icon: <IconSparkle size={15} aria-hidden />, label: "A real agent" },
+];
 
 /**
  * Step 1: welcome + sign-in, fused into one screen so the wizard's progress
@@ -63,18 +69,19 @@ export function SignInStep({
     return (
       <section className="onboarding-step onboarding-step-hero">
         <StepHeading
-          art={mascot}
+          art={
+            <StepSpot>
+              <IconSparkle size={26} aria-hidden />
+            </StepSpot>
+          }
           title={name ? `Welcome, ${name}!` : "Welcome to June"}
           subtitle={
             account.user?.handle
-              ? `You're signed in as @${account.user.handle}. Let's get June set up.`
-              : "You're signed in. Let's get June set up."
+              ? `Signed in as @${account.user.handle}.`
+              : "You're signed in."
           }
         />
-        <StepActions
-          continueLabel="Let's get you set up"
-          onContinue={onContinue}
-        />
+        <StepActions continueLabel="Set up June" onContinue={onContinue} />
       </section>
     );
   }
@@ -82,23 +89,16 @@ export function SignInStep({
   return (
     <section className="onboarding-step">
       <StepHeading
-        art={mascot}
         title="Welcome to June"
-        subtitle="June is your private AI assistant: dictate into any app, never take meeting notes again, and hand off real work to an agent that runs on your Mac."
+        subtitle="Your private AI assistant. Talk instead of type, skip the note-taking, hand off real work."
       />
-      <ul className="onboarding-feature-list">
-        <li>
-          <strong>Talk, don't type</strong>: hold a key and speak; June types at
-          your cursor in whatever app has focus.
-        </li>
-        <li>
-          <strong>Never take notes again</strong>: decisions, action items, and
-          who said what, written for you.
-        </li>
-        <li>
-          <strong>Hand off real work</strong>: give June a task, not just a
-          question. It comes back with it done.
-        </li>
+      <ul className="onboarding-chips" aria-hidden>
+        {FEATURE_CHIPS.map((chip) => (
+          <li key={chip.label} className="onboarding-chip">
+            {chip.icon}
+            <span>{chip.label}</span>
+          </li>
+        ))}
       </ul>
       {account.configured ? (
         busy ? (
@@ -112,7 +112,7 @@ export function SignInStep({
               <span>Complete sign-in in your browser</span>
             </span>
             <span className="onboarding-browser-wait-hint">
-              June picks up where you left off the moment you're done.
+              June picks up the moment you're done.
             </span>
             <button
               type="button"

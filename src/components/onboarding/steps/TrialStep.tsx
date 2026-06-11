@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { IconCircleCheck } from "central-icons/IconCircleCheck";
-import { IconGift1 } from "central-icons/IconGift1";
+import { IconCircleCheck } from "central-icons-filled/IconCircleCheck";
+import { IconGift1 } from "central-icons-filled/IconGift1";
 import {
   isSubscriptionActive,
   useTrialCheckout,
@@ -15,15 +15,15 @@ import { StepActions, StepHeading, StepSpot } from "../StepChrome";
 const TRIAL_TIMELINE = [
   {
     title: "Today",
-    body: "Full access to dictation, meeting notes, and the agent. You pay nothing now.",
+    body: "Full access, no charge.",
   },
   {
     title: "During your trial",
-    body: "Use June everywhere. Cancel in one click from your account and keep access through the trial.",
+    body: "Cancel in one click and keep access to the end.",
   },
   {
-    title: "When the trial ends",
-    body: "Your membership starts. Cancel before then and you won't be charged.",
+    title: "When it ends",
+    body: "Your membership starts. No charge before then.",
   },
 ];
 
@@ -77,11 +77,11 @@ export function TrialStep({
         <StepHeading
           art={
             <StepSpot tone="success">
-              <IconCircleCheck size={28} aria-hidden />
+              <IconCircleCheck size={26} aria-hidden />
             </StepSpot>
           }
-          title="You're in! Your free trial is active"
-          subtitle="No charge until the trial ends, and you can cancel anytime from your account. Now for the fun part."
+          title="Your trial is live"
+          subtitle="No charge until it ends. Cancel anytime from your account."
         />
         <StepActions
           continueLabel="Try your first dictation"
@@ -95,11 +95,11 @@ export function TrialStep({
     return (
       <section className="onboarding-step">
         <StepHeading
-          title="Finish checkout in your browser"
+          title="Finish in your browser"
           subtitle={
             checkout.usedPortalFallback
-              ? "We opened your account portal. Start the free trial there. June will notice the moment you're done."
-              : "We opened a secure Stripe checkout. June will notice the moment you're done. No need to come back and click anything."
+              ? "We opened your account portal. Start your free trial there."
+              : "June will notice the moment you're done."
           }
         />
         <div
@@ -135,11 +135,11 @@ export function TrialStep({
       <StepHeading
         art={
           <StepSpot>
-            <IconGift1 size={28} aria-hidden />
+            <IconGift1 size={26} aria-hidden />
           </StepSpot>
         }
-        title="Start your free trial"
-        subtitle="Everything you just set up (dictation, meeting notes, the agent) runs on your June membership."
+        title="Try June free"
+        subtitle="Dictation, meeting notes, and the agent, all on one membership."
       />
       <ol className="onboarding-timeline">
         {TRIAL_TIMELINE.map((item) => (
@@ -150,8 +150,7 @@ export function TrialStep({
         ))}
       </ol>
       <p className="onboarding-footnote">
-        Checkout opens in your browser. June notices the moment you finish and
-        brings you right back.
+        Checkout opens in your browser. June picks up the moment you're done.
       </p>
       <StepActions
         continueLabel={

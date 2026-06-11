@@ -1,5 +1,5 @@
 import { emit, listen } from "@tauri-apps/api/event";
-import mascotUrl from "./assets/june-pangolin.svg";
+import mascotUrl from "./assets/june-mark.svg";
 import {
   AGENT_OPEN_EVENT,
   AGENT_REPLY_EVENT,
