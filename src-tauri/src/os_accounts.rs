@@ -470,6 +470,16 @@ const PREPARED_CHECKOUT_TTL: Duration = Duration::from_secs(30 * 60);
 
 static PREPARED_CHECKOUT: StdMutex<Option<PreparedCheckout>> = StdMutex::new(None);
 
+/// Serializes the prepare path. Without it, concurrent prepare calls (a
+/// remounting pitch screen, an effect double-fire) both see an empty cache
+/// and both mint a Stripe Checkout session — the loser's store overwrites
+/// the winner's and the discarded session sits open against Stripe's limits
+/// for 24 hours. The loser of this lock re-checks the cache once it acquires
+/// and reuses the winner's mint instead. Async because it is held across the
+/// mint's awaits; `PREPARED_CHECKOUT` above stays a std mutex because it is
+/// only ever held for a read or a swap.
+static PREPARE_TRIAL_CHECKOUT_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
 fn take_fresh_prepared_checkout() -> Option<String> {
     let mut slot = PREPARED_CHECKOUT.lock().ok()?;
     let prepared = slot.take()?;
@@ -587,6 +597,10 @@ pub enum TrialCheckoutPrepared {
 /// explicit click path.
 #[tauri::command]
 pub async fn os_accounts_prepare_trial_checkout() -> Result<TrialCheckoutPrepared, AppError> {
+    // Held across the mint so overlapping prepare calls can't both reach
+    // Stripe; the freshness re-check below then answers the loser from the
+    // winner's cache entry. See PREPARE_TRIAL_CHECKOUT_LOCK.
+    let _prepare_guard = PREPARE_TRIAL_CHECKOUT_LOCK.lock().await;
     if prepared_checkout_is_fresh() {
         return Ok(TrialCheckoutPrepared::Ready);
     }
