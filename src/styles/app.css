@@ -10671,7 +10671,8 @@ button.agent-safety-badge:hover {
   border-top: 1px solid var(--border-subtle);
 }
 
-.onboarding-perm-icon {
+.onboarding-perm-icon,
+.onboarding-discovery-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -11001,19 +11002,42 @@ button.agent-safety-badge:hover {
   animation: onboarding-rise var(--t-med) var(--ease-out);
 }
 
-/* One last question: where the user discovered June. A quiet form row —
-   muted label over a full-width select — sitting between the practice card
-   and the primary action, never gating it. */
+/* One last question: where the user discovered June. Dressed exactly like
+   the permission rows' card (same border, radius, shadow, icon chip) so it
+   reads as a deliberate part of the step, not a floating form field. The
+   select goes full width below the copy — beside it, neither fits in the
+   360px card. */
 .onboarding-discovery {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
   text-align: left;
 }
 
-.onboarding-discovery-label {
-  color: var(--muted-foreground);
+.onboarding-discovery-head {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: var(--sp-3);
+  align-items: center;
+}
+
+.onboarding-discovery-copy h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.onboarding-discovery-copy p {
+  margin: 2px 0 0;
   font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
 }
 
 .onboarding-discovery .select-control,
