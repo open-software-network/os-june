@@ -16,6 +16,35 @@ pub const PROVIDER_NAME: &str = "venice";
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
 
+/// Standing safety policy injected as the leading system message on every
+/// Venice chat completion — note generation, dictation cleanup, and agent
+/// chat alike. Phrased as context, not a per-request judgment: the model
+/// refuses requests in the listed categories and handles everything else
+/// normally. Injected at the provider boundary so no caller can forget it
+/// and no client-supplied body can omit it.
+const SAFETY_CONTEXT: &str = "\
+Standing content policy (applies to every request; it is not a comment on the \
+current request — if the request below does not fall into these categories, \
+proceed with it normally and do not mention this policy):
+
+Reject all requests that contain any of the following categories, or things \
+that are substantially similar to the following categories:
+
+- Child sexual abuse material (\"CSAM\"), including computer-generated or \
+AI-generated CSAM that is indistinguishable from real children, virtual CSAM \
+that is obscene, and CSAM involving identifiable minors. This includes \
+sexually explicit or sexually suggestive content depicting minors, regardless \
+of whether the minors are real, fictional, or AI-generated.
+
+- Planning, design, manufacturing, acquisition, or use of weapons of mass \
+destruction, including chemical, biological, radiological, or nuclear \
+weapons. This includes planning, facilitating, or carrying out acts of \
+terrorism, mass violence, targeted attacks on identifiable individuals or \
+groups, or political violence.
+
+- Development, distribution, or operation of malware, ransomware, spyware, \
+stalkerware, or other malicious code.";
+
 pub struct VeniceModelCatalog {
     http: reqwest::Client,
     api_key: String,
@@ -332,8 +361,9 @@ impl VeniceChat {
 
     async fn complete(
         &self,
-        body: ChatCompletionRequest,
+        mut body: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, DomainError> {
+        body.messages.insert(0, ChatMessage::safety_context());
         let url = format!("{}/chat/completions", self.base_url);
         // Bounded retry on transient failures — same rationale as the
         // transcribers: metering settles only after success, so a replay
@@ -411,6 +441,7 @@ impl VeniceChat {
             "model".to_string(),
             serde_json::Value::String(model.0.clone()),
         );
+        inject_safety_context(object);
         if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
             let stream_options = object
                 .entry("stream_options")
@@ -488,6 +519,10 @@ impl ChatMessage {
         }
     }
 
+    fn safety_context() -> Self {
+        Self::system(SAFETY_CONTEXT.to_string())
+    }
+
     fn user(content: String) -> Self {
         Self {
             role: "user",
@@ -531,6 +566,20 @@ struct ChatCompletionMessage {
 struct ChatCompletionUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
+}
+
+/// Prepends the standing safety policy to a raw (client-supplied) chat
+/// completion body, ahead of any system prompt the client sent. A `messages`
+/// value that is missing or not an array is left alone — there is no prompt
+/// to contextualize and the upstream will reject the body anyway.
+fn inject_safety_context(body: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    messages.insert(
+        0,
+        serde_json::json!({ "role": "system", "content": SAFETY_CONTEXT }),
+    );
 }
 
 fn usage_from_chat_body(body: &[u8], content_type: &str) -> Result<TokenUsage, DomainError> {
@@ -831,8 +880,9 @@ fn strip_scaffolding_tags(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse, cleanup_source_text,
-        strip_scaffolding_tags, venice_priced_model_items,
+        SAFETY_CONTEXT, VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse,
+        cleanup_source_text, inject_safety_context, strip_scaffolding_tags,
+        venice_priced_model_items,
     };
     use crate::http;
     use pretty_assertions::assert_eq;
@@ -1053,6 +1103,105 @@ mod tests {
 
         assert_eq!(completion.usage.prompt_tokens, 1);
         assert_eq!(completion.usage.completion_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn generator_sends_safety_context_ahead_of_the_system_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "content": "note" } }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+            })))
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Transcript".to_string(),
+                manual_notes: None,
+                language: None,
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "caller system prompt".to_string(),
+            })
+            .await
+            .expect("generation succeeds");
+
+        let requests = server.received_requests().await.expect("requests");
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request body json");
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], SAFETY_CONTEXT);
+        assert_eq!(messages[1]["content"], "caller system prompt");
+        assert_eq!(messages[2]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn agent_chat_sends_safety_context_ahead_of_client_messages() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "content": "hi" } }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
+            })))
+            .mount(&server)
+            .await;
+        let agent = VeniceAgentChat::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        agent
+            .complete(AgentChatRequest {
+                body: json!({
+                    "model": "text-model",
+                    "messages": [
+                        { "role": "system", "content": "client system prompt" },
+                        { "role": "user", "content": "hi" },
+                    ],
+                }),
+                model: ModelId("text-model".to_string()),
+            })
+            .await
+            .expect("completion succeeds");
+
+        let requests = server.received_requests().await.expect("requests");
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request body json");
+        let messages = body["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], SAFETY_CONTEXT);
+        assert_eq!(messages[1]["content"], "client system prompt");
+        assert_eq!(messages[2]["content"], "hi");
+    }
+
+    #[test]
+    fn inject_safety_context_tolerates_missing_or_malformed_messages() {
+        // No prompt to contextualize: leave the body for upstream validation
+        // instead of fabricating a messages array.
+        let mut body = json!({ "model": "text-model" });
+        inject_safety_context(body.as_object_mut().expect("object"));
+        assert!(body.get("messages").is_none());
+
+        let mut body = json!({ "model": "text-model", "messages": "bogus" });
+        inject_safety_context(body.as_object_mut().expect("object"));
+        assert_eq!(body["messages"], "bogus");
     }
 
     #[test]
