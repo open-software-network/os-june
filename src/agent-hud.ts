@@ -1025,3 +1025,11 @@ void listen<AgentHudVisibilityChangedDetail>(
 
 setIcon(pillChevron, IconChevronDownSmall, 14);
 render();
+
+// Console driver for this page when served standalone in a browser:
+// __agentHud("waiting") etc. See lib/agent-hud-demo.ts.
+if (import.meta.env.DEV) {
+  void import("./lib/agent-hud-demo").then(({ registerAgentHudDemo }) =>
+    registerAgentHudDemo({ local: true }),
+  );
+}
