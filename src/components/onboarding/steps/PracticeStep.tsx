@@ -1,4 +1,3 @@
-import { IconBubbleQuestion } from "central-icons/IconBubbleQuestion";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { useEffect, useRef, useState } from "react";
 import { discoverySource, setDiscoverySource } from "../../../lib/onboarding";
@@ -138,13 +137,8 @@ export function DictationPracticeStep({
       {askDiscovery ? (
         <div className="onboarding-discovery">
           <div className="onboarding-discovery-head">
-            <span className="onboarding-discovery-icon" aria-hidden>
-              <IconBubbleQuestion size={15} />
-            </span>
-            <div className="onboarding-discovery-copy">
-              <h2>{DISCOVERY_QUESTION}</h2>
-              <p>Optional, but it helps us out.</p>
-            </div>
+            <h2>{DISCOVERY_QUESTION}</h2>
+            <span className="onboarding-discovery-optional">Optional</span>
           </div>
           <Select
             ariaLabel={DISCOVERY_QUESTION}

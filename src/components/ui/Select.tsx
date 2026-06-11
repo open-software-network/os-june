@@ -138,6 +138,7 @@ export function Select({
       <button
         type="button"
         className="select-trigger"
+        data-placeholder={!selected}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
