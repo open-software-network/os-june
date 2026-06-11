@@ -2580,6 +2580,11 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
   );
 
+  // Which conversation the scroller is already settled in. A switch (and the
+  // history fetch that fills the new conversation in) must land at the bottom
+  // instantly; only turns arriving while the user is already reading glide.
+  const settledScrollSelectionRef = useRef<string>();
+
   useEffect(() => {
     // The conversation scrolls in .agent-scroll, which sits below the sticky
     // breadcrumb so the scrollbar can't ride up over the bar — drive that
@@ -2587,7 +2592,18 @@ export function AgentWorkspace({
     const scroller = listRef.current?.closest(".agent-scroll");
     if (!(scroller instanceof HTMLElement)) return;
     if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    const selectionKey = `${selectedHermesSessionId ?? ""}:${selectedTaskId ?? ""}`;
+    const settled = settledScrollSelectionRef.current === selectionKey;
+    // A conversation only counts as settled once turns have rendered, so the
+    // empty frame between selecting a session and its history arriving still
+    // resolves with an instant jump, not an animated scroll from the top.
+    if (renderedTurnsSignature > 0) {
+      settledScrollSelectionRef.current = selectionKey;
+    }
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: settled ? "smooth" : "auto",
+    });
   }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
 
   // Reshuffle the deck each time the hero comes back, so repeat visits start
