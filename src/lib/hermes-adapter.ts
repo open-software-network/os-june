@@ -106,13 +106,18 @@ export function stripScheduledRunPreamble(content: string) {
     }
   }
   // Unbalanced (truncated preview): drop the opener line so it's not gibberish.
-  return content.slice(start).replace(/^\[IMPORTANT:[^\n]*/i, "").trim();
+  return content
+    .slice(start)
+    .replace(/^\[IMPORTANT:[^\n]*/i, "")
+    .trim();
 }
 
 /** Gives a scheduled-run session a readable title and a clean preview when the
  * stored ones are empty or still the raw delivery preamble, so every list
  * surface stops showing "[IMPORTANT…". Non-cron sessions pass through. */
-function withScheduledRunDisplay(session: HermesSessionInfo): HermesSessionInfo {
+function withScheduledRunDisplay(
+  session: HermesSessionInfo,
+): HermesSessionInfo {
   if (!isScheduledRunSession(session)) return session;
   const cleanedPreview = stripScheduledRunPreamble(session.preview ?? "");
   const storedTitle = session.title?.trim() ?? "";

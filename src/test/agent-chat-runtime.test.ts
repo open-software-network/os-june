@@ -52,7 +52,7 @@ describe("repairContractionSpacing", () => {
 describe("Agent chat runtime", () => {
   it("strips the cron preamble and flags a scheduled-run turn", () => {
     const preamble =
-      '[IMPORTANT: You are running as a scheduled cron job. SILENT: respond ' +
+      "[IMPORTANT: You are running as a scheduled cron job. SILENT: respond " +
       'with exactly "[SILENT]" if nothing is new. Never combine [SILENT] ' +
       "with content — say [SILENT] and nothing more.]";
     const turns = buildHermesSessionChatTurns([

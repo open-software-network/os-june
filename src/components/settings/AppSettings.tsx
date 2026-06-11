@@ -48,6 +48,7 @@ import {
   BillingSettingsSection,
 } from "../account/AccountSettings";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
+import { shortcutFromCapturePayload } from "../shortcuts/use-shortcut-capture";
 import { Dialog } from "../ui/Dialog";
 import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -1160,13 +1161,10 @@ export function AppSettings({
 
                 <div className="settings-row">
                   <div className="settings-row-info">
-                    <h3 className="settings-row-title">
-                      Server verification
-                    </h3>
+                    <h3 className="settings-row-title">Server verification</h3>
                     <p className="settings-row-description">
-                      June&apos;s server runs in a confidential VM. See
-                      exactly what code is running and how to verify it
-                      yourself.
+                      June&apos;s server runs in a confidential VM. See exactly
+                      what code is running and how to verify it yourself.
                     </p>
                   </div>
                   <div className="settings-row-control">
@@ -1820,44 +1818,6 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
     },
     ...models,
   ];
-}
-
-function shortcutFromCapturePayload(
-  shortcut: unknown,
-  fallbackPressCount: 1 | 2,
-):
-  | Pick<
-      DictationShortcutSetting,
-      "code" | "modifiers" | "label" | "pressCount"
-    >
-  | undefined {
-  if (!shortcut || typeof shortcut !== "object") return undefined;
-
-  const value = shortcut as Partial<DictationShortcutSetting>;
-  const modifiers = value.modifiers;
-  const pressCount =
-    value.pressCount === 1 || value.pressCount === 2
-      ? value.pressCount
-      : fallbackPressCount;
-  if (
-    typeof value.code !== "string" ||
-    typeof value.label !== "string" ||
-    !modifiers ||
-    typeof modifiers.command !== "boolean" ||
-    typeof modifiers.control !== "boolean" ||
-    typeof modifiers.option !== "boolean" ||
-    typeof modifiers.shift !== "boolean" ||
-    typeof modifiers.function !== "boolean"
-  ) {
-    return undefined;
-  }
-
-  return {
-    code: value.code,
-    label: value.label,
-    modifiers,
-    pressCount,
-  };
 }
 
 function shortcutKindLabel(kind: DictationShortcutKind) {

@@ -300,8 +300,8 @@ export function RoutinesView({
       )}
 
       {/* Hidden while everything is empty (the routines empty state owns the
-        * page) and while a search matches no runs; shown otherwise, including
-        * when only orphaned runs of deleted routines remain. */}
+       * page) and while a search matches no runs; shown otherwise, including
+       * when only orphaned runs of deleted routines remain. */}
       {!loading &&
       (query.trim()
         ? filteredRuns.length > 0

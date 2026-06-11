@@ -225,8 +225,10 @@ const CONTRACTION_GLUE = /([A-Za-z])('(?:s|re|ve|ll|m|d|t))(?=[A-Za-z])/gi;
  * Apply only to assistant prose (never code spans, URLs, or user text).
  */
 export function repairContractionSpacing(text: string): string {
-  return text.replace(CONTRACTION_GLUE, (whole, pre: string, enclitic: string) =>
-    pre.toLowerCase() === "s" ? whole : `${pre}${enclitic} `,
+  return text.replace(
+    CONTRACTION_GLUE,
+    (whole, pre: string, enclitic: string) =>
+      pre.toLowerCase() === "s" ? whole : `${pre}${enclitic} `,
   );
 }
 

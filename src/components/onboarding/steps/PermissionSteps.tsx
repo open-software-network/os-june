@@ -1,10 +1,13 @@
-import { useEffect } from "react";
-import { IconCircleCheck } from "central-icons/IconCircleCheck";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconTextIndicator } from "central-icons/IconTextIndicator";
 import {
   dictationHelperCommand,
   openPrivacySettings,
 } from "../../../lib/tauri";
-import { StepActions, StepHeading } from "../StepChrome";
+import { StepActions, StepCard } from "../StepChrome";
 import {
   isAccessibilityGranted,
   isMicrophoneDenied,
@@ -12,40 +15,41 @@ import {
   type PermissionStatuses,
 } from "../use-permission-status";
 
-function PermissionCard({
+function PermissionRow({
+  icon,
   granted,
   title,
-  body,
-  action,
+  detail,
+  onAllow,
 }: {
+  icon: ReactNode;
   granted: boolean;
   title: string;
-  body: string;
-  action?: { label: string; onClick: () => void };
+  detail: string;
+  /** Grant affordance — fires the TCC prompt or opens System Settings;
+   * either way the user's decision is "allow". */
+  onAllow?: () => void;
 }) {
   return (
-    <div className="onboarding-permission-card" data-granted={granted}>
-      <div className="onboarding-permission-copy">
-        <h2>
-          {title}
-          {granted ? (
-            <span className="onboarding-permission-check" aria-label="Granted">
-              <IconCircleCheck size={16} aria-hidden />
-            </span>
-          ) : null}
-        </h2>
-        <p>{body}</p>
+    <li className="onboarding-perm" data-granted={granted}>
+      <span className="onboarding-perm-icon" aria-hidden>
+        {granted ? <IconCheckmark1Small size={15} /> : icon}
+      </span>
+      <div className="onboarding-perm-copy">
+        <h2>{title}</h2>
+        <p>{detail}</p>
       </div>
-      {!granted && action ? (
+      {!granted && onAllow ? (
         <button
           type="button"
-          className="primary-action"
-          onClick={action.onClick}
+          className="onboarding-perm-btn"
+          onClick={onAllow}
+          aria-label={`Allow ${title.toLowerCase()} access`}
         >
-          {action.label}
+          Allow
         </button>
       ) : null}
-    </div>
+    </li>
   );
 }
 
@@ -56,9 +60,11 @@ export function PermissionsStep({
   statuses: PermissionStatuses;
   onContinue: () => void;
 }) {
+  const [showUnknownStatuses, setShowUnknownStatuses] = useState(false);
   const micGranted = isMicrophoneGranted(statuses);
   const micDenied = isMicrophoneDenied(statuses);
   const accessibilityGranted = isAccessibilityGranted(statuses);
+  const showPermissionRows = statuses.checked || showUnknownStatuses;
 
   // Fire the native TCC prompt as soon as the screen shows — the user just
   // read why we're asking, so the dialog lands in context. No-op when
@@ -69,6 +75,19 @@ export function PermissionsStep({
       type: "request_microphone_permission",
     }).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (statuses.checked) {
+      setShowUnknownStatuses(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setShowUnknownStatuses(true);
+    }, 240);
+
+    return () => window.clearTimeout(timer);
+  }, [statuses.checked]);
 
   function openAccessibilitySettings() {
     // Fire the helper's prompting check first: it registers the dictation
@@ -85,62 +104,51 @@ export function PermissionsStep({
   }
 
   return (
-    <section className="onboarding-step">
-      <StepHeading
-        title="Give June permissions on your Mac"
-        subtitle="Two permissions power dictation: the microphone to hear you, and accessibility to type your words into whatever app you're using."
-      />
-      <div className="onboarding-permission-stack">
-        <PermissionCard
-          granted={micGranted}
-          title={
-            micGranted ? "June can use your microphone" : "Microphone access"
-          }
-          body={
-            micGranted
-              ? "Only when you ask June to listen: dictating, recording a meeting, or testing your mic."
-              : micDenied
-                ? "Microphone access is turned off for June. Flip the toggle in System Settings, then come back. We'll notice."
-                : "June only listens when you ask it to: while you hold the dictation key or record a meeting."
-          }
-          action={
+    <StepCard
+      title="Let June listen and type"
+      subtitle="Dictation needs two macOS permissions."
+      wide
+    >
+      <ul
+        className="onboarding-perms"
+        data-checking={!showPermissionRows}
+        aria-busy={!showPermissionRows}
+      >
+        <PermissionRow
+          icon={<IconMicrophone size={15} />}
+          granted={showPermissionRows && micGranted}
+          title="Microphone"
+          detail={
             micDenied
-              ? {
-                  label: "Open System Settings",
-                  onClick: () => void openPrivacySettings("microphone"),
-                }
-              : {
-                  label: "Allow microphone",
-                  onClick: () =>
+              ? "Turned off in System Settings. Flip the toggle and June will notice."
+              : "Hears you only when you ask June to listen."
+          }
+          onAllow={
+            showPermissionRows
+              ? micDenied
+                ? () => void openPrivacySettings("microphone")
+                : () =>
                     void dictationHelperCommand({
                       type: "request_microphone_permission",
-                    }).catch(() => undefined),
-                }
+                    }).catch(() => undefined)
+              : undefined
           }
         />
-        <PermissionCard
-          granted={accessibilityGranted}
-          title={
-            accessibilityGranted
-              ? "June can type anywhere"
-              : "Accessibility access"
-          }
-          body={
-            accessibilityGranted
-              ? "Your spoken words land at your cursor, in any app."
-              : "Turn on June in System Settings → Privacy & Security → Accessibility, then come back. We'll notice."
-          }
-          action={{
-            label: "Open System Settings",
-            onClick: openAccessibilitySettings,
-          }}
+        <PermissionRow
+          icon={<IconTextIndicator size={15} />}
+          granted={showPermissionRows && accessibilityGranted}
+          title="Accessibility"
+          detail="Types your words at your cursor, in any app."
+          onAllow={showPermissionRows ? openAccessibilitySettings : undefined}
         />
-      </div>
+      </ul>
       <StepActions
         onContinue={onContinue}
-        continueDisabled={!micGranted || !accessibilityGranted}
+        continueDisabled={
+          !showPermissionRows || !micGranted || !accessibilityGranted
+        }
         onSkip={onContinue}
       />
-    </section>
+    </StepCard>
   );
 }

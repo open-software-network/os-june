@@ -14,8 +14,8 @@ import {
 import type { HermesSessionInfo } from "../lib/tauri";
 
 const SCHEDULED_PREAMBLE =
-  '[IMPORTANT: You are running as a scheduled cron job. DELIVERY: produce ' +
-  'your report as your final response. SILENT: if there is nothing new, ' +
+  "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: produce " +
+  "your report as your final response. SILENT: if there is nothing new, " +
   'respond with exactly "[SILENT]" (nothing else). Never combine [SILENT] ' +
   "with content — either report normally, or say [SILENT] and nothing more.]";
 
@@ -55,7 +55,9 @@ describe("scheduled-run helpers", () => {
     expect(isScheduledRunSession(session as HermesSessionInfo)).toBe(true);
     expect(session?.title).toBe("Summarize Github Activity for the Team");
     expect(session?.title).not.toContain("IMPORTANT");
-    expect(session?.preview?.startsWith("Summarize GitHub activity")).toBe(true);
+    expect(session?.preview?.startsWith("Summarize GitHub activity")).toBe(
+      true,
+    );
   });
 
   it("derives the title from a cron title that is itself the raw preamble", () => {
