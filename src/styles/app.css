@@ -248,14 +248,6 @@ input:focus-visible,
   left: 5px;
 }
 
-/* Width tracks the cursor raw while dragging — the slide-over transitions
- * would lag the pointer. */
-.app-shell[data-files-resizing="true"] .main-panel,
-.app-shell[data-files-resizing="true"] .agent-composer,
-.app-shell[data-files-resizing="true"] .agent-artifact-panel {
-  transition: none;
-}
-
 /* Agent ------------------------------------------------------------- */
 
 /* The breadcrumb is a fixed header and the conversation scrolls in .agent-scroll,
@@ -360,14 +352,25 @@ input:focus-visible,
 
 /* The card-edge fades animate off .main-panel-body's scroll, but in the agent
  * view that body is frozen and the conversation scrolls in .agent-scroll. Drive
- * the named timeline off that inner scroller instead so the bottom fade still
- * dissolves the conversation into the fixed composer, rather than sticking on. */
+ * the named timeline off that inner scroller instead so the top fade still
+ * tracks the conversation, rather than sticking on. */
 @supports (animation-timeline: scroll()) {
   .main-panel-body[data-active-view="agent"] {
     scroll-timeline: none;
   }
   .main-panel-body[data-active-view="agent"] .agent-scroll {
     scroll-timeline: --main-panel-scroll block;
+  }
+  /* The card-level bottom veil cannot paint beneath the composer — the
+   * workspace isolates its own stacking context, capping the composer's
+   * z-index below the panel's ::after — so in the agent view that veil stays
+   * off (the scroll-driven animation would otherwise override the static
+   * opacity below, and a timeline that goes inactive on the hero can leave
+   * it stuck on). The dissolve hangs off the fixed composer instead
+   * (.agent-composer::before), inside the workspace context where the
+   * composer wins. */
+  .main-panel:has(.main-panel-body[data-active-view="agent"])::after {
+    animation: none;
   }
   .main-panel-body[data-note-detail-scroller="true"] {
     scroll-timeline: none;
@@ -544,6 +547,19 @@ input:focus-visible,
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
   padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
+  /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
+   * scroller: the classic scrollbar steals an engine-specific slice of the
+   * content box (8px custom in Chrome, wider native in WKWebView), and auto
+   * margins split what's left — drifting the column half a scrollbar off the
+   * fixed composer's axis. Percentage padding resolves against the workspace
+   * (the containing block), which the scrollbar can't touch, so the column's
+   * left edge lands exactly where the composer's does on every engine. The
+   * scrollbar then eats rightward slack beyond the chat column instead.
+   * .agent-main pairs with this via margin:0 below. */
+  padding-left: calc(
+    var(--sp-8) +
+      max(0px, (100% - min(var(--chat-max), var(--content-max))) / 2)
+  );
   /* The global standard props (scrollbar-width/color, top of file) make the
    * engine IGNORE all ::-webkit-scrollbar styling and draw a native overlay
    * scrollbar instead — which offers no way to start the track below the bar.
@@ -564,8 +580,16 @@ input:focus-visible,
    * when long; max-width keeps the column centred inside the full-bleed scroller. */
   flex: 1;
   width: 100%;
-  max-width: var(--content-max);
+  max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto;
+}
+
+/* Inside the scroller the column hugs the left gutter — .agent-scroll's
+ * padding-left does the centering (see there: it must be scrollbar-immune).
+ * Auto margins here would re-split the scrollbar's bite into the centering.
+ * The hero's .agent-main has no scrollbar and keeps margin:auto. */
+.agent-scroll .agent-main {
+  margin: 0;
 }
 
 .agent-detail-title {
@@ -718,9 +742,12 @@ input:focus-visible,
   flex: 1;
   flex-direction: column;
   gap: var(--sp-6);
+  /* Align the thread rail with the composer's text line, not its outer
+   * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
+   * User turns stay right-aligned inside this rail. */
   /* Bottom padding clears the fixed composer so the last turn can scroll fully
    * clear of it instead of hiding underneath. */
-  padding: var(--sp-2) 0 148px;
+  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5)) 148px;
 }
 
 /* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
@@ -2056,6 +2083,16 @@ input:focus-visible,
   transition: right var(--t-slow) var(--ease-spring);
 }
 
+/* Width tracks the cursor raw while dragging — the slide-over transitions
+ * would lag the pointer (and let the panel ride over the composer). Equal
+ * specificity to the composer rule above, so it must stay after it in the
+ * cascade. */
+.app-shell[data-files-resizing="true"] .main-panel,
+.app-shell[data-files-resizing="true"] .agent-composer,
+.app-shell[data-files-resizing="true"] .agent-artifact-panel {
+  transition: none;
+}
+
 /* No divider under the header — the body's top scroll fade is what signals
  * content passing underneath (same trick as the dictation history dialog). */
 .agent-artifact-panel-bar {
@@ -2566,6 +2603,39 @@ input:focus-visible,
   pointer-events: none;
 }
 
+/* Docked-chat bottom dissolve. It cannot live as .agent-scroll::after
+ * (generated flex content participates in the scroll column and can show up
+ * as a clipped patch at the content edge), so it hangs off the fixed composer
+ * instead: full-bleed to the card edges minus the scrollbar's lane,
+ * stretched down to the card's bottom edge, beneath the frosted box (z -1)
+ * but over the conversation. Anchoring it here also scopes it for free —
+ * chat panel only, gone in the hero — and leaves the workspace's ::before
+ * to the warm wash and its handoff fade. */
+.agent-composer:not([data-hero="true"])::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--sp-8));
+  right: calc(-1 * var(--sp-8) + var(--scrollbar-w));
+  bottom: calc(-1 * var(--sp-5));
+  z-index: -1;
+  /* Short on purpose: just the gap under the box plus its bottom edge. Any
+   * taller and it pre-washes the backdrop the frosted box samples, and the
+   * conversation stops showing through the glass. */
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
+/* In a session the docked box is near-opaque frost: a whisper of the
+ * conversation ghosts through as it scrolls beneath the input, then melts
+ * into the dissolve below. The effect should sit at the edge of perception —
+ * the heavy blur keeps the faint show-through from ever reading as text.
+ * The hero composer keeps the base opaque card — nothing scrolls there. */
+.agent-composer:not([data-hero="true"]) .agent-composer-box {
+  background: color-mix(in oklch, var(--card) 92%, transparent);
+  -webkit-backdrop-filter: saturate(140%) blur(36px);
+  backdrop-filter: saturate(140%) blur(36px);
+}
+
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
@@ -2578,7 +2648,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-3);
   width: fit-content;
-  max-width: var(--content-max);
+  max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
@@ -2610,9 +2680,9 @@ input:focus-visible,
   display: none;
 }
 
-/* Single-line at rest. The textarea grows upward to its max while the controls
- * stay pinned to the bottom edge. Quiet by default; the border firms up and the
- * surface lifts on focus. */
+/* Two rows always: the textarea owns the top and grows upward to its max, the
+ * toolbar (attach, dictation, send) sits in a fixed metadata row beneath it.
+ * Quiet by default; the border firms up and the surface lifts on focus. */
 .agent-composer-box {
   pointer-events: auto;
   display: flex;
@@ -2623,53 +2693,31 @@ input:focus-visible,
   justify-content: flex-end;
   gap: var(--sp-1);
   width: 100%;
-  max-width: var(--content-max);
+  max-width: min(var(--chat-max), var(--content-max));
   padding: var(--sp-1);
   border: 1px solid var(--border-subtle);
   /* Squircle, not a pill — a calmer rounded-rect. */
   border-radius: var(--r-xl);
   background: var(--card);
   box-shadow: var(--shadow-sm);
-  /* Clips the send button to the field as it slides in from the edge. */
+  /* Clips the rising top edge during the FLIP height glide. */
   overflow: hidden;
   transition:
     border-color var(--t-fast) var(--ease-out),
     box-shadow var(--t-fast) var(--ease-out);
 }
 
-.agent-composer-row {
+.agent-composer-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  /* The single-line textarea (33px) runs 1px taller than the 32px controls;
-   * centering splits the difference so the send button sits evenly inset
-   * instead of flush-bottom with a fatter top gap. On the multiline toolbar
-   * row every control is the same height, so centering is a no-op there. */
   align-items: center;
   gap: var(--sp-1);
 }
 
-.agent-composer-attach {
-  order: 1;
-}
-
-.agent-composer-row > textarea {
-  order: 2;
-  min-width: 0;
-}
-
 .agent-composer-actions {
-  order: 3;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--sp-1);
   margin-left: auto;
-}
-
-/* Two lines or more: the textarea claims the top row and the +/mic/send toolbar
- * slides down beneath it. */
-.agent-composer-box[data-multiline="true"] .agent-composer-row > textarea {
-  order: 0;
-  flex: 1 1 100%;
 }
 
 /* Attach (+) and dictation (mic) are both quiet ghost buttons that round to a
@@ -2788,20 +2836,32 @@ input:focus-visible,
 }
 
 .agent-composer-box:focus-within {
-  border-color: var(--ring-focus);
+  /* A touch firmer than the resting border, not the full focus ring — the
+   * docked box is already the obvious locus, a stark outline overshoots. */
+  border-color: color-mix(
+    in oklch,
+    var(--ring-focus) 40%,
+    var(--border-subtle)
+  );
   box-shadow: var(--shadow-md);
 }
 
 .agent-composer textarea {
-  flex: 1;
+  width: 100%;
   min-height: var(--control-lg);
   max-height: 200px;
   resize: none;
-  overflow-y: auto;
+  /* Hidden until the auto-grow caps out at max-height — the grow effect in
+   * AgentWorkspace flips this to auto then. Below the cap the field always
+   * fits its content, and auto here makes the overlay scrollbar flash on
+   * every line growth (the measurement passes through height:auto). */
+  overflow-y: hidden;
   border: 0;
-  /* Symmetric vertical padding centers the single line; a little left padding
-   * keeps the placeholder/text off the field edge. */
-  padding: 6px var(--sp-2);
+  /* Symmetric vertical padding centers the single line; the horizontal
+   * padding keeps the placeholder/text comfortably off the box edge. The
+   * thread rail (.agent-timeline) derives its inset from this value — keep
+   * them in step. */
+  padding: 6px var(--sp-5);
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-lg);
@@ -2857,6 +2917,7 @@ input:focus-visible,
   background: var(--warm-soft);
   color: var(--warm-strong);
   transition: background-color var(--t-fast) var(--ease-out);
+  animation: agent-composer-action-in var(--t-fast) var(--ease-out);
 }
 
 .agent-composer-stop:hover {
@@ -2868,11 +2929,9 @@ input:focus-visible,
   pointer-events: none;
 }
 
-/* Send slides in from the right (pushing the mic over) only once there's
- * something to send — an up arrow in a solid circle. */
 /* Send is the primary action in the brand terracotta (the logo mark color);
- * dictation stays a ghost. It slides in fast-but-smooth (pushing the mic over)
- * only once there's text, clipped by the field. */
+ * dictation stays a ghost. The arrow is always in its slot — it just goes
+ * quiet while there's nothing to send, and lights up as the user types. */
 .agent-composer-send {
   display: inline-grid;
   place-items: center;
@@ -2885,27 +2944,35 @@ input:focus-visible,
   background: var(--brand);
   color: oklch(100% 0 none);
   transition:
-    width var(--t-fast) var(--ease-spring),
-    margin var(--t-fast) var(--ease-spring),
-    opacity var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-spring),
-    background-color var(--t-fast) var(--ease-out);
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+  animation: agent-composer-action-in var(--t-fast) var(--ease-out);
 }
 
 .agent-composer-send:hover {
   background: color-mix(in oklch, var(--brand) 88%, black);
 }
 
-.agent-composer-box[data-dirty="false"] .agent-composer-send {
-  width: 0;
-  margin-left: calc(var(--sp-1) * -1);
-  opacity: 0;
-  transform: translateX(8px) scale(0.7);
-  pointer-events: none;
+.agent-composer-send:disabled {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  cursor: default;
 }
 
-.agent-composer-send:disabled {
-  cursor: default;
+/* Send and stop trade the same slot; the incoming control scales up out of
+ * the other so the swap reads as a state change rather than a teleport. */
+@keyframes agent-composer-action-in {
+  from {
+    opacity: 0;
+    scale: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-send,
+  .agent-composer-stop {
+    animation: none;
+  }
 }
 
 /* "Responding" affordance pinned to the bottom of the timeline while the agent
@@ -2957,8 +3024,7 @@ input:focus-visible,
   transform: translateY(-10px);
 }
 
-.agent-main[data-hero-leaving="true"] .agent-hero-suggestions,
-.agent-main[data-hero-leaving="true"] .agent-fullmode-row {
+.agent-main[data-hero-leaving="true"] .agent-hero-suggestions {
   opacity: 0;
   transform: translateY(10px);
   pointer-events: none;
@@ -2974,22 +3040,26 @@ input:focus-visible,
 
 /* In the hero the composer leaves its fixed bottom dock and sits inline at
  * the column's center — taller at rest and a touch narrower than the reading
- * column, so it reads as "start here" rather than "reply here". */
+ * column, so it reads as "start here" rather than "reply here". Relative so
+ * the sandbox menu can anchor to it; the dock's left/right/bottom offsets
+ * must be cleared or relative re-applies them as a visual shift (static
+ * ignored them for free). */
 .agent-composer[data-hero="true"] {
-  position: static;
+  position: relative;
+  inset: auto;
   pointer-events: auto;
 }
 
 .agent-composer[data-hero="true"] .agent-composer-box {
+  /* Deliberately compact — the hero box is an invitation, not a reading
+   * column, so it does not track --chat-max up on larger displays. */
   max-width: 640px;
   box-shadow: var(--shadow-md);
 }
 
-/* Big-box at rest: the textarea owns the full top rows and the +/mic/send
- * toolbar always sits beneath it, regardless of the JS multiline probe. */
-.agent-composer[data-hero="true"] .agent-composer-row > textarea {
-  order: 0;
-  flex: 1 1 100%;
+/* Big-box at rest: same two-row anatomy as the docked composer, just a
+ * taller field so it reads as "start here". */
+.agent-composer[data-hero="true"] textarea {
   min-height: 76px;
 }
 
@@ -3079,86 +3149,131 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-/* Full mode opt-in under the hero composer: a quiet switch-styled pill that
- * turns destructive-tinted once armed, with the consequence spelled out
- * beside it rather than only in the tooltip. */
-.agent-fullmode-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-3);
-  margin-top: var(--sp-3);
-  transition:
-    opacity 280ms var(--ease-out),
-    transform 280ms var(--ease-out);
-}
-
-.agent-fullmode-toggle {
+/* Sandbox picker — a mode trigger in the hero composer's toolbar, styled
+ * like Codex's permission control: a borderless ghost button (icon + current
+ * mode + chevron) that opens a small menu of modes. Unrestricted tints the
+ * trigger in the warm terracotta family; no border in either state. */
+.agent-sandbox-trigger {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: var(--sp-1);
-  padding: 2px var(--sp-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: none;
+  height: var(--control-lg);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   transition:
     background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
 }
 
-.agent-fullmode-toggle:hover {
-  border-color: var(--border);
+.agent-sandbox-trigger:hover {
+  background: var(--surface-subtle);
   color: var(--foreground);
 }
 
-.agent-fullmode-toggle[aria-checked="true"] {
-  border-color: color-mix(in oklch, var(--destructive) 40%, transparent);
-  background: var(--destructive-soft);
-  color: var(--destructive);
+.agent-sandbox-trigger[data-unrestricted="true"] {
+  color: var(--warm-strong);
 }
 
-.agent-fullmode-hint {
+/* A lighter wash than the stop button's solid --warm-soft — at full strength
+ * the hover read like an armed alarm rather than a hover. */
+.agent-sandbox-trigger[data-unrestricted="true"]:hover {
+  background: color-mix(in oklch, var(--warm-soft) 45%, transparent);
+  color: var(--warm-strong);
+}
+
+/* The menu drops below the composer box (a sibling, since the box clips its
+ * overflow for the FLIP glide), left-aligned to the box's 640px column. */
+.agent-sandbox-menu {
+  position: absolute;
+  top: calc(100% + var(--sp-1));
+  left: max(0px, calc(50% - 320px));
+  z-index: 30;
+  width: min(400px, 100%);
+  padding: var(--sp-1);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+}
+
+.agent-sandbox-menu-title {
   margin: 0;
-  color: var(--destructive);
-  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
 }
 
-/* Session-bar twin of .agent-safety-badge, tinted destructive: the runtime is
- * live without the write-jail. */
-.agent-fullmode-badge {
-  background: var(--destructive-soft);
-  color: var(--destructive);
+.agent-sandbox-menu button {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  text-align: left;
 }
 
-.agent-fullmode-badge svg {
-  color: var(--destructive);
+.agent-sandbox-menu button:hover {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.agent-sandbox-menu button > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--muted-foreground);
+}
+
+.agent-sandbox-option {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-sandbox-option-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.agent-sandbox-option-desc {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-sandbox-menu button > svg.agent-sandbox-option-check {
+  margin-left: auto;
+  align-self: center;
+  color: var(--foreground);
+}
+
+/* Session-bar twin of .agent-safety-badge in the warm terracotta family: the
+ * runtime is live without the write-jail. */
+.agent-sandbox-badge {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.agent-sandbox-badge svg {
+  color: var(--warm-strong);
 }
 
 /* Hero teardown: while a shortcut/submit is creating the session, the
  * greeting drifts up and the suggestions drift down out of the way
  * ([data-hero-leaving] below); when the conversation mounts, the composer
- * FLIPs from its hero spot to the bottom dock (WAAPI in AgentWorkspace) and
- * the timeline fades up to meet it. */
-.agent-timeline {
-  animation: agent-timeline-enter 280ms var(--ease-out) backwards;
-}
-
-@keyframes agent-timeline-enter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-timeline {
-    animation: none;
-  }
-}
+ * FLIPs from its hero spot to the bottom dock and the timeline fades up to
+ * meet it (both WAAPI in AgentWorkspace, gated to that handoff — a CSS mount
+ * animation on .agent-timeline would replay when opening an existing chat). */
 
 @media (max-width: 980px) {
   .agent-workspace {
@@ -4360,6 +4475,14 @@ input:focus-visible,
  * a safe degradation, since it exists to dissolve scrolling content. */
 .main-panel:has(.main-panel-body[data-active-view="agent"])::after {
   opacity: 0;
+}
+
+/* Agent conversations have a sticky breadcrumb bar over the scroller. The top
+ * fade is driven by .agent-scroll, but it should start below that chrome rather
+ * than washing through the transparent frosted breadcrumb surface. */
+.main-panel:has(.main-panel-body[data-active-view="agent"])::before {
+  top: var(--detail-bar-h);
+  right: var(--scrollbar-w);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6940,6 +7063,41 @@ input:focus-visible,
   color: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
 }
 
+/* Hover callout card (HoverTip) — the Venice-style explainer behind privacy
+ * pills. Body-portaled at a fixed position, so it must sit above dialogs
+ * (backdrop is z-index 80). data-side="top" anchors the card's bottom edge
+ * to the coordinate instead of its top. */
+.hover-tip {
+  position: fixed;
+  z-index: 120;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  animation: hover-tip-in 120ms var(--ease-out);
+}
+
+.hover-tip[data-side="top"] {
+  transform: translateY(-100%);
+}
+
+@keyframes hover-tip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* Tag-style chip wrapping each trait icon + label. Squared-off corners
  * match the keycap / kbd chips used elsewhere in the app. */
 .model-trait-icon {
@@ -7185,13 +7343,14 @@ input:focus-visible,
 
 /* Native overlay thumbs float a couple px off the window edge; match that on
  * the custom scrollbar so breadcrumb views don't read flush against the card
- * edge next to the bar-less views' native thumb. The region widens to 8px and
- * transparent borders clip the painted pill back to the usual 4px, inset 2px
- * from the card edge and the content alike. */
+ * edge next to the bar-less views' native thumb. The region widens to
+ * --scrollbar-w (shared with the edge fades that stop short of this lane)
+ * and transparent borders clip the painted pill back to the usual 4px,
+ * inset 2px from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
-  width: 8px;
+  width: var(--scrollbar-w);
   background: transparent;
 }
 
@@ -9888,12 +10047,91 @@ input:focus-visible,
   text-underline-offset: 2px;
 }
 
-/* Trial gate — same card chrome as the sign-in gate. */
-.trial-gate-refresh {
-  margin-top: var(--sp-2);
+/* Trial gate — same card chrome as the sign-in gate, slightly wider so the
+   timeline details breathe. */
+.trial-card {
+  width: min(100%, 360px);
 }
 
-.trial-gate-signout {
+.trial-timeline {
+  display: flex;
+  flex-direction: column;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.trial-timeline li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: var(--sp-3);
+  align-items: start;
+  padding-bottom: var(--sp-4);
+}
+
+.trial-timeline li:last-child {
+  padding-bottom: 0;
+}
+
+/* Connector between step icons. */
+.trial-timeline li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 13.5px;
+  top: 32px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border);
+}
+
+.trial-timeline-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+
+.trial-timeline-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.trial-timeline-date {
+  color: var(--warm-strong);
+}
+
+/* The charge date is the step that matters — echo the terracotta there. */
+.trial-timeline li:last-child .trial-timeline-icon {
+  border-color: color-mix(in oklch, var(--warm-strong) 30%, transparent);
+  background: color-mix(in oklch, var(--warm-soft) 35%, var(--card));
+  color: var(--warm-strong);
+}
+
+.trial-timeline-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
+.trial-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.trial-gate-link {
   padding: 0;
   border: 0;
   background: none;

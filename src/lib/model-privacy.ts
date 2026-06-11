@@ -1,6 +1,6 @@
 import type { ProviderModelMode, VeniceModelDto } from "./tauri";
 
-export type ModelPrivacyMode = "private" | "anonymous";
+export type ModelPrivacyMode = "e2ee" | "private" | "anonymous";
 
 export type ModelPrivacyBadge = {
   mode: ModelPrivacyMode;
@@ -9,6 +9,7 @@ export type ModelPrivacyBadge = {
 };
 
 export type ModelPrivacyFlags = {
+  e2ee: boolean;
   private: boolean;
   anonymous: boolean;
   uncensored: boolean;
@@ -33,15 +34,29 @@ export function dispatchProviderModelSettingsChanged(
   );
 }
 
+export const E2EE_MODEL_DESCRIPTION =
+  "Private model with end-to-end encryption. Your prompt is encrypted on your Mac and only decrypted inside a hardware-secured enclave (TEE); the response is encrypted before it leaves the enclave. No prompt data is ever readable by the model provider or its infrastructure.";
 export const PRIVATE_MODEL_DESCRIPTION =
-  "You're using a model that is private and anonymous.";
+  "Private model with zero data retention. No prompt data is stored, shared with a third party, or trained on.";
 export const ANONYMOUS_MODEL_DESCRIPTION =
-  "You're using a model that is anonymizing your prompts but may still train on your data.";
+  "The model provider may retain prompts, though they're anonymized — your identity is stripped before anything leaves June. For sensitive content, pick a Private or E2EE model.";
 
+type ModelPrivacySignals = Pick<VeniceModelDto, "privacy" | "traits"> &
+  Partial<Pick<VeniceModelDto, "capabilities">>;
+
+// Strongest claim wins: E2EE models are also private, but "encrypted into the
+// enclave" is the property worth surfacing.
 export function modelPrivacyBadge(
-  model: Pick<VeniceModelDto, "privacy" | "traits">,
+  model: ModelPrivacySignals,
   flags = modelPrivacyFlags(model),
 ): ModelPrivacyBadge | undefined {
+  if (flags.e2ee) {
+    return {
+      mode: "e2ee",
+      label: "E2EE",
+      description: E2EE_MODEL_DESCRIPTION,
+    };
+  }
   if (flags.private) {
     return {
       mode: "private",
@@ -60,11 +75,18 @@ export function modelPrivacyBadge(
 }
 
 export function modelPrivacyFlags(
-  model: Pick<VeniceModelDto, "privacy" | "traits">,
+  model: ModelPrivacySignals,
 ): ModelPrivacyFlags {
   const privacy = (model.privacy ?? "").toLowerCase();
   const traits = model.traits.map((trait) => trait.toLowerCase());
+  const capabilities = (model.capabilities ?? []).map((capability) =>
+    capability.toLowerCase(),
+  );
   return {
+    e2ee:
+      privacy === "e2ee" ||
+      traits.some((trait) => trait === "e2ee") ||
+      capabilities.some((capability) => capability === "e2ee"),
     private:
       privacy === "private" || traits.some((trait) => trait === "private"),
     anonymous:

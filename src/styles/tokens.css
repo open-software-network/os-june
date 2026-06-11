@@ -69,6 +69,10 @@
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */
   --detail-bar-h: 46px;
+  /* Width of the custom webkit scrollbar on detail-view scrollers (agent
+   * chat, note detail). Shared with the edge fades and dissolves that stop
+   * short of the scrollbar's lane so they don't wash over the thumb. */
+  --scrollbar-w: 8px;
   /* Visible grabber pill on drag-resize handles (sidebar, files panel). The
    * full-height strip stays draggable; only the indicator is this tall. */
   --resize-grabber-h: 200px;
@@ -91,6 +95,11 @@
    * dictation, the editor) so they line up, and steps up on larger displays
    * so the column doesn't feel marooned in whitespace on big monitors. */
   --content-max: 760px;
+
+  /* Agent chat column: the thread rail and the docked composer share this
+   * width so they stay concentric. Narrower than --content-max (chat reads
+   * as a conversation, not a document) but steps up with it below. */
+  --chat-max: 680px;
 
   /* Color — light theme.  Mirrors Fellow's globals.css so the two apps
    * read like siblings. ------------------------------------------------ */
@@ -196,12 +205,14 @@
 @media (min-width: 1440px) {
   :root {
     --content-max: 880px;
+    --chat-max: 768px;
   }
 }
 
 @media (min-width: 1920px) {
   :root {
     --content-max: 1000px;
+    --chat-max: 820px;
   }
 }
 

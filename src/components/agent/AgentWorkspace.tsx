@@ -31,8 +31,10 @@ import { IconFilePdf } from "central-icons/IconFilePdf";
 import { IconFilePng } from "central-icons/IconFilePng";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFileZip } from "central-icons/IconFileZip";
-import { IconFolderSparkle } from "central-icons/IconFolderSparkle";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
+import { IconHistory } from "central-icons/IconHistory";
+import { IconListBullets } from "central-icons/IconListBullets";
+import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
@@ -60,7 +62,9 @@ import {
   useState,
 } from "react";
 import { BackButton } from "../ui/BackButton";
+import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
+import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
@@ -344,6 +348,49 @@ function sampleImageBytes(): Uint8Array {
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
+/**
+ * The two write-access modes a new session can start the runtime in. The
+ * sandbox is a kernel write-jail (reads are unrestricted either way), chosen
+ * per new session — switching restarts June's runtime, so the picker only
+ * appears in the hero composer.
+ */
+// The Unrestricted confirm is a speed bump, not a recurring gate: one
+// acknowledgment per app session, after which picking it arms directly.
+// sessionStorage scopes that to the running app (a relaunch asks again) and
+// survives the workspace remounting on view switches.
+const UNRESTRICTED_ACK_KEY = "june.agent.unrestrictedAcknowledged";
+
+function unrestrictedAcknowledged(): boolean {
+  try {
+    return window.sessionStorage.getItem(UNRESTRICTED_ACK_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function rememberUnrestrictedAcknowledged() {
+  try {
+    window.sessionStorage.setItem(UNRESTRICTED_ACK_KEY, "true");
+  } catch {
+    // Ignore; worst case the dialog shows again.
+  }
+}
+
+const SANDBOX_OPTIONS = [
+  {
+    unrestricted: false,
+    icon: <IconShieldCheck size={16} aria-hidden />,
+    title: "Sandboxed",
+    description: "June can read your files but only change its own workspace.",
+  },
+  {
+    unrestricted: true,
+    icon: <IconShieldCrossed size={16} aria-hidden />,
+    title: "Unrestricted",
+    description: "June can change any file your account can.",
+  },
+] as const;
+
 type AgentShortcut = {
   key: string;
   icon: ReactNode;
@@ -365,15 +412,21 @@ type AgentShortcut = {
  * window is the curated first-impression mix (an instant run, a prefill, an
  * attach flow, and a health check) that shows when the shuffle is identity
  * (e.g. in tests with Math.random mocked to 0).
+ *
+ * Every suggestion must succeed inside the default write-jail: reads are
+ * broad, but writes land only in the agent workspace. Don't add shortcuts
+ * that rename, move, or delete the user's files (tidy a folder, free up
+ * disk space, dedupe) — the sandbox denies the write mid-task and June's
+ * own suggestion reads as broken.
  */
 const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
-    key: "tidy-downloads",
-    icon: <IconFolderSparkle size={18} />,
-    title: "Tidy my Downloads",
-    description: "Sort the clutter into folders and flag what's safe to toss.",
+    key: "recent-files",
+    icon: <IconHistory size={18} />,
+    title: "Catch up on recent files",
+    description: "A quick rundown of what's new across your folders.",
     prompt:
-      "Tidy up my Downloads folder: group the files into subfolders by type, then list anything older than six months that looks safe to delete. Don't delete anything without checking with me first.",
+      "Look through my Desktop, Documents, and Downloads folders for files added or changed in the last week and give me a quick rundown of what's new, grouped by what they seem to be for. Don't move or change anything.",
     action: "run",
   },
   {
@@ -412,31 +465,31 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
-    key: "rename-screenshots",
+    key: "describe-screenshots",
     icon: <IconCameraSparkle size={18} />,
-    title: "Rename my screenshots",
-    description: "Turn screenshot gibberish into names that mean something.",
+    title: "Find the right screenshot",
+    description: "June looks through them so you don't have to.",
     prompt:
-      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
+      "Look through the recent screenshots on my Desktop and in my Downloads folder, open each one, and tell me what it shows so I can find the one I'm looking for. Don't rename, move, or change anything.",
     action: "run",
   },
   {
     key: "draft-document",
     icon: <IconPencilLine size={18} />,
     title: "Draft a document",
-    description: "Start a write-up and save it to your Documents.",
+    description: "Start a write-up and get it as a downloadable file.",
     prompt:
-      "Draft a <kind of document> about <topic>, then save it as a Markdown file in my Documents folder.",
+      "Draft a <kind of document> about <topic>, then save it as a Markdown file in your workspace so I can download it.",
     action: "prefill",
   },
   {
-    key: "disk-space",
+    key: "analyze-spreadsheet",
     icon: <IconPieChart1 size={18} />,
-    title: "Free up disk space",
-    description: "Find what's eating your storage and what can go.",
+    title: "Analyze a spreadsheet",
+    description: "Key figures, trends, and oddities from a CSV or sheet.",
     prompt:
-      "Work out what's taking up the most disk space in my home folder, summarize the biggest culprits, and suggest what's safe to clean up. Don't delete anything without checking with me first.",
-    action: "run",
+      "Analyze the attached spreadsheet: summarize the key figures and trends, and call out anything that looks off.",
+    action: "attach",
   },
   {
     key: "extract-text",
@@ -448,15 +501,49 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "attach",
   },
   {
-    key: "find-duplicates",
-    icon: <IconFiles size={18} />,
-    title: "Find duplicate files",
-    description: "Spot copies wasting space across your folders.",
+    key: "plan-project",
+    icon: <IconListBullets size={18} />,
+    title: "Plan a project",
+    description: "Turn a vague goal into concrete first steps.",
     prompt:
-      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
-    action: "run",
+      "Help me plan <a project>: break it into concrete steps, flag the risks, and suggest what to tackle first.",
+    action: "prefill",
   },
 ];
+
+/**
+ * Hero greetings, one per visit: the heading cycles through this pool each
+ * time the hero is entered, tracked in localStorage so the rotation continues
+ * across launches. Exported so tests can match "any greeting".
+ */
+export const HERO_GREETINGS = [
+  "What can June do for you?",
+  "What should we work on?",
+  "Where should June start?",
+  "What can June take off your plate?",
+] as const;
+
+const HERO_GREETING_INDEX_KEY = "scribe:agent:hero-greeting";
+
+function advanceHeroGreeting(): string {
+  try {
+    const index =
+      Math.abs(
+        Number.parseInt(
+          window.localStorage.getItem(HERO_GREETING_INDEX_KEY) ?? "0",
+          10,
+        ) || 0,
+      ) % HERO_GREETINGS.length;
+    window.localStorage.setItem(
+      HERO_GREETING_INDEX_KEY,
+      String((index + 1) % HERO_GREETINGS.length),
+    );
+    return HERO_GREETINGS[index];
+  } catch {
+    // Storage unavailable: any greeting beats none.
+    return HERO_GREETINGS[Math.floor(Math.random() * HERO_GREETINGS.length)];
+  }
+}
 
 // Three per hand so the row never wraps — a row-count jump mid-rotation would
 // shove the footnote around every cycle.
@@ -568,20 +655,44 @@ export function AgentWorkspace({
   // without the OS sandbox. Read through a ref inside the async submit path.
   const [fullModeDraft, setFullModeDraft] = useState(false);
   const fullModeDraftRef = useRef(false);
+  const [sandboxMenuOpen, setSandboxMenuOpen] = useState(false);
+  // Codex-style speed bump: picking Unrestricted from the menu confirms in a
+  // dialog before arming, instead of a persistent warning line.
+  const [confirmUnrestricted, setConfirmUnrestricted] = useState(false);
+  const sandboxTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const sandboxMenuRef = useRef<HTMLDivElement | null>(null);
+  const sandboxFirstItemRef = useRef<HTMLButtonElement | null>(null);
+  const sandboxMenuWasOpenRef = useRef(false);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
+  // False until the first listHermesSessions fetch lands. Until then the
+  // items above only hold the mount seed (the clicked session, or nothing),
+  // and broadcasting that would wipe the sidebar's already-loaded list.
+  const [hermesSessionsHydrated, setHermesSessionsHydrated] = useState(false);
   // Mounting without an explicit target restores the last open conversation,
   // so app restarts and dev reloads land the user back in the session they
-  // were working in instead of bouncing them to the newest one.
+  // were working in instead of bouncing them to the newest one. A pending
+  // new-session marker overrides the restore: the mount-time sessions-changed
+  // dispatch would otherwise announce the restored session as selected, which
+  // App reads as "switched to an existing session" and drops a pending
+  // project assignment before the new session even exists.
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
     string | undefined
-  >(() => initialSessionId ?? readLastOpenSessionId());
+  >(
+    () =>
+      initialSessionId ??
+      (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+  );
   const selectedHermesSessionIdRef = useRef<string | undefined>(
     selectedHermesSessionId,
   );
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
-  const [newSessionMode, setNewSessionMode] = useState(false);
+  const [newSessionMode, setNewSessionMode] = useState(
+    () => !initialSessionId && hasPendingNewSessionRequest(),
+  );
+  const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
+  const heroGreetingConsumedRef = useRef(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
   const [heroDeckStart, setHeroDeckStart] = useState(0);
   const [heroChipPhase, setHeroChipPhase] = useState<"in" | "out">("in");
@@ -674,7 +785,10 @@ export function AgentWorkspace({
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
-  const newSessionModeRef = useRef(false);
+  // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
+  // the fetch *started*) — the scroll-settling logic needs the landing.
+  const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
+  const newSessionModeRef = useRef(newSessionMode);
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -686,7 +800,6 @@ export function AgentWorkspace({
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
-  const [composerMultiline, setComposerMultiline] = useState(false);
 
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
@@ -860,13 +973,64 @@ export function AgentWorkspace({
   // what advances it each render.
   const prevHeroModeRef = useRef(heroMode);
 
-  // Full mode is an opt-in made per new session, so the toggle re-arms to off
-  // every time the hero is entered — it never carries over from the last one.
+  // A fresh greeting each time the hero is landed on. The state initializer
+  // already consumed one for the mount, so the first hero entry (which may be
+  // the mount itself) keeps it; later entries advance the cycle. Pre-paint so
+  // a re-entry never flashes the previous greeting.
+  useLayoutEffect(() => {
+    if (!heroMode) return;
+    if (!heroGreetingConsumedRef.current) {
+      heroGreetingConsumedRef.current = true;
+      return;
+    }
+    setHeroGreeting(advanceHeroGreeting());
+  }, [heroMode]);
+
+  // Unrestricted is an opt-in made per new session, so the picker re-arms to
+  // sandboxed every time the hero is entered — it never carries over from the
+  // last one.
   useEffect(() => {
     if (!heroMode) return;
     fullModeDraftRef.current = false;
     setFullModeDraft(false);
+    setSandboxMenuOpen(false);
+    setConfirmUnrestricted(false);
   }, [heroMode]);
+
+  // The sandbox picker closes on a click anywhere outside it or Esc, same as
+  // the session-bar overflow menu.
+  useEffect(() => {
+    if (!sandboxMenuOpen) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (sandboxMenuRef.current?.contains(target)) return;
+      if (sandboxTriggerRef.current?.contains(target)) return;
+      setSandboxMenuOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSandboxMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [sandboxMenuOpen]);
+
+  useLayoutEffect(() => {
+    if (sandboxMenuOpen) {
+      sandboxMenuWasOpenRef.current = true;
+      sandboxFirstItemRef.current?.focus();
+      return;
+    }
+    if (!sandboxMenuWasOpenRef.current) return;
+    sandboxMenuWasOpenRef.current = false;
+    sandboxTriggerRef.current?.focus();
+  }, [sandboxMenuOpen]);
 
   // The conversation scroller's thumb fades in with scroll activity and back
   // out when idle (native-overlay feel; see scroll-thumb-fade.ts). The hero
@@ -912,6 +1076,7 @@ export function AgentWorkspace({
     setHermesSessionsLoading(true);
     try {
       const sessions = applySessionTitleOverrides(await listHermesSessions());
+      setHermesSessionsHydrated(true);
       const pendingMessages = pendingHermesMessagesRef.current;
       const selectedSessionId = selectedHermesSessionIdRef.current;
       const workingSessions = workingSessionIdsRef.current;
@@ -1058,6 +1223,11 @@ export function AgentWorkspace({
   }, [pendingReply]);
 
   useEffect(() => {
+    // The sidebar and App replace their session lists wholesale with this
+    // payload, so an unhydrated broadcast (mount seed only) would collapse
+    // the list they already fetched themselves and flicker it back once the
+    // real fetch lands.
+    if (!hermesSessionsHydrated) return;
     dispatchAgentSessionsChanged({
       sessions: hermesSessionItems,
       selectedSessionId: selectedHermesSessionId,
@@ -1065,6 +1235,7 @@ export function AgentWorkspace({
       waitingSessionIds: Array.from(waitingSessionIds),
     });
   }, [
+    hermesSessionsHydrated,
     hermesSessionItems,
     selectedHermesSessionId,
     waitingSessionIds,
@@ -1203,6 +1374,7 @@ export function AgentWorkspace({
     getAgentTask(selectedTaskId)
       .then((fullTask) => {
         if (!cancelled) {
+          taskHistoryLoadedIdsRef.current.add(fullTask.id);
           setTasks((current) =>
             current.map((item) => (item.id === fullTask.id ? fullTask : item)),
           );
@@ -1280,28 +1452,14 @@ export function AgentWorkspace({
       for (const animation of el.getAnimations()) animation.cancel();
       for (const animation of box.getAnimations()) animation.cancel();
     }
-    // The toolbar drops below the input once the text can't fit on one line
-    // beside the buttons — so probe that at the narrow single-line width.
-    // Deciding at the *current* width feeds back into itself: text that
-    // overflows the narrow slot can fit on one full-width line, so the modes
-    // would flip-flop on every keystroke right at the wrap boundary.
-    box.dataset.multiline = "false";
     el.style.height = "auto";
-    const styles = getComputedStyle(el);
-    const lineHeight = parseFloat(styles.lineHeight) || 20;
-    const padding =
-      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const lines = Math.round((el.scrollHeight - padding) / lineHeight);
-    const multiline = lines >= 2;
-    setComposerMultiline(multiline);
-    // Flip the layout attribute now rather than waiting for the re-render so
-    // the height below and the FLIP "last" measurement both see the final
-    // layout in this same effect (none of the probe states ever paint).
-    box.dataset.multiline = multiline ? "true" : "false";
-    // Size to the content at the final width, never the probe width — a
-    // narrow-width height on a full-width textarea leaves a phantom line.
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    const contentHeight = el.scrollHeight;
+    el.style.height = `${Math.min(contentHeight, 200)}px`;
+    // Scrollable only once growth is capped. Below the cap the field always
+    // fits its content, but the measurement above passes through a transient
+    // overflowing state (height:auto), and with overflow-y:auto that makes
+    // the overlay scrollbar flash on every line growth.
+    el.style.overflowY = contentHeight > 200 ? "auto" : "hidden";
     const nextBoxHeight = box.offsetHeight;
     if (nextBoxHeight === prevBoxHeight) return;
     if (
@@ -1331,8 +1489,7 @@ export function AgentWorkspace({
       grow,
     );
     // Glide the textarea from its old spot, bottom-left anchored so the line
-    // being typed stays put while space opens above it (most visible on the
-    // one→two line hop, where it leaves the slot between the +/mic buttons).
+    // being typed stays put while space opens above it.
     const nextRect = el.getBoundingClientRect();
     const dx = prevRect.left - nextRect.left;
     const dy = prevRect.bottom - nextRect.bottom;
@@ -1345,10 +1502,9 @@ export function AgentWorkspace({
         grow,
       );
     }
-    // heroMode is a dependency because the hero composer is a different shape
-    // (full-width textarea, taller min-height): leaving the hero must re-probe
-    // the line count and clear the stale inline height, or the docked
-    // composer keeps the hero's 76px textarea and multiline toolbar.
+    // heroMode is a dependency because the hero textarea is taller at rest:
+    // leaving the hero must re-measure and clear the stale inline height, or
+    // the docked composer keeps the hero's 76px field.
   }, [draft, attachments.length, heroMode]);
 
   useEffect(() => {
@@ -1608,8 +1764,9 @@ export function AgentWorkspace({
     const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
-    // Only a session being created applies the Full mode opt-in; follow-ups
-    // on existing sessions never change the runtime's mode under them.
+    // Only a session being created applies the unrestricted opt-in;
+    // follow-ups on existing sessions never change the runtime's mode under
+    // them.
     const gateway = await ensureHermesGateway(
       targetSessionId ? undefined : fullModeDraftRef.current,
     );
@@ -2580,6 +2737,24 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
   );
 
+  // Which conversation the scroller is already settled in. A switch (and the
+  // history fetch that fills the new conversation in) must land at the bottom
+  // instantly; only turns arriving while the user is already reading glide.
+  const settledScrollSelectionRef = useRef<string>();
+
+  // History for the selected conversation has landed: a session gets an entry
+  // in hermesSessionMessages (even an empty one) once its fetch resolves;
+  // tasks either arrive with their turns inline or get recorded when the lazy
+  // hydration resolves. Settling keys off this rather than rendered turns so
+  // a genuinely empty conversation still settles, and its first turn glides.
+  const selectedHistoryLoaded = selectedHermesSessionId
+    ? hermesSessionMessages[selectedHermesSessionId] !== undefined
+    : selectedTask
+      ? selectedTask.messages.length > 0 ||
+        selectedTask.toolEvents.length > 0 ||
+        taskHistoryLoadedIdsRef.current.has(selectedTask.id)
+      : false;
+
   useEffect(() => {
     // The conversation scrolls in .agent-scroll, which sits below the sticky
     // breadcrumb so the scrollbar can't ride up over the bar — drive that
@@ -2587,8 +2762,28 @@ export function AgentWorkspace({
     const scroller = listRef.current?.closest(".agent-scroll");
     if (!(scroller instanceof HTMLElement)) return;
     if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
-  }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
+    const selectionKey = `${selectedHermesSessionId ?? ""}:${selectedTaskId ?? ""}`;
+    const settled = settledScrollSelectionRef.current === selectionKey;
+    if (selectedHistoryLoaded || renderedTurnsSignature > 0) {
+      // The settling run itself still scrolls with the pre-write snapshot, so
+      // the history fill after a switch lands instantly; everything after it
+      // (including the first streamed turn of an empty conversation) glides.
+      settledScrollSelectionRef.current = selectionKey;
+    } else if (!settled) {
+      // Mid-load switch: forget the previous conversation so flipping back
+      // before this one settles re-lands instantly instead of gliding.
+      settledScrollSelectionRef.current = undefined;
+    }
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: settled ? "smooth" : "auto",
+    });
+  }, [
+    renderedTurnsSignature,
+    selectedHermesSessionId,
+    selectedHistoryLoaded,
+    selectedTaskId,
+  ]);
 
   // Reshuffle the deck each time the hero comes back, so repeat visits start
   // from a fresh hand instead of wherever the last rotation left off.
@@ -2677,6 +2872,24 @@ export function AgentWorkspace({
     ) {
       return;
     }
+    // The timeline's rise-and-fade belongs to this same handoff, so it runs
+    // here rather than as a CSS mount animation — as CSS it replayed on every
+    // timeline mount, nudging the conversation upward when merely opening an
+    // existing chat from the hero (or returning from another view).
+    listRef.current?.animate(
+      [
+        { opacity: 0, transform: "translateY(10px)" },
+        { opacity: 1, transform: "translateY(0)" },
+      ],
+      // Backwards fill so a slow frame can't paint the timeline at rest
+      // before the first animation frame applies (the CSS original filled
+      // backwards for the same reason).
+      {
+        duration: 280,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
+        fill: "backwards",
+      },
+    );
     const next = box.getBoundingClientRect();
     const dx = prev.left - next.left;
     const dy = prev.top - next.top;
@@ -2728,12 +2941,7 @@ export function AgentWorkspace({
             </motion.p>
           ) : null}
         </AnimatePresence>
-        <div
-          ref={composerBoxRef}
-          className="agent-composer-box"
-          data-dirty={draft.trim() || attachments.length ? "true" : "false"}
-          data-multiline={composerMultiline ? "true" : "false"}
-        >
+        <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
               {attachments.map((attachment) => (
@@ -2765,7 +2973,30 @@ export function AgentWorkspace({
               ))}
             </div>
           ) : null}
-          <div className="agent-composer-row">
+          <textarea
+            ref={composerRef}
+            value={draft}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            placeholder={
+              importingFiles
+                ? "Attaching file…"
+                : heroMode
+                  ? "Describe a task for June…"
+                  : "Send a message"
+            }
+            rows={1}
+            onKeyDown={(event) => {
+              // Ignore the Enter that commits an IME composition
+              // (Japanese/Chinese/Korean input) — only a real Enter
+              // press should send the message.
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+          />
+          <div className="agent-composer-toolbar">
             <button
               type="button"
               className="agent-composer-attach"
@@ -2775,29 +3006,30 @@ export function AgentWorkspace({
             >
               <IconPlusMedium size={18} />
             </button>
-            <textarea
-              ref={composerRef}
-              value={draft}
-              onChange={(event) => setDraft(event.currentTarget.value)}
-              placeholder={
-                importingFiles
-                  ? "Attaching file…"
-                  : heroMode
-                    ? "Describe a task for June…"
-                    : "Send a message"
-              }
-              rows={1}
-              onKeyDown={(event) => {
-                // Ignore the Enter that commits an IME composition
-                // (Japanese/Chinese/Korean input) — only a real Enter
-                // press should send the message.
-                if (event.nativeEvent.isComposing) return;
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
+            {heroMode ? (
+              // Unrestricted only applies to the session being created, so
+              // the picker lives in the hero composer's toolbar and nowhere
+              // else. The menu itself renders as a sibling of the box (below)
+              // because the box clips its overflow for the FLIP glide.
+              <button
+                type="button"
+                ref={sandboxTriggerRef}
+                className="agent-sandbox-trigger"
+                data-unrestricted={fullModeDraft ? "true" : undefined}
+                aria-haspopup="menu"
+                aria-expanded={sandboxMenuOpen}
+                title="Change what June can touch"
+                onClick={() => setSandboxMenuOpen((open) => !open)}
+              >
+                {fullModeDraft ? (
+                  <IconShieldCrossed size={14} aria-hidden />
+                ) : (
+                  <IconShieldCheck size={14} aria-hidden />
+                )}
+                {fullModeDraft ? "Unrestricted" : "Sandboxed"}
+                <IconChevronDownSmall size={12} aria-hidden />
+              </button>
+            ) : null}
             <div className="agent-composer-actions">
               <button
                 type="button"
@@ -2833,10 +3065,6 @@ export function AgentWorkspace({
                     importingFiles ||
                     (!draft.trim() && !attachments.length)
                   }
-                  tabIndex={draft.trim() || attachments.length ? 0 : -1}
-                  aria-hidden={
-                    draft.trim() || attachments.length ? undefined : true
-                  }
                   aria-label={
                     selectedHermesSessionId || selectedTask
                       ? "Send message"
@@ -2849,6 +3077,89 @@ export function AgentWorkspace({
             </div>
           </div>
         </div>
+        {heroMode && sandboxMenuOpen ? (
+          <div
+            ref={sandboxMenuRef}
+            className="agent-sandbox-menu"
+            role="menu"
+            aria-label="What can June change?"
+          >
+            <p className="agent-sandbox-menu-title">What can June change?</p>
+            {SANDBOX_OPTIONS.map((option, index) => (
+              <button
+                key={option.title}
+                ref={index === 0 ? sandboxFirstItemRef : undefined}
+                type="button"
+                role="menuitemradio"
+                aria-checked={fullModeDraft === option.unrestricted}
+                onClick={() => {
+                  setSandboxMenuOpen(false);
+                  // First arm of the app session goes through the confirm
+                  // dialog; once acknowledged it arms directly, and going
+                  // back to sandboxed never asks.
+                  if (
+                    option.unrestricted &&
+                    !fullModeDraft &&
+                    !unrestrictedAcknowledged()
+                  ) {
+                    setConfirmUnrestricted(true);
+                    return;
+                  }
+                  fullModeDraftRef.current = option.unrestricted;
+                  setFullModeDraft(option.unrestricted);
+                }}
+              >
+                {option.icon}
+                <span className="agent-sandbox-option">
+                  <span className="agent-sandbox-option-title">
+                    {option.title}
+                  </span>
+                  <span className="agent-sandbox-option-desc">
+                    {option.description}
+                  </span>
+                </span>
+                {fullModeDraft === option.unrestricted ? (
+                  <IconCheckmark1Small
+                    size={16}
+                    aria-hidden
+                    className="agent-sandbox-option-check"
+                  />
+                ) : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <Dialog
+          open={confirmUnrestricted}
+          onClose={() => setConfirmUnrestricted(false)}
+          title="Turn on Unrestricted?"
+          description="June will be able to change any file your account can, not just its own workspace. This comes with risks like data loss if something goes wrong."
+          footer={
+            <>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => setConfirmUnrestricted(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-action primary-solid"
+                onClick={() => {
+                  rememberUnrestrictedAcknowledged();
+                  fullModeDraftRef.current = true;
+                  setFullModeDraft(true);
+                  setConfirmUnrestricted(false);
+                }}
+              >
+                Turn on Unrestricted
+              </button>
+            </>
+          }
+        >
+          {null}
+        </Dialog>
       </form>
     ) : null;
 
@@ -3021,34 +3332,9 @@ export function AgentWorkspace({
             />
           ) : null}
           <div className="agent-hero-heading">
-            <h2 className="agent-hero-title">What can June do for you?</h2>
+            <h2 className="agent-hero-title">{heroGreeting}</h2>
           </div>
           {composer}
-          {activePanel === "chat" ? (
-            <div className="agent-fullmode-row">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={fullModeDraft}
-                className="agent-fullmode-toggle"
-                title="Start this session without the file sandbox. June can then change any file your account can. Switching modes restarts June's runtime and stops sessions that are still working."
-                onClick={() => {
-                  const next = !fullModeDraft;
-                  fullModeDraftRef.current = next;
-                  setFullModeDraft(next);
-                }}
-              >
-                <IconShieldCrossed size={14} aria-hidden />
-                Full mode
-              </button>
-              {fullModeDraft ? (
-                <p className="agent-fullmode-hint" role="alert">
-                  June won't be sandboxed and can change any file your account
-                  can.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
           {activePanel === "chat" ? (
             <div className="agent-hero-suggestions">
               <div
@@ -3130,37 +3416,41 @@ export function AgentWorkspace({
 function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
   if (!privacyBadge) return null;
   return (
-    <span
+    <HoverTip
+      tip={privacyBadge.description}
       className="agent-safety-badge"
       data-mode={privacyBadge.mode}
-      title={privacyBadge.description}
+      tabIndex={0}
       aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
     >
-      {privacyBadge.mode === "private" ? (
+      {privacyBadge.mode === "e2ee" ? (
+        <IconLock size={13} aria-hidden />
+      ) : privacyBadge.mode === "private" ? (
         <IconShieldAi size={13} aria-hidden />
       ) : (
         <IconAnonymous size={13} aria-hidden />
       )}
       <span className="agent-safety-badge-label">{privacyBadge.label}</span>
-    </span>
+    </HoverTip>
   );
 }
 
 // Honest indicator of the live runtime, not of any one session: the jail is
-// per-process, so while the user has it in Full mode every session it serves
+// per-process, so while the user has it unrestricted every session it serves
 // runs unsandboxed.
-function FullModeBadge() {
+function UnrestrictedBadge() {
   const description =
-    "June is running without the file sandbox and can change any file your account can. Start a session with Full mode off to restore the sandbox.";
+    "June is running without the file sandbox and can change any file your account can. Start a session with Unrestricted off to restore the sandbox.";
   return (
-    <span
-      className="agent-safety-badge agent-fullmode-badge"
-      title={description}
-      aria-label={`Full mode - ${description}`}
+    <HoverTip
+      tip={description}
+      className="agent-safety-badge agent-sandbox-badge"
+      tabIndex={0}
+      aria-label={`Unrestricted - ${description}`}
     >
       <IconShieldCrossed size={13} aria-hidden />
-      Full mode
-    </span>
+      Unrestricted
+    </HoverTip>
   );
 }
 
@@ -3291,7 +3581,7 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
-        {fullMode ? <FullModeBadge /> : null}
+        {fullMode ? <UnrestrictedBadge /> : null}
         {onToggleArtifacts && artifactCount > 0 ? (
           <button
             type="button"
@@ -6118,6 +6408,23 @@ export function markAgentNewSessionPending(prompt?: string) {
 // would hijack whatever the user had open into a new session (and re-submit
 // the stale prompt).
 const AGENT_NEW_SESSION_PENDING_TTL_MS = 15_000;
+
+/** Non-consuming peek at the pending marker, for state init on a fresh
+ * mount. The mount effect still consumes it via pendingNewSessionRequest();
+ * peeking here must not clear it, or the auto-submit prompt would be lost. */
+function hasPendingNewSessionRequest(): boolean {
+  try {
+    const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
+    if (value == null) return false;
+    const parsed = JSON.parse(value) as { createdAt?: number };
+    return (
+      typeof parsed.createdAt === "number" &&
+      Date.now() - parsed.createdAt <= AGENT_NEW_SESSION_PENDING_TTL_MS
+    );
+  } catch {
+    return false;
+  }
+}
 
 function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {

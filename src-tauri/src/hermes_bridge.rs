@@ -1166,14 +1166,91 @@ async fn start_hermes_gateway_if_needed(
     {
         return Ok(());
     }
-    hermes_connection_json(
-        connection,
-        reqwest::Method::POST,
-        "/api/gateway/start",
-        None,
-    )
-    .await?;
+    spawn_hermes_gateway_start(connection)
+}
+
+/// Starts the messaging gateway by running `hermes gateway start` as a direct
+/// child of this (unsandboxed) app process — deliberately NOT via the bridge's
+/// `POST /api/gateway/start`. The bridge runs inside the Seatbelt write-jail,
+/// and launchd refuses service-management requests from any sandboxed process:
+/// `launchctl bootstrap` fails with exit 5 (EIO) and `kickstart` with 113, so a
+/// jailed bridge can never (re)register the gateway's LaunchAgent — routines
+/// silently stop running after the job is unloaded. The gateway is meant to
+/// outlive the app (cron routines, Slack), which is exactly why it is
+/// launchd-managed and must be started from outside the jail. The plist
+/// rewrite `hermes gateway start` performs also needs `~/Library/LaunchAgents`,
+/// which sits outside the jail's write roots.
+///
+/// Fire-and-forget like the bridge endpoint was: the CLI's stdout/stderr go to
+/// `<hermes_home>/logs/gateway-start.log` (the same file the bridge's action
+/// runner appends to) and the exit status is reaped in the background.
+fn spawn_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = build_hermes_gateway_start_command(connection, &hermes_home);
+    match open_gateway_start_log(&hermes_home) {
+        Some((log_for_stdout, log_for_stderr)) => {
+            cmd.stdout(log_for_stdout).stderr(log_for_stderr);
+        }
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
+    let mut child = cmd.spawn().map_err(|error| {
+        AppError::new(
+            "hermes_gateway_start_failed",
+            format!("Could not run `hermes gateway start`. {error}"),
+        )
+    })?;
+    // Reap the short-lived CLI off the async runtime so it never lingers as a
+    // zombie, and surface a non-zero exit in the app log for diagnosis.
+    tauri::async_runtime::spawn_blocking(move || match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("hermes gateway start exited with {status}; see logs/gateway-start.log");
+        }
+        Err(error) => {
+            eprintln!("could not reap hermes gateway start: {error}");
+        }
+    });
     Ok(())
+}
+
+/// Pure command construction so a test can assert the spawn is the bare hermes
+/// executable (no `sandbox-exec` wrapper) with the isolated environment.
+fn build_hermes_gateway_start_command(
+    connection: &HermesBridgeConnection,
+    hermes_home: &Path,
+) -> Command {
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["gateway", "start"]);
+    apply_isolated_hermes_env(&mut cmd, hermes_home, &connection.token);
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(hermes_home);
+    cmd.stdin(Stdio::null());
+    cmd
+}
+
+/// Opens `<hermes_home>/logs/gateway-start.log` for appending and writes the
+/// same header line the bridge's action runner does, tagged with the app as
+/// the spawner. Returns two handles (stdout, stderr) onto the same file, or
+/// `None` when the log can't be opened — the spawn then proceeds silenced
+/// rather than failing gateway startup over diagnostics.
+fn open_gateway_start_log(hermes_home: &Path) -> Option<(std::fs::File, std::fs::File)> {
+    let log_dir = hermes_home.join("logs");
+    fs::create_dir_all(&log_dir).ok()?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("gateway-start.log"))
+        .ok()?;
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    use io::Write as _;
+    let _ = writeln!(
+        file,
+        "\n=== gateway-start started {timestamp} (spawned by June app, outside the sandbox) ==="
+    );
+    let clone = file.try_clone().ok()?;
+    Some((file, clone))
 }
 
 async fn hermes_connection_json(
@@ -2329,6 +2406,55 @@ mod tests {
         let request: StartHermesBridgeRequest =
             serde_json::from_str(r#"{"fullMode":false}"#).expect("sandboxed request");
         assert_eq!(request.full_mode, Some(false));
+    }
+
+    #[test]
+    fn gateway_start_spawns_the_bare_hermes_cli_outside_the_sandbox() {
+        let connection = HermesBridgeConnection {
+            base_url: "http://127.0.0.1:1".to_string(),
+            ws_url: "ws://127.0.0.1:1/api/ws".to_string(),
+            token: "session-token".to_string(),
+            port: 1,
+            command: "/opt/hermes/bin/hermes".to_string(),
+            hermes_home: "/tmp/hermes-home".to_string(),
+            cwd: None,
+            provider_proxy_port: 2,
+            pid: 3,
+            sandboxed: true,
+            full_mode: false,
+        };
+
+        let cmd = build_hermes_gateway_start_command(&connection, Path::new("/tmp/hermes-home"));
+
+        // The whole point of the direct spawn: the program is the hermes CLI
+        // itself, never a sandbox-exec wrapper — launchd rejects service
+        // management (bootstrap/kickstart) from sandboxed processes.
+        assert_eq!(cmd.get_program(), "/opt/hermes/bin/hermes");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["gateway", "start"]);
+        let envs: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            envs.get("HERMES_HOME").map(String::as_str),
+            Some("/tmp/hermes-home")
+        );
+        assert_eq!(
+            envs.get("HERMES_NONINTERACTIVE").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
     }
 
     #[test]

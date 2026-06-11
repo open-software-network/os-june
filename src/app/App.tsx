@@ -104,8 +104,10 @@ import type {
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import {
+  applyOnboardingReplayFlag,
   isOnboardingComplete,
   markOnboardingComplete,
+  shouldReplayOnboarding,
 } from "../lib/onboarding";
 import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
 import {
@@ -148,6 +150,7 @@ function sidebarMaxWidth() {
 }
 
 export function App() {
+  const replayOnboarding = shouldReplayOnboarding();
   const [state, dispatch] = useReducer(
     notesReducer,
     undefined,
@@ -244,10 +247,11 @@ export function App() {
       : "microphoneOnly";
   const {
     account,
+    error: accountError,
     loading: accountLoading,
     refresh: refreshAccount,
     setAccount,
-  } = useAccountStatus();
+  } = useAccountStatus({ forceLogoutOnMount: replayOnboarding });
   // The note the active recording session belongs to. recordingStatus carries
   // no noteId, so without this the finish flow could only guess from the
   // currently selected note — wrong whenever the user browsed away while
@@ -255,11 +259,22 @@ export function App() {
   const recordingNoteIdRef = useRef<string | undefined>(undefined);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
   const finishingSessionsRef = useRef<Set<string>>(new Set());
-  const signInRequired = shouldBlockOnSignIn(account);
-  const trialRequired = !signInRequired && shouldBlockOnTrial(account);
-  const [onboardingDone, setOnboardingDone] = useState(() =>
-    isOnboardingComplete(),
-  );
+  // A dev build without the OS Accounts env vars (fresh workspace, no .env)
+  // can never complete sign-in, so the sign-in and trial gates would be dead
+  // ends — skip them and let account-dependent features surface their own
+  // errors. Release builds always gate; so do dev builds once configured.
+  const devAccountsUnconfigured =
+    import.meta.env.DEV &&
+    !account.signedIn &&
+    (accountLoading || !!accountError || !account.configured);
+  const signInRequired =
+    !devAccountsUnconfigured && shouldBlockOnSignIn(account);
+  const trialRequired =
+    !devAccountsUnconfigured && !signInRequired && shouldBlockOnTrial(account);
+  const [onboardingDone, setOnboardingDone] = useState(() => {
+    applyOnboardingReplayFlag();
+    return isOnboardingComplete();
+  });
   // The wizard handles sign-in and the free trial itself, so it gates on
   // onboarding state alone; AccountGate/TrialGate remain for users who
   // finished onboarding and later signed out or lapsed.

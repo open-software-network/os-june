@@ -124,7 +124,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
   );
 }
 
-function JuneMark() {
+export function JuneMark() {
   return (
     <svg
       width="24"

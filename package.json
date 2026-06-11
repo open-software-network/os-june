@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node scripts/tauri-dev.mjs",
     "tauri:build": "tauri build --bundles app,dmg",
     "tauri:build:signed-dmg": "./scripts/build-signed-dmg.sh",
     "build": "tsc && vite build",

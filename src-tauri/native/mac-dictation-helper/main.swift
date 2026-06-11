@@ -407,17 +407,28 @@ final class ShortcutKeyMonitor {
         CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 
-    fileprivate func handle(flags: CGEventFlags) {
-        if isCapturingShortcut {
-            handleCapture(flags: flags)
-            return
+    /// A flagsChanged event names the key that changed (`keyCode`), and the
+    /// matching below is gated on it. Matching on the flag bits alone caused
+    /// phantom fn edges: releasing Cmd while fn was still held made the flags
+    /// read exactly {fn} again, which looked like a fresh fn press — so
+    /// cmd-tabbing away from a dictation could re-trigger push-to-talk, and a
+    /// quick Cmd press+release while fn was down counted as a double-press
+    /// and fired the fn+fn toggle. Arrow/Home/End/PageUp/PageDown events set
+    /// the fn bit too, faking the same edges. Only the shortcut's own
+    /// modifier keys may create a press; foreign keys can still *end* one
+    /// (adding Cmd mid-push releases it), but such an interruption is not a
+    /// physical release and must not arm the double-press detector.
+    fileprivate func handleFlagsChanged(_ current: ShortcutModifiers, changedKeyCode: UInt16) {
+        if let identity = activeIdentity, identity.modifiers != current {
+            handlePhysicalUp(
+                identity: identity,
+                isPhysicalRelease: modifierKeyCodes(for: identity.modifiers).contains(changedKeyCode)
+            )
         }
 
-        if let identity = activeIdentity, identity.keyCode == 0, !modifiersMatch(flags, identity.modifiers) {
-            handlePhysicalUp(identity: identity)
-        }
-
-        guard let identity = matchingModifierOnlyIdentity(flags: flags) else {
+        guard let identity = matchingModifierOnlyIdentity(current),
+              modifierKeyCodes(for: identity.modifiers).contains(changedKeyCode)
+        else {
             return
         }
 
@@ -442,10 +453,7 @@ final class ShortcutKeyMonitor {
             }
             handlePhysicalUp(identity: identity)
         case .flagsChanged:
-            handle(flags: event.flags)
-            if let identity = activeIdentity, !modifiersMatch(event.flags, identity.modifiers) {
-                handlePhysicalUp(identity: identity)
-            }
+            handleFlagsChanged(shortcutModifiers(from: event.flags), changedKeyCode: keyCode(from: event))
         default:
             break
         }
@@ -525,15 +533,10 @@ final class ShortcutKeyMonitor {
             }
             handlePhysicalUp(identity: identity)
         case .flagsChanged:
-            if let identity = activeIdentity, identity.keyCode == 0, !modifiersMatch(event.modifierFlags, identity.modifiers) {
-                handlePhysicalUp(identity: identity)
-            }
-            if let identity = matchingModifierOnlyIdentity(flags: event.modifierFlags) {
-                handlePhysicalDown(identity: identity)
-            }
-            if let identity = activeIdentity, !modifiersMatch(event.modifierFlags, identity.modifiers) {
-                handlePhysicalUp(identity: identity)
-            }
+            handleFlagsChanged(
+                shortcutModifiers(from: event.modifierFlags),
+                changedKeyCode: UInt16(event.keyCode)
+            )
         default:
             break
         }
@@ -669,9 +672,9 @@ final class ShortcutKeyMonitor {
         return nil
     }
 
-    private func matchingModifierOnlyIdentity(flags: CGEventFlags) -> ShortcutIdentity? {
+    private func matchingModifierOnlyIdentity(_ current: ShortcutModifiers) -> ShortcutIdentity? {
         for shortcut in shortcuts.values where shortcut.isModifierOnly {
-            guard modifiersMatch(flags, shortcut.modifiers) else {
+            guard shortcut.modifiers == current else {
                 continue
             }
             return ShortcutIdentity(shortcut)
@@ -679,14 +682,28 @@ final class ShortcutKeyMonitor {
         return nil
     }
 
-    private func matchingModifierOnlyIdentity(flags: NSEvent.ModifierFlags) -> ShortcutIdentity? {
-        for shortcut in shortcuts.values where shortcut.isModifierOnly {
-            guard modifiersMatch(flags, shortcut.modifiers) else {
-                continue
-            }
-            return ShortcutIdentity(shortcut)
+    /// The physical keys that can legitimately produce a press/release edge
+    /// for a shortcut's modifier set. flagsChanged events carry the keyCode
+    /// of the key that changed; anything outside this set (an arrow key's fn
+    /// bit, a Cmd release while fn is held) must not be read as an edge.
+    private func modifierKeyCodes(for modifiers: ShortcutModifiers) -> Set<UInt16> {
+        var codes: Set<UInt16> = []
+        if modifiers.command {
+            codes.formUnion([0x36, 0x37]) // right/left Command
         }
-        return nil
+        if modifiers.shift {
+            codes.formUnion([0x38, 0x3C]) // left/right Shift
+        }
+        if modifiers.option {
+            codes.formUnion([0x3A, 0x3D]) // left/right Option
+        }
+        if modifiers.control {
+            codes.formUnion([0x3B, 0x3E]) // left/right Control
+        }
+        if modifiers.function {
+            codes.insert(0x3F) // fn / Globe
+        }
+        return codes
     }
 
     private func shortcuts(matching identity: ShortcutIdentity) -> [(ShortcutKind, MonitoredShortcut)] {
@@ -724,7 +741,11 @@ final class ShortcutKeyMonitor {
         }
     }
 
-    private func handlePhysicalUp(identity: ShortcutIdentity) {
+    /// `isPhysicalRelease` is false when the up is synthesized by a foreign
+    /// modifier interrupting the chord (Cmd pressed mid-fn-hold): the press
+    /// ends, but it was never released, so it must not count as the first
+    /// tap of a double-press.
+    private func handlePhysicalUp(identity: ShortcutIdentity, isPhysicalRelease: Bool = true) {
         guard activeIdentity == identity else {
             return
         }
@@ -738,7 +759,8 @@ final class ShortcutKeyMonitor {
 
         cancelPendingPush()
 
-        if shortcuts(matching: identity).contains(where: { $0.0 == .toggle && $0.1.pressCount == 2 }) {
+        if isPhysicalRelease,
+           shortcuts(matching: identity).contains(where: { $0.0 == .toggle && $0.1.pressCount == 2 }) {
             lastTapIdentity = identity
             lastTapAt = Date()
         }

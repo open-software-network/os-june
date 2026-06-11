@@ -4,6 +4,7 @@ import {
   osAccountsCancelLogin,
   osAccountsLogin,
   osAccountsLogout,
+  osAccountsOpenPortal,
   osAccountsTopUp,
 } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
@@ -172,6 +173,32 @@ export function BillingSettingsSection({
     }
   }
 
+  async function handleManageSubscription() {
+    try {
+      await osAccountsOpenPortal();
+      setBillingStatus("Opened your account portal in the browser.");
+    } catch (error) {
+      setBillingStatus(messageFromError(error));
+    }
+  }
+
+  // Only the states reachable from inside the app: past_due and canceled park
+  // the whole app on the trial gate, so settings never renders them.
+  const subscription = account.subscription;
+  const subscriptionRow =
+    subscription?.status === "trialing"
+      ? {
+          title: "Free trial",
+          detail: describeEnd("Ends", subscription.trialEnd) ?? "Active now",
+        }
+      : subscription?.status === "active"
+        ? {
+            title: "Subscription",
+            detail:
+              describeEnd("Renews", subscription.currentPeriodEnd) ?? "Active",
+          }
+        : undefined;
+
   async function handleRefresh() {
     setRefreshing(true);
     setSpins((turns) => turns + 1);
@@ -198,6 +225,25 @@ export function BillingSettingsSection({
       ) : null}
       <div className="settings-card">
         <div className="settings-rows">
+          {subscriptionRow ? (
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">{subscriptionRow.title}</h3>
+                <p className="settings-row-description">
+                  {subscriptionRow.detail}
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleManageSubscription()}
+                >
+                  Manage subscription
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="settings-row">
             <div className="settings-row-info">
               <p className="balance-amount">
@@ -245,6 +291,24 @@ function displayName(account: AccountStatus) {
 
 function formatUsd(usdMillis?: number) {
   return `$${((usdMillis ?? 0) / 1000).toFixed(2)}`;
+}
+
+/** "Ends June 24" from an accounts-API timestamp, or undefined when the
+ * date is missing or unparseable so callers can fall back to plain copy. */
+function describeEnd(verb: string, timestamp?: string) {
+  if (!timestamp) return undefined;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return undefined;
+  // Annual plans renew up to a year out: include the year whenever the date
+  // isn't in the current calendar year, so "Renews March 15" can't mean
+  // either 3 or 15 months away.
+  const showYear = date.getFullYear() !== new Date().getFullYear();
+  const formatted = new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    ...(showYear ? { year: "numeric" } : {}),
+  }).format(date);
+  return `${verb} ${formatted}`;
 }
 
 function messageFromError(error: unknown) {

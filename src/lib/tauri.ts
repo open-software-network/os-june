@@ -1027,6 +1027,9 @@ export type AccountSubscription = {
   status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
   trialEnd?: string;
   currentPeriodEnd?: string;
+  /** Trial length from the Stripe price config, available pre-subscription.
+   * Absent on accounts APIs that don't expose it yet. */
+  trialPeriodDays?: number;
 };
 
 export type AccountStatus = {
@@ -1072,9 +1075,11 @@ export type TrialCheckoutResult = {
 };
 
 /** Mints the free-trial Stripe Checkout session with the user's own token and
- * opens it in the system browser — no portal detour. Rejects when the direct
- * path is unavailable (old token without billing:write, subscriptions
- * disabled, network); callers fall back to the portal. */
+ * opens it in the system browser — no portal detour. Rejects with code
+ * `trial_checkout_needs_reauth` when the stored grant lacks the billing
+ * scope (callers re-run sign-in and retry), and with other codes when the
+ * direct path is unavailable (subscriptions disabled, network); callers
+ * answer those with the portal fallback. */
 export async function osAccountsStartTrialCheckout() {
   return invoke<TrialCheckoutResult>("os_accounts_start_trial_checkout");
 }

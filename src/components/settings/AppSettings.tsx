@@ -9,6 +9,7 @@ import { IconCircleX } from "central-icons/IconCircleX";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconFire1 } from "central-icons/IconFire1";
 import { IconGhost2 } from "central-icons/IconGhost2";
+import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMoonStar } from "central-icons/IconMoonStar";
 import { IconSun } from "central-icons/IconSun";
@@ -48,6 +49,7 @@ import {
 } from "../account/AccountSettings";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import { Dialog } from "../ui/Dialog";
+import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
@@ -1412,18 +1414,22 @@ function ModelMeta({ model }: { model: VeniceModelDto }) {
   if (context) items.push(<span>{context}</span>);
   if (privacyBadge) {
     items.push(
-      <span
+      <HoverTip
+        tip={privacyBadge.description}
         className="model-trait-icon"
-        title={privacyBadge.description}
-        aria-label={privacyBadge.description}
+        data-mode={privacyBadge.mode}
+        tabIndex={0}
+        aria-label={`${privacyBadge.label} — ${privacyBadge.description}`}
       >
-        {privacyBadge.mode === "private" ? (
+        {privacyBadge.mode === "e2ee" ? (
+          <IconLock size={14} />
+        ) : privacyBadge.mode === "private" ? (
           <IconGhost2 size={14} />
         ) : (
           <IconAnonymous size={14} />
         )}
         <span>{privacyBadge.label}</span>
-      </span>,
+      </HoverTip>,
     );
   }
   if (flags.uncensored) {

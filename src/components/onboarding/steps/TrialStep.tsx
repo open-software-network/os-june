@@ -154,11 +154,15 @@ export function TrialStep({
       </p>
       <StepActions
         continueLabel={
-          checkout.phase === "opening"
-            ? "Opening checkout…"
-            : "Start free trial"
+          checkout.phase === "reauth"
+            ? "Confirming your sign-in…"
+            : checkout.phase === "opening"
+              ? "Opening checkout…"
+              : "Start free trial"
         }
-        continueDisabled={checkout.phase === "opening"}
+        continueDisabled={
+          checkout.phase === "opening" || checkout.phase === "reauth"
+        }
         onContinue={() => void checkout.start()}
       />
       {checkout.error ? (

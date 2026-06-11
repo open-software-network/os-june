@@ -53,6 +53,11 @@ const ERR_CONFLICT: i64 = 4001;
 // ApiError::unprocessable — returned for a return_url the accounts
 // deployment hasn't allowlisted (or hasn't learned about yet).
 const ERR_UNPROCESSABLE: i64 = 4201;
+/// AppError code for "the stored grant lacks a scope the direct checkout
+/// needs". The frontend reacts by re-running sign-in (which requests the
+/// current scope set) and retrying, instead of falling back to the portal.
+/// Mirrored in src/lib/trial-checkout.ts.
+const TRIAL_CHECKOUT_NEEDS_REAUTH: &str = "trial_checkout_needs_reauth";
 
 /// Tauri event fired when the `osscribe://billing/callback` deep link lands —
 /// the user just finished (or canceled) Stripe Checkout in the browser.
@@ -105,6 +110,10 @@ struct SubscriptionWire {
     status: Option<String>,
     trial_end: Option<String>,
     current_period_end: Option<String>,
+    /// Trial length from the Stripe price config, available pre-subscription.
+    /// Absent on accounts APIs that don't expose it yet; the UI falls back to
+    /// a pinned default.
+    trial_period_days: Option<u32>,
 }
 
 #[derive(Serialize, Clone)]
@@ -137,6 +146,8 @@ pub struct AccountSubscription {
     pub trial_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_period_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trial_period_days: Option<u32>,
 }
 
 #[derive(Serialize, Default)]
@@ -446,9 +457,12 @@ const BILLING_RETURN_URL: &str = "";
 
 /// One-click free trial: mint the subscription Stripe Checkout session
 /// directly from the app (the user's own token authorizes it) and open it in
-/// the system browser — no detour through the portal's billing page. Any
-/// failure other than "already subscribed" surfaces as an error so the UI can
-/// fall back to the portal flow.
+/// the system browser — no detour through the portal's billing page.
+///
+/// A persistent scope failure surfaces as `trial_checkout_needs_reauth` so
+/// the UI can re-run sign-in (picking up the scopes this build requests) and
+/// retry the direct path. Any other failure surfaces as an error the UI
+/// answers with the portal fallback.
 #[tauri::command]
 pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppError> {
     let cfg = Config::load();
@@ -493,11 +507,18 @@ pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppErro
                 return_url = None;
             }
             // 3001 doubles as "token expired" and "missing scope". Refresh
-            // once; a token from a pre-billing:write sign-in still fails the
-            // retry, and the error below sends the UI down the portal path.
+            // once; if a freshly refreshed token still 3001s, the grant
+            // itself predates a scope this build requests (refresh can never
+            // broaden a grant) — only an interactive re-auth can fix that.
             Some(ERR_TOKEN_EXPIRED) if !refreshed => {
                 refreshed = true;
                 access = refresh_locked(&cfg).await?;
+            }
+            Some(ERR_TOKEN_EXPIRED) => {
+                return Err(AppError::new(
+                    TRIAL_CHECKOUT_NEEDS_REAUTH,
+                    "Your sign-in predates the billing permission June now uses. Sign in again to continue.",
+                ));
             }
             _ => break,
         }
@@ -958,6 +979,7 @@ async fn fetch_snapshot(
             status: w.status,
             trial_end: w.trial_end,
             current_period_end: w.current_period_end,
+            trial_period_days: w.trial_period_days,
         });
     Ok((me.into(), balance.into(), subscription))
 }

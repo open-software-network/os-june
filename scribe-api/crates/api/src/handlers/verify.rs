@@ -225,9 +225,13 @@ the digest yourself instead of trusting our CI) are in progress; see
 
 <h2>What this does not cover</h2>
 <p>The chain verifies the <strong>code</strong> running in the confidential VM,
-not what upstream providers do. Audio still leaves the TEE when forwarded to
-OpenAI or Venice for transcription, under those providers' own privacy
-policies. End-to-end private speech-to-text is a separate workstream.</p>
+not what upstream providers do. Everything leaving the TEE for model inference
+(audio for transcription, prompts and context for note generation and the
+agent) goes through Venice. By default it runs on Venice private models: zero
+data retention, no training. If you select an anonymized model not run by
+Venice, the request is still routed and anonymized by Venice, but the
+underlying model provider may retain data under its own privacy policy.
+End-to-end private inference is a separate workstream.</p>
 
 <footer>
   <p>Open Software · <a href="@REPO_URL@">source</a> · <a href="@TRUST_CENTER_URL@">attestation</a></p>

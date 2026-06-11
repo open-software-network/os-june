@@ -45,7 +45,7 @@ provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o mini transcribe"
 description = "Fast OpenAI speech-to-text model."
-privacy = "OpenAI"
+privacy = "anonymized"
 context_tokens = 16000
 traits = ["prompt"]
 capabilities = []
@@ -57,7 +57,7 @@ provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o transcribe"
 description = "Large OpenAI speech-to-text model."
-privacy = "OpenAI"
+privacy = "anonymized"
 context_tokens = 16000
 traits = ["prompt"]
 capabilities = []
@@ -68,6 +68,7 @@ credits_per_million_seconds = 100000
 provider = "venice"
 model_type = "asr"
 display_name = "Parakeet TDT 0.6B v3"
+privacy = "private"
 
 [pricing."zai-org-glm-5"]
 unit = "tokens"
@@ -76,6 +77,7 @@ output_credits_per_million_tokens = 3200
 provider = "venice"
 model_type = "text"
 display_name = "GLM 5"
+privacy = "private"
 
 [pricing."nvidia-nemotron-3-nano-30b-a3b"]
 unit = "tokens"
@@ -84,3 +86,4 @@ output_credits_per_million_tokens = 300
 provider = "venice"
 model_type = "text"
 display_name = "Nemotron Nano 30B (dictation cleanup)"
+privacy = "private"

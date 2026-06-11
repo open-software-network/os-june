@@ -14,10 +14,20 @@ import {
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
+  HERO_GREETINGS,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
-import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import {
+  ANONYMOUS_MODEL_DESCRIPTION,
+  E2EE_MODEL_DESCRIPTION,
+  PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+} from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
+
+// The hero greeting cycles per visit, so tests match any entry in the pool.
+const HERO_GREETING = new RegExp(
+  `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
+);
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -237,15 +247,48 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    expect(
-      await screen.findByText("What can June do for you?"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
     expect(screen.queryByText("Existing session")).toBeNull();
     expect(screen.queryByText("Existing task")).toBeNull();
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("never announces the restored session as selected while a New Session is pending", async () => {
+    // Regression: "New session" from inside a project arms the pending marker
+    // and remounts the workspace. Initializing from the last-open restore used
+    // to dispatch a mount-time sessions-changed event selecting the old
+    // session, which App reads as "switched to existing work" — dropping the
+    // pending project assignment before the new session exists.
+    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    try {
+      render(<AgentWorkspace />);
+
+      expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+      await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+      expect(sessionDetails.length).toBeGreaterThan(0);
+      expect(
+        sessionDetails.every((detail) => detail.selectedSessionId == null),
+      ).toBe(true);
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
   });
 
   it("labels anonymous-only agent models as anonymous mode", async () => {
@@ -277,11 +320,52 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
     expect(
-      screen.getByLabelText(
-        "Anonymous mode - You're using a model that is anonymizing your prompts but may still train on your data.",
-      ),
+      screen.getByLabelText(`Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+  });
+
+  it("labels e2ee models over private and explains the mode on hover", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "e2ee-glm",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "e2ee-glm",
+      models: [
+        {
+          provider: "venice",
+          id: "e2ee-glm",
+          name: "E2EE GLM",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["e2ee"],
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const badge = await screen.findByText("E2EE");
+    expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+
+    // The hover callout replaces the native title tooltip.
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await user.hover(badge);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      E2EE_MODEL_DESCRIPTION,
+    );
+    await user.unhover(badge);
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
+    );
   });
 
   it("refreshes the model privacy label when generation model settings change", async () => {
@@ -499,9 +583,7 @@ describe("AgentWorkspace", () => {
 
     window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
 
-    expect(
-      await screen.findByText("What can June do for you?"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     expect(screen.queryByText("Existing session")).toBeNull();
   });
 
@@ -1083,9 +1165,7 @@ describe("AgentWorkspace", () => {
 
     // The source toggle swaps the rendered document for the raw markdown.
     await user.click(within(panel).getByRole("button", { name: "Source" }));
-    expect(
-      within(panel).getByText(/# Quarterly summary/),
-    ).toBeInTheDocument();
+    expect(within(panel).getByText(/# Quarterly summary/)).toBeInTheDocument();
 
     await user.click(
       within(panel).getByRole("button", { name: "Close files" }),
@@ -1508,6 +1588,57 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("holds session broadcasts until the first fetch lands", async () => {
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    // First click after app launch: the workspace mounts seeded with only the
+    // clicked session while listHermesSessions is still in flight. The sidebar
+    // replaces its list wholesale with each broadcast, so a pre-fetch
+    // broadcast would collapse it to one row and flicker it back.
+    let resolveSessions: (sessions: (typeof existingSession)[]) => void = () =>
+      undefined;
+    mocks.listHermesSessions.mockImplementation(
+      () =>
+        new Promise<(typeof existingSession)[]>((resolve) => {
+          resolveSessions = resolve;
+        }),
+    );
+    const clickedSession = {
+      id: "session-2",
+      title: "Clicked session",
+      preview: "Clicked preview",
+      last_active: "2026-06-05T12:00:00Z",
+    };
+
+    try {
+      render(<AgentWorkspace initialSession={clickedSession} />);
+
+      await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+      expect(sessionDetails).toEqual([]);
+
+      await act(async () => {
+        resolveSessions([clickedSession, existingSession]);
+      });
+
+      await waitFor(() => expect(sessionDetails.length).toBeGreaterThan(0));
+      expect(sessionDetails[0].sessions.map((session) => session.id)).toEqual([
+        "session-2",
+        "session-1",
+      ]);
+      expect(sessionDetails[0].selectedSessionId).toBe("session-2");
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
+  });
+
   it("scrubs working state when deleting the selected session from the session bar", async () => {
     const user = userEvent.setup();
     const sessionDetails: AgentSessionsChangedDetail[] = [];
@@ -1557,21 +1688,21 @@ describe("AgentWorkspace", () => {
       JSON.stringify({ createdAt: Date.now() }),
     );
     // rand() of 0 keeps the rotating hero suggestions in curated pool order,
-    // so the leading window (incl. "Tidy my Downloads") is what renders.
+    // so the leading window (incl. "Catch up on recent files") is what renders.
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
     try {
       render(<AgentWorkspace />);
       const user = userEvent.setup();
 
       await user.click(
-        await screen.findByRole("button", { name: /Tidy my Downloads/ }),
+        await screen.findByRole("button", { name: /Catch up on recent files/ }),
       );
 
       await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith(
           "prompt.submit",
           expect.objectContaining({
-            text: expect.stringContaining("Downloads folder"),
+            text: expect.stringContaining("changed in the last week"),
           }),
         ),
       );
@@ -1607,7 +1738,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("starts a new session in full mode only after the explicit opt-in", async () => {
+  it("starts a new session unrestricted only after the explicit opt-in", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now() }),
@@ -1615,8 +1746,9 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
 
-    const toggle = await screen.findByRole("switch", { name: "Full mode" });
-    expect(toggle).toHaveAttribute("aria-checked", "false");
+    // The picker rests on Sandboxed for a fresh hero.
+    const trigger = await screen.findByRole("button", { name: "Sandboxed" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
 
     // Submitting without the opt-in must not touch the runtime's mode — the
     // running sandboxed bridge is reused as-is.
@@ -1633,17 +1765,29 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.startHermesBridge).not.toHaveBeenCalled();
 
-    // Re-entering the hero re-arms the opt-in to off, then opting in and
-    // submitting restarts the runtime in full mode.
+    // Re-entering the hero re-arms the picker to Sandboxed. Choosing
+    // Unrestricted from the menu routes through the confirm dialog before
+    // arming; submitting then restarts the runtime unsandboxed.
     act(() => {
       window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
     });
-    const rearmed = await screen.findByRole("switch", { name: "Full mode" });
-    expect(rearmed).toHaveAttribute("aria-checked", "false");
+    const rearmed = await screen.findByRole("button", { name: "Sandboxed" });
     await user.click(rearmed);
-    expect(rearmed).toHaveAttribute("aria-checked", "true");
+    await user.click(
+      screen.getByRole("menuitemradio", { name: /^Unrestricted/ }),
+    );
     expect(
-      screen.getByText(/won't be sandboxed and can change any file/),
+      screen.queryByRole("menu", { name: "What can June change?" }),
+    ).not.toBeInTheDocument();
+    // Not armed until the dialog confirms.
+    expect(
+      screen.getByRole("button", { name: "Sandboxed" }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Turn on Unrestricted" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Unrestricted" }),
     ).toBeInTheDocument();
 
     await user.type(
@@ -1655,9 +1799,51 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
     );
+
+    // The confirm is once per app session: with the acknowledgment stored,
+    // the next arm goes straight through without the dialog.
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    await user.click(await screen.findByRole("button", { name: "Sandboxed" }));
+    await user.click(
+      screen.getByRole("menuitemradio", { name: /^Unrestricted/ }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Turn on Unrestricted" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Unrestricted" }),
+    ).toBeInTheDocument();
   });
 
-  it("shows the full mode badge while the runtime is unsandboxed by choice", async () => {
+  it("moves focus into the sandbox menu and restores it on close", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    const trigger = await screen.findByRole("button", { name: "Sandboxed" });
+    await user.click(trigger);
+
+    const firstOption = screen.getByRole("menuitemradio", {
+      name: /^Sandboxed/,
+    });
+    expect(firstOption).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("menu", { name: "What can June change?" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveFocus();
+  });
+
+  it("shows the unrestricted badge while the runtime is unsandboxed by choice", async () => {
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: {
@@ -1669,9 +1855,9 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(await screen.findByText("Full mode")).toBeInTheDocument();
+    expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
     expect(
-      screen.getByLabelText(/Full mode - June is running without the file/),
+      screen.getByLabelText(/Unrestricted - June is running without the file/),
     ).toBeInTheDocument();
   });
 
@@ -1835,9 +2021,7 @@ describe("AgentWorkspace", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("What can June do for you?"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     expect(screen.getByText("Projects")).toBeInTheDocument();
     expect(screen.getByText("Scribe")).toBeInTheDocument();
     expect(screen.getByText("New session")).toBeInTheDocument();
