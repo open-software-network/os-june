@@ -1423,7 +1423,13 @@ export function AgentWorkspace({
       for (const animation of box.getAnimations()) animation.cancel();
     }
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    const contentHeight = el.scrollHeight;
+    el.style.height = `${Math.min(contentHeight, 200)}px`;
+    // Scrollable only once growth is capped. Below the cap the field always
+    // fits its content, but the measurement above passes through a transient
+    // overflowing state (height:auto), and with overflow-y:auto that makes
+    // the overlay scrollbar flash on every line growth.
+    el.style.overflowY = contentHeight > 200 ? "auto" : "hidden";
     const nextBoxHeight = box.offsetHeight;
     if (nextBoxHeight === prevBoxHeight) return;
     if (
@@ -2836,6 +2842,17 @@ export function AgentWorkspace({
     ) {
       return;
     }
+    // The timeline's rise-and-fade belongs to this same handoff, so it runs
+    // here rather than as a CSS mount animation — as CSS it replayed on every
+    // timeline mount, nudging the conversation upward when merely opening an
+    // existing chat from the hero (or returning from another view).
+    listRef.current?.animate(
+      [
+        { opacity: 0, transform: "translateY(10px)" },
+        { opacity: 1, transform: "translateY(0)" },
+      ],
+      { duration: 280, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }, // --ease-out
+    );
     const next = box.getBoundingClientRect();
     const dx = prev.left - next.left;
     const dy = prev.top - next.top;
