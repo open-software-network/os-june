@@ -8,6 +8,8 @@ export type PermissionStatuses = {
   microphone?: string;
   /** AXIsProcessTrusted, surfaced as "granted" | "missing". */
   accessibility?: string;
+  /** True after the helper has emitted at least one permission snapshot. */
+  checked: boolean;
 };
 
 export function isMicrophoneGranted(statuses: PermissionStatuses) {
@@ -36,7 +38,9 @@ export function isAccessibilityGranted(statuses: PermissionStatuses) {
  * running yet.
  */
 export function usePermissionStatuses(active: boolean): PermissionStatuses {
-  const [statuses, setStatuses] = useState<PermissionStatuses>({});
+  const [statuses, setStatuses] = useState<PermissionStatuses>({
+    checked: false,
+  });
 
   useEffect(() => {
     let aborted = false;
@@ -53,6 +57,7 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
       const microphone = helperEvent.payload?.microphone;
       const accessibility = helperEvent.payload?.accessibility;
       setStatuses((prev) => ({
+        checked: true,
         microphone:
           typeof microphone === "string" ? microphone : prev.microphone,
         accessibility:

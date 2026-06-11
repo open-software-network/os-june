@@ -24,13 +24,16 @@ const POLL_INTERVAL_MS = 10_000;
 // match trial_period_days on the Stripe price in the OS Accounts dashboard —
 // the trial is configured there, not in code. Once the API ships the field,
 // the live value always wins and this constant is dead weight.
-const FALLBACK_TRIAL_LENGTH_DAYS = 14;
+// (Exported, like TRIAL_STEPS and trialEndDate, for the onboarding trial
+// step, which renders the same pitch.)
+export const FALLBACK_TRIAL_LENGTH_DAYS = 14;
 
-const TRIAL_STEPS = [
+export const TRIAL_STEPS = [
   {
     icon: IconUnlocked,
     label: "Today",
-    detail: "Full access to June: record meetings, dictate, and get polished notes.",
+    detail:
+      "Full access to June: record meetings, dictate, and get polished notes.",
   },
   {
     icon: IconCalendar1,
@@ -47,7 +50,7 @@ const TRIAL_STEPS = [
 
 /** The end date assuming the trial starts now — accurate at the moment the
  * screen is read, which is the only moment it's shown. */
-function trialEndDate(trialDays: number) {
+export function trialEndDate(trialDays: number) {
   const end = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
   // A trial started in late December ends next year; include the year so
   // the date can't read as eleven months past.
@@ -94,7 +97,8 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
         }
       : {
           title: "Start your free trial",
-          subtitle: "Try everything June can do. Free to start, cancel anytime.",
+          subtitle:
+            "Try everything June can do. Free to start, cancel anytime.",
           cta: "Start free trial",
           waiting: "Waiting for your trial to start",
         };
@@ -235,9 +239,7 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
                     ? "Opening checkout…"
                     : copy.cta}
               </button>
-              {trialPitch ? (
-                <p className="trial-hint">Due today: $0</p>
-              ) : null}
+              {trialPitch ? <p className="trial-hint">Due today: $0</p> : null}
             </>
           )}
         </div>
@@ -253,11 +255,7 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
 
         <p className="welcome-terms">
           {handle ? <>Signed in as @{handle}. </> : null}
-          <button
-            type="button"
-            className="trial-gate-link"
-            onClick={onSignOut}
-          >
+          <button type="button" className="trial-gate-link" onClick={onSignOut}>
             Sign out
           </button>
         </p>

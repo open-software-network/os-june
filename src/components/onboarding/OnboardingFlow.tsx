@@ -1,46 +1,40 @@
-import { useEffect, useMemo, useState } from "react";
+import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
+import { useEffect, useState } from "react";
 import {
   onboardingResumeStep,
-  setAgentRiskAcknowledged,
   setOnboardingResumeStep,
 } from "../../lib/onboarding";
-import { dictationSettings } from "../../lib/tauri";
+import { setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { isSubscriptionActive } from "../../lib/trial-checkout";
-import { FinishStep } from "./steps/FinishStep";
-import {
-  AgentStep,
-  DictationPracticeStep,
-  MeetingNotesStep,
-} from "./steps/LearnSteps";
 import { PermissionsStep } from "./steps/PermissionSteps";
-import { PrivacyStep } from "./steps/PrivacySteps";
+import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TrialStep } from "./steps/TrialStep";
 import { usePermissionStatuses } from "./use-permission-status";
 
-type StepId =
-  | "sign-in"
-  | "privacy"
-  | "permissions"
-  | "trial"
-  | "dictation-practice"
-  | "meeting-notes"
-  | "agent"
-  | "finish";
+type StepId = "sign-in" | "permissions" | "trial" | "dictation-practice";
 
-// The trial sits after permissions (the user has invested) and right before
-// the hands-on practice — which runs the real, metered pipeline and
-// therefore needs the trial's credits. Pay, then immediately feel the payoff.
+// The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
+// on the Rust side.
+const FN_SHORTCUT = {
+  code: "Fn",
+  modifiers: {
+    command: false,
+    control: false,
+    option: false,
+    shift: false,
+    function: true,
+  },
+  label: "Fn",
+  pressCount: 1 as const,
+};
+
 const STEPS: StepId[] = [
   "sign-in",
-  "privacy",
   "permissions",
   "trial",
   "dictation-practice",
-  "meeting-notes",
-  "agent",
-  "finish",
 ];
 
 type Props = {
@@ -63,10 +57,11 @@ export function OnboardingFlow({
   onRefreshAccount,
   onComplete,
 }: Props) {
-  const [stepIndex, setStepIndex] = useState(initialStepIndex);
-  const [direction, setDirection] = useState<"forward" | "back">("forward");
+  const [stepIndex, setStepIndex] = useState(() => {
+    const initial = initialStepIndex();
+    return account.signedIn && STEPS[initial] === "sign-in" ? 1 : initial;
+  });
   const [shortcutLabel, setShortcutLabel] = useState("fn");
-  const [language, setLanguage] = useState("");
 
   const stepId = STEPS[stepIndex];
 
@@ -80,41 +75,42 @@ export function OnboardingFlow({
   }, [account.signedIn, stepId]);
 
   useEffect(() => {
+    if (account.signedIn && stepId === "sign-in") {
+      setStepIndex(1);
+    }
+  }, [account.signedIn, stepId]);
+
+  const firstReachableStepIndex = account.signedIn ? 1 : 0;
+
+  useEffect(() => {
     setOnboardingResumeStep(stepId);
   }, [stepId]);
 
   // Only poll the helper while the user is on the permissions screen.
   const permissionStatuses = usePermissionStatuses(stepId === "permissions");
 
+  // Onboarding normalizes dictation to the bare-fn default — once per wizard
+  // run, not per practice-step mount, so a key rebound on the practice screen
+  // survives stepping back and forward.
   useEffect(() => {
-    dictationSettings()
-      .then(({ settings }) => {
-        if (settings.pushToTalkShortcut.label) {
-          setShortcutLabel(settings.pushToTalkShortcut.label);
-        }
-        setLanguage(settings.language ?? "");
+    setDictationShortcut("push_to_talk", FN_SHORTCUT)
+      .then((saved) => {
+        setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
       })
       .catch(() => undefined);
   }, []);
 
-  const firstName = useMemo(() => {
-    const display = account.user?.displayName ?? account.user?.handle;
-    return display?.split(/\s+/)[0];
-  }, [account.user?.displayName, account.user?.handle]);
-
   function goNext() {
-    setDirection("forward");
     setStepIndex((index) => Math.min(index + 1, STEPS.length - 1));
   }
 
   function goBack() {
-    setDirection("back");
     setStepIndex((index) => {
-      let next = Math.max(index - 1, 0);
+      let next = Math.max(index - 1, firstReachableStepIndex);
       // The trial step auto-skips forward for subscribed users; stepping
       // back onto it would just bounce, so hop over it instead.
       if (STEPS[next] === "trial" && isSubscriptionActive(account)) {
-        next = Math.max(next - 1, 0);
+        next = Math.max(next - 1, firstReachableStepIndex);
       }
       return next;
     });
@@ -122,45 +118,45 @@ export function OnboardingFlow({
 
   return (
     <div className="onboarding-screen">
-      <nav
-        className="onboarding-progress"
-        aria-label={`Setup progress: step ${stepIndex + 1} of ${STEPS.length}`}
-      >
-        {STEPS.map((id, index) => (
-          <span
-            key={id}
-            className="onboarding-progress-seg"
-            aria-hidden
-            data-state={
-              index < stepIndex
-                ? "done"
-                : index === stepIndex
-                  ? "current"
-                  : "upcoming"
-            }
-          />
-        ))}
-      </nav>
-      <div className="onboarding-body" data-direction={direction}>
-        {stepIndex > 0 ? (
+      <header className="onboarding-topbar">
+        {stepIndex > firstReachableStepIndex ? (
           <button
             type="button"
             className="onboarding-back"
             onClick={goBack}
             aria-label="Back"
+            title="Back"
           >
-            ← Back
+            <IconChevronLeftSmall size={18} aria-hidden />
           </button>
         ) : null}
+        <nav
+          className="onboarding-progress"
+          aria-label={`Setup progress: step ${stepIndex + 1} of ${STEPS.length}`}
+        >
+          {STEPS.map((id, index) => (
+            <span
+              key={id}
+              className="onboarding-progress-seg"
+              aria-hidden
+              data-state={
+                index < stepIndex
+                  ? "done"
+                  : index === stepIndex
+                    ? "current"
+                    : "upcoming"
+              }
+            />
+          ))}
+        </nav>
+      </header>
+      <div className="onboarding-body">
         {stepId === "sign-in" ? (
           <SignInStep
             account={account}
-            name={firstName}
             onAccountChanged={onAccountChanged}
             onContinue={goNext}
           />
-        ) : stepId === "privacy" ? (
-          <PrivacyStep onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep statuses={permissionStatuses} onContinue={goNext} />
         ) : stepId === "trial" ? (
@@ -171,23 +167,11 @@ export function OnboardingFlow({
           />
         ) : stepId === "dictation-practice" ? (
           <DictationPracticeStep
-            name={firstName}
             shortcutLabel={shortcutLabel}
             onShortcutLabelChange={setShortcutLabel}
-            language={language}
-            onLanguageChange={setLanguage}
-            onContinue={goNext}
+            onContinue={onComplete}
           />
-        ) : stepId === "meeting-notes" ? (
-          <MeetingNotesStep onContinue={goNext} />
-        ) : stepId === "agent" ? (
-          <AgentStep
-            onAcknowledged={() => setAgentRiskAcknowledged(true)}
-            onContinue={goNext}
-          />
-        ) : (
-          <FinishStep shortcutLabel={shortcutLabel} onComplete={onComplete} />
-        )}
+        ) : null}
       </div>
     </div>
   );

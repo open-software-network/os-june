@@ -131,7 +131,7 @@ describe("OnboardingFlow", () => {
 
   async function renderFlow(onComplete = vi.fn()) {
     render(<OnboardingFlow {...flowProps({ onComplete })} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
     return onComplete;
   }
 
@@ -144,22 +144,21 @@ describe("OnboardingFlow", () => {
     });
   }
 
-  async function walkToAgent(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getByRole("button", { name: "Set up June" }));
-    // Privacy education.
-    await screen.findByRole("heading", { name: "Private by design" });
-    await user.click(screen.getByRole("button", { name: "Continue" }));
+  it("walks the full flow for a subscribed user", async () => {
+    const user = userEvent.setup();
+    const onComplete = await renderFlow();
+
     // Permissions: continue stays locked until the helper reports both granted.
-    await screen.findByRole("heading", { name: "Let June listen and type" });
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
     grantPermissions();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    // Dictation practice: typing into the field stands in for dictation,
-    // and the step applies the fn dictation key on mount.
-    const input = await screen.findByPlaceholderText(/Hold Fn/i);
+    // The trial auto-skips (already subscribed), landing on the practice
+    // step. The flow applied the fn dictation default when it mounted.
+    // Typing into the field stands in for dictation.
+    const input = await screen.findByPlaceholderText(/Tell June what to do/i);
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
         "push_to_talk",
@@ -167,47 +166,99 @@ describe("OnboardingFlow", () => {
       ),
     );
     await user.type(input, "hello there");
-    await screen.findByText(/That's it\./);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    // Meeting notes.
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Meet the agent" });
-  }
-
-  it("walks the full flow and persists what the user chose", async () => {
-    const user = userEvent.setup();
-    const onComplete = await renderFlow();
-
-    await walkToAgent(user);
-
-    // The agent screen gates on the acknowledgment checkbox.
-    const continueButton = screen.getByRole("button", { name: "Continue" });
-    expect(continueButton).toBeDisabled();
-    await user.click(screen.getByRole("checkbox"));
-    expect(continueButton).toBeEnabled();
-    await user.click(continueButton);
-
-    await user.click(
-      await screen.findByRole("button", { name: "Start using June" }),
-    );
+    await screen.findByRole("status", { name: "Dictation is working" });
+    await user.click(screen.getByRole("button", { name: "Start using June" }));
 
     expect(onComplete).toHaveBeenCalledOnce();
-    expect(isAgentRiskAcknowledged()).toBe(true);
     // Completion is the caller's job (App marks it), not the flow's.
     expect(isOnboardingComplete()).toBe(false);
   });
 
-  async function walkToTrial(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getByRole("button", { name: "Set up June" }));
-    await screen.findByRole("heading", { name: "Private by design" });
+  async function walkToPractice(user: ReturnType<typeof userEvent.setup>) {
+    grantPermissions();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+    );
     await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByPlaceholderText(/Tell June what to do/i);
+  }
+
+  it("rebinds the dictation key from the practice screen", async () => {
+    const user = userEvent.setup();
+    await renderFlow();
+    await walkToPractice(user);
+    mocks.setDictationShortcut.mockClear();
+
+    // "Change key" hands the helper the capture; the chord comes back as a
+    // shortcut_captured event and lands in the setting.
+    await user.click(screen.getByRole("button", { name: "Change key" }));
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "start_shortcut_capture",
+      pressCount: 1,
+    });
+    await screen.findByText(/Press shortcut/);
+
+    emitDictationEvent?.({
+      payload: JSON.stringify({
+        type: "shortcut_captured",
+        payload: {
+          shortcut: {
+            code: "F5",
+            label: "F5",
+            pressCount: 1,
+            modifiers: {
+              command: false,
+              control: false,
+              option: false,
+              shift: false,
+              function: false,
+            },
+          },
+        },
+      }),
+    });
+
+    await waitFor(() =>
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
+        "push_to_talk",
+        expect.objectContaining({ code: "F5", label: "F5" }),
+      ),
+    );
+    // Both the instruction row and the composer-corner chip show the new key.
+    await waitFor(() => expect(screen.getAllByText("F5")).toHaveLength(2));
+  });
+
+  it("cancels a shortcut capture with Escape", async () => {
+    const user = userEvent.setup();
+    await renderFlow();
+    await walkToPractice(user);
+
+    await user.click(screen.getByRole("button", { name: "Change key" }));
+    await screen.findByText(/Press shortcut/);
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "cancel_shortcut_capture",
+      }),
+    );
+    // Back to the idle instruction with the key unchanged (the keycaps
+    // render the fn glyph lowercase).
+    await waitFor(() => expect(screen.getAllByText("fn")).toHaveLength(2));
+    expect(mocks.setDictationShortcut).not.toHaveBeenCalledWith(
+      "push_to_talk",
+      expect.objectContaining({ code: "F5" }),
+    );
+  });
+
+  async function walkToTrial(user: ReturnType<typeof userEvent.setup>) {
     await screen.findByRole("heading", { name: "Let June listen and type" });
     grantPermissions();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Try June free" });
+    await screen.findByRole("heading", { name: "Start your free trial" });
   }
 
   it("signs the user in from the first step", async () => {
@@ -236,7 +287,7 @@ describe("OnboardingFlow", () => {
     });
     const props = flowProps({ account: unsubscribedAccount });
     const { rerender } = render(<OnboardingFlow {...props} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
@@ -245,22 +296,19 @@ describe("OnboardingFlow", () => {
     // No portal page in the middle: the direct checkout opened, so the
     // portal command must not have fired.
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
-    await screen.findByRole("heading", {
-      name: "Finish in your browser",
-    });
+    await screen.findByText(/Waiting for trial/);
+    await screen.findByText(/Finish in Stripe checkout/);
 
     // Checkout completes in the browser; the refreshed snapshot flips the
     // step to its success state and pulls the app forward.
     rerender(<OnboardingFlow {...props} account={account} />);
     await screen.findByRole("heading", {
-      name: "Your trial is live",
+      name: "You're good to go",
     });
     expect(mocks.focusMainWindow).toHaveBeenCalledOnce();
 
-    await user.click(
-      screen.getByRole("button", { name: "Try your first dictation" }),
-    );
-    await screen.findByPlaceholderText(/Hold fn/i);
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByPlaceholderText(/Tell June what to do/i);
   });
 
   it("reacts to the post-checkout deep link without waiting out the poll", async () => {
@@ -274,21 +322,21 @@ describe("OnboardingFlow", () => {
         {...flowProps({ account: unsubscribedAccount, onRefreshAccount })}
       />,
     );
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
-    await screen.findByRole("heading", { name: "Finish in your browser" });
+    await screen.findByText(/Waiting for trial/);
 
     // Cancel: back to the pitch with a friendly note, not an error.
     emitBillingCallback?.({ payload: "cancel" });
-    await screen.findByRole("heading", { name: "Try June free" });
+    await screen.findByRole("heading", { name: "Start your free trial" });
     await screen.findByText(/Checkout canceled/);
 
     // Success: the deep link triggers an immediate status refresh.
     onRefreshAccount.mockClear();
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
-    await screen.findByRole("heading", { name: "Finish in your browser" });
+    await screen.findByText(/Waiting for trial/);
     emitBillingCallback?.({ payload: "success" });
     await waitFor(() => expect(onRefreshAccount).toHaveBeenCalled());
   });
@@ -300,7 +348,7 @@ describe("OnboardingFlow", () => {
     );
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
@@ -308,7 +356,7 @@ describe("OnboardingFlow", () => {
     await waitFor(() =>
       expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce(),
     );
-    await screen.findByText(/We opened your account portal/);
+    await screen.findByText(/Finish in your account portal/);
   });
 
   // A grant from a sign-in that predates billing:write can't mint the
@@ -330,7 +378,7 @@ describe("OnboardingFlow", () => {
         }),
     );
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
@@ -338,7 +386,7 @@ describe("OnboardingFlow", () => {
     // While the sign-in bounce is in flight the button says what's happening
     // (and stays disabled) instead of pretending checkout is opening.
     const reauthButton = await screen.findByRole("button", {
-      name: "Confirming your sign-in…",
+      name: "Confirming sign-in...",
     });
     expect(reauthButton).toBeDisabled();
     finishLogin?.();
@@ -348,10 +396,8 @@ describe("OnboardingFlow", () => {
     );
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
-    await screen.findByRole("heading", {
-      name: "Finish checkout in your browser",
-    });
-    await screen.findByText(/We opened a secure Stripe checkout/);
+    await screen.findByText(/Waiting for trial/);
+    await screen.findByText(/Finish in Stripe checkout/);
   });
 
   it("falls back to the portal when the re-auth itself fails", async () => {
@@ -366,7 +412,7 @@ describe("OnboardingFlow", () => {
     });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
@@ -376,7 +422,7 @@ describe("OnboardingFlow", () => {
     );
     // No retry without a fresh grant: the direct path was attempted once.
     expect(mocks.osAccountsStartTrialCheckout).toHaveBeenCalledOnce();
-    await screen.findByText(/We opened your account portal/);
+    await screen.findByText(/Finish in your account portal/);
   });
 
   it("falls back to the portal when re-auth does not unblock checkout", async () => {
@@ -388,7 +434,7 @@ describe("OnboardingFlow", () => {
     mocks.osAccountsLogin.mockResolvedValue(unsubscribedAccount);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
@@ -397,7 +443,7 @@ describe("OnboardingFlow", () => {
       expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce(),
     );
     expect(mocks.osAccountsStartTrialCheckout).toHaveBeenCalledTimes(2);
-    await screen.findByText(/We opened your account portal/);
+    await screen.findByText(/Finish in your account portal/);
   });
 
   it("returns to the pitch when the user cancels the re-auth", async () => {
@@ -411,7 +457,7 @@ describe("OnboardingFlow", () => {
       message: "Sign-in canceled.",
     });
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
 
     await walkToTrial(user);
     await user.click(screen.getByRole("button", { name: "Start free trial" }));
@@ -423,9 +469,9 @@ describe("OnboardingFlow", () => {
   });
 
   it("resumes a half-finished run at the saved step", async () => {
-    setOnboardingResumeStep("meeting-notes");
+    setOnboardingResumeStep("dictation-practice");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Never take notes again" });
+    await screen.findByRole("heading", { name: "Talk to June" });
   });
 
   it("resets only onboarding progress when replaying the wizard", () => {
@@ -462,11 +508,7 @@ describe("OnboardingFlow", () => {
   });
 
   it("requests the mic permission when the mic screen shows", async () => {
-    const user = userEvent.setup();
     await renderFlow();
-    await user.click(screen.getByRole("button", { name: "Set up June" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "request_microphone_permission",

@@ -1,39 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { IconCircleCheck } from "central-icons-filled/IconCircleCheck";
-import { IconGift1 } from "central-icons-filled/IconGift1";
 import {
   isSubscriptionActive,
   useTrialCheckout,
 } from "../../../lib/trial-checkout";
 import type { AccountStatus } from "../../../lib/tauri";
+import {
+  FALLBACK_TRIAL_LENGTH_DAYS,
+  TRIAL_STEPS,
+  trialEndDate,
+} from "../../account/TrialGate";
 import { Spinner } from "../../ui/Spinner";
-import { StepActions, StepHeading, StepSpot } from "../StepChrome";
-
-// The no-surprise-charge story as a timeline (today / during / when it
-// ends) rather than three look-alike bullets — the card ask reads as a
-// sequence of guarantees, not a feature pitch.
-const TRIAL_TIMELINE = [
-  {
-    title: "Today",
-    body: "Full access, no charge.",
-  },
-  {
-    title: "During your trial",
-    body: "Cancel in one click and keep access to the end.",
-  },
-  {
-    title: "When it ends",
-    body: "Your membership starts. No charge before then.",
-  },
-];
+import { StepActions, StepCard } from "../StepChrome";
 
 /**
- * The free-trial step, deliberately placed after permissions and setup
- * (the user has invested) and right before the hands-on dictation practice
- * (the practice runs the real, metered pipeline, and the payoff lands
- * seconds after the card does). One click opens Stripe Checkout directly —
- * no portal page in between — and the hook polls until the subscription
- * appears, then pulls the app back to the foreground.
+ * The free-trial step, deliberately placed after permissions (the user has
+ * invested) and right before the hands-on dictation practice (the practice
+ * runs the real, metered pipeline, and the payoff lands seconds after the
+ * card does). One click opens Stripe Checkout directly — no portal page in
+ * between — and the hook polls until the subscription appears, then pulls
+ * the app back to the foreground. The pitch itself is the TrialGate's,
+ * verbatim: same timeline, same end date, same "$0 due today".
  */
 export function TrialStep({
   account,
@@ -49,6 +35,9 @@ export function TrialStep({
   // paying user.
   const initiallySubscribed = useRef(isSubscriptionActive(account)).current;
   const [activated, setActivated] = useState(false);
+
+  const trialDays =
+    account.subscription?.trialPeriodDays ?? FALLBACK_TRIAL_LENGTH_DAYS;
 
   const checkout = useTrialCheckout({
     account,
@@ -73,103 +62,93 @@ export function TrialStep({
 
   if (activated) {
     return (
-      <section className="onboarding-step onboarding-step-hero">
-        <StepHeading
-          art={
-            <StepSpot tone="success">
-              <IconCircleCheck size={26} aria-hidden />
-            </StepSpot>
-          }
-          title="Your trial is live"
-          subtitle="No charge until it ends. Cancel anytime from your account."
-        />
-        <StepActions
-          continueLabel="Try your first dictation"
-          onContinue={onContinue}
-        />
-      </section>
+      <StepCard
+        title="You're good to go"
+        subtitle="Your trial is live. Try talking to June."
+      >
+        <StepActions onContinue={onContinue} />
+      </StepCard>
     );
   }
 
-  if (checkout.phase === "waiting") {
-    return (
-      <section className="onboarding-step">
-        <StepHeading
-          title="Finish in your browser"
-          subtitle={
-            checkout.usedPortalFallback
-              ? "We opened your account portal. Start your free trial there."
-              : "June will notice the moment you're done."
-          }
-        />
-        <div
-          className="onboarding-browser-wait"
-          role="status"
-          aria-live="polite"
-        >
-          <span className="onboarding-browser-wait-label">
-            <Spinner aria-hidden />
-            <span>Waiting for your trial to start</span>
-          </span>
-          <button
-            type="button"
-            className="onboarding-skip"
-            onClick={() => void checkout.checkNow()}
-          >
-            I've finished, check now
-          </button>
-          <button
-            type="button"
-            className="onboarding-skip"
-            onClick={() => void checkout.start()}
-          >
-            Reopen checkout
-          </button>
-        </div>
-      </section>
-    );
-  }
+  const waiting = checkout.phase === "waiting";
 
   return (
-    <section className="onboarding-step">
-      <StepHeading
-        art={
-          <StepSpot>
-            <IconGift1 size={26} aria-hidden />
-          </StepSpot>
-        }
-        title="Try June free"
-        subtitle="Dictation, meeting notes, and the agent, all on one membership."
-      />
-      <ol className="onboarding-timeline">
-        {TRIAL_TIMELINE.map((item) => (
-          <li key={item.title}>
-            <h2>{item.title}</h2>
-            <p>{item.body}</p>
+    <StepCard
+      title="Start your free trial"
+      subtitle="Try everything June can do. Free to start, cancel anytime."
+      wide
+    >
+      <ol className="trial-timeline" aria-label="How your free trial works">
+        {TRIAL_STEPS.map(({ icon: Icon, label, detail, showsEndDate }) => (
+          <li key={label}>
+            <span className="trial-timeline-icon" aria-hidden>
+              <Icon size={15} />
+            </span>
+            <div>
+              <span className="trial-timeline-label">
+                {label}
+                {showsEndDate ? (
+                  <>
+                    {" "}
+                    <span className="trial-timeline-date">
+                      {trialEndDate(trialDays)}
+                    </span>
+                  </>
+                ) : null}
+              </span>
+              <span className="trial-timeline-detail">{detail}</span>
+            </div>
           </li>
         ))}
       </ol>
-      <p className="onboarding-footnote">
-        Checkout opens in your browser. June picks up the moment you're done.
+      {waiting ? (
+        <div className="welcome-providers">
+          <div
+            className="welcome-auth-progress onboarding-waiting"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="welcome-progress-label">
+              <Spinner className="welcome-spinner" aria-hidden />
+              <span>Waiting for trial...</span>
+            </span>
+            <button
+              type="button"
+              className="welcome-cancel-btn"
+              onClick={() => void checkout.start()}
+            >
+              Reopen
+            </button>
+          </div>
+        </div>
+      ) : (
+        <StepActions
+          continueLabel={
+            checkout.phase === "reauth"
+              ? "Confirming sign-in..."
+              : checkout.phase === "opening"
+                ? "Opening checkout..."
+                : "Start free trial"
+          }
+          continueDisabled={
+            checkout.phase === "opening" || checkout.phase === "reauth"
+          }
+          onContinue={() => void checkout.start()}
+        />
+      )}
+      <p className="trial-hint">
+        {waiting
+          ? checkout.usedPortalFallback
+            ? "Finish in your account portal."
+            : "Finish in Stripe checkout."
+          : "Due today: $0"}
       </p>
-      <StepActions
-        continueLabel={
-          checkout.phase === "reauth"
-            ? "Confirming your sign-in…"
-            : checkout.phase === "opening"
-              ? "Opening checkout…"
-              : "Start free trial"
-        }
-        continueDisabled={
-          checkout.phase === "opening" || checkout.phase === "reauth"
-        }
-        onContinue={() => void checkout.start()}
-      />
       {checkout.error ? (
         <p className="welcome-status">{checkout.error}</p>
       ) : checkout.notice ? (
         <p className="welcome-status welcome-status-info">{checkout.notice}</p>
       ) : null}
-    </section>
+    </StepCard>
   );
 }

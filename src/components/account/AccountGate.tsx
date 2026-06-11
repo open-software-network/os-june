@@ -140,7 +140,7 @@ export function JuneMark() {
 }
 
 // The "OS" wordmark, drawn in currentColor for the sign-in button.
-function OsMark() {
+export function OsMark() {
   return (
     <svg
       width="28"
