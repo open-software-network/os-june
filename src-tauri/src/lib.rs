@@ -110,6 +110,8 @@ pub fn run() {
             hermes_bridge::toggle_hermes_bridge_skill,
             hermes_bridge::toggle_hermes_bridge_toolset,
             hermes_bridge::update_hermes_bridge_messaging_platform,
+            hermes_bridge::hermes_agent_cli_access,
+            hermes_bridge::set_hermes_agent_cli_access,
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,

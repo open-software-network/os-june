@@ -31,6 +31,8 @@ const mocks = vi.hoisted(() => ({
   updateHermesBridgeMessagingPlatform: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
+  hermesAgentCliAccess: vi.fn(),
+  setHermesAgentCliAccess: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
@@ -65,6 +67,8 @@ vi.mock("../lib/tauri", () => ({
     mocks.updateHermesBridgeMessagingPlatform,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
+  hermesAgentCliAccess: mocks.hermesAgentCliAccess,
+  setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
@@ -254,6 +258,10 @@ describe("AppSettings", () => {
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
+    mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
+    mocks.setHermesAgentCliAccess.mockImplementation(
+      async (enabled: boolean) => ({ enabled }),
+    );
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
       ...(kind === "toggle"
@@ -1292,5 +1300,43 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).not.toHaveBeenCalled();
+  });
+
+  it("opts into agent CLI access from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const cliSwitch = await screen.findByRole("switch", {
+      name: "Allow agent CLI access",
+    });
+    // The disclosure names the deferred-execution risk, not just the benefit.
+    expect(screen.getByText(/runs outside June's sandbox/)).toBeInTheDocument();
+
+    await waitFor(() => expect(cliSwitch).toBeEnabled());
+    expect(cliSwitch).toHaveAttribute("aria-checked", "false");
+
+    await user.click(cliSwitch);
+    await waitFor(() =>
+      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true),
+    );
+    expect(cliSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(cliSwitch);
+    await waitFor(() =>
+      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false),
+    );
+    expect(cliSwitch).toHaveAttribute("aria-checked", "false");
   });
 });
