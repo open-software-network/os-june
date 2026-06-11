@@ -849,6 +849,9 @@ export function AgentWorkspace({
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
   >(() => continuity?.liveEvents ?? {});
+  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<
+    Record<string, boolean>
+  >({});
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -3061,6 +3064,20 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
     chatArtifacts,
   );
+  const activeThinkingKey = selectedHermesSessionId
+    ? `session:${selectedHermesSessionId}:active`
+    : selectedTask
+      ? `task:${selectedTask.id}:active`
+      : undefined;
+  const thinkingOpen = useCallback(
+    (key: string) => thinkingOpenByKey[key] ?? false,
+    [thinkingOpenByKey],
+  );
+  const setThinkingOpen = useCallback((key: string, open: boolean) => {
+    setThinkingOpenByKey((current) =>
+      current[key] === open ? current : { ...current, [key]: open },
+    );
+  }, []);
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
   const surfacedArtifacts = [...turnArtifacts.values()]
@@ -3532,9 +3549,12 @@ export function AgentWorkspace({
         <AgentChatTurnRow
           key={turn.id}
           turn={turn}
+          activeThinkingKey={activeThinkingKey}
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
+          thinkingOpen={thinkingOpen}
+          onThinkingOpenChange={setThinkingOpen}
           onDownloadArtifact={downloadArtifact}
           onOpenArtifact={openArtifact}
           onApproval={(part, choice) =>
@@ -3609,9 +3629,12 @@ export function AgentWorkspace({
           <AgentChatTurnRow
             key={turn.id}
             turn={turn}
+            activeThinkingKey={activeThinkingKey}
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
+            thinkingOpen={thinkingOpen}
+            onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
             onTopUp={() =>
@@ -4785,6 +4808,14 @@ function AgentResponseGallery({
   errors?: boolean;
   onClose: () => void;
 }) {
+  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<
+    Record<string, boolean>
+  >({});
+  const setThinkingOpen = useCallback((key: string, open: boolean) => {
+    setThinkingOpenByKey((current) =>
+      current[key] === open ? current : { ...current, [key]: open },
+    );
+  }, []);
   return (
     <div className="agent-timeline agent-gallery">
       <div className="agent-gallery-banner">
@@ -4822,9 +4853,11 @@ function AgentResponseGallery({
               artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
+              thinkingOpen={(key) => thinkingOpenByKey[key] ?? false}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
             />
           ))}
@@ -4835,19 +4868,24 @@ function AgentResponseGallery({
 }
 
 function AgentChatTurnRow({
+  activeThinkingKey,
   approvalSubmitting,
   artifacts,
   clarifySubmitting,
+  thinkingOpen,
   onApproval,
   onClarify,
   onDownloadArtifact,
   onOpenArtifact,
+  onThinkingOpenChange,
   onTopUp,
   turn,
 }: {
+  activeThinkingKey?: string;
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
+  thinkingOpen: (key: string) => boolean;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: AgentApprovalChoice,
@@ -4858,6 +4896,7 @@ function AgentChatTurnRow({
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
+  onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   turn: AgentChatTurn;
 }) {
@@ -4865,6 +4904,56 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "text" }> =>
       part.type === "text",
   );
+  const reasoningParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
+      part.type === "reasoning",
+  );
+  const toolParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
+      part.type === "tool",
+  );
+  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
+  // "Thought" disclosure so the conversation isn't littered with terminal rows.
+  const thinkingRunning =
+    reasoningParts.some((part) => part.status === "running") ||
+    toolParts.some((part) => part.status === "running");
+  const completedThinkingKey = `turn:${turn.id}:thinking`;
+  const thinkingKey =
+    thinkingRunning && activeThinkingKey
+      ? activeThinkingKey
+      : completedThinkingKey;
+  const wasThinkingRunningRef = useRef(thinkingRunning);
+  const carriedOpen =
+    !thinkingRunning &&
+    wasThinkingRunningRef.current &&
+    activeThinkingKey !== undefined &&
+    thinkingOpen(activeThinkingKey);
+  const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
+
+  useEffect(() => {
+    const wasRunning = wasThinkingRunningRef.current;
+    wasThinkingRunningRef.current = thinkingRunning;
+    if (
+      !wasRunning ||
+      thinkingRunning ||
+      activeThinkingKey === undefined ||
+      reasoningParts.length + toolParts.length === 0 ||
+      !thinkingOpen(activeThinkingKey)
+    ) {
+      return;
+    }
+    onThinkingOpenChange(completedThinkingKey, true);
+    onThinkingOpenChange(activeThinkingKey, false);
+  }, [
+    activeThinkingKey,
+    completedThinkingKey,
+    onThinkingOpenChange,
+    reasoningParts.length,
+    thinkingOpen,
+    thinkingRunning,
+    toolParts.length,
+  ]);
+
   const contextParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "context" }> =>
       part.type === "context",
@@ -4903,20 +4992,6 @@ function AgentChatTurnRow({
     );
   }
 
-  const reasoningParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
-      part.type === "reasoning",
-  );
-  const toolParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
-      part.type === "tool",
-  );
-  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
-  // "Thought" disclosure so the conversation isn't littered with terminal rows.
-  const thinkingRunning =
-    reasoningParts.some((part) => part.status === "running") ||
-    toolParts.some((part) => part.status === "running");
-
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
       <div className="agent-assistant-turn-body">
@@ -4925,6 +5000,8 @@ function AgentChatTurnRow({
             reasoning={reasoningParts}
             tools={toolParts}
             running={thinkingRunning}
+            open={thinkingIsOpen}
+            onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
         ) : null}
         {turn.parts.map((part, index) =>
@@ -5341,19 +5418,21 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
 }
 
 function AgentThinkingGroup({
+  open,
+  onOpenChange,
   reasoning,
   tools,
   running,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
   tools: Extract<AgentChatPart, { type: "tool" }>[];
   running: boolean;
 }) {
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
   // Collapsed by default to a short label — "Thinking" while it works, "Thought"
   // once done (terracotta while live). Expanding reveals the reasoning prose and
   // any terminal calls it ran, nested together.
-  const open = userOpen ?? false;
   const reasoningText = reasoning
     .map((part) => part.text)
     .join("\n\n")
@@ -5363,7 +5442,7 @@ function AgentThinkingGroup({
       className="agent-reasoning"
       data-status={running ? "running" : "completed"}
       open={open}
-      onToggle={(event) => setUserOpen(event.currentTarget.open)}
+      onToggle={(event) => onOpenChange(event.currentTarget.open)}
     >
       <summary>
         <span className={running ? "text-shimmer" : undefined}>

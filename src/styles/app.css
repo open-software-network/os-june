@@ -2964,8 +2964,11 @@ button.agent-safety-badge:hover {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) 0;
-  font-size: var(--fs-md);
+  max-width: 85%;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.6;
 }
 
 .agent-thinking-icon {

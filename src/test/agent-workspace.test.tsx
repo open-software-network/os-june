@@ -886,6 +886,95 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
+  it("keeps an opened thinking disclosure open while reasoning streams", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "think out loud",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "think out loud",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Checking the project state." },
+        });
+      }
+    });
+
+    const label = await screen.findByText("Thinking");
+    const details = label.closest("details");
+    expect(details).not.toHaveAttribute("open");
+
+    await user.click(label);
+    await waitFor(() => expect(details).toHaveAttribute("open"));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: " Reading one more file." },
+        });
+      }
+    });
+
+    expect(await screen.findByText(/Reading one more file/)).toBeInTheDocument();
+    expect(screen.getByText("Thinking").closest("details")).toHaveAttribute(
+      "open",
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Thought")).toBeInTheDocument();
+    expect(screen.getByText("Thought").closest("details")).toHaveAttribute(
+      "open",
+    );
+
+    await user.type(screen.getByRole("textbox"), "next request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "next request",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Starting the next turn." },
+        });
+      }
+    });
+    expect(await screen.findByText("Thinking")).toBeInTheDocument();
+    expect(screen.getByText("Thinking").closest("details")).not.toHaveAttribute(
+      "open",
+    );
+  });
+
   it("explains a pending approval before the user chooses", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
