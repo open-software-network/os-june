@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
@@ -116,6 +117,7 @@ import {
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
+  stripScheduledRunPreamble,
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
 import {
@@ -4980,7 +4982,16 @@ function AgentChatTurnRow({
 
   if (turn.role === "user") {
     return (
-      <article className="agent-user-turn">
+      <article
+        className="agent-user-turn"
+        data-scheduled-run={turn.isScheduledRun ? "true" : undefined}
+      >
+        {turn.isScheduledRun ? (
+          <span className="agent-user-turn-eyebrow">
+            <IconArrowsRepeat size={12} aria-hidden />
+            Scheduled routine run
+          </span>
+        ) : null}
         <div className="agent-user-turn-body">
           {textParts.map((part, index) => (
             <MarkdownContent
@@ -6753,9 +6764,10 @@ function stripHermesVisibleContext(value: string) {
     "",
   );
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
-  return (
-    marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings
-  ).trim();
+  const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
+  // Drop the scheduled-run delivery preamble so a routine's title and dedup
+  // key come from its actual prompt, not the cron scaffolding.
+  return stripScheduledRunPreamble(visible.trim());
 }
 
 function compactPath(path: string) {

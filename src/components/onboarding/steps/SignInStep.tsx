@@ -87,8 +87,8 @@ export function SignInStep({
           at your cursor in whatever app has focus.
         </li>
         <li>
-          <strong>Never take notes again</strong>: decisions, action items, and
-          who said what, written for you.
+          <strong>Never take notes again</strong>: decisions, action items,
+          your side and theirs, written for you.
         </li>
         <li>
           <strong>Hand off real work</strong>: give June a task, not just a

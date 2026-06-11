@@ -70,7 +70,7 @@ export function MeetingNotesStep({ onContinue }: { onContinue: () => void }) {
     <section className="onboarding-step">
       <StepHeading
         title="Never take notes again"
-        subtitle="June listens to your meetings and writes the notes: decisions, action items, who said what."
+        subtitle="June listens to your meetings and writes the notes: decisions, action items, your side and theirs."
       />
       <div className="onboarding-practice-card">
         <div className="onboarding-practice-header">Meeting notes</div>
@@ -151,11 +151,12 @@ export function AgentHonestyStep({
           </p>
         </li>
         <li>
-          <h2>So nothing irreversible happens without you.</h2>
+          <h2>So June keeps it on a short leash.</h2>
           <p>
-            The agent asks before it edits or deletes files, sends anything, or
-            spends anything. Every session has a full activity log, and you can
-            stop it at any moment.
+            By default the agent works inside a sandbox that blocks writes
+            outside its own workspace, and it asks before running anything
+            risky. Every session has a full activity log, and you can stop it
+            at any moment.
           </p>
         </li>
         <li>
@@ -165,7 +166,8 @@ export function AgentHonestyStep({
           </h2>
           <p>
             When June thinks, your prompts go to zero-retention models: nothing
-            stored, nothing trained on. That's always on. When the agent acts
+            stored, nothing trained on. That's the default for every model June
+            suggests. When the agent acts
             (visits a site, calls a tool, sends an email you approved), the
             other side sees what it shares, exactly as if you'd done it
             yourself. June

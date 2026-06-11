@@ -1,3 +1,4 @@
+import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
@@ -9,6 +10,7 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteHermesSession,
+  isScheduledRunSession,
   sessionTimestamp,
 } from "../../lib/hermes-adapter";
 import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
@@ -260,7 +262,11 @@ function AgentSessionListRow({
       >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconBubble3 size={15} />
+            {isScheduledRunSession(session) ? (
+              <IconArrowsRepeat size={15} />
+            ) : (
+              <IconBubble3 size={15} />
+            )}
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>

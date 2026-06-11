@@ -123,7 +123,11 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
 
-vi.mock("../lib/hermes-adapter", () => ({
+vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
+  // Spread the real module so the pure scheduled-run helpers
+  // (isScheduledRunPreamble/stripScheduledRunPreamble) are present for the
+  // chat runtime; only the network-touching calls are overridden.
+  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
   deleteHermesSession: mocks.deleteHermesSession,
   listHermesSessionMessages: mocks.listHermesSessionMessages,
   listHermesSessions: mocks.listHermesSessions,

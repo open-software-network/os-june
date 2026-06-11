@@ -98,10 +98,10 @@ export function PermissionsStep({
           }
           body={
             micGranted
-              ? "Only while you hold the dictation key or a meeting note is recording."
+              ? "Only when you ask June to listen: dictating, recording a meeting, or testing your mic."
               : micDenied
                 ? "Microphone access is turned off for June. Flip the toggle in System Settings, then come back. We'll notice."
-                : "June only listens while you hold the dictation key or while a meeting note is recording."
+                : "June only listens when you ask it to: while you hold the dictation key or record a meeting."
           }
           action={
             micDenied

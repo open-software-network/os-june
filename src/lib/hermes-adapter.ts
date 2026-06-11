@@ -48,7 +48,81 @@ export async function deleteHermesSession(sessionId: string) {
 export function normalizeHermesSessionsResponse(response: unknown) {
   return extractList(response, "sessions")
     .filter(isHermesSessionInfo)
+    .map(withScheduledRunDisplay)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
+}
+
+/** Hermes tags scheduled-routine runs with source "cron". */
+export const SCHEDULED_RUN_SOURCE = "cron";
+
+export function isScheduledRunSession(session: HermesSessionInfo) {
+  return session.source === SCHEDULED_RUN_SOURCE;
+}
+
+/** The cron scheduler mints run session ids as
+ * `cron_<job id>_<YYYYMMDD_HHMMSS>` — the embedded job id is the only link
+ * from a run back to its routine. Returns undefined for any other id shape. */
+export function scheduledRunJobId(sessionId: string) {
+  return /^cron_(.+)_\d{8}_\d{6}$/.exec(sessionId)?.[1];
+}
+
+/** Hermes's session list has no source filter, so runs are found by fetching
+ * a recent window and filtering client-side. 200 covers weeks of mixed
+ * activity; runs older than the window age out of the history view. */
+const SCHEDULED_RUN_FETCH_LIMIT = 200;
+
+/** Recent scheduled-routine runs, newest first. */
+export async function listScheduledRunSessions() {
+  const sessions = await listHermesSessions({
+    limit: SCHEDULED_RUN_FETCH_LIMIT,
+  });
+  return sessions.filter(isScheduledRunSession);
+}
+
+/** A scheduled run's first message is the routine prompt wrapped in a machine
+ * delivery preamble the cron runner injects: `[IMPORTANT: You are running as a
+ * scheduled cron job. … nothing more.]`. Recognized by that exact opener so a
+ * user message that merely starts with "[IMPORTANT" is never mistaken for it. */
+export function isScheduledRunPreamble(content: string) {
+  return /^\s*\[IMPORTANT:\s*You are running as a scheduled cron job\.?/i.test(
+    content,
+  );
+}
+
+/** Strips the leading delivery preamble from a scheduled run's prompt, leaving
+ * the routine's actual instructions. The preamble embeds bracketed tokens
+ * (`[SILENT]`), so it's removed by matching brackets rather than to the first
+ * `]`. A prompt without the preamble is returned unchanged. */
+export function stripScheduledRunPreamble(content: string) {
+  if (!isScheduledRunPreamble(content)) return content.trim();
+  const start = content.indexOf("[");
+  let depth = 0;
+  for (let index = start; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === "[") depth += 1;
+    else if (char === "]") {
+      depth -= 1;
+      if (depth === 0) return content.slice(index + 1).trim();
+    }
+  }
+  // Unbalanced (truncated preview): drop the opener line so it's not gibberish.
+  return content.slice(start).replace(/^\[IMPORTANT:[^\n]*/i, "").trim();
+}
+
+/** Gives a scheduled-run session a readable title and a clean preview when the
+ * stored ones are empty or still the raw delivery preamble, so every list
+ * surface stops showing "[IMPORTANT…". Non-cron sessions pass through. */
+function withScheduledRunDisplay(session: HermesSessionInfo): HermesSessionInfo {
+  if (!isScheduledRunSession(session)) return session;
+  const cleanedPreview = stripScheduledRunPreamble(session.preview ?? "");
+  const storedTitle = session.title?.trim() ?? "";
+  // Replace the stored title when it's empty or is the cron scaffolding — a
+  // stored title is often truncated ("[IMPORTANT: You are running as"), so a
+  // leading "[IMPORTANT" is enough to treat it as raw here, where we already
+  // know this is a cron session.
+  const looksRaw = !storedTitle || /^\[IMPORTANT\b/i.test(storedTitle);
+  const title = looksRaw ? titleFromPrompt(cleanedPreview) : storedTitle;
+  return { ...session, title, preview: cleanedPreview || session.preview };
 }
 
 export function normalizeHermesSessionMessagesResponse(response: unknown) {
@@ -87,7 +161,7 @@ export function titleFromPrompt(prompt: string) {
 }
 
 function promptTitleSource(prompt: string) {
-  return prompt
+  return stripScheduledRunPreamble(prompt)
     .replace(/\n*--- Attached Context ---[\s\S]*$/m, "")
     .replace(/\n*--- Context Warnings ---[\s\S]*$/m, "")
     .replace(/\n+Attached files copied into[\s\S]*$/i, "")

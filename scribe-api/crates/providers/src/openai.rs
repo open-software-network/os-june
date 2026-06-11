@@ -58,9 +58,11 @@ impl OpenAiTranscriber {
         request: &TranscriptionRequest,
     ) -> Result<Transcript, UpstreamAttemptError> {
         let model_id = &request.model.0;
+        // Canonical part name and mime from the container format only — the
+        // user's own file name never reaches the provider.
         let audio_part = Part::bytes(request.audio.clone())
-            .file_name(request.filename.clone())
-            .mime_str(crate::transcription::audio_mime(&request.filename))
+            .file_name(request.format.upstream_filename())
+            .mime_str(request.format.mime())
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %model_id, "openai: audio mime build failed");
                 UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
@@ -141,7 +143,7 @@ mod tests {
     use crate::http;
     use pretty_assertions::assert_eq;
     use scribe_config::UpstreamConfig;
-    use scribe_domain::{DomainError, ModelId, Transcriber, TranscriptionRequest};
+    use scribe_domain::{AudioFormat, DomainError, ModelId, Transcriber, TranscriptionRequest};
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -161,12 +163,34 @@ mod tests {
     fn request() -> TranscriptionRequest {
         TranscriptionRequest {
             audio: b"fake wav".to_vec(),
-            filename: "recording.wav".to_string(),
-            title: "Title".to_string(),
+            format: AudioFormat::Wav,
             context: None,
             language: None,
             model: ModelId("gpt-4o-mini-transcribe".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn upstream_request_carries_only_the_canonical_part_name() {
+        // The privacy guarantee for opt-in third-party ASR: the multipart
+        // body names the audio "audio.wav", whatever the user's file was
+        // called, and contains nothing identifying beyond the audio itself.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "Hello" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = transcriber(&server).transcribe(request()).await;
+        assert_eq!(result.map(|value| value.text), Ok("Hello".to_string()));
+
+        let received = server.received_requests().await.unwrap_or_default();
+        assert_eq!(received.len(), 1);
+        let body = String::from_utf8_lossy(&received[0].body);
+        assert!(body.contains("filename=\"audio.wav\""), "body: {body}");
+        assert!(body.contains("Content-Type: audio/wav"), "body: {body}");
     }
 
     #[tokio::test]

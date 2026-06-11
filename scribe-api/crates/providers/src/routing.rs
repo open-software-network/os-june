@@ -79,8 +79,7 @@ mod tests {
         let transcript = transcriber
             .transcribe(TranscriptionRequest {
                 audio: b"fake wav".to_vec(),
-                filename: "recording.wav".to_string(),
-                title: "Title".to_string(),
+                format: scribe_domain::AudioFormat::Wav,
                 context: Some("Prompt context".to_string()),
                 language: Some("es".to_string()),
                 model: ModelId("gpt-4o-mini-transcribe".to_string()),

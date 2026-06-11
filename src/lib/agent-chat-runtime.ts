@@ -6,6 +6,10 @@ import type {
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
 import { isInsufficientCreditsMessage } from "./errors";
+import {
+  isScheduledRunPreamble,
+  stripScheduledRunPreamble,
+} from "./hermes-adapter";
 
 export type LiveHermesEvent = HermesGatewayEvent & {
   receivedAt: string;
@@ -84,6 +88,9 @@ export type AgentChatTurn = {
   createdAt: string;
   status: "running" | "complete";
   parts: AgentChatPart[];
+  /** True for the opening prompt of a scheduled-routine run — the UI labels it
+   * so a cron run reads as a routine rather than a message the user sent. */
+  isScheduledRun?: boolean;
 };
 
 export function buildAgentChatTurns(
@@ -142,6 +149,7 @@ export function buildHermesSessionChatTurns(
       createdAt: messageTimestamp(message),
       status: "complete",
       parts: [],
+      isScheduledRun: isScheduledRunMessage(message) || undefined,
     };
 
     if (contextPart) {
@@ -798,15 +806,29 @@ function safeJsonParse(value: string) {
   }
 }
 
-function displayContentForHermesMessage(message: HermesSessionMessage) {
-  const content =
+function resolveHermesMessageText(message: HermesSessionMessage) {
+  return (
     textFromHermesContent(message.content) ??
     textFromHermesContent(message.text) ??
     textFromHermesContent(message.context) ??
     stringValue(message.name, true) ??
-    "";
+    ""
+  );
+}
+
+function displayContentForHermesMessage(message: HermesSessionMessage) {
+  const content = resolveHermesMessageText(message);
   if (message.role !== "user") return content.trim();
-  return stripHermesContextMarkers(content);
+  // Scheduled runs lead with the cron delivery preamble; show the routine's
+  // own instructions, not the machine scaffolding.
+  return stripScheduledRunPreamble(stripHermesContextMarkers(content));
+}
+
+function isScheduledRunMessage(message: HermesSessionMessage) {
+  return (
+    message.role === "user" &&
+    isScheduledRunPreamble(resolveHermesMessageText(message))
+  );
 }
 
 function contextCompactionPartForHermesContent(

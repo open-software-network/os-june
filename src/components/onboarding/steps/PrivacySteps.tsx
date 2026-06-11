@@ -8,7 +8,7 @@ const PRIVACY_CARDS = [
   },
   {
     title: "Private inference",
-    body: "Prompts leave your Mac only for model inference, routed to zero-retention models by default. Nothing stored, nothing trained on. Ever.",
+    body: "Prompts leave your Mac only for model inference, routed to zero-retention models by default. Nothing stored, nothing trained on. The few models that work differently say so on their label.",
   },
   {
     title: "Verifiable",
@@ -61,7 +61,7 @@ export function DataPracticesStep({ onContinue }: { onContinue: () => void }) {
           <h2>What we never store</h2>
           <p>
             Your prompts, transcripts, files, and memory. They stay on your Mac,
-            and inference runs through zero-retention models.
+            and inference runs through zero-retention models by default.
           </p>
         </article>
       </div>

@@ -1498,6 +1498,26 @@ button.agent-safety-badge:hover {
   line-height: 1.55;
 }
 
+/* A scheduled routine run opens with the cron prompt; stack a quiet eyebrow
+ * above the right-aligned bubble so it reads as a routine, not a user message. */
+.agent-user-turn[data-scheduled-run="true"] {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+
+.agent-user-turn-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-user-turn-eyebrow svg {
+  color: var(--muted-foreground);
+}
+
 .agent-assistant-empty {
   margin: 0;
   color: var(--muted-foreground);
@@ -7856,6 +7876,95 @@ button.agent-safety-badge:hover {
 .routines-create-input:focus {
   outline: none;
   border-color: var(--ring);
+}
+
+/* Run history: past scheduled runs under the routines list. Rows reuse the
+ * routines-item grid rhythm, but each row is one button that opens the run's
+ * session, so there is no hover action cluster to make room for. */
+.routines-runs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.routines-runs-header h2 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-2xl);
+  line-height: 1.2;
+}
+
+.routines-runs-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.routines-run {
+  margin: 0 calc(-1 * var(--sp-4));
+}
+
+.routines-run-button {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.routines-run-button:hover,
+.routines-run-button:focus-visible {
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.routines-run-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.routines-run-name {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routines-run-preview {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.routines-run-time {
+  padding-top: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
 }
 
 .folders-header {

@@ -50,6 +50,44 @@ describe("repairContractionSpacing", () => {
 });
 
 describe("Agent chat runtime", () => {
+  it("strips the cron preamble and flags a scheduled-run turn", () => {
+    const preamble =
+      '[IMPORTANT: You are running as a scheduled cron job. SILENT: respond ' +
+      'with exactly "[SILENT]" if nothing is new. Never combine [SILENT] ' +
+      "with content — say [SILENT] and nothing more.]";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: `${preamble}\n\nSummarize GitHub activity for the team.`,
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.isScheduledRun).toBe(true);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Summarize GitHub activity for the team.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("leaves an ordinary user turn unflagged", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: "Summarize GitHub activity for the team.",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.isScheduledRun).toBeUndefined();
+  });
+
   it("renders persisted Hermes user and assistant messages", () => {
     const turns = buildHermesSessionChatTurns([
       {
