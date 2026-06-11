@@ -53,11 +53,11 @@ describe("agent HUD", () => {
     expect(hudElement().dataset.expanded).toBe("false");
     expect(hudElement().dataset.hasEntries).toBe("true");
     expect(pillLabelElement()).toHaveTextContent("1 running");
-    expect(pillStatusElement().dataset.status).toBe("running");
-    expect(
-      pillStatusElement().querySelector(".dot-spinner > span"),
-    ).toBeTruthy();
-    expect(stackElement()).toBeEmptyDOMElement();
+    expect(markElement().dataset.status).toBe("running");
+    // Rows stay in the DOM while collapsed (the expand reveal animates
+    // them); they are hidden from assistive tech instead of removed.
+    expect(stackElement().querySelector(".dot-spinner > span")).toBeTruthy();
+    expect(stackElement()).toHaveAttribute("aria-hidden", "true");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
       request: { expanded: false, cardCount: 0, replying: false },
     });
@@ -87,7 +87,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("false");
-    expect(stackElement()).toBeEmptyDOMElement();
+    expect(stackElement()).toHaveAttribute("aria-hidden", "true");
     expect(mocks.invoke).not.toHaveBeenCalledWith(
       "agent_hud_set_layout",
       expect.anything(),
@@ -162,7 +162,7 @@ describe("agent HUD", () => {
 
     expect(hudElement().dataset.expanded).toBe("true");
     expect(pillLabelElement()).toHaveTextContent("1 needs input");
-    expect(pillStatusElement().dataset.status).toBe("waitingForUser");
+    expect(markElement().dataset.status).toBe("waitingForUser");
     expect(stackElement()).toHaveTextContent("Need approval");
     expect(document.querySelector(".agent-hud-status svg")).toBeTruthy();
     expect(document.querySelector(".agent-hud-chevron svg")).toBeTruthy();
@@ -377,7 +377,7 @@ describe("agent HUD", () => {
 
     expect(hudElement().dataset.hasEntries).toBe("true");
     expect(pillLabelElement()).toHaveTextContent("Done");
-    expect(pillStatusElement().dataset.status).toBe("completed");
+    expect(markElement().dataset.status).toBe("completed");
 
     mocks.invoke.mockClear();
     await vi.advanceTimersByTimeAsync(2250);
@@ -386,7 +386,10 @@ describe("agent HUD", () => {
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_hide");
 
-    await vi.advanceTimersByTimeAsync(180);
+    // The pill keeps showing "Done" under the fade instead of blanking.
+    expect(pillLabelElement()).toHaveTextContent("Done");
+
+    await vi.advanceTimersByTimeAsync(300);
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
@@ -586,10 +589,10 @@ function pillLabelElement() {
   return label as HTMLElement;
 }
 
-function pillStatusElement() {
-  const status = document.querySelector<HTMLElement>("#agent-hud-pill-status");
-  expect(status).toBeTruthy();
-  return status as HTMLElement;
+function markElement() {
+  const mark = document.querySelector<HTMLElement>("#agent-hud-mark");
+  expect(mark).toBeTruthy();
+  return mark as HTMLElement;
 }
 
 function stackElement() {
@@ -627,11 +630,11 @@ function agentHudMarkup() {
           aria-expanded="false"
           aria-label="Expand agent activity"
         >
-          <span
-            id="agent-hud-pill-status"
-            class="agent-hud-status"
-            aria-hidden="true"
-          ></span>
+          <span id="agent-hud-mark" class="agent-hud-mark" aria-hidden="true">
+            <svg viewBox="0 0 12 14" fill="currentColor" aria-hidden="true">
+              <path d="M0 0" />
+            </svg>
+          </span>
           <span id="agent-hud-pill-label" class="agent-hud-pill-label"></span>
           <span
             id="agent-hud-chevron"
@@ -639,12 +642,14 @@ function agentHudMarkup() {
             aria-hidden="true"
           ></span>
         </button>
-        <ul
-          id="agent-hud-stack"
-          class="agent-hud-stack"
-          role="list"
-          aria-label="Agent sessions"
-        ></ul>
+        <div class="agent-hud-reveal">
+          <ul
+            id="agent-hud-stack"
+            class="agent-hud-stack"
+            role="list"
+            aria-label="Agent sessions"
+          ></ul>
+        </div>
       </section>
       <div
         id="agent-hud-menu"

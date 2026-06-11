@@ -8,8 +8,9 @@
  * A small always-on-top overlay pinned to the top right of the screen
  * (agent_hud.rs owns the window position and sizes the window to the
  * layout the controller requests). Collapsed it is a single quiet pill:
- * status indicator + "2 running". Click, keyboard focus, or a session
- * needing input expands it into a compact list with open/reply actions.
+ * the June mark, tinted by the aggregate state, plus "2 running". Click,
+ * keyboard focus, or a session needing input expands it into a compact
+ * list with open/reply actions.
  *
  * Forced dark regardless of system theme, like the dictation HUD: a
  * transient overlay has to read consistently against any wallpaper or
@@ -28,6 +29,7 @@
   --border: oklch(1 0 0 / 12%);
   --destructive: oklch(0.704 0.191 22.216);
   --success: oklch(0.72 0.14 150);
+  --attention: oklch(0.78 0.16 76);
 
   color: var(--foreground);
   background: transparent;
@@ -63,8 +65,16 @@ body {
 
 /* Shared surface recipe: near-opaque dark glass with a hairline border.
  * Matches the dictation pill's tint family; CSS backdrop-filter can't
- * sample other apps' pixels, so opacity does the legibility work. */
+ * sample other apps' pixels, so opacity does the legibility work.
+ *
+ * Shared geometry: the header and every row place their leading icon in
+ * the same 14px column at the same inset, so the header label and row
+ * titles sit on one left edge no matter which icon leads. */
 .agent-hud-surface {
+  --hud-inset-x: 12px;
+  --hud-icon-col: 14px;
+  --hud-col-gap: var(--sp-3);
+
   position: absolute;
   top: var(--sp-3);
   right: var(--sp-4);
@@ -76,25 +86,32 @@ body {
   opacity: 0;
   pointer-events: none;
   transform: translateY(-3px) scale(0.98);
+  /* Out (base state): a longer, calmer fade; agent-hud.ts keeps the last
+   * content rendered underneath it and delays the native hide to match. */
   transition:
-    opacity var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out);
+    opacity var(--t-slow) var(--ease-out),
+    transform var(--t-slow) var(--ease-out),
+    border-radius var(--t-med) var(--ease-out);
 }
 
 .agent-hud[data-visible="true"] .agent-hud-surface {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0) scale(1);
+  /* In: quick. */
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    border-radius var(--t-med) var(--ease-out);
 }
 
 .agent-hud[data-expanded="true"] .agent-hud-surface {
   width: min(280px, calc(100vw - 2 * var(--sp-4)));
   border-radius: var(--r-xl);
-  padding-bottom: var(--sp-1);
 }
 
 .agent-hud[data-has-action="true"] .agent-hud-surface {
-  border-color: color-mix(in oklch, oklch(0.78 0.16 76) 65%, transparent);
+  border-color: color-mix(in oklch, var(--attention) 65%, transparent);
 }
 
 .agent-hud-icon,
@@ -110,11 +127,12 @@ body {
 /* Pill / header row ---------------------------------------------------- */
 
 .agent-hud-pill {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--hud-icon-col) 1fr auto;
+  column-gap: var(--hud-col-gap);
   align-items: center;
-  gap: var(--sp-2);
   height: 30px;
-  padding: 0 var(--sp-4);
+  padding: 0 var(--hud-inset-x);
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -123,6 +141,7 @@ body {
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   letter-spacing: 0;
+  text-align: left;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -142,7 +161,6 @@ body {
   place-items: center;
   width: 14px;
   height: 14px;
-  margin-left: var(--sp-px);
   color: var(--muted-foreground);
   transition: transform var(--t-med) var(--ease-out);
 }
@@ -151,19 +169,55 @@ body {
   transform: rotate(180deg);
 }
 
-/* Status indicator ------------------------------------------------------ */
+/* June mark ------------------------------------------------------------- */
 
-.agent-hud-status {
-  flex: none;
+/* The agents mark carries the aggregate state through color alone:
+ * neutral at rest, breathing white while working, amber when a session
+ * needs input, green/red on the way out. */
+.agent-hud-mark {
   display: grid;
   place-items: center;
-  width: 14px;
+  width: var(--hud-icon-col);
   height: 14px;
-  border-radius: var(--r-pill);
+  color: var(--muted-foreground);
+  transition: color var(--t-med) var(--ease-out);
 }
 
-/* Running statuses hold the rolling dot spinner (dot-spinner.css), colored
- * via currentColor like everywhere else in the app. */
+.agent-hud-mark svg {
+  display: block;
+}
+
+.agent-hud-mark[data-status="received"],
+.agent-hud-mark[data-status="starting"],
+.agent-hud-mark[data-status="running"] {
+  color: var(--foreground);
+  animation: agent-hud-breathe 1600ms var(--ease-in-out) infinite;
+}
+
+.agent-hud-mark[data-status="waitingForUser"] {
+  color: var(--attention);
+}
+
+.agent-hud-mark[data-status="completed"] {
+  color: var(--success);
+}
+
+.agent-hud-mark[data-status="failed"],
+.agent-hud-mark[data-status="cancelled"] {
+  color: var(--destructive);
+}
+
+/* Status indicator ------------------------------------------------------ */
+
+/* Outlined glyphs straight on the surface — no filled chip behind them.
+ * Color does the talking, matching the mark above. */
+.agent-hud-status {
+  display: grid;
+  place-items: center;
+  width: var(--hud-icon-col);
+  height: 14px;
+}
+
 .agent-hud-status[data-status="received"],
 .agent-hud-status[data-status="starting"],
 .agent-hud-status[data-status="running"] {
@@ -171,52 +225,78 @@ body {
 }
 
 .agent-hud-status[data-status="waitingForUser"] {
-  background: oklch(0.78 0.16 76);
-  color: oklch(0.17 0.035 76);
+  color: var(--attention);
   animation: agent-hud-breathe 1600ms var(--ease-in-out) infinite;
 }
 
 .agent-hud-status[data-status="completed"] {
-  background: var(--success);
-  color: oklch(0.12 0.02 148);
+  color: var(--success);
 }
 
 .agent-hud-status[data-status="failed"],
 .agent-hud-status[data-status="cancelled"] {
-  background: var(--destructive);
-  color: var(--foreground);
-}
-
-.agent-hud-status[data-status="idle"] {
-  border: 1.5px solid color-mix(in oklch, var(--foreground) 30%, transparent);
+  color: var(--destructive);
 }
 
 /* Session rows ----------------------------------------------------------- */
 
-.agent-hud-stack {
+/* Expansion is a pure CSS reveal (0fr -> 1fr); the rows stay in the DOM
+ * while collapsed so the open and close both animate. agent-hud.ts delays
+ * the native window shrink so the close isn't clipped mid-flight. */
+.agent-hud-reveal {
   display: grid;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--t-med) var(--ease-out);
 }
 
-.agent-hud[data-expanded="false"] .agent-hud-stack {
-  display: none;
+.agent-hud[data-expanded="true"] .agent-hud-reveal {
+  grid-template-rows: 1fr;
+}
+
+.agent-hud-stack {
+  display: block;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 var(--sp-1);
+  overflow: hidden;
+  list-style: none;
+  /* Hidden rows must not be clickable or tabbable; the delay keeps them
+   * visible for the collapse animation. */
+  visibility: hidden;
+  transition: visibility 0s var(--t-med);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-stack {
+  visibility: visible;
+  transition: visibility 0s;
 }
 
 .agent-hud-row {
   position: relative;
   margin: 0 var(--sp-1);
   border-radius: var(--r-lg);
+  opacity: 0;
+  transform: translateY(-3px);
+  transition:
+    opacity var(--t-med) var(--ease-out),
+    transform var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-row {
+  opacity: 1;
+  transform: none;
+  /* Stagger the rows in on expand; collapsing fades them together. */
+  transition-delay: calc(var(--row-index, 0) * 30ms);
 }
 
 .agent-hud-row-body {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+  display: grid;
+  grid-template-columns: var(--hud-icon-col) 1fr;
+  column-gap: var(--hud-col-gap);
+  align-items: start;
   width: 100%;
   min-height: 46px;
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) calc(var(--hud-inset-x) - var(--sp-1));
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -229,6 +309,12 @@ body {
 .agent-hud-row-body:hover,
 .agent-hud-row-body:focus-visible {
   background: color-mix(in oklch, var(--foreground) 7%, transparent);
+}
+
+/* Rides the title's first line (13px x 1.25 line height) rather than
+ * centering across both lines. */
+.agent-hud-row-body .agent-hud-status {
+  margin-top: 1px;
 }
 
 .agent-hud-row-text {
@@ -260,7 +346,7 @@ body {
 
 .agent-hud-reply {
   position: absolute;
-  top: 50%;
+  top: 11px;
   right: var(--sp-3);
   display: grid;
   place-items: center;
@@ -278,7 +364,6 @@ body {
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%);
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
@@ -297,6 +382,14 @@ body {
   grid-template-columns: 1fr auto;
   gap: var(--sp-2);
   padding: 0 var(--sp-3) var(--sp-2);
+  animation: agent-hud-reply-in var(--t-med) var(--ease-out);
+}
+
+/* One-shot entrance: the cached form node re-appends on every stack
+ * rebuild while a draft is open, and must not replay it (agent-hud.ts
+ * sets data-settled after the first run). */
+.agent-hud-reply-form[data-settled] {
+  animation: none;
 }
 
 .agent-hud-reply-input {
@@ -395,5 +488,27 @@ body {
   }
   50% {
     opacity: 0.55;
+  }
+}
+
+@keyframes agent-hud-reply-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-hud-surface,
+  .agent-hud-reveal,
+  .agent-hud-row,
+  .agent-hud-stack {
+    transition: none;
+  }
+
+  .agent-hud-mark,
+  .agent-hud-status,
+  .agent-hud-reply-form {
+    animation: none;
   }
 }

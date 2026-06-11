@@ -1,5 +1,4 @@
 import { emit, listen } from "@tauri-apps/api/event";
-import { IconAgent } from "central-icons/IconAgent";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
@@ -55,13 +54,16 @@ const EXPANDED_KEY = "scribe:agent-hud:expanded";
 const MAX_VISIBLE_ROWS = 3;
 const COMPLETED_STATUS_TTL_MS = 2200;
 const FAILED_STATUS_TTL_MS = 8 * 1000;
-const WINDOW_FADE_MS = 180;
+// Covers the surface's fade-out transition (--t-slow) before the native
+// window hides, plus a little slack for the compositor.
+const WINDOW_FADE_MS = 300;
+// How long the CSS collapse animation gets to play before the native
+// window shrinks underneath it (--t-med plus slack).
+const COLLAPSE_RESIZE_DELAY_MS = 200;
 
 const hud = document.querySelector<HTMLElement>("#agent-hud");
 const pill = document.querySelector<HTMLButtonElement>("#agent-hud-pill");
-const pillStatus = document.querySelector<HTMLElement>(
-  "#agent-hud-pill-status",
-);
+const mark = document.querySelector<HTMLElement>("#agent-hud-mark");
 const pillLabel = document.querySelector<HTMLElement>("#agent-hud-pill-label");
 const pillChevron = document.querySelector<HTMLElement>("#agent-hud-chevron");
 const stack = document.querySelector<HTMLElement>("#agent-hud-stack");
@@ -86,10 +88,11 @@ const state = {
 let lastLayoutKey = "";
 let lastStackKey = "";
 let lastRenderedExpanded = false;
+let lastWindowHeight = 0;
 let pruneTimer: number | undefined;
 let hideTimer: number | undefined;
+let resizeTimer: number | undefined;
 let windowShown = false;
-let lastPillStatus: HudSessionStatus | undefined;
 // The reply form lives outside the rebuild cycle: status events arrive in
 // bursts while sessions work, and recreating the input on each one would
 // wipe whatever the user is typing.
@@ -219,9 +222,21 @@ function render() {
       (state.hovered && lastRenderedExpanded));
   lastRenderedExpanded = expanded;
 
-  hud.dataset.expanded = expanded ? "true" : "false";
+  const visible = state.enabled && hasEntries;
   hud.dataset.hasEntries = hasEntries ? "true" : "false";
-  hud.dataset.visible = state.enabled && hasEntries ? "true" : "false";
+  hud.dataset.visible = visible ? "true" : "false";
+
+  // Going invisible: leave the last-rendered content in place under the
+  // CSS fade so the panel fades out showing "Done" instead of blanking
+  // and vanishing. The native window hides once the fade has played.
+  if (!visible && windowShown) {
+    lastRenderedExpanded = false;
+    void syncWindowLayout(false, 0, hasEntries);
+    scheduleStatusPrune();
+    return;
+  }
+
+  hud.dataset.expanded = expanded ? "true" : "false";
   hud.dataset.hasAction = hasAction ? "true" : "false";
   hud.dataset.menuOpen = state.menuOpen ? "true" : "false";
 
@@ -230,28 +245,27 @@ function render() {
   // Only rebuild the rows when their visible content changes. Status events
   // arrive in bursts while a session works; recreating identical nodes on
   // each one restarts CSS animations (the status spinner) and reads as
-  // flicker.
-  const stackKey = expanded
-    ? entries
-        .map((entry) =>
-          [
-            entry.id,
-            entry.title,
-            entry.summary,
-            entry.status,
-            state.replyingEntryId === entry.id ? "replying" : "",
-          ].join(""),
-        )
-        .join("")
-    : "collapsed";
+  // flicker. Rows stay in the DOM while collapsed so the expand and
+  // collapse reveal always has content to animate.
+  const stackKey = entries
+    .map((entry) =>
+      [
+        entry.id,
+        entry.title,
+        entry.summary,
+        entry.status,
+        state.replyingEntryId === entry.id ? "replying" : "",
+      ].join("\u0001"),
+    )
+    .join("\u0002");
   if (stackKey !== lastStackKey) {
     lastStackKey = stackKey;
     const inputHadFocus =
       replyForm !== undefined && document.activeElement === replyForm.input;
     stack.replaceChildren();
-    if (expanded) {
-      for (const entry of entries) stack.appendChild(renderRow(entry));
-    }
+    entries.forEach((entry, index) => {
+      stack.appendChild(renderRow(entry, index));
+    });
     // replaceChildren re-homes the cached form node, which drops focus.
     if (inputHadFocus && replyForm?.input.isConnected) replyForm.input.focus();
   }
@@ -266,14 +280,9 @@ function render() {
 }
 
 function renderPill(entries: HudEntry[], expanded: boolean) {
-  if (!pill || !pillStatus || !pillLabel) return;
+  if (!pill || !mark || !pillLabel) return;
   const { label, status } = pillSummary(entries);
-  pillStatus.dataset.status = status;
-  if (status !== lastPillStatus) {
-    lastPillStatus = status;
-    pillStatus.replaceChildren();
-    appendStatusIcon(pillStatus, status);
-  }
+  mark.dataset.status = status;
   pillLabel.textContent = label;
   pill.setAttribute("aria-expanded", expanded ? "true" : "false");
   pill.setAttribute(
@@ -314,10 +323,14 @@ function pillSummary(entries: HudEntry[]): {
   return { label: "Idle", status: "idle" };
 }
 
-function renderRow(entry: HudEntry) {
+function renderRow(entry: HudEntry, index: number) {
   const row = document.createElement("li");
   row.className = "agent-hud-row";
   row.dataset.status = entry.status;
+  // Staggers the rows' fade-in when the panel expands (CSS transition
+  // delay). Rows created while already expanded paint directly in their
+  // final state, so they never re-run the entrance.
+  row.style.setProperty("--row-index", String(index));
 
   const body = document.createElement("button");
   body.type = "button";
@@ -384,6 +397,14 @@ function ensureReplyForm(entry: HudEntry) {
 
   const form = document.createElement("form");
   form.className = "agent-hud-reply-form";
+  // The entrance keyframes must run only on the first mount; the cached
+  // form node gets re-appended on every stack rebuild while a draft is
+  // open, and each re-append would restart them.
+  form.addEventListener(
+    "animationend",
+    () => form.setAttribute("data-settled", ""),
+    { once: true },
+  );
 
   const input = document.createElement("input");
   input.className = "agent-hud-reply-input";
@@ -735,20 +756,59 @@ async function syncWindowLayout(
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
   if (!visible) {
+    cancelPendingResize();
     scheduleWindowHide(!state.enabled);
     return;
   }
   cancelWindowHide();
-  await agentHudSetLayout({
-    expanded,
-    cardCount: rowCount,
-    replying,
-    ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
-  }).catch(() => {});
-  if (!windowShown) {
-    await agentHudShow().catch(() => {});
-    windowShown = true;
+  cancelPendingResize();
+  const height = nativeWindowHeight(expanded, rowCount, replying, menuOpen);
+  const apply = async () => {
+    await agentHudSetLayout({
+      expanded,
+      cardCount: rowCount,
+      replying,
+      ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
+    }).catch(() => {});
+    if (!windowShown) {
+      await agentHudShow().catch(() => {});
+      windowShown = true;
+    }
+  };
+  // Growing: the window must be at full size before the CSS reveal plays.
+  // Shrinking: the reveal collapses first, then the window snaps down under
+  // the (already pill-sized) surface; resizing immediately would clip the
+  // animation mid-flight.
+  if (windowShown && height < lastWindowHeight) {
+    resizeTimer = window.setTimeout(() => {
+      resizeTimer = undefined;
+      void apply();
+    }, COLLAPSE_RESIZE_DELAY_MS);
+  } else {
+    await apply();
   }
+  lastWindowHeight = height;
+}
+
+/* Mirrors agent_hud_window_size in agent_hud.rs, only to tell growth from
+ * shrinkage; the Rust side stays the source of truth for the real size. */
+function nativeWindowHeight(
+  expanded: boolean,
+  rowCount: number,
+  replying: boolean,
+  menuOpen: boolean,
+) {
+  const height =
+    !expanded || rowCount === 0
+      ? 48
+      : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + (replying ? 32 : 0) + 14;
+  return menuOpen ? Math.max(height, 104) : height;
+}
+
+function cancelPendingResize() {
+  if (resizeTimer === undefined) return;
+  window.clearTimeout(resizeTimer);
+  resizeTimer = undefined;
 }
 
 function scheduleWindowHide(immediate = false) {
@@ -815,26 +875,25 @@ function setIcon(parent: HTMLElement | null, Icon: CentralIcon, size: number) {
 function appendStatusIcon(parent: HTMLElement, status: HudSessionStatus) {
   switch (status) {
     case "waitingForUser":
-      appendIcon(parent, IconCircleQuestionmark, 12);
+      appendIcon(parent, IconCircleQuestionmark, 14);
       return;
     case "completed":
-      appendIcon(parent, IconCheckmark1Small, 12);
+      appendIcon(parent, IconCheckmark1Small, 14);
       return;
     case "failed":
     case "cancelled":
       appendIcon(
         parent,
         status === "failed" ? IconCrossSmall : IconStopCircle,
-        12,
+        14,
       );
-      return;
-    case "idle":
-      appendIcon(parent, IconAgent, 12);
       return;
     case "received":
     case "starting":
     case "running":
       appendDotSpinner(parent);
+      return;
+    case "idle":
       return;
   }
 }
