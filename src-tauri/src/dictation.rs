@@ -1073,7 +1073,7 @@ pub fn dictation_hud_exit(app: AppHandle) {
         let frame = PhysicalPosition::new(base.x, y.round() as i32);
         let _ = app.run_on_main_thread(move || {
             let _ = frame_hud.set_position(frame);
-            set_window_alpha(&frame_hud, 1.0 - t);
+            set_window_alpha(&frame_hud, 1.0 - e);
         });
         thread::sleep(Duration::from_millis(STEP_MS));
     }

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
-import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { spinners } from "unicode-animations";
@@ -187,6 +187,7 @@ function setHud(state: string, status: string) {
       });
     }
     if (state === "meeting") clearStopHover();
+    if (state === "exiting") return;
     hud.offsetWidth;
     const sizeAfter = hud.getBoundingClientRect();
     void syncWindowToPill({
@@ -526,7 +527,7 @@ async function hideHud() {
     const meetingExit =
       hud.dataset.state === "meeting" && !prefersReducedMotion();
     hud.classList.toggle("hud-exit-up", meetingExit);
-    hud.dataset.state = "exiting";
+    setHud("exiting", statusText?.textContent || "Idle");
     stopBraille();
     if (meetingExit) {
       // The meeting card leaves the way it came in: a native slide-up +
@@ -560,7 +561,7 @@ async function hideHud() {
   // window is ever shown again without new content, a pill stuck in that
   // state renders as a bare, undraggable gray bar.
   if (hud?.dataset.state === "exiting" && requestId === hideRequestId) {
-    hud.dataset.state = "idle";
+    setHud("idle", "Idle");
   }
 }
 

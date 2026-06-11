@@ -185,6 +185,7 @@ describe("meeting detection HUD", () => {
     // under the mocked invoke.
     expect(mocks.hide).toHaveBeenCalledOnce();
     expect(hudElement().dataset.state).toBe("idle");
+    expect(chromeCalls()).toEqual([true, false]);
   });
 
   it("hides and suppresses the prompt after 30 seconds without a click", async () => {
@@ -357,6 +358,12 @@ function hudShowCalls() {
   return mocks.invoke.mock.calls.filter(
     ([command]) => command === "dictation_hud_show",
   ).length;
+}
+
+function chromeCalls() {
+  return mocks.invoke.mock.calls
+    .filter(([command]) => command === "dictation_hud_set_chrome")
+    .map(([, args]) => (args as { meeting: boolean }).meeting);
 }
 
 function hudElement() {
