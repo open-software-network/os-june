@@ -261,13 +261,31 @@ fn is_missing_label(message: &str) -> bool {
 
 const ISSUE_TITLE_MAX_CHARS: usize = 120;
 
-/// First line of the description, truncated on a char boundary. The full
-/// description is always in the body.
+/// Strips the report form's field labels so a line's *content* drives the
+/// title: "What happened: X" yields "X", and a bare label line yields ""
+/// (and is skipped by the caller).
+fn report_line_content(line: &str) -> &str {
+    for label in ["What happened:", "What I expected:"] {
+        if let Some(rest) = line.strip_prefix(label) {
+            return rest.trim();
+        }
+    }
+    if line.starts_with("Extra details") {
+        return line.rsplit_once(':').map_or("", |(_, rest)| rest.trim());
+    }
+    line
+}
+
+/// Title from the report's content, truncated on a char boundary. The
+/// app's report form opens with a canned intro and field labels; the first
+/// line with actual content wins. The full description is always in the
+/// body.
 fn issue_title(description: &str) -> String {
     let first_line = description
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
+        .map(report_line_content)
+        .find(|line| !line.is_empty() && *line != "I want to report an issue with June.")
         .unwrap_or("(no description)");
     let mut title = String::with_capacity(ISSUE_TITLE_MAX_CHARS + 16);
     title.push_str("June report: ");
@@ -520,6 +538,38 @@ mod tests {
         assert_eq!(
             sink.deliver(report()).await,
             Err(DomainError::UpstreamProvider)
+        );
+    }
+}
+
+#[cfg(test)]
+mod issue_title_tests {
+    use super::issue_title;
+
+    #[test]
+    fn title_prefers_the_what_happened_line() {
+        let description = "I want to report an issue with June.\n\nWhat happened: recorder freezes on pause\n\nWhat I expected:\n";
+        assert_eq!(
+            issue_title(description),
+            "June report: recorder freezes on pause"
+        );
+    }
+
+    #[test]
+    fn title_skips_the_canned_intro_when_what_happened_is_empty() {
+        let description =
+            "I want to report an issue with June.\n\nWhat happened:\n\nIt crashed twice today.";
+        assert_eq!(
+            issue_title(description),
+            "June report: It crashed twice today."
+        );
+    }
+
+    #[test]
+    fn title_falls_back_for_free_form_reports() {
+        assert_eq!(
+            issue_title("The recorder freezes\nwhen I pause it"),
+            "June report: The recorder freezes"
         );
     }
 }
