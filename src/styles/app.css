@@ -366,8 +366,9 @@ input:focus-visible,
    * z-index below the panel's ::after — so in the agent view that veil stays
    * off (the scroll-driven animation would otherwise override the static
    * opacity below, and a timeline that goes inactive on the hero can leave
-   * it stuck on). The dissolve lives in .agent-scroll::after instead, inside
-   * the workspace context where the composer wins. */
+   * it stuck on). The dissolve hangs off the fixed composer instead
+   * (.agent-composer::before), inside the workspace context where the
+   * composer wins. */
   .main-panel:has(.main-panel-body[data-active-view="agent"])::after {
     animation: none;
   }
@@ -546,6 +547,19 @@ input:focus-visible,
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
   padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
+  /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
+   * scroller: the classic scrollbar steals an engine-specific slice of the
+   * content box (8px custom in Chrome, wider native in WKWebView), and auto
+   * margins split what's left — drifting the column half a scrollbar off the
+   * fixed composer's axis. Percentage padding resolves against the workspace
+   * (the containing block), which the scrollbar can't touch, so the column's
+   * left edge lands exactly where the composer's does on every engine. The
+   * scrollbar then eats rightward slack beyond the chat column instead.
+   * .agent-main pairs with this via margin:0 below. */
+  padding-left: calc(
+    var(--sp-8) +
+      max(0px, (100% - min(var(--chat-max), var(--content-max))) / 2)
+  );
   /* The global standard props (scrollbar-width/color, top of file) make the
    * engine IGNORE all ::-webkit-scrollbar styling and draw a native overlay
    * scrollbar instead — which offers no way to start the track below the bar.
@@ -559,32 +573,6 @@ input:focus-visible,
   margin-top: var(--detail-bar-h);
 }
 
-/* Bottom dissolve for the conversation — the agent-view stand-in for the
- * card's ::after veil, which is disabled here (see the @supports block above
- * .main-panel::after): it must paint beneath the composer, so it lives inside
- * the workspace's stacking context (z 4 under the composer's 5). Sticky to
- * the scrollport bottom with zero net layout (the negative top margin), and
- * bled past the side padding so it spans the full card width. */
-.agent-scroll::after {
-  content: "";
-  position: sticky;
-  bottom: 0;
-  z-index: 4;
-  flex: 0 0 auto;
-  height: 96px;
-  margin: -96px calc(-1 * var(--sp-8)) 0;
-  background: linear-gradient(to bottom, transparent, var(--card) 78%);
-  opacity: 0;
-  pointer-events: none;
-}
-
-@supports (animation-timeline: scroll()) {
-  .agent-scroll::after {
-    animation: main-panel-fade-end linear both;
-    animation-timeline: --main-panel-scroll;
-  }
-}
-
 .agent-main {
   display: flex;
   flex-direction: column;
@@ -592,8 +580,16 @@ input:focus-visible,
    * when long; max-width keeps the column centred inside the full-bleed scroller. */
   flex: 1;
   width: 100%;
-  max-width: var(--content-max);
+  max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto;
+}
+
+/* Inside the scroller the column hugs the left gutter — .agent-scroll's
+ * padding-left does the centering (see there: it must be scrollbar-immune).
+ * Auto margins here would re-split the scrollbar's bite into the centering.
+ * The hero's .agent-main has no scrollbar and keeps margin:auto. */
+.agent-scroll .agent-main {
+  margin: 0;
 }
 
 .agent-detail-title {
@@ -746,9 +742,12 @@ input:focus-visible,
   flex: 1;
   flex-direction: column;
   gap: var(--sp-6);
+  /* Align the thread rail with the composer's text line, not its outer
+   * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
+   * User turns stay right-aligned inside this rail. */
   /* Bottom padding clears the fixed composer so the last turn can scroll fully
    * clear of it instead of hiding underneath. */
-  padding: var(--sp-2) 0 148px;
+  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5)) 148px;
 }
 
 /* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
@@ -2604,6 +2603,39 @@ input:focus-visible,
   pointer-events: none;
 }
 
+/* Docked-chat bottom dissolve. It cannot live as .agent-scroll::after
+ * (generated flex content participates in the scroll column and can show up
+ * as a clipped patch at the content edge), so it hangs off the fixed composer
+ * instead: full-bleed to the card edges minus the scrollbar's lane,
+ * stretched down to the card's bottom edge, beneath the frosted box (z -1)
+ * but over the conversation. Anchoring it here also scopes it for free —
+ * chat panel only, gone in the hero — and leaves the workspace's ::before
+ * to the warm wash and its handoff fade. */
+.agent-composer:not([data-hero="true"])::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--sp-8));
+  right: calc(-1 * var(--sp-8) + var(--scrollbar-w));
+  bottom: calc(-1 * var(--sp-5));
+  z-index: -1;
+  /* Short on purpose: just the gap under the box plus its bottom edge. Any
+   * taller and it pre-washes the backdrop the frosted box samples, and the
+   * conversation stops showing through the glass. */
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
+/* In a session the docked box is near-opaque frost: a whisper of the
+ * conversation ghosts through as it scrolls beneath the input, then melts
+ * into the dissolve below. The effect should sit at the edge of perception —
+ * the heavy blur keeps the faint show-through from ever reading as text.
+ * The hero composer keeps the base opaque card — nothing scrolls there. */
+.agent-composer:not([data-hero="true"]) .agent-composer-box {
+  background: color-mix(in oklch, var(--card) 92%, transparent);
+  -webkit-backdrop-filter: saturate(140%) blur(36px);
+  backdrop-filter: saturate(140%) blur(36px);
+}
+
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
@@ -2616,7 +2648,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-3);
   width: fit-content;
-  max-width: var(--content-max);
+  max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
@@ -2661,7 +2693,7 @@ input:focus-visible,
   justify-content: flex-end;
   gap: var(--sp-1);
   width: 100%;
-  max-width: var(--content-max);
+  max-width: min(var(--chat-max), var(--content-max));
   padding: var(--sp-1);
   border: 1px solid var(--border-subtle);
   /* Squircle, not a pill — a calmer rounded-rect. */
@@ -2804,7 +2836,13 @@ input:focus-visible,
 }
 
 .agent-composer-box:focus-within {
-  border-color: var(--ring-focus);
+  /* A touch firmer than the resting border, not the full focus ring — the
+   * docked box is already the obvious locus, a stark outline overshoots. */
+  border-color: color-mix(
+    in oklch,
+    var(--ring-focus) 40%,
+    var(--border-subtle)
+  );
   box-shadow: var(--shadow-md);
 }
 
@@ -2813,11 +2851,17 @@ input:focus-visible,
   min-height: var(--control-lg);
   max-height: 200px;
   resize: none;
-  overflow-y: auto;
+  /* Hidden until the auto-grow caps out at max-height — the grow effect in
+   * AgentWorkspace flips this to auto then. Below the cap the field always
+   * fits its content, and auto here makes the overlay scrollbar flash on
+   * every line growth (the measurement passes through height:auto). */
+  overflow-y: hidden;
   border: 0;
-  /* Symmetric vertical padding centers the single line; a little left padding
-   * keeps the placeholder/text off the field edge. */
-  padding: 6px var(--sp-2);
+  /* Symmetric vertical padding centers the single line; the horizontal
+   * padding keeps the placeholder/text comfortably off the box edge. The
+   * thread rail (.agent-timeline) derives its inset from this value — keep
+   * them in step. */
+  padding: 6px var(--sp-5);
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-lg);
@@ -3007,6 +3051,8 @@ input:focus-visible,
 }
 
 .agent-composer[data-hero="true"] .agent-composer-box {
+  /* Deliberately compact — the hero box is an invitation, not a reading
+   * column, so it does not track --chat-max up on larger displays. */
   max-width: 640px;
   box-shadow: var(--shadow-md);
 }
@@ -3225,24 +3271,9 @@ input:focus-visible,
 /* Hero teardown: while a shortcut/submit is creating the session, the
  * greeting drifts up and the suggestions drift down out of the way
  * ([data-hero-leaving] below); when the conversation mounts, the composer
- * FLIPs from its hero spot to the bottom dock (WAAPI in AgentWorkspace) and
- * the timeline fades up to meet it. */
-.agent-timeline {
-  animation: agent-timeline-enter 280ms var(--ease-out) backwards;
-}
-
-@keyframes agent-timeline-enter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-timeline {
-    animation: none;
-  }
-}
+ * FLIPs from its hero spot to the bottom dock and the timeline fades up to
+ * meet it (both WAAPI in AgentWorkspace, gated to that handoff — a CSS mount
+ * animation on .agent-timeline would replay when opening an existing chat). */
 
 @media (max-width: 980px) {
   .agent-workspace {
@@ -4444,6 +4475,14 @@ input:focus-visible,
  * a safe degradation, since it exists to dissolve scrolling content. */
 .main-panel:has(.main-panel-body[data-active-view="agent"])::after {
   opacity: 0;
+}
+
+/* Agent conversations have a sticky breadcrumb bar over the scroller. The top
+ * fade is driven by .agent-scroll, but it should start below that chrome rather
+ * than washing through the transparent frosted breadcrumb surface. */
+.main-panel:has(.main-panel-body[data-active-view="agent"])::before {
+  top: var(--detail-bar-h);
+  right: var(--scrollbar-w);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -7304,13 +7343,14 @@ input:focus-visible,
 
 /* Native overlay thumbs float a couple px off the window edge; match that on
  * the custom scrollbar so breadcrumb views don't read flush against the card
- * edge next to the bar-less views' native thumb. The region widens to 8px and
- * transparent borders clip the painted pill back to the usual 4px, inset 2px
- * from the card edge and the content alike. */
+ * edge next to the bar-less views' native thumb. The region widens to
+ * --scrollbar-w (shared with the edge fades that stop short of this lane)
+ * and transparent borders clip the painted pill back to the usual 4px,
+ * inset 2px from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
-  width: 8px;
+  width: var(--scrollbar-w);
   background: transparent;
 }
 
