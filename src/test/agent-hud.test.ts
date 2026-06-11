@@ -169,6 +169,32 @@ describe("agent HUD", () => {
     expect(document.querySelector(".agent-hud-reply svg")).toBeTruthy();
   });
 
+  it("shows a running-count badge when sessions work behind a needs-input one", async () => {
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Sweep typographic dashes",
+      summary: "Checking files.",
+    });
+    await flushPromises();
+
+    const badge = document.querySelector<HTMLElement>("#agent-hud-pill-badge");
+    expect(badge?.hidden).toBe(true);
+
+    emitStatus({
+      status: "waitingForUser",
+      title: "Need approval",
+      summary: "Review this step.",
+    });
+    await flushPromises();
+
+    expect(pillLabelElement()).toHaveTextContent("1 needs input");
+    expect(badge?.hidden).toBe(false);
+    expect(badge).toHaveTextContent("1");
+    expect(badge).toHaveAttribute("aria-label", "1 running");
+  });
+
   it("does not repeat generic status text in expanded rows", async () => {
     await loadAgentHud();
 
@@ -630,17 +656,24 @@ function agentHudMarkup() {
           aria-expanded="false"
           aria-label="Expand agent activity"
         >
-          <span id="agent-hud-mark" class="agent-hud-mark" aria-hidden="true">
-            <svg viewBox="0 0 12 14" fill="currentColor" aria-hidden="true">
-              <path d="M0 0" />
-            </svg>
-          </span>
-          <span id="agent-hud-pill-label" class="agent-hud-pill-label"></span>
           <span
-            id="agent-hud-chevron"
-            class="agent-hud-chevron"
+            id="agent-hud-mark"
+            class="agent-hud-mark"
             aria-hidden="true"
           ></span>
+          <span id="agent-hud-pill-label" class="agent-hud-pill-label"></span>
+          <span class="agent-hud-pill-end">
+            <span
+              id="agent-hud-pill-badge"
+              class="agent-hud-pill-badge"
+              hidden
+            ></span>
+            <span
+              id="agent-hud-chevron"
+              class="agent-hud-chevron"
+              aria-hidden="true"
+            ></span>
+          </span>
         </button>
         <div class="agent-hud-reveal">
           <ul

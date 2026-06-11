@@ -65,6 +65,8 @@ const hud = document.querySelector<HTMLElement>("#agent-hud");
 const pill = document.querySelector<HTMLButtonElement>("#agent-hud-pill");
 const mark = document.querySelector<HTMLElement>("#agent-hud-mark");
 const pillLabel = document.querySelector<HTMLElement>("#agent-hud-pill-label");
+const pillBadge = document.querySelector<HTMLElement>("#agent-hud-pill-badge");
+const surface = document.querySelector<HTMLElement>(".agent-hud-surface");
 const pillChevron = document.querySelector<HTMLElement>("#agent-hud-chevron");
 const stack = document.querySelector<HTMLElement>("#agent-hud-stack");
 const menu = document.querySelector<HTMLElement>("#agent-hud-menu");
@@ -92,6 +94,7 @@ let lastWindowHeight = 0;
 let pruneTimer: number | undefined;
 let hideTimer: number | undefined;
 let resizeTimer: number | undefined;
+let widthFlipTimer: number | undefined;
 let windowShown = false;
 // The reply form lives outside the rebuild cycle: status events arrive in
 // bursts while sessions work, and recreating the input on each one would
@@ -236,6 +239,16 @@ function render() {
     return;
   }
 
+  // The surface width comes from CSS (280px expanded, content-sized pill
+  // collapsed) and `auto` cannot transition, so expand/collapse animates
+  // it FLIP-style: measure before the state flips, re-measure after, run
+  // the px-to-px transition.
+  const willFlipWidth =
+    surface !== null &&
+    windowShown &&
+    (hud.dataset.expanded === "true") !== expanded;
+  const widthBefore = willFlipWidth ? surface.getBoundingClientRect().width : 0;
+
   hud.dataset.expanded = expanded ? "true" : "false";
   hud.dataset.hasAction = hasAction ? "true" : "false";
   hud.dataset.menuOpen = state.menuOpen ? "true" : "false";
@@ -275,15 +288,48 @@ function render() {
     menu.setAttribute("aria-hidden", state.menuOpen ? "false" : "true");
   }
 
+  if (willFlipWidth && surface) flipSurfaceWidth(surface, widthBefore);
+
   void syncWindowLayout(expanded, expanded ? entries.length : 0, hasEntries);
   scheduleStatusPrune();
 }
 
+function flipSurfaceWidth(target: HTMLElement, fromWidth: number) {
+  if (widthFlipTimer !== undefined) {
+    window.clearTimeout(widthFlipTimer);
+    widthFlipTimer = undefined;
+  }
+  target.style.width = "";
+  const toWidth = target.getBoundingClientRect().width;
+  if (!fromWidth || !toWidth || Math.abs(toWidth - fromWidth) < 1) return;
+  target.style.width = `${fromWidth}px`;
+  // Force a layout so the starting width commits; the next assignment
+  // then transitions instead of jumping.
+  target.getBoundingClientRect();
+  target.style.width = `${toWidth}px`;
+  widthFlipTimer = window.setTimeout(() => {
+    widthFlipTimer = undefined;
+    // Hand the width back to the stylesheet (same computed value).
+    target.style.width = "";
+  }, 220);
+}
+
 function renderPill(entries: HudEntry[], expanded: boolean) {
   if (!pill || !mark || !pillLabel) return;
-  const { label, status } = pillSummary(entries);
+  const { label, status, runningCount, waitingCount } = pillSummary(entries);
   mark.dataset.status = status;
   pillLabel.textContent = label;
+  if (pillBadge) {
+    // Mixed state: the label leads with what needs the user; the badge
+    // keeps the count of agents still working behind it.
+    const showBadge = waitingCount > 0 && runningCount > 0;
+    pillBadge.hidden = !showBadge;
+    if (showBadge) {
+      pillBadge.textContent = String(runningCount);
+      pillBadge.setAttribute("aria-label", `${runningCount} running`);
+      pillBadge.title = `${runningCount} running`;
+    }
+  }
   pill.setAttribute("aria-expanded", expanded ? "true" : "false");
   pill.setAttribute(
     "aria-label",
@@ -294,33 +340,45 @@ function renderPill(entries: HudEntry[], expanded: boolean) {
 function pillSummary(entries: HudEntry[]): {
   label: string;
   status: HudSessionStatus;
+  runningCount: number;
+  waitingCount: number;
 } {
-  const waiting = entries.filter(
+  const waitingCount = entries.filter(
     (entry) => entry.status === "waitingForUser",
   ).length;
-  if (waiting > 0) {
-    return {
-      label: waiting === 1 ? "1 needs input" : `${waiting} need input`,
-      status: "waitingForUser",
-    };
-  }
-  const running = entries.filter(
+  const runningCount = entries.filter(
     (entry) =>
       entry.status === "received" ||
       entry.status === "starting" ||
       entry.status === "running",
   ).length;
-  if (running > 0) {
+  if (waitingCount > 0) {
     return {
-      label: `${running} running`,
+      label:
+        waitingCount === 1 ? "1 needs input" : `${waitingCount} need input`,
+      status: "waitingForUser",
+      runningCount,
+      waitingCount,
+    };
+  }
+  if (runningCount > 0) {
+    return {
+      label: `${runningCount} running`,
       status: "running",
+      runningCount,
+      waitingCount,
     };
   }
   const [latest] = entries;
   if (latest) {
-    return { label: statusLabel(latest.status), status: latest.status };
+    return {
+      label: statusLabel(latest.status),
+      status: latest.status,
+      runningCount,
+      waitingCount,
+    };
   }
-  return { label: "Idle", status: "idle" };
+  return { label: "Idle", status: "idle", runningCount, waitingCount };
 }
 
 function renderRow(entry: HudEntry, index: number) {
