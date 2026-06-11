@@ -4,6 +4,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
 
+const shareMocks = vi.hoisted(() => ({
+  shareNote: vi.fn(),
+  revokeNoteShare: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  shareNote: shareMocks.shareNote,
+  revokeNoteShare: shareMocks.revokeNoteShare,
+}));
+
 const now = "2026-05-19T10:00:00Z";
 
 function note(overrides: Partial<NoteDto> = {}): NoteDto {
@@ -45,6 +56,8 @@ const props = {
   onNavigateToFolders: vi.fn(),
   onNavigateToFolder: vi.fn(),
   onTabChange: vi.fn(),
+  sharedBy: "Gaut",
+  onNoteShared: vi.fn(),
 };
 
 const recovery: RecoverableRecordingDto = {
@@ -554,5 +567,56 @@ describe("NoteEditor", () => {
     );
 
     expect(container.querySelectorAll(".note-skeleton-line")).toHaveLength(0);
+  });
+});
+
+describe("NoteEditor sharing", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shares the note from the dialog and reports the refreshed note", async () => {
+    const user = userEvent.setup();
+    const onNoteShared = vi.fn();
+    const updated = note({ shareUrl: "https://scribe-api.example.test/s/abc" });
+    shareMocks.shareNote.mockResolvedValue(updated);
+
+    render(<NoteEditor {...props} onNoteShared={onNoteShared} note={note()} />);
+
+    await user.click(screen.getByRole("button", { name: "Share" }));
+    // The dialog says exactly what leaves the Mac before anything happens.
+    expect(
+      screen.getByText(/uploads the note's title and text/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Nothing else leaves your Mac/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Create link" }));
+
+    expect(shareMocks.shareNote).toHaveBeenCalledWith({
+      noteId: "note-1",
+      sharedBy: "Gaut",
+    });
+    expect(onNoteShared).toHaveBeenCalledWith(updated);
+  });
+
+  it("manages an existing share: shows the link and revokes", async () => {
+    const user = userEvent.setup();
+    const onNoteShared = vi.fn();
+    const shared = note({ shareUrl: "https://scribe-api.example.test/s/abc" });
+    shareMocks.revokeNoteShare.mockResolvedValue(note());
+
+    render(
+      <NoteEditor {...props} onNoteShared={onNoteShared} note={shared} />,
+    );
+
+    // The chip reflects the live link.
+    await user.click(screen.getByRole("button", { name: "Shared" }));
+    expect(screen.getByLabelText("Share link")).toHaveValue(
+      "https://scribe-api.example.test/s/abc",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Stop sharing" }));
+    expect(shareMocks.revokeNoteShare).toHaveBeenCalledWith("note-1");
+    expect(onNoteShared).toHaveBeenCalled();
   });
 });

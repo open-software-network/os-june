@@ -38,6 +38,9 @@ services:
     # internal compose network via TARGET_ENDPOINT=http://scribe-api:8080.
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
+      # Shared-notes SQLite database. Inside the CVM, so shared note content
+      # gets the same encrypted-disk + attestation story as the service.
+      - scribe-data:/data
     # App secrets are encrypted per-CVM via Phala sealed env (`phala envs`) and
     # injected at boot by ${VAR} interpolation — reference each one, unquoted.
     # An empty `KEY: ""` clobbers the sealed value with a blank; omitting the ref
@@ -48,6 +51,7 @@ services:
     # DSTACK_DOCKER_* (registry auth) is consumed by the prelaunch, not the app.
     environment:
       - RUST_LOG=scribe=warn,scribe_api=warn,scribe_services=warn,scribe_providers=warn,tower_http=warn
+      - SCRIBE__SHARE__DATABASE_PATH=/data/scribe.db
       - SCRIBE__OS_ACCOUNTS__API_URL=https://accounts-api.opensoftware.co
       - SCRIBE__OS_ACCOUNTS__ISS=https://accounts.opensoftware.co
       - SCRIBE__OS_ACCOUNTS__AUD=open-software-apps
@@ -57,3 +61,4 @@ services:
 
 volumes:
   cert-data:
+  scribe-data:

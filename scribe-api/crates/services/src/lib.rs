@@ -5,6 +5,7 @@ mod charge_flow;
 mod dictate;
 mod error;
 mod note_generate;
+mod note_share;
 mod note_transcribe;
 mod pricing;
 mod prompts;
@@ -19,6 +20,7 @@ pub use error::ServiceError;
 pub use note_generate::{
     NoteGenerateOutput, NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps,
 };
+pub use note_share::{CreateShareParams, CreatedShare, NoteShareService, NoteShareServiceDeps};
 pub use note_transcribe::{
     NoteTranscribeOutput, NoteTranscribeParams, NoteTranscribeService, NoteTranscribeServiceDeps,
 };

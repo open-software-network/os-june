@@ -249,6 +249,8 @@ pub enum DomainError {
     UpstreamProvider,
     #[error("invalid input: {reason}")]
     InvalidInput { reason: String },
+    #[error("storage failed")]
+    Storage,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -299,6 +301,54 @@ pub trait IssueReportSink: Send + Sync {
 
 pub trait AudioDurationProbe: Send + Sync {
     fn probe(&self, audio: &[u8]) -> Result<Duration, DomainError>;
+}
+
+/// Opaque id of a publicly shared note (URL path segment).
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ShareId(pub String);
+
+/// A note the user explicitly published as a read-only web page. The only
+/// user content the service ever stores, and only because the user asked it
+/// to; everything else stays on their Mac.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedNote {
+    pub id: ShareId,
+    pub user_id: UserId,
+    pub title: String,
+    pub body_markdown: String,
+    /// Display name the sharer chose to attribute the note to.
+    pub shared_by: String,
+    /// RFC3339 creation instant.
+    pub created_at: String,
+}
+
+pub struct CreateSharedNoteParams {
+    pub id: ShareId,
+    pub user_id: UserId,
+    pub title: String,
+    pub body_markdown: String,
+    pub shared_by: String,
+    pub created_at: String,
+}
+
+/// Outcome of a revoke attempt, explicit so the API layer can pick status
+/// codes without the store guessing at HTTP semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevokeOutcome {
+    Revoked,
+    /// Unknown id, already revoked, or owned by someone else. Collapsed on
+    /// purpose: shares are unlisted, so "not yours" must read as "not found".
+    NotFound,
+}
+
+/// Durable store for shared notes. Implemented by the persistence crate;
+/// services and the API only see this port.
+#[async_trait]
+pub trait SharedNotesStore: Send + Sync {
+    async fn create(&self, params: CreateSharedNoteParams) -> Result<SharedNote, DomainError>;
+    /// Live (non-revoked) share by id.
+    async fn get(&self, id: &ShareId) -> Result<Option<SharedNote>, DomainError>;
+    async fn revoke(&self, id: &ShareId, owner: &UserId) -> Result<RevokeOutcome, DomainError>;
 }
 
 #[cfg(test)]

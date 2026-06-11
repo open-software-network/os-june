@@ -13,7 +13,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use std::time::Duration;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -30,6 +30,7 @@ pub use handlers::health::HealthDto;
 pub use handlers::issues::IssueReportResponse;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
+pub use handlers::shares::{CreateShareRequest, RevokeShareResponse, ShareResponse};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
 pub fn router(state: ApiState) -> Router {
@@ -44,6 +45,15 @@ pub fn router(state: ApiState) -> Router {
         .route("/healthz", get(handlers::health::healthz))
         .route("/verify", get(handlers::verify::verify))
         .route("/v1/models", get(handlers::models::list_models))
+        .route("/s/{share_id}", get(handlers::shares::view))
+        .route(
+            "/v1/notes/shares",
+            post(handlers::shares::create).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/notes/shares/{share_id}",
+            delete(handlers::shares::revoke),
+        )
         .route(
             "/v1/notes/transcribe",
             post(handlers::notes::transcribe).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),

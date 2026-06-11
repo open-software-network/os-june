@@ -88,11 +88,30 @@ pub struct NoteDto {
     pub audio_sources: Vec<AudioArtifactDto>,
     pub active_tab: Option<String>,
     pub last_error: Option<String>,
+    /// Public share-page URL when the user has shared this note.
+    #[serde(default)]
+    pub share_url: Option<String>,
     /// Recordings queued behind the one currently processing for this note
     /// (0 when nothing extra is waiting). Populated from the in-memory
     /// processing queue at the command layer, not persisted.
     #[serde(default)]
     pub queued_recordings: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareNoteRequest {
+    pub note_id: String,
+    /// Display name the user shares under; chosen client-side from their
+    /// account profile.
+    #[serde(default)]
+    pub shared_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeNoteShareRequest {
+    pub note_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

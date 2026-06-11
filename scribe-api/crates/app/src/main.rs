@@ -8,8 +8,8 @@ use scribe_providers::{
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
-    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable,
+    NoteGenerateService, NoteGenerateServiceDeps, NoteShareService, NoteShareServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -40,7 +40,10 @@ async fn serve() -> anyhow::Result<()> {
     let address: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     let http = default_client();
     let pricing = load_pricing(&config, http.clone()).await;
-    let app = build_router(&config, &http, pricing);
+    let shares_pool = scribe_persistence::connect(&config.share.database_path).await?;
+    let shared_notes: Arc<dyn scribe_domain::SharedNotesStore> =
+        Arc::new(scribe_persistence::SqliteSharedNotesStore::new(shares_pool));
+    let app = build_router(&config, &http, pricing, shared_notes);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "scribe-api listening");
     axum::serve(listener, app).await?;
@@ -72,6 +75,7 @@ fn build_router(
     config: &AppConfig,
     http: &reqwest::Client,
     pricing_config: BTreeMap<String, ModelPriceConfig>,
+    shared_notes: Arc<dyn scribe_domain::SharedNotesStore>,
 ) -> axum::Router {
     let openai_model_ids = pricing_config
         .iter()
@@ -102,19 +106,7 @@ fn build_router(
     let token_verifier: Arc<dyn scribe_domain::TokenVerifier> = Arc::new(
         JwksTokenVerifier::from_config(jwks_client(), &config.os_accounts),
     );
-    let issue_reports: Arc<dyn scribe_domain::IssueReportSink> = if let Some(sink) =
-        OsPlatformIssueReportSink::from_config(http.clone(), &config.issue_reports)
-    {
-        tracing::info!("issue reports will be filed as os-platform issues");
-        Arc::new(sink)
-    } else if let Some(sink) =
-        WebhookIssueReportSink::from_config(http.clone(), &config.issue_reports)
-    {
-        Arc::new(sink)
-    } else {
-        tracing::info!("no issue report sink configured; reports will be logged only");
-        Arc::new(LogIssueReportSink)
-    };
+    let issue_reports = issue_report_sink(config, http);
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
 
@@ -153,6 +145,11 @@ fn build_router(
         flat_estimate_credits,
     }));
 
+    let note_shares = Arc::new(NoteShareService::new(NoteShareServiceDeps {
+        store: shared_notes,
+        public_base_url: config.share.public_base_url.clone(),
+    }));
+
     let state = ApiState::new(ApiStateParams {
         pricing,
         token_verifier,
@@ -160,6 +157,7 @@ fn build_router(
         note_generate,
         agent_chat,
         dictate,
+        note_shares,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
@@ -174,6 +172,24 @@ fn build_router(
         },
     });
     scribe_api::router(state)
+}
+
+fn issue_report_sink(
+    config: &AppConfig,
+    http: &reqwest::Client,
+) -> Arc<dyn scribe_domain::IssueReportSink> {
+    if let Some(sink) = OsPlatformIssueReportSink::from_config(http.clone(), &config.issue_reports)
+    {
+        tracing::info!("issue reports will be filed as os-platform issues");
+        Arc::new(sink)
+    } else if let Some(sink) =
+        WebhookIssueReportSink::from_config(http.clone(), &config.issue_reports)
+    {
+        Arc::new(sink)
+    } else {
+        tracing::info!("no issue report sink configured; reports will be logged only");
+        Arc::new(LogIssueReportSink)
+    }
 }
 
 fn init_tracing() {

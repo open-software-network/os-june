@@ -64,6 +64,8 @@ pub fn run() {
             commands::list_notes,
             commands::get_note,
             commands::update_note,
+            commands::share_note,
+            commands::revoke_note_share,
             commands::delete_note,
             commands::delete_notes,
             commands::create_folder,

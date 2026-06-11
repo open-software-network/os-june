@@ -128,7 +128,7 @@ impl Repositories {
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error FROM notes WHERE id = ?",
+            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error, share_id, share_url FROM notes WHERE id = ?",
         )
         .bind(note_id)
         .fetch_one(&self.pool)
@@ -165,8 +165,33 @@ impl Repositories {
             audio_sources: self.latest_audio_sources(note_id).await?,
             active_tab: row.get("active_tab"),
             last_error: row.get("last_error"),
+            share_url: row.get("share_url"),
             queued_recordings: 0,
         })
+    }
+
+    /// Server-side share id for a note, when shared.
+    pub async fn note_share_id(&self, note_id: &str) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query("SELECT share_id FROM notes WHERE id = ?")
+            .bind(note_id)
+            .fetch_one(&self.pool)
+            .await?;
+        row.try_get("share_id")
+    }
+
+    pub async fn set_note_share(
+        &self,
+        note_id: &str,
+        share_id: Option<&str>,
+        share_url: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE notes SET share_id = ?, share_url = ? WHERE id = ?")
+            .bind(share_id)
+            .bind(share_url)
+            .bind(note_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn list_notes(

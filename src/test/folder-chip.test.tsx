@@ -45,6 +45,8 @@ function baseProps(folders: FolderDto[]) {
     onNavigateToFolders: vi.fn(),
     onNavigateToFolder: vi.fn(),
     onTabChange: vi.fn(),
+  sharedBy: "Gaut",
+  onNoteShared: vi.fn(),
   };
 }
 

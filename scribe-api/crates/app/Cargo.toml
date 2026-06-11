@@ -23,6 +23,7 @@ reqwest.workspace = true
 scribe-api.workspace = true
 scribe-config.workspace = true
 scribe-domain.workspace = true
+scribe-persistence.workspace = true
 scribe-providers.workspace = true
 scribe-services.workspace = true
 tokio.workspace = true

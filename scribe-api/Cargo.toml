@@ -14,6 +14,7 @@ publish = false
 scribe-api = { path = "crates/api" }
 scribe-config = { path = "crates/config" }
 scribe-domain = { path = "crates/domain" }
+scribe-persistence = { path = "crates/persistence" }
 scribe-providers = { path = "crates/providers" }
 scribe-services = { path = "crates/services" }
 
@@ -32,6 +33,13 @@ sha2 = "0.10"
 mp4 = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
+# SQLite for the shared-notes store: single-instance service in the TEE, so
+# a file on the CVM volume is the right weight; the domain port keeps a
+# Postgres swap local to the persistence crate.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+nanoid = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

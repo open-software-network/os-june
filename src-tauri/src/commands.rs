@@ -110,6 +110,55 @@ pub async fn get_note(app: AppHandle, request: GetNoteRequest) -> Result<NoteDto
     Ok(note)
 }
 
+/// Publishes the note's current text as a public share page and records the
+/// returned link locally. Re-sharing replaces the previous share so the link
+/// always reflects the note as the user last shared it.
+#[tauri::command]
+pub async fn share_note(
+    app: AppHandle,
+    request: crate::domain::types::ShareNoteRequest,
+) -> Result<NoteDto, AppError> {
+    let repos = repositories(&app).await?;
+    let note = repos.get_note(&request.note_id).await?;
+    let content = note
+        .edited_content
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| note.generated_content.clone())
+        .unwrap_or_default();
+    if content.trim().is_empty() {
+        return Err(AppError::new(
+            "note_share_empty",
+            "This note has no content to share yet.",
+        ));
+    }
+    // Replace-on-reshare: revoke the previous share before minting the new
+    // one so stale snapshots don't stay public under an old link.
+    if let Some(previous) = repos.note_share_id(&request.note_id).await? {
+        let _ = crate::scribe_api::revoke_note_share(&previous).await;
+    }
+    let share =
+        crate::scribe_api::create_note_share(&note.title, &content, &request.shared_by).await?;
+    repos
+        .set_note_share(&request.note_id, Some(&share.id), Some(&share.url))
+        .await?;
+    repos.get_note(&request.note_id).await.map_err(Into::into)
+}
+
+/// Stops sharing: revokes the server-side page, then clears the local link.
+#[tauri::command]
+pub async fn revoke_note_share(
+    app: AppHandle,
+    request: crate::domain::types::RevokeNoteShareRequest,
+) -> Result<NoteDto, AppError> {
+    let repos = repositories(&app).await?;
+    if let Some(share_id) = repos.note_share_id(&request.note_id).await? {
+        crate::scribe_api::revoke_note_share(&share_id).await?;
+    }
+    repos.set_note_share(&request.note_id, None, None).await?;
+    repos.get_note(&request.note_id).await.map_err(Into::into)
+}
+
 #[tauri::command]
 pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<NoteDto, AppError> {
     Ok(repositories(&app)

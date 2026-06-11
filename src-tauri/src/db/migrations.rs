@@ -150,6 +150,10 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
                 .map_err(sqlx::migrate::MigrateError::Execute)?;
         }
     }
+    // Public note sharing: the server-side share id and the public URL,
+    // both NULL until the user shares the note.
+    ensure_column(_pool, "notes", "share_id", "TEXT").await?;
+    ensure_column(_pool, "notes", "share_url", "TEXT").await?;
     Ok(())
 }
 

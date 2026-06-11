@@ -264,6 +264,8 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Public share-page URL when the user has shared this note. */
+  shareUrl?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
 };
@@ -1000,6 +1002,17 @@ export async function deleteNote(noteId: string) {
 
 export async function deleteNotes(noteIds: string[]) {
   return invoke<void>("delete_notes", { request: { noteIds } });
+}
+
+/** Publishes the note's current text as a public share page; re-sharing
+ * replaces the previous page so the link tracks what the user last shared. */
+export async function shareNote(input: { noteId: string; sharedBy: string }) {
+  return invoke<NoteDto>("share_note", { request: input });
+}
+
+/** Stops sharing: the public page starts answering "no longer shared". */
+export async function revokeNoteShare(noteId: string) {
+  return invoke<NoteDto>("revoke_note_share", { request: { noteId } });
 }
 
 export async function updateNote(input: {

@@ -805,6 +805,43 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
     Some(title)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteShareDto {
+    pub id: String,
+    pub url: String,
+}
+
+/// Publishes a note as a public share page. The only path on which note
+/// content ever leaves the Mac for storage, and only because the user asked.
+pub async fn create_note_share(
+    title: &str,
+    content: &str,
+    shared_by: &str,
+) -> Result<NoteShareDto, AppError> {
+    let body = serde_json::json!({
+        "title": title,
+        "content": content,
+        "sharedBy": shared_by,
+    });
+    post_json("/v1/notes/shares", &body).await
+}
+
+/// Revokes a share. A 404 (already revoked server-side) counts as success so
+/// local state can always be cleared.
+pub async fn revoke_note_share(share_id: &str) -> Result<(), AppError> {
+    let path = format!("/v1/notes/shares/{share_id}");
+    let response = authed_send(&path, |client, url, token| {
+        client.delete(url).bearer_auth(token)
+    })
+    .await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    let _: serde_json::Value = parse_response(&path, response).await?;
+    Ok(())
+}
+
 async fn post_json<T, B>(path: &str, body: &B) -> Result<T, AppError>
 where
     T: for<'de> Deserialize<'de>,

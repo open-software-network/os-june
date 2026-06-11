@@ -9,14 +9,15 @@ use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
 use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use scribe_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
-    Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, CreateSharedNoteParams,
+    Credits, DomainError, GeneratedNote, GenerationRequest, Generator, IssueReport,
+    IssueReportSink, OsAccountsClient, Receipt, RevokeOutcome, ShareId, SharedNote,
+    SharedNotesStore, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
-    NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable,
+    NoteGenerateService, NoteGenerateServiceDeps, NoteShareService, NoteShareServiceDeps,
+    NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
 };
 use std::{
     collections::BTreeMap,
@@ -282,6 +283,83 @@ async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> 
 }
 
 #[tokio::test]
+async fn integration_share_lifecycle_create_view_revoke() -> Result<(), Box<dyn Error>> {
+    // One router instance throughout: the share must survive across requests.
+    let app = test_router();
+
+    // Create (authenticated).
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/v1/notes/shares",
+            &serde_json::json!({
+                "title": "Weekly sync",
+                "content": "# Decisions\n\nShip it. <script>alert(1)</script>",
+                "sharedBy": "Gaut",
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&response_text(response).await?)?;
+    assert_eq!(body["success"], true);
+    let id = body["data"]["id"].as_str().unwrap_or_default().to_string();
+    assert!(!id.is_empty());
+    let url = body["data"]["url"].as_str().unwrap_or_default();
+    assert_eq!(url, format!("https://scribe-api.example.test/s/{id}"));
+
+    // Anonymous create is rejected.
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/v1/notes/shares",
+            &serde_json::json!({ "title": "x", "content": "y" }),
+            None,
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Public view renders the markdown, neutralizes embedded HTML, and
+    // carries the growth-loop footer.
+    let response = app
+        .clone()
+        .oneshot(get_request(&format!("/s/{id}"))?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = response_text(response).await?;
+    assert!(page.contains("<h1>Decisions</h1>"));
+    assert!(!page.contains("<script>alert(1)</script>"));
+    assert!(page.contains("Notes by June, shared by Gaut."));
+    assert!(page.contains("Get June for your Mac"));
+
+    // Revoke (authenticated owner), then the public page is gone.
+    let request = Request::builder()
+        .method(Method::DELETE)
+        .uri(format!("/v1/notes/shares/{id}"))
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::empty())?;
+    let response = app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(get_request(&format!("/s/{id}"))?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let page = response_text(response).await?;
+    assert!(page.contains("no longer shared"));
+
+    // Revoking an unknown share 404s through the envelope.
+    let request = Request::builder()
+        .method(Method::DELETE)
+        .uri("/v1/notes/shares/does-not-exist")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::empty())?;
+    let response = app.oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_verify_page_without_commit_reports_unstamped_build()
 -> Result<(), Box<dyn Error>> {
     let attestation = AttestationInfo {
@@ -336,6 +414,10 @@ fn test_state_with_issue_sink(
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
     let chat_completer = Arc::new(FakeChatCompleter);
+    let note_shares = Arc::new(NoteShareService::new(NoteShareServiceDeps {
+        store: Arc::new(MemorySharedNotes::default()),
+        public_base_url: "https://scribe-api.example.test".to_string(),
+    }));
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
@@ -372,6 +454,7 @@ fn test_state_with_issue_sink(
             cleanup_hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
         })),
+        note_shares,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
@@ -575,6 +658,51 @@ impl IssueReportSink for RecordingIssueReportSink {
             .map_err(|_| DomainError::UpstreamProvider)?
             .push(report);
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct MemorySharedNotes {
+    notes: Mutex<Vec<SharedNote>>,
+}
+
+#[async_trait]
+impl SharedNotesStore for MemorySharedNotes {
+    async fn create(&self, params: CreateSharedNoteParams) -> Result<SharedNote, DomainError> {
+        let note = SharedNote {
+            id: params.id,
+            user_id: params.user_id,
+            title: params.title,
+            body_markdown: params.body_markdown,
+            shared_by: params.shared_by,
+            created_at: params.created_at,
+        };
+        self.notes
+            .lock()
+            .map_err(|_| DomainError::Storage)?
+            .push(note.clone());
+        Ok(note)
+    }
+
+    async fn get(&self, id: &ShareId) -> Result<Option<SharedNote>, DomainError> {
+        Ok(self
+            .notes
+            .lock()
+            .map_err(|_| DomainError::Storage)?
+            .iter()
+            .find(|note| &note.id == id)
+            .cloned())
+    }
+
+    async fn revoke(&self, id: &ShareId, owner: &UserId) -> Result<RevokeOutcome, DomainError> {
+        let mut notes = self.notes.lock().map_err(|_| DomainError::Storage)?;
+        let before = notes.len();
+        notes.retain(|note| !(&note.id == id && &note.user_id == owner));
+        Ok(if notes.len() < before {
+            RevokeOutcome::Revoked
+        } else {
+            RevokeOutcome::NotFound
+        })
     }
 }
 

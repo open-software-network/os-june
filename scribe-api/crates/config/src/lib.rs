@@ -19,6 +19,8 @@ pub struct AppConfig {
     pub attestation: AttestationConfig,
     #[serde(default)]
     pub issue_reports: IssueReportsConfig,
+    #[serde(default)]
+    pub share: ShareConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
 }
 
@@ -31,6 +33,7 @@ impl Debug for AppConfig {
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
+            .field("share", &self.share)
             .field("pricing", &self.pricing)
             .finish()
     }
@@ -132,6 +135,26 @@ pub struct AttestationConfig {
     pub source_repo_url: String,
     pub image_repo: String,
     pub trust_center_url: String,
+}
+
+/// Shared-notes storage and public link shape.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ShareConfig {
+    /// `SQLite` database file for shared notes. Lives on the CVM volume in
+    /// production (`SCRIBE__SHARE__DATABASE_PATH=/data/scribe.db`); a
+    /// relative path is fine for local runs.
+    pub database_path: String,
+    /// Origin shared-note URLs are minted on, no trailing slash.
+    pub public_base_url: String,
+}
+
+impl Default for ShareConfig {
+    fn default() -> Self {
+        Self {
+            database_path: "./data/scribe.db".to_string(),
+            public_base_url: "https://scribe-api.opensoftware.co".to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -431,6 +454,7 @@ impl Default for AppConfig {
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
+            share: ShareConfig::default(),
             pricing: default_pricing(),
         }
     }

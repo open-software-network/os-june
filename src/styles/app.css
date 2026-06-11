@@ -4630,6 +4630,53 @@ button.agent-safety-badge:hover {
   margin: 0 calc(-1 * var(--sp-2));
 }
 
+/* Share chip sits beside the folder chip in the note overline; lights up
+ * once the note has a live public link. */
+.note-share-chip[data-shared] {
+  color: var(--warm-strong);
+}
+
+.share-note-body {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.share-note-body p {
+  margin: 0;
+}
+
+.share-note-url {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.share-note-hint {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.share-note-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--foreground);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.share-note-error {
+  margin: var(--sp-2) 0 0;
+  color: var(--destructive, #c4554d);
+  font-size: var(--fs-sm);
+}
+
 .folder-chip {
   display: inline-flex;
   align-items: center;

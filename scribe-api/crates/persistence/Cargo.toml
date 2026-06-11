@@ -1,5 +1,5 @@
 [package]
-name = "scribe-services"
+name = "scribe-persistence"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,16 +11,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-scribe-config.workspace = true
+async-trait.workspace = true
 scribe-domain.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-nanoid.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-async-trait.workspace = true
-pretty_assertions.workspace = true

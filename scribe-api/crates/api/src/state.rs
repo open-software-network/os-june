@@ -1,6 +1,7 @@
 use scribe_domain::{IssueReportSink, TokenVerifier};
 use scribe_services::{
-    AgentChatService, DictateService, NoteGenerateService, NoteTranscribeService, PricingTable,
+    AgentChatService, DictateService, NoteGenerateService, NoteShareService, NoteTranscribeService,
+    PricingTable,
 };
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ struct ApiStateInner {
     note_generate: Arc<NoteGenerateService>,
     agent_chat: Arc<AgentChatService>,
     dictate: Arc<DictateService>,
+    note_shares: Arc<NoteShareService>,
     issue_reports: Arc<dyn IssueReportSink>,
     limits: ApiLimits,
     attestation: AttestationInfo,
@@ -46,6 +48,7 @@ pub struct ApiStateParams {
     pub note_generate: Arc<NoteGenerateService>,
     pub agent_chat: Arc<AgentChatService>,
     pub dictate: Arc<DictateService>,
+    pub note_shares: Arc<NoteShareService>,
     pub issue_reports: Arc<dyn IssueReportSink>,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
@@ -61,6 +64,7 @@ impl ApiState {
                 note_generate: params.note_generate,
                 agent_chat: params.agent_chat,
                 dictate: params.dictate,
+                note_shares: params.note_shares,
                 issue_reports: params.issue_reports,
                 limits: params.limits,
                 attestation: params.attestation,
@@ -90,6 +94,10 @@ impl ApiState {
 
     pub(crate) fn dictate(&self) -> &DictateService {
         &self.inner.dictate
+    }
+
+    pub(crate) fn note_shares(&self) -> &NoteShareService {
+        &self.inner.note_shares
     }
 
     pub(crate) fn issue_reports(&self) -> &dyn IssueReportSink {

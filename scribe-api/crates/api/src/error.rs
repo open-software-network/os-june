@@ -1,6 +1,7 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
+    ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    error_response,
 };
 use axum::{http::StatusCode, response::IntoResponse};
 use scribe_domain::AuthError;
@@ -9,6 +10,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
+    #[error("not_found")]
+    NotFound { code: i32, message: String },
     #[error("bad_request")]
     BadRequest { code: i32, message: String },
     #[error("unauthorized")]
@@ -28,6 +31,13 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::NotFound {
+            code: ERR_NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest {
             code: ERR_BAD_REQUEST,
@@ -53,6 +63,9 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         match self {
+            Self::NotFound { code, message } => {
+                error_response(StatusCode::NOT_FOUND, code, &message)
+            }
             Self::BadRequest { code, message } => {
                 error_response(StatusCode::BAD_REQUEST, code, &message)
             }
@@ -103,6 +116,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::AuthorizationDenied => Self::AuthorizationDenied,
             ServiceError::UpstreamProvider => Self::Upstream,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
+            ServiceError::Storage => Self::Internal,
         }
     }
 }

@@ -1,4 +1,5 @@
 import { IconClipboard } from "central-icons/IconClipboard";
+import { IconGlobe } from "central-icons/IconGlobe";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -31,6 +32,7 @@ import {
   userFacingFailureMessage,
 } from "./NoteFailureBanner";
 import { NotePreview } from "./NotePreview";
+import { ShareNoteDialog } from "./ShareNoteDialog";
 
 type NoteEditorProps = {
   note: NoteDto;
@@ -58,6 +60,9 @@ type NoteEditorProps = {
   onCreateAndAssignFolder: (name: string) => void;
   onNavigateToFolder?: (folderId: string) => void;
   onTabChange: (tab: "notes" | "transcription") => void;
+  /** Display name shares are attributed to (empty hides no functionality). */
+  sharedBy: string;
+  onNoteShared: (note: NoteDto) => void;
 };
 
 const TABS = [
@@ -124,7 +129,10 @@ export function NoteEditor({
   onCreateAndAssignFolder,
   onNavigateToFolder,
   onTabChange,
+  sharedBy,
+  onNoteShared,
 }: NoteEditorProps) {
+  const [shareOpen, setShareOpen] = useState(false);
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = orderedVisibleSourceTranscripts(note);
@@ -249,6 +257,15 @@ export function NoteEditor({
             onCreateAndAssign={onCreateAndAssignFolder}
             onNavigateToFolder={onNavigateToFolder}
           />
+          <button
+            type="button"
+            className="folder-chip note-share-chip"
+            data-shared={note.shareUrl ? "true" : undefined}
+            onClick={() => setShareOpen(true)}
+          >
+            <IconGlobe size={14} aria-hidden />
+            {note.shareUrl ? "Shared" : "Share"}
+          </button>
         </div>
         <input
           className="note-title"
@@ -264,6 +281,14 @@ export function NoteEditor({
           onValueChange={onTabChange}
         />
       </header>
+
+      <ShareNoteDialog
+        note={note}
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        sharedBy={sharedBy}
+        onNoteShared={onNoteShared}
+      />
 
       <section className="editor-content">
         {recovery ? (

@@ -2012,6 +2012,12 @@ export function App() {
                     onDiscardRecording={(sessionId) =>
                       handleRecovery(sessionId, "discard")
                     }
+                    sharedBy={
+                      account.user?.displayName ?? account.user?.handle ?? ""
+                    }
+                    onNoteShared={(updated) =>
+                      dispatch({ type: "noteUpdated", note: updated })
+                    }
                     onTitleChange={(title) => void handleUpdateNote({ title })}
                     onContentChange={(sourceNoteId, editedContent) => {
                       // Blur fired by an editor that was already torn

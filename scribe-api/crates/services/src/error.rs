@@ -16,6 +16,8 @@ pub enum ServiceError {
     UpstreamProvider,
     #[error("invalid_input: {reason}")]
     InvalidInput { reason: String },
+    #[error("storage_failed")]
+    Storage,
 }
 
 impl From<PricingError> for ServiceError {
@@ -36,6 +38,7 @@ impl From<DomainError> for ServiceError {
             DomainError::InsufficientCredits => Self::InsufficientCredits,
             DomainError::UpstreamProvider => Self::UpstreamProvider,
             DomainError::InvalidInput { reason } => Self::InvalidInput { reason },
+            DomainError::Storage => Self::Storage,
         }
     }
 }

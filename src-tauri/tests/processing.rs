@@ -24,6 +24,7 @@ fn note(overrides: impl FnOnce(&mut NoteDto)) -> NoteDto {
         audio_sources: Vec::new(),
         active_tab: Some("notes".to_string()),
         last_error: None,
+        share_url: None,
         queued_recordings: 0,
     };
     overrides(&mut note);

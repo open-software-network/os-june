@@ -4,4 +4,5 @@ pub(crate) mod health;
 pub(crate) mod issues;
 pub(crate) mod models;
 pub(crate) mod notes;
+pub(crate) mod shares;
 pub(crate) mod verify;
