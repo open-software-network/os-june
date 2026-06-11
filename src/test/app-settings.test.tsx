@@ -137,7 +137,7 @@ describe("AppSettings", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5",
+        generationModel: "zai-org-glm-5-1",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -146,7 +146,7 @@ describe("AppSettings", () => {
       selectedModel:
         mode === "transcription"
           ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5",
+          : "zai-org-glm-5-1",
       models:
         mode === "transcription"
           ? [
@@ -191,8 +191,8 @@ describe("AppSettings", () => {
           : [
               {
                 provider: "venice",
-                id: "zai-org-glm-5",
-                name: "GLM 5",
+                id: "zai-org-glm-5-1",
+                name: "GLM 5.1",
                 modelType: "text",
                 description: "Text model for writing notes.",
                 privacy: "private",
@@ -248,7 +248,7 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "zai-org-glm-5",
+      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-1",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
@@ -1122,7 +1122,7 @@ describe("AppSettings", () => {
     // Suggested is the default view: only the curated picks present in the
     // catalog show, each with its recommendation reason.
     expect(
-      await screen.findByRole("option", { name: /GLM 5/ }),
+      await screen.findByRole("option", { name: /GLM 5\.1/ }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("option", { name: /Venice Uncensored/ }),
@@ -1144,10 +1144,10 @@ describe("AppSettings", () => {
       screen.getByRole("option", { name: /Venice Uncensored/ }),
     ).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Search models"));
-    await user.click(screen.getByRole("option", { name: /GLM 5/ }));
+    await user.click(screen.getByRole("option", { name: /GLM 5\.1/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "generation",
-      "zai-org-glm-5",
+      "zai-org-glm-5-1",
     );
   });
 

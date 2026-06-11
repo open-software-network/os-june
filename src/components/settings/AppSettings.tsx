@@ -156,7 +156,9 @@ const DEFAULT_SHORTCUTS: Record<
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionProvider: "venice",
   transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-  generationModel: "zai-org-glm-5",
+  // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
+  // leading Suggested pick in lib/suggested-models.ts.
+  generationModel: "zai-org-glm-5-1",
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;

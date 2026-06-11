@@ -187,18 +187,18 @@ describe("AgentWorkspace", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5",
+        generationModel: "zai-org-glm-5-1",
       },
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5",
+      selectedModel: "zai-org-glm-5-1",
       models: [
         {
           provider: "venice",
-          id: "zai-org-glm-5",
-          name: "GLM 5",
+          id: "zai-org-glm-5-1",
+          name: "GLM 5.1",
           modelType: "text",
           privacy: "private",
           traits: [],

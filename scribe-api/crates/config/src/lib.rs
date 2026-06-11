@@ -285,6 +285,29 @@ impl Default for AppConfig {
                 capabilities: Vec::new(),
             },
         );
+        // Fallback pricing for the default text model, used only when the live
+        // Venice catalog can't be reached at startup so metered charges still
+        // settle. The live catalog (which carries the authoritative numbers)
+        // extends over this on every boot. Keep the first entry in sync with
+        // DEFAULT_GENERATION_MODEL in the Tauri providers module.
+        pricing.insert(
+            "zai-org-glm-5-1".to_string(),
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(1_750),
+                output_credits_per_million_tokens: Some(5_500),
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Text,
+                display_name: "GLM 5.1".to_string(),
+                description: None,
+                privacy: Some("private".to_string()),
+                pricing: None,
+                context_tokens: Some(200_000),
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        );
         pricing.insert(
             "zai-org-glm-5".to_string(),
             ModelPriceConfig {
