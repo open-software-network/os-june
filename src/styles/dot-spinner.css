@@ -1,0 +1,61 @@
+/* The dot spinner (né pangolin): a perfectly square 2×2 grid of tiny real
+ * circles with a dim spot rolling clockwise — drawn, not typeset, so the
+ * dots are crisp (à la Conductor's timer dots). The mark is one fixed size
+ * everywhere by design — wrappers set only color (currentColor), there is
+ * no size knob. Dot and gap MUST stay integer px: fractional sizes put the
+ * second column on a different subpixel phase and its circles rasterize
+ * ovular. Shared by every page entry that shows agent activity. */
+.dot-spinner {
+  display: inline-grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 2px;
+  line-height: 1;
+}
+
+.dot-spinner > span {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: dot-spinner-roll 800ms linear infinite;
+}
+
+/* Stagger the dim spot clockwise: TL → TR → BR → BL (grid DOM order is
+ * TL TR / BL BR, hence 3 and 4 swapped). Negative delays so the loop is
+ * already rolling on first paint. */
+.dot-spinner > span:nth-child(1) {
+  animation-delay: -800ms;
+}
+
+.dot-spinner > span:nth-child(2) {
+  animation-delay: -600ms;
+}
+
+.dot-spinner > span:nth-child(4) {
+  animation-delay: -400ms;
+}
+
+.dot-spinner > span:nth-child(3) {
+  animation-delay: -200ms;
+}
+
+/* Each dot dips once per revolution; the 25% phase offsets above turn the
+ * dips into one gap travelling around the square. */
+@keyframes dot-spinner-roll {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+
+  35%,
+  65% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The spinner rests as a steady square of dots. */
+  .dot-spinner > span {
+    animation: none;
+  }
+}

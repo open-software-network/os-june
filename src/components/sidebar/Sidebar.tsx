@@ -53,7 +53,7 @@ import type {
 } from "../../lib/tauri";
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { PangolinSpinner } from "../PangolinSpinner";
+import { DotSpinner } from "../DotSpinner";
 import { IconPangolin } from "../icons/IconPangolin";
 
 export type SidebarView =
@@ -1276,7 +1276,7 @@ function AgentSessionRow({
         <span className="note-row-icon">
           {status === "running" ? (
             <span role="status" aria-label="Working" title="Working">
-              <PangolinSpinner className="agent-sidebar-spinner" />
+              <DotSpinner className="agent-sidebar-spinner" />
             </span>
           ) : (
             <IconPangolin size={16} />

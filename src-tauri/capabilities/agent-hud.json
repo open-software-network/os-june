@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "mascot",
-  "description": "Desktop mascot access to agent events and overlay window controls.",
-  "windows": ["mascot"],
+  "identifier": "agent-hud",
+  "description": "Agent HUD access to agent events and overlay window controls.",
+  "windows": ["agent-hud"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-emit",

@@ -698,25 +698,29 @@ export async function listAgentTasks() {
   return invoke<AgentTaskListResponse>("list_agent_tasks");
 }
 
-export async function mascotShow() {
-  return invoke<void>("mascot_show");
+export async function agentHudShow() {
+  return invoke<void>("agent_hud_show");
 }
 
-export async function mascotHide() {
-  return invoke<void>("mascot_hide");
+export async function agentHudHide() {
+  return invoke<void>("agent_hud_hide");
 }
 
-export async function mascotSetLayout(input: {
+export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   replying?: boolean;
   contextMenuOpen?: boolean;
 }) {
-  return invoke<void>("mascot_set_layout", { request: input });
+  return invoke<void>("agent_hud_set_layout", { request: input });
 }
 
-export async function mascotOpenAgent(session?: HermesSessionInfo) {
-  return invoke<void>("mascot_open_agent", { session });
+export async function agentHudFocusReply() {
+  return invoke<void>("agent_hud_focus_reply");
+}
+
+export async function agentHudOpenAgent(session?: HermesSessionInfo) {
+  return invoke<void>("agent_hud_open_agent", { session });
 }
 
 export async function createAgentTask(input: {

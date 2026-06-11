@@ -1,0 +1,399 @@
+@import "./tokens.css";
+@import "./fonts.css";
+@import "./dot-spinner.css";
+
+/*
+ * Agent HUD.
+ *
+ * A small always-on-top overlay pinned to the top right of the screen
+ * (agent_hud.rs owns the window position and sizes the window to the
+ * layout the controller requests). Collapsed it is a single quiet pill:
+ * status indicator + "2 running". Click, keyboard focus, or a session
+ * needing input expands it into a compact list with open/reply actions.
+ *
+ * Forced dark regardless of system theme, like the dictation HUD: a
+ * transient overlay has to read consistently against any wallpaper or
+ * app behind it. The window is transparent with click-through gutters;
+ * depth comes from CSS shadows, so the window keeps a margin around the
+ * surface for them to paint into (the Rust size math accounts for it).
+ */
+
+:root {
+  /* Force dark surface tokens for the HUD, ignoring prefers-color-scheme. */
+  --background: oklch(0.165 0.0015 84.59);
+  --foreground: oklch(0.985 0.0015 84.59);
+  --popover: oklch(0.195 0.0015 84.59);
+  --muted: oklch(0.268 0.0015 84.59);
+  --muted-foreground: oklch(0.709 0.0015 84.59);
+  --border: oklch(1 0 0 / 12%);
+  --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.72 0.14 150);
+
+  color: var(--foreground);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+.agent-hud {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  /* Only the surface is interactive; the transparent gutter around it
+   * (shadow room) is click-through. */
+  pointer-events: none;
+}
+
+/* Shared surface recipe: near-opaque dark glass with a hairline border.
+ * Matches the dictation pill's tint family; CSS backdrop-filter can't
+ * sample other apps' pixels, so opacity does the legibility work. */
+.agent-hud-surface {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-4);
+  display: grid;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--popover) 92%, transparent);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px) scale(0.98);
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.agent-hud[data-visible="true"] .agent-hud-surface {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-surface {
+  width: min(280px, calc(100vw - 2 * var(--sp-4)));
+  border-radius: var(--r-xl);
+  padding-bottom: var(--sp-1);
+}
+
+.agent-hud[data-has-action="true"] .agent-hud-surface {
+  border-color: color-mix(in oklch, oklch(0.78 0.16 76) 65%, transparent);
+}
+
+.agent-hud-icon,
+.agent-hud-icon svg {
+  display: block;
+}
+
+.agent-hud-icon {
+  flex: none;
+  line-height: 0;
+}
+
+/* Pill / header row ---------------------------------------------------- */
+
+.agent-hud-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 30px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-pill {
+  height: 36px;
+  border-radius: 0;
+}
+
+.agent-hud-pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-hud-chevron {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: var(--sp-px);
+  color: var(--muted-foreground);
+  transition: transform var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-chevron {
+  transform: rotate(180deg);
+}
+
+/* Status indicator ------------------------------------------------------ */
+
+.agent-hud-status {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--r-pill);
+}
+
+/* Running statuses hold the rolling dot spinner (dot-spinner.css), colored
+ * via currentColor like everywhere else in the app. */
+.agent-hud-status[data-status="received"],
+.agent-hud-status[data-status="starting"],
+.agent-hud-status[data-status="running"] {
+  color: var(--foreground);
+}
+
+.agent-hud-status[data-status="waitingForUser"] {
+  background: oklch(0.78 0.16 76);
+  color: oklch(0.17 0.035 76);
+  animation: agent-hud-breathe 1600ms var(--ease-in-out) infinite;
+}
+
+.agent-hud-status[data-status="completed"] {
+  background: var(--success);
+  color: oklch(0.12 0.02 148);
+}
+
+.agent-hud-status[data-status="failed"],
+.agent-hud-status[data-status="cancelled"] {
+  background: var(--destructive);
+  color: var(--foreground);
+}
+
+.agent-hud-status[data-status="idle"] {
+  border: 1.5px solid color-mix(in oklch, var(--foreground) 30%, transparent);
+}
+
+/* Session rows ----------------------------------------------------------- */
+
+.agent-hud-stack {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-hud[data-expanded="false"] .agent-hud-stack {
+  display: none;
+}
+
+.agent-hud-row {
+  position: relative;
+  margin: 0 var(--sp-1);
+  border-radius: var(--r-lg);
+}
+
+.agent-hud-row-body {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 46px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-hud-row-body:hover,
+.agent-hud-row-body:focus-visible {
+  background: color-mix(in oklch, var(--foreground) 7%, transparent);
+}
+
+.agent-hud-row-text {
+  display: grid;
+  min-width: 0;
+}
+
+.agent-hud-row-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-hud-row-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Reply ------------------------------------------------------------------ */
+
+.agent-hud-reply {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-3);
+  display: grid;
+  place-items: center;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-hud-row:hover .agent-hud-reply,
+.agent-hud-row:focus-within .agent-hud-reply {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.agent-hud-row:has(.agent-hud-reply-form) .agent-hud-reply {
+  display: none;
+}
+
+.agent-hud-reply-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+
+.agent-hud-reply-input {
+  /* The body disables selection for the overlay; the input needs it back. */
+  user-select: text;
+  min-width: 0;
+  height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--background) 65%, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+  outline: none;
+}
+
+.agent-hud-reply-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.agent-hud-reply-input:focus-visible {
+  border-color: var(--ring-focus);
+}
+
+.agent-hud-reply-send {
+  display: grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--foreground);
+  color: var(--background);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+/* Context menu ------------------------------------------------------------ */
+
+.agent-hud-menu {
+  position: absolute;
+  top: 44px;
+  right: var(--sp-4);
+  min-width: 148px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--popover) 96%, transparent);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+}
+
+.agent-hud-menu[hidden] {
+  display: none;
+}
+
+.agent-hud-menu button {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-hud-menu button:hover,
+.agent-hud-menu button:focus-visible {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  outline: none;
+}
+
+.agent-hud-pill:focus-visible,
+.agent-hud-row-body:focus-visible,
+.agent-hud-reply:focus-visible,
+.agent-hud-reply-send:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+@keyframes agent-hud-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}

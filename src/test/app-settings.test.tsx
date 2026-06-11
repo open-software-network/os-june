@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
-import { MASCOT_ENABLED_KEY } from "../lib/mascot-settings";
+import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
@@ -29,8 +29,8 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
-  mascotShow: vi.fn(),
-  mascotHide: vi.fn(),
+  agentHudShow: vi.fn(),
+  agentHudHide: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
@@ -63,8 +63,8 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
     mocks.updateHermesBridgeMessagingPlatform,
-  mascotShow: mocks.mascotShow,
-  mascotHide: mocks.mascotHide,
+  agentHudShow: mocks.agentHudShow,
+  agentHudHide: mocks.agentHudHide,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
@@ -254,8 +254,8 @@ describe("AppSettings", () => {
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
-    mocks.mascotShow.mockResolvedValue(undefined);
-    mocks.mascotHide.mockResolvedValue(undefined);
+    mocks.agentHudShow.mockResolvedValue(undefined);
+    mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
       ...(kind === "toggle"
@@ -1267,7 +1267,7 @@ describe("AppSettings", () => {
     expect(screen.queryByText("Logs")).toBeNull();
   });
 
-  it("toggles the desktop mascot from Agent settings", async () => {
+  it("toggles the agent HUD from Agent settings", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -1283,18 +1283,18 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Agent" }));
-    const mascotSwitch = await screen.findByRole("switch", {
-      name: "Show desktop mascot",
+    const hudSwitch = await screen.findByRole("switch", {
+      name: "Show agent HUD",
     });
 
-    expect(mascotSwitch).toHaveAttribute("aria-checked", "true");
+    expect(hudSwitch).toHaveAttribute("aria-checked", "true");
 
-    await user.click(mascotSwitch);
-    expect(localStorage.getItem(MASCOT_ENABLED_KEY)).toBe("false");
-    expect(mocks.mascotHide).toHaveBeenCalledTimes(1);
+    await user.click(hudSwitch);
+    expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("false");
+    expect(mocks.agentHudHide).toHaveBeenCalledTimes(1);
 
-    await user.click(mascotSwitch);
-    expect(localStorage.getItem(MASCOT_ENABLED_KEY)).toBe("true");
-    expect(mocks.mascotShow).toHaveBeenCalledTimes(1);
+    await user.click(hudSwitch);
+    expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
+    expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
   });
 });

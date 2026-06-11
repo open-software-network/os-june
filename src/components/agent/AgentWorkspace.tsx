@@ -46,7 +46,7 @@ import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
-import { PangolinSpinner } from "../PangolinSpinner";
+import { DotSpinner } from "../DotSpinner";
 import {
   type CSSProperties,
   type FormEvent,
@@ -625,9 +625,9 @@ type AgentWorkspaceProps = {
 };
 
 // Module-scoped so a remount of AgentWorkspace (e.g. navigating away from the
-// agent view and back) does not re-submit a mascot reply that App still holds
+// agent view and back) does not re-submit an agent HUD reply that App still holds
 // in its pendingReply state.
-const handledMascotReplyIds = new Set<string>();
+const handledHudReplyIds = new Set<string>();
 
 // Mid-run continuity across remounts. While June is working, a session has
 // state that exists nowhere outside this component: the optimistic list entry
@@ -1320,9 +1320,9 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!pendingReply?.text.trim()) return;
-    if (handledMascotReplyIds.has(pendingReply.requestId)) return;
-    handledMascotReplyIds.add(pendingReply.requestId);
-    void submitMascotReply(pendingReply);
+    if (handledHudReplyIds.has(pendingReply.requestId)) return;
+    handledHudReplyIds.add(pendingReply.requestId);
+    void submitHudReply(pendingReply);
   }, [pendingReply]);
 
   useEffect(() => {
@@ -1717,7 +1717,7 @@ export function AgentWorkspace({
     }
   }
 
-  async function submitMascotReply(reply: AgentReplyDetail) {
+  async function submitHudReply(reply: AgentReplyDetail) {
     const message = reply.text.trim();
     if (!message) return;
     if (submitting || importingFiles) {
@@ -3078,7 +3078,7 @@ export function AgentWorkspace({
               exit={{ opacity: 0 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
-              <PangolinSpinner />
+              <DotSpinner />
               {busyNotice ?? SESSION_BUSY_NOTICE}
             </motion.p>
           ) : null}
@@ -5245,7 +5245,7 @@ function AgentToolPartRow({
             aria-label="Running"
             title="Running"
           >
-            <PangolinSpinner />
+            <DotSpinner />
           </span>
         ) : part.status === "failed" ? (
           <span className="agent-tool-live-status" data-status="failed">

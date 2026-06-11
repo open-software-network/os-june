@@ -42,11 +42,11 @@
         "visible": false
       },
       {
-        "label": "mascot",
-        "url": "/mascot.html",
-        "title": "June Mascot",
-        "width": 72,
-        "height": 72,
+        "label": "agent-hud",
+        "url": "/agent-hud.html",
+        "title": "June Agents",
+        "width": 240,
+        "height": 48,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -80,32 +80,21 @@
       "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'sha256-5zseCXEQXMrhVnLDc5/8D6srY3KbB1TDtKXlkC9HSao='; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' asset: data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; media-src 'self' asset: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$TEMP/os-scribe-dictation-*.m4a"
-        ]
+        "scope": ["$TEMP/os-scribe-dictation-*.m4a"]
       },
-      "capabilities": [
-        "main",
-        "hud",
-        "mascot",
-        "meeting-hud"
-      ]
+      "capabilities": ["main", "hud", "agent-hud", "meeting-hud"]
     }
   },
   "plugins": {
     "deep-link": {
       "mobile": [
         {
-          "scheme": [
-            "osscribe"
-          ],
+          "scheme": ["osscribe"],
           "appLink": false
         }
       ],
       "desktop": {
-        "schemes": [
-          "osscribe"
-        ]
+        "schemes": ["osscribe"]
       }
     },
     "updater": {
@@ -125,10 +114,7 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "targets": [
-      "app",
-      "dmg"
-    ],
+    "targets": ["app", "dmg"],
     "resources": {
       "../.tauri-helper/June.app": "native/bin/June.app",
       "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",

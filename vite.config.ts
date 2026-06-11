@@ -23,7 +23,9 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         hud: fileURLToPath(new URL("./hud.html", import.meta.url)),
-        mascot: fileURLToPath(new URL("./mascot.html", import.meta.url)),
+        "agent-hud": fileURLToPath(
+          new URL("./agent-hud.html", import.meta.url),
+        ),
         "meeting-hud": fileURLToPath(
           new URL("./meeting-hud.html", import.meta.url),
         ),
@@ -45,7 +47,7 @@ export default defineConfig({
         "src/**/*.d.ts",
         "src/main.tsx",
         "src/hud.ts",
-        "src/mascot.ts",
+        "src/agent-hud.ts",
       ],
     },
   },

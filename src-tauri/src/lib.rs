@@ -1,3 +1,4 @@
+pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
 pub mod commands;
@@ -5,7 +6,6 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
-pub mod mascot;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
@@ -135,10 +135,11 @@ pub fn run() {
             dictation::dictation_hud_shake,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,
-            mascot::mascot_show,
-            mascot::mascot_hide,
-            mascot::mascot_set_layout,
-            mascot::mascot_open_agent,
+            agent_hud::agent_hud_show,
+            agent_hud::agent_hud_hide,
+            agent_hud::agent_hud_set_layout,
+            agent_hud::agent_hud_focus_reply,
+            agent_hud::agent_hud_open_agent,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,
@@ -160,7 +161,7 @@ pub fn run() {
             menu_bar::setup(app)?;
             providers::setup(app);
             dictation::setup(app);
-            mascot::setup(app);
+            agent_hud::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
