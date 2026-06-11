@@ -53,6 +53,10 @@ pub fn agent_hud_set_layout(app: AppHandle, request: AgentHudLayoutRequest) -> R
         request.replying.unwrap_or(false),
         request.context_menu_open.unwrap_or(false),
     );
+    // The HUD is top-right anchored with a fixed native width, so resizing
+    // only changes height and does not need an immediate reposition. If the
+    // width becomes dynamic, reposition with the requested size here instead
+    // of reading outer_size(), which can lag behind set_size() on macOS.
     window
         .set_size(Size::Logical(LogicalSize::new(width, height)))
         .map_err(|error| error.to_string())

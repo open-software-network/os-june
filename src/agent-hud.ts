@@ -79,7 +79,6 @@ const state = {
   hovered: false,
   menuOpen: false,
   sessions: [] as HermesSessionInfo[],
-  selectedSessionId: undefined as string | undefined,
   workingSessionIds: new Set<string>(),
   waitingSessionIds: new Set<string>(),
   statusBySessionId: new Map<string, StatusRecord>(),
@@ -111,7 +110,6 @@ let replyForm:
 function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   if (!detail) return;
   state.sessions = detail.sessions ?? [];
-  state.selectedSessionId = detail.selectedSessionId;
   state.workingSessionIds = new Set(detail.workingSessionIds ?? []);
   state.waitingSessionIds = new Set(detail.waitingSessionIds ?? []);
   const activeSessionIds = new Set([
@@ -655,6 +653,8 @@ function statusLabel(status: HudSessionStatus) {
       return "Stopped";
     case "idle":
       return "Idle";
+    default:
+      return "Idle";
   }
 }
 
@@ -709,6 +709,10 @@ function replacePendingWithTerminalStatus(record: StatusRecord) {
     const activePending = state.pendingStatuses.filter((item) =>
       isActiveStatus(item.status),
     );
+    // No subject matched, but the status stream says no active work remains.
+    // Mark all anonymous pending rows terminal as a best-effort cleanup; each
+    // row keeps its own title, while the terminal summary comes from this
+    // final record and may describe only the last session that reported.
     state.pendingStatuses = [
       ...activePending.map((item) => terminalRecord(record, item)),
       ...state.pendingStatuses.filter((item) => !isActiveStatus(item.status)),

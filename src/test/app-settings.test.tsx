@@ -1187,9 +1187,7 @@ describe("AppSettings", () => {
     expect(mocks.setVeniceModel).not.toHaveBeenCalled();
 
     // Tool-capable models stay selectable.
-    await user.click(
-      screen.getByRole("option", { name: /Venice Uncensored/ }),
-    );
+    await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "generation",
       "venice-uncensored",
@@ -1295,6 +1293,6 @@ describe("AppSettings", () => {
 
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
-    expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+    expect(mocks.agentHudShow).not.toHaveBeenCalled();
   });
 });
