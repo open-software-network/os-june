@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import type { HermesSessionInfo } from "../lib/tauri";
 
@@ -36,6 +37,11 @@ const sessions: HermesSessionInfo[] = [
 ];
 
 describe("AgentSessionsList", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
+  });
+
   it("surfaces active session status and sorts active work first", () => {
     render(
       <AgentSessionsList
@@ -47,6 +53,7 @@ describe("AgentSessionsList", () => {
         onSelectSession={vi.fn()}
         onNewSession={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
         onRemoveFromProject={vi.fn()}
       />,
     );
@@ -65,10 +72,78 @@ describe("AgentSessionsList", () => {
     );
 
     const list = screen.getByRole("list");
+    expect(list.querySelector(".agent-session-row")).toBeTruthy();
+    expect(list.querySelector(".agent-session-row.all-notes-row")).toBeTruthy();
     expect(
       Array.from(list.querySelectorAll(".folder-note-title")).map((node) =>
         node.textContent?.trim(),
       ),
     ).toEqual(["Waiting session", "Running session", "Idle session"]);
+  });
+
+  it("selects agent sessions and moves them in list order", async () => {
+    const user = userEvent.setup();
+    const onOpenMoveSessions = vi.fn();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        workingSessionIds={new Set(["running-session"])}
+        waitingSessionIds={new Set(["waiting-session"])}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={onOpenMoveSessions}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("Select Waiting session"));
+    await user.click(screen.getByLabelText("Select Running session"));
+
+    expect(
+      screen.getByRole("toolbar", { name: "Selection" }),
+    ).toHaveTextContent("2 selected");
+
+    await user.click(screen.getByRole("button", { name: "Move" }));
+
+    expect(onOpenMoveSessions).toHaveBeenCalledWith([
+      "waiting-session",
+      "running-session",
+    ]);
+  });
+
+  it("bulk deletes selected agent sessions", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        workingSessionIds={new Set(["running-session"])}
+        waitingSessionIds={new Set(["waiting-session"])}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("Select Waiting session"));
+    await user.click(screen.getByLabelText("Select Running session"));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete sessions" }));
+
+    expect(hermesMocks.deleteHermesSession).toHaveBeenCalledTimes(2);
+    expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(
+      1,
+      "waiting-session",
+    );
+    expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(
+      2,
+      "running-session",
+    );
   });
 });

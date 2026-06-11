@@ -8,20 +8,22 @@ import { Dialog } from "../ui/Dialog";
 type Props = {
   open: boolean;
   onClose: () => void;
-  session: HermesSessionInfo | null;
-  /** Project ids the session is currently filed under (first one wins). */
-  currentFolderIds: string[];
+  sessions: HermesSessionInfo[];
+  /** sessionId -> project ids the session is currently filed under. */
+  sessionFolderIds: Record<string, string[]>;
   folders: FolderDto[];
   onSetFolder: (sessionId: string, folderId: string) => Promise<unknown> | void;
+  onMoved?: () => void;
 };
 
 export function MoveSessionToProjectDialog({
   open,
   onClose,
-  session,
-  currentFolderIds,
+  sessions,
+  sessionFolderIds,
   folders,
   onSetFolder,
+  onMoved,
 }: Props) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -34,9 +36,19 @@ export function MoveSessionToProjectDialog({
     setSubmitting(false);
   }, [open]);
 
-  const currentFolderId = currentFolderIds[0];
+  const isSingle = sessions.length === 1;
+  const sharedFolderId =
+    sessions.length > 0 &&
+    sessions.every(
+      (session) =>
+        sessionFolderIds[session.id]?.[0] ===
+        sessionFolderIds[sessions[0].id]?.[0],
+    )
+      ? sessionFolderIds[sessions[0].id]?.[0]
+      : undefined;
+  const currentFolderId = sharedFolderId;
   const currentFolder = folders.find((f) => f.id === currentFolderId);
-  const hasCurrent = Boolean(currentFolder);
+  const hasCurrent = isSingle && Boolean(currentFolder);
 
   const candidates = useMemo(() => {
     const available = folders.filter((folder) => folder.id !== currentFolderId);
@@ -54,21 +66,30 @@ export function MoveSessionToProjectDialog({
   }, [folders, currentFolderId, query]);
 
   async function handleCommit() {
-    if (!session || !selectedId || submitting) return;
+    if (sessions.length === 0 || !selectedId || submitting) return;
     setSubmitting(true);
     try {
-      await onSetFolder(session.id, selectedId);
+      for (const session of sessions) {
+        await onSetFolder(session.id, selectedId);
+      }
+      onMoved?.();
       onClose();
     } finally {
       setSubmitting(false);
     }
   }
 
-  const title = hasCurrent ? "Move session" : "Add session to project";
-  const description = hasCurrent
-    ? `This session is in "${currentFolder?.name}". Pick another project to move it to.`
-    : "Pick a project for this session.";
-  const commitLabel = hasCurrent ? "Move" : "Add";
+  const title = isSingle
+    ? hasCurrent
+      ? "Move session"
+      : "Add session to project"
+    : `Move ${sessions.length} sessions`;
+  const description = isSingle
+    ? hasCurrent
+      ? `This session is in "${currentFolder?.name}". Pick another project to move it to.`
+      : "Pick a project for this session."
+    : "Pick a project to move them to.";
+  const commitLabel = isSingle && !hasCurrent ? "Add" : "Move";
 
   return (
     <Dialog

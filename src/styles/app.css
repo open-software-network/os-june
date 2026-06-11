@@ -9138,8 +9138,13 @@ button.agent-safety-badge:hover {
 
 .folder-note-row[data-has-actions="true"]:hover .folder-note-time,
 .folder-note-row[data-has-actions="true"]:focus-within .folder-note-time,
+.folder-note-row[data-has-actions="true"]:hover .agent-session-list-status,
+.folder-note-row[data-has-actions="true"]:focus-within
+  .agent-session-list-status,
 .folder-note-row[data-has-actions="true"][data-menu-open="true"]
-  .folder-note-time {
+  .folder-note-time,
+.folder-note-row[data-has-actions="true"][data-menu-open="true"]
+  .agent-session-list-status {
   opacity: 0;
 }
 
