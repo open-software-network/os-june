@@ -4183,11 +4183,7 @@ button.agent-safety-badge:hover {
 }
 
 .agent-sidebar-row .note-row-main {
-  grid-template-rows: auto;
-}
-
-.agent-sidebar-row .note-row-icon {
-  grid-row: 1;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Titles ellipsize short of the trailing slot so they never collide with the
@@ -4197,25 +4193,9 @@ button.agent-safety-badge:hover {
   padding-right: 36px;
 }
 
-/* Running agent sessions show the rolling dot spinner; idle rows show nothing.
- * The glyph is decorative (aria-hidden inside DotSpinner) — the wrapping
- * status span carries "Working" for assistive tech. */
-.agent-sidebar-spinner {
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
-}
-
-/* The status wrapper is inline by default, so its line box inherits the row's
- * line-height and the dot-grid lands off-center in the icon cell. Make it a
- * centering grid so the spinner sits dead-center like the idle icon. */
-.agent-sidebar-row .note-row-icon > [role="status"] {
-  display: inline-grid;
-  place-items: center;
-  line-height: 0;
-}
-
-/* Trailing meta on agent rows: the relative timestamp, or the terracotta
- * needs-you dot when the session is waiting. It sits where the delete button
- * lands, so the hover swap reads as the trash can covering the date. */
+/* Trailing meta on agent rows: the relative timestamp or a compact status dot.
+ * It sits where the delete button lands, so the hover swap reads as the trash
+ * can covering the date/status. */
 .agent-session-meta {
   position: absolute;
   top: 50%;
@@ -4232,6 +4212,10 @@ button.agent-safety-badge:hover {
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.agent-session-status {
+  line-height: 0;
 }
 
 .agent-sidebar-row:hover .agent-session-meta,
@@ -4266,13 +4250,11 @@ button.agent-safety-badge:hover {
   border-radius: var(--r-pill);
 }
 
-.agent-sidebar-working[data-status="waitingForUser"] {
-  background: var(--warm-strong);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 18%, transparent);
+.agent-sidebar-spinner {
+  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
-/* Unread variant: a finished turn the user hasn't looked at yet. Plain dot —
- * the halo stays reserved for "needs you". */
+.agent-sidebar-working[data-status="waitingForUser"],
 .agent-sidebar-working[data-status="unread"] {
   background: var(--warm-strong);
 }
@@ -4280,7 +4262,7 @@ button.agent-safety-badge:hover {
 /* A session awaiting your input reads a touch heavier so it stands out in the
  * list. */
 .agent-sidebar-row[data-status="waitingForUser"] .note-row-title-text {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .sidebar[data-collapsed="true"] .note-row-menu,

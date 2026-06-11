@@ -121,11 +121,11 @@ export function NotesList({
   }
 
   return (
-    <section className="all-notes-workspace" aria-label="Meetings">
+    <section className="all-notes-workspace" aria-label="Meeting notes">
       <header className="folders-header">
         <div className="folders-heading">
           <h1>
-            Meetings
+            Meeting notes
             {notes.length > 0 ? (
               <span className="folders-count">{notes.length}</span>
             ) : null}
@@ -138,7 +138,7 @@ export function NotesList({
           onClick={onCreateNote}
         >
           <IconPlusMedium size={13} />
-          New meeting
+          New note
           <kbd className="primary-action-kbd" aria-hidden>
             ⌘N
           </kbd>
@@ -195,8 +195,8 @@ export function NotesList({
                 >
                   <IconTrashCan size={13} />
                   {selectedCount === 1
-                    ? "Delete 1 meeting"
-                    : `Delete ${selectedCount} meetings`}
+                    ? "Delete 1 note"
+                    : `Delete ${selectedCount} notes`}
                 </button>
               </>
             ) : null}
@@ -206,19 +206,19 @@ export function NotesList({
 
       {notes.length === 0 ? (
         <div className="folders-empty">
-          <p>No meetings yet.</p>
+          <p>No notes yet.</p>
           <button
             type="button"
             className="primary-action primary-solid"
             onClick={onCreateNote}
           >
             <IconPlusMedium size={13} />
-            Create your first meeting
+            Create your first note
           </button>
         </div>
       ) : filteredNotes.length === 0 ? (
         <div className="folders-empty">
-          <p>No meetings match “{query.trim()}”.</p>
+          <p>No notes match “{query.trim()}”.</p>
         </div>
       ) : (
         <ul className="folder-notes all-notes-list" role="list">
@@ -253,12 +253,10 @@ export function NotesList({
           resetSelection();
         }}
         title={`Delete ${selectedCount} ${
-          selectedCount === 1 ? "meeting" : "meetings"
+          selectedCount === 1 ? "note" : "notes"
         }?`}
-        description="This cannot be undone. Audio, transcripts, and generated notes for these meetings will be removed."
-        confirmLabel={
-          selectedCount === 1 ? "Delete meeting" : "Delete meetings"
-        }
+        description="This cannot be undone. Audio, transcripts, and generated notes for these notes will be removed."
+        confirmLabel={selectedCount === 1 ? "Delete note" : "Delete notes"}
         destructive
       />
     </section>
@@ -288,7 +286,7 @@ function AllNoteRow({
   onOpenMove: () => void;
   onDelete: () => void;
 }) {
-  const title = note.title.trim() || "New meeting";
+  const title = note.title.trim() || "New note";
   const preview = note.preview.trim() || statusLabel(note.processingStatus);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -382,7 +380,7 @@ function AllNoteRow({
               }}
             >
               <IconTrashCan size={14} />
-              Delete meeting
+              Delete note
             </button>
           </div>
         ) : null}
@@ -393,7 +391,7 @@ function AllNoteRow({
         onConfirm={onDelete}
         title={`Delete "${title}"?`}
         description="This cannot be undone."
-        confirmLabel="Delete meeting"
+        confirmLabel="Delete note"
         destructive
       />
     </li>

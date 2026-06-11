@@ -252,13 +252,13 @@ export function NoteEditor({
         </div>
         <input
           className="note-title"
-          aria-label="Meeting title"
-          placeholder="New meeting"
+          aria-label="Note title"
+          placeholder="New note"
           value={note.title}
           onChange={(event) => onTitleChange(event.currentTarget.value)}
         />
         <SegmentedControl
-          aria-label="Meeting views"
+          aria-label="Note views"
           value={activeTab}
           options={TABS}
           onValueChange={onTabChange}

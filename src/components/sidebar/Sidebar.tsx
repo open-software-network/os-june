@@ -1,5 +1,6 @@
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
+import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBrain2 } from "central-icons/IconBrain2";
@@ -54,7 +55,6 @@ import type {
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { DotSpinner } from "../DotSpinner";
-import { IconPangolin } from "../icons/IconPangolin";
 
 export type SidebarView =
   | "notes"
@@ -114,6 +114,46 @@ const AGENT_SIDEBAR_SESSION_LIMIT = 12;
 const AGENT_SIDEBAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000, 16000, 32000,
 ];
+const SIDEBAR_DEV_STATES_EVENT = "scribe:sidebar:dev-states";
+const SIDEBAR_DEV_SESSION_IDS = {
+  selected: "sidebar-state-selected",
+  working: "sidebar-state-working",
+  waiting: "sidebar-state-waiting",
+  unread: "sidebar-state-unread",
+  recent: "sidebar-state-recent",
+  older: "sidebar-state-older",
+  long: "sidebar-state-long",
+} as const;
+
+type SidebarDevStatesDetail = { show: boolean };
+
+let sidebarDevStatesDesired = false;
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__sidebarStates = (
+    show: boolean = true,
+  ) => {
+    sidebarDevStatesDesired = show;
+    window.dispatchEvent(
+      new CustomEvent<SidebarDevStatesDetail>(SIDEBAR_DEV_STATES_EVENT, {
+        detail: { show },
+      }),
+    );
+    return show
+      ? "Sidebar state preview shown. Run __sidebarStates(false) to restore."
+      : "Sidebar state preview restored.";
+  };
+}
+
+type SidebarDevStateSnapshot = {
+  sessions: HermesSessionInfo[];
+  selectedSessionId?: string;
+  workingSessionIds: Set<string>;
+  waitingSessionIds: Set<string>;
+  unreadSessionIds: Set<string>;
+  deletingSessionIds: Set<string>;
+  query: string;
+};
 
 const SETTINGS_SIDEBAR_GROUPS: {
   title: string;
@@ -154,7 +194,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
     title: "AI",
     items: [
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
-      { id: "agent", label: "Agent", icon: <IconPangolin size={16} /> },
+      { id: "agent", label: "Agent", icon: <IconBubble3 size={16} /> },
     ],
   },
   {
@@ -218,6 +258,9 @@ export function Sidebar({
   // front of the user (those never go unread).
   const workingAgentSessionIdsRef = useRef<Set<string>>(new Set());
   const openAgentSessionIdRef = useRef<string | undefined>(undefined);
+  const sidebarDevStateSnapshotRef = useRef<SidebarDevStateSnapshot | null>(
+    null,
+  );
 
   // formatSessionTime reads the clock at render time, so re-render once a
   // minute to keep the relative timestamps ("5m", "3h") advancing instead of
@@ -268,11 +311,11 @@ export function Sidebar({
 
     const recentItems: CommandPaletteItem[] = [
       ...notes.slice(0, 5).map((note) => {
-        const title = note.title.trim() || "New meeting";
+        const title = note.title.trim() || "New note";
         return {
           id: `note:${note.id}`,
           label: title,
-          meta: "Meeting",
+          meta: "Meeting note",
           icon: <IconNoteText size={15} />,
           searchText: normalizeCommandQuery(`${title} ${note.preview}`),
           action: () => onSelectNote(note.id),
@@ -285,7 +328,7 @@ export function Sidebar({
           id: `agent:${session.id}`,
           label: title,
           meta: "Agent",
-          icon: <IconPangolin size={15} />,
+          icon: <IconBubble3 size={15} />,
           searchText: normalizeCommandQuery(
             `${title} ${session.preview ?? ""} agent session`,
           ),
@@ -309,9 +352,9 @@ export function Sidebar({
       },
       {
         id: "quick:meetings",
-        label: "Go to Meetings",
+        label: "Go to Meeting notes",
         icon: <IconNoteText size={15} />,
-        searchText: normalizeCommandQuery("meetings notes go to"),
+        searchText: normalizeCommandQuery("meeting notes meetings go to"),
         action: () => onChangeView("notes"),
       },
       {
@@ -373,6 +416,80 @@ export function Sidebar({
     if (commandActiveIndex < commandPaletteItems.length) return;
     setCommandActiveIndex(Math.max(commandPaletteItems.length - 1, 0));
   }, [commandActiveIndex, commandPaletteItems.length]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+
+    function applySidebarDevStates(show: boolean) {
+      if (!show) {
+        const snapshot = sidebarDevStateSnapshotRef.current;
+        if (!snapshot) return;
+        setAgentSessions(snapshot.sessions);
+        setSelectedAgentSessionId(snapshot.selectedSessionId);
+        setWorkingAgentSessionIds(new Set(snapshot.workingSessionIds));
+        setWaitingAgentSessionIds(new Set(snapshot.waitingSessionIds));
+        setUnreadAgentSessionIds(new Set(snapshot.unreadSessionIds));
+        setDeletingAgentSessionIds(new Set(snapshot.deletingSessionIds));
+        workingAgentSessionIdsRef.current = new Set(snapshot.workingSessionIds);
+        setQuery(snapshot.query);
+        sidebarDevStateSnapshotRef.current = null;
+        return;
+      }
+
+      if (
+        sidebarDevStateSnapshotRef.current &&
+        agentSessions[0]?.id === SIDEBAR_DEV_SESSION_IDS.selected
+      ) {
+        return;
+      }
+
+      if (!sidebarDevStateSnapshotRef.current) {
+        sidebarDevStateSnapshotRef.current = {
+          sessions: agentSessions,
+          selectedSessionId: selectedAgentSessionId,
+          workingSessionIds: new Set(workingAgentSessionIds),
+          waitingSessionIds: new Set(waitingAgentSessionIds),
+          unreadSessionIds: new Set(unreadAgentSessionIds),
+          deletingSessionIds: new Set(deletingAgentSessionIds),
+          query,
+        };
+      }
+
+      setQuery("");
+      setMenu(null);
+      setIdentityMenuOpen(false);
+      setCommandPaletteOpen(false);
+      setAgentSessions(buildSidebarDevStateSessions());
+      setSelectedAgentSessionId(SIDEBAR_DEV_SESSION_IDS.selected);
+      setWorkingAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.working]));
+      setWaitingAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.waiting]));
+      setUnreadAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.unread]));
+      setDeletingAgentSessionIds(new Set());
+      workingAgentSessionIdsRef.current = new Set([
+        SIDEBAR_DEV_SESSION_IDS.working,
+      ]);
+      onChangeView("agent");
+    }
+
+    const onDevStates = (event: Event) => {
+      const detail = (event as CustomEvent<SidebarDevStatesDetail>).detail;
+      applySidebarDevStates(Boolean(detail?.show));
+    };
+
+    applySidebarDevStates(sidebarDevStatesDesired);
+    window.addEventListener(SIDEBAR_DEV_STATES_EVENT, onDevStates);
+    return () =>
+      window.removeEventListener(SIDEBAR_DEV_STATES_EVENT, onDevStates);
+  }, [
+    agentSessions,
+    deletingAgentSessionIds,
+    onChangeView,
+    query,
+    selectedAgentSessionId,
+    unreadAgentSessionIds,
+    waitingAgentSessionIds,
+    workingAgentSessionIds,
+  ]);
 
   function dispatchAgentEvent<T>(name: string, detail?: T) {
     window.setTimeout(() => {
@@ -683,7 +800,7 @@ export function Sidebar({
               <span className="sidebar-nav-icon">
                 <IconNoteText size={15} />
               </span>
-              <span className="sidebar-nav-label">Meetings</span>
+              <span className="sidebar-nav-label">Meeting notes</span>
             </button>
             <button
               type="button"
@@ -871,7 +988,7 @@ function NoteRow({
   onSelect: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
 }) {
-  const title = note.title.trim() || "New meeting";
+  const title = note.title.trim() || "New note";
   const menuRef = useRef<HTMLButtonElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -950,6 +1067,74 @@ function NoteRow({
       </button>
     </article>
   );
+}
+
+function buildSidebarDevStateSessions(): HermesSessionInfo[] {
+  const now = Date.now();
+  const minutesAgo = (minutes: number) =>
+    new Date(now - minutes * 60_000).toISOString();
+  const daysAgo = (days: number) =>
+    new Date(now - days * 24 * 60 * 60_000).toISOString();
+  const session = (
+    id: string,
+    title: string,
+    preview: string,
+    lastActive: string,
+  ): HermesSessionInfo => ({
+    id,
+    title,
+    preview,
+    source: "sidebar-dev",
+    model: "dev-preview",
+    started_at: lastActive,
+    last_active: lastActive,
+    message_count: 12,
+  });
+
+  return [
+    session(
+      SIDEBAR_DEV_SESSION_IDS.selected,
+      "Selected session",
+      "Open conversation row with selected background.",
+      minutesAgo(2),
+    ),
+    session(
+      SIDEBAR_DEV_SESSION_IDS.working,
+      "Working spinner",
+      "Dot spinner in the trailing timestamp slot.",
+      minutesAgo(4),
+    ),
+    session(
+      SIDEBAR_DEV_SESSION_IDS.waiting,
+      "Needs you",
+      "Terracotta status dot with title emphasis.",
+      minutesAgo(8),
+    ),
+    session(
+      SIDEBAR_DEV_SESSION_IDS.unread,
+      "New reply",
+      "Unread reply dot in the trailing status slot.",
+      minutesAgo(16),
+    ),
+    session(
+      SIDEBAR_DEV_SESSION_IDS.recent,
+      "Recent timestamp",
+      "Compact relative time at the right edge.",
+      minutesAgo(43),
+    ),
+    session(
+      SIDEBAR_DEV_SESSION_IDS.older,
+      "Older timestamp",
+      "Calendar date instead of relative time.",
+      daysAgo(9),
+    ),
+    session(
+      SIDEBAR_DEV_SESSION_IDS.long,
+      "Very long session title that should truncate cleanly before the right edge state slot",
+      "Exercises title ellipsis and trailing slot spacing.",
+      minutesAgo(91),
+    ),
+  ];
 }
 
 function SettingsSidebarNav({
@@ -1074,7 +1259,7 @@ function CommandPalette({
             value={query}
             onChange={(event) => onQueryChange(event.currentTarget.value)}
             onKeyDown={onKeyDown}
-            placeholder="Search meetings, sessions, or jump to..."
+            placeholder="Search meeting notes, sessions, or jump to..."
             aria-label="Search"
             aria-activedescendant={
               items[activeIndex]
@@ -1273,22 +1458,13 @@ function AgentSessionRow({
           }
         }}
       >
-        <span className="note-row-icon">
-          {status === "running" ? (
-            <span role="status" aria-label="Working" title="Working">
-              <DotSpinner className="agent-sidebar-spinner" />
-            </span>
-          ) : (
-            <IconPangolin size={16} />
-          )}
-        </span>
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
         </span>
       </div>
       {waiting ? (
         <span
-          className="agent-session-meta"
+          className="agent-session-meta agent-session-status"
           role="status"
           aria-label="Needs you"
         >
@@ -1298,9 +1474,17 @@ function AgentSessionRow({
             title="Needs you"
           />
         </span>
+      ) : working ? (
+        <span
+          className="agent-session-meta agent-session-status"
+          role="status"
+          aria-label="Working"
+        >
+          <DotSpinner className="agent-sidebar-spinner" />
+        </span>
       ) : unread ? (
         <span
-          className="agent-session-meta"
+          className="agent-session-meta agent-session-status"
           role="status"
           aria-label="New reply"
         >
@@ -1420,7 +1604,7 @@ function NoteContextMenu({
         }}
       >
         <IconTrashCan size={14} />
-        Delete meeting
+        Delete note
       </button>
     </div>
   );

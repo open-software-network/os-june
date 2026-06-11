@@ -224,7 +224,9 @@ describe("App shortcuts", () => {
     render(<App />);
 
     // The app launches on the agent view; the notes list is one hop away.
-    await user.click(await screen.findByRole("button", { name: "Meetings" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Meeting notes" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: /^First note/ }),
     );
@@ -257,7 +259,7 @@ describe("App shortcuts", () => {
       await screen.findByRole("heading", { name: "Welcome to June" }),
     ).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "New meeting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
 
     await user.click(
       screen.getByRole("button", { name: "Continue with OpenSoftware" }),

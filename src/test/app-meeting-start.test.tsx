@@ -242,7 +242,7 @@ describe("meeting start transcription event", () => {
 
     await fireMeetingStartUntilRecording();
     expect(mocks.startRecording).toHaveBeenCalledOnce();
-    expect(screen.getByLabelText("Meeting title")).toHaveValue("First note");
+    expect(screen.getByLabelText("Note title")).toHaveValue("First note");
 
     await act(async () => {
       await mocks.listeners.get("meeting-hud-action")?.({
@@ -251,7 +251,7 @@ describe("meeting start transcription event", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Meeting title")).toHaveValue("First note"),
+      expect(screen.getByLabelText("Note title")).toHaveValue("First note"),
     );
   });
 

@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
@@ -11,6 +12,7 @@ import { IconFolders } from "central-icons/IconFolders";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStopCircle } from "central-icons/IconStopCircle";
 import { IconToolbox } from "central-icons/IconToolbox";
+import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { IconAnonymous } from "central-icons/IconAnonymous";
@@ -44,8 +46,6 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
-import { IconTrashCan } from "central-icons/IconTrashCan";
-import { IconPangolin } from "../icons/IconPangolin";
 import { DotSpinner } from "../DotSpinner";
 import {
   type CSSProperties,
@@ -3396,9 +3396,7 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <SafetyBadge
-              privacyBadge={generationPrivacyBadge}
-            />
+            <SafetyBadge privacyBadge={generationPrivacyBadge} />
           </div>
         </div>
         <div className="agent-actions">
@@ -3615,11 +3613,7 @@ export function AgentWorkspace({
 // just asserted — when the backend's attestation walkthrough URL is known,
 // the badge links straight to it instead of leaving the proof buried in
 // Settings → About.
-function SafetyBadge({
-  privacyBadge,
-}: {
-  privacyBadge?: ModelPrivacyBadge;
-}) {
+function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
   if (!privacyBadge) return null;
   const icon =
     privacyBadge.mode === "e2ee" ? (
@@ -3924,7 +3918,7 @@ function PanelTabs({
         aria-selected={activePanel === "chat"}
         onClick={() => onChange("chat")}
       >
-        <IconPangolin size={14} />
+        <IconBubble3 size={14} />
         Chat
       </button>
       <button
@@ -4185,7 +4179,7 @@ export function FilesystemPanel({
               <header>
                 <div>
                   <h3 className="agent-files-root-title">
-                    <IconPangolin size={14} />
+                    <IconBubble3 size={14} />
                     {root.label}
                   </h3>
                   <p>{root.description}</p>
@@ -6552,10 +6546,10 @@ function ActivityIndicator({
   );
 }
 
-// Bottom-of-timeline "responding" affordance: the pangolin alongside a
-// shimmering label, reusing the same text-shimmer the recorder uses while
-// transcribing. Lives in the timeline (not the header) so it reads like the
-// agent is actively composing the next turn.
+// Bottom-of-timeline "responding" affordance: a shimmering label, reusing the
+// same text-shimmer the recorder uses while transcribing. Lives in the timeline
+// (not the header) so it reads like the agent is actively composing the next
+// turn.
 function AgentThinking() {
   return (
     <div className="agent-thinking" role="status" aria-live="polite">

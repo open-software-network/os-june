@@ -1297,7 +1297,7 @@ export function App() {
 
   async function handleDeleteNote(noteId: string) {
     if (state.recordingStatus) {
-      setError("Stop the current recording before deleting a meeting.");
+      setError("Stop the current recording before deleting a note.");
       return;
     }
     try {
@@ -1917,25 +1917,29 @@ export function App() {
                           setOriginFolderId(undefined);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New meeting" },
+                      {
+                        label: selectedNote.title.trim() || "New note",
+                      },
                     ]}
                   />
                 ) : originAllNotes ? (
                   <BreadcrumbBar
-                    backLabel="Back to meetings"
+                    backLabel="Back to meeting notes"
                     onBack={() => {
                       setActiveView("all-notes");
                       setOriginAllNotes(false);
                     }}
                     items={[
                       {
-                        label: "Meetings",
+                        label: "Meeting notes",
                         onClick: () => {
                           setActiveView("all-notes");
                           setOriginAllNotes(false);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New meeting" },
+                      {
+                        label: selectedNote.title.trim() || "New note",
+                      },
                     ]}
                   />
                 ) : null}
@@ -2013,7 +2017,7 @@ export function App() {
                       dispatch({ type: "folderSelected", folderId });
                       setFolderReturnTarget({
                         noteId: selectedNote.id,
-                        label: selectedNote.title.trim() || "New meeting",
+                        label: selectedNote.title.trim() || "New note",
                       });
                       setOriginFolderId(undefined);
                     }}

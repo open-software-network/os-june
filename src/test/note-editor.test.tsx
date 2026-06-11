@@ -68,7 +68,7 @@ describe("NoteEditor", () => {
       <NoteEditor {...props} note={note()} onTitleChange={onTitleChange} />,
     );
 
-    await user.type(screen.getByLabelText("Meeting title"), " updated");
+    await user.type(screen.getByLabelText("Note title"), " updated");
     expect(onTitleChange).toHaveBeenCalled();
 
     // The note body is a rendered preview, not an editable textarea.

@@ -255,7 +255,7 @@ describe("notes recording reliability", () => {
 
     // Browse to another note while the recording keeps running on note-1.
     await userEvent.click(
-      screen.getByRole("button", { name: "Meetings", current: "page" }),
+      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
     );
     await userEvent.click(
       screen.getByRole("button", { name: /Second note Preview/ }),
@@ -325,7 +325,7 @@ describe("notes recording reliability", () => {
     // The app launches on the agent view; open the note from the Meetings
     // list so the editor (and its failure banner) is on screen.
     await userEvent.click(
-      await screen.findByRole("button", { name: "Meetings" }),
+      await screen.findByRole("button", { name: "Meeting notes" }),
     );
     await userEvent.click(
       screen.getByRole("button", { name: /First note Preview/ }),

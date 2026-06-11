@@ -1,7 +1,7 @@
-/* The dot spinner (né pangolin): a perfectly square 2×2 grid of tiny real
- * circles with a dim spot rolling clockwise — drawn, not typeset, so the
+/* The dot spinner: a perfectly square 2×2 grid of tiny real
+ * circles with a dim spot rolling clockwise. Drawn, not typeset, so the
  * dots are crisp (à la Conductor's timer dots). The mark is one fixed size
- * everywhere by design — wrappers set only color (currentColor), there is
+ * everywhere by design. Wrappers set only color (currentColor), there is
  * no size knob. Dot and gap MUST stay integer px: fractional sizes put the
  * second column on a different subpixel phase and its circles rasterize
  * ovular. Shared by every page entry that shows agent activity. */
