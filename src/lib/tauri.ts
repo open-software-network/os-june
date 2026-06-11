@@ -1093,6 +1093,20 @@ export type TrialCheckoutResult = {
   outcome: "checkoutOpened" | "alreadySubscribed";
 };
 
+export type TrialCheckoutPreparedResult = {
+  outcome: "ready" | "alreadySubscribed";
+};
+
+/** Pre-mints the free-trial Stripe Checkout session and caches it in the
+ * Rust core, so the next start call only has to open the browser. Call it
+ * while the user is reading the trial pitch; failures are safe to swallow,
+ * the start path falls back to minting on the spot. */
+export async function osAccountsPrepareTrialCheckout() {
+  return invoke<TrialCheckoutPreparedResult>(
+    "os_accounts_prepare_trial_checkout",
+  );
+}
+
 /** Mints the free-trial Stripe Checkout session with the user's own token and
  * opens it in the system browser — no portal detour. Rejects with code
  * `trial_checkout_needs_reauth` when the stored grant lacks the billing

@@ -4,6 +4,7 @@ import {
   focusMainWindow,
   osAccountsLogin,
   osAccountsOpenPortal,
+  osAccountsPrepareTrialCheckout,
   osAccountsStartTrialCheckout,
 } from "./tauri";
 import type { AccountStatus } from "./tauri";
@@ -114,6 +115,30 @@ export function useTrialCheckout({
       void unlisten.then((dispose) => dispose());
     };
   }, []);
+
+  // Pre-mint the Checkout session while the pitch is on screen, so the
+  // "Start free trial" click only has to open the browser instead of paying
+  // for token refresh + Stripe session creation right when the user is
+  // watching the button. Re-arms whenever the flow lands back on the pitch
+  // (a canceled checkout consumed the previous session). Failures stay
+  // silent on purpose: start() mints on the spot as before and owns the
+  // interactive re-auth path — a background prefetch must never pop a
+  // browser sign-in.
+  useEffect(() => {
+    if (phase !== "idle" || subscribed) return;
+    let stale = false;
+    void osAccountsPrepareTrialCheckout()
+      .then((result) => {
+        if (stale || result.outcome !== "alreadySubscribed") return;
+        // Subscribed on another machine; the refreshed snapshot trips the
+        // activation watcher below instead of pitching a trial.
+        void onRefreshRef.current();
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [phase, subscribed]);
 
   // Activation watcher. Covers every path to a live subscription — direct
   // checkout, portal fallback, even a second device — because it keys off

@@ -15,7 +15,7 @@ use std::{
     error::Error as StdError,
     sync::{
         atomic::{AtomicBool, Ordering},
-        OnceLock,
+        Mutex as StdMutex, OnceLock,
     },
     time::Duration,
 };
@@ -455,16 +455,57 @@ const BILLING_RETURN_URL: &str = "osscribe://billing/callback";
 #[cfg(debug_assertions)]
 const BILLING_RETURN_URL: &str = "";
 
-/// One-click free trial: mint the subscription Stripe Checkout session
-/// directly from the app (the user's own token authorizes it) and open it in
-/// the system browser — no detour through the portal's billing page.
-///
-/// A persistent scope failure surfaces as `trial_checkout_needs_reauth` so
-/// the UI can re-run sign-in (picking up the scopes this build requests) and
-/// retry the direct path. Any other failure surfaces as an error the UI
-/// answers with the portal fallback.
-#[tauri::command]
-pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppError> {
+/// A minted-but-not-opened Stripe Checkout session, cached so the click that
+/// follows only has to launch the browser instead of paying for the
+/// token-refresh + session-mint round trips while the user stares at an
+/// "Opening checkout" button.
+struct PreparedCheckout {
+    url: String,
+    minted_at: std::time::Instant,
+}
+
+/// Stripe keeps Checkout sessions live for 24 hours; this stays far inside
+/// that so a consumed cache entry never points at an expired session.
+const PREPARED_CHECKOUT_TTL: Duration = Duration::from_secs(30 * 60);
+
+static PREPARED_CHECKOUT: StdMutex<Option<PreparedCheckout>> = StdMutex::new(None);
+
+fn take_fresh_prepared_checkout() -> Option<String> {
+    let mut slot = PREPARED_CHECKOUT.lock().ok()?;
+    let prepared = slot.take()?;
+    (prepared.minted_at.elapsed() < PREPARED_CHECKOUT_TTL).then_some(prepared.url)
+}
+
+fn store_prepared_checkout(url: String) {
+    if let Ok(mut slot) = PREPARED_CHECKOUT.lock() {
+        *slot = Some(PreparedCheckout {
+            url,
+            minted_at: std::time::Instant::now(),
+        });
+    }
+}
+
+fn prepared_checkout_is_fresh() -> bool {
+    PREPARED_CHECKOUT
+        .lock()
+        .ok()
+        .and_then(|slot| {
+            slot.as_ref()
+                .map(|prepared| prepared.minted_at.elapsed() < PREPARED_CHECKOUT_TTL)
+        })
+        .unwrap_or(false)
+}
+
+enum MintedTrialCheckout {
+    Url(String),
+    AlreadySubscribed,
+}
+
+/// Mint the subscription Stripe Checkout session directly from the app (the
+/// user's own token authorizes it) — no detour through the portal's billing
+/// page. This is the slow part of starting a trial: up to a token refresh
+/// plus the accounts API creating the session at Stripe.
+async fn mint_trial_checkout() -> Result<MintedTrialCheckout, AppError> {
     let cfg = Config::load();
     if !cfg.configured() {
         return Err(AppError::new(
@@ -498,11 +539,10 @@ pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppErro
             let session = resp
                 .data
                 .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."))?;
-            open_in_browser(&session.url)?;
-            return Ok(TrialCheckout::CheckoutOpened);
+            return Ok(MintedTrialCheckout::Url(session.url));
         }
         match resp.error_code {
-            Some(ERR_CONFLICT) => return Ok(TrialCheckout::AlreadySubscribed),
+            Some(ERR_CONFLICT) => return Ok(MintedTrialCheckout::AlreadySubscribed),
             Some(ERR_UNPROCESSABLE) if return_url.is_some() => {
                 return_url = None;
             }
@@ -527,6 +567,61 @@ pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppErro
         "trial_checkout_unavailable",
         "Could not start the free trial checkout.",
     ))
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum TrialCheckoutPrepared {
+    /// A Checkout session is minted and cached; the next start call opens it
+    /// without any network round trips.
+    Ready,
+    /// The accounts API reported a live subscription already exists — the
+    /// caller should refresh the account snapshot instead of pitching.
+    AlreadySubscribed,
+}
+
+/// Pre-mint the Stripe Checkout session while the user is still reading the
+/// trial pitch, so the "Start free trial" click feels instant. Best-effort:
+/// callers swallow failures and the start command falls back to minting on
+/// the spot. Never triggers an interactive re-auth — that stays on the
+/// explicit click path.
+#[tauri::command]
+pub async fn os_accounts_prepare_trial_checkout() -> Result<TrialCheckoutPrepared, AppError> {
+    if prepared_checkout_is_fresh() {
+        return Ok(TrialCheckoutPrepared::Ready);
+    }
+    match mint_trial_checkout().await? {
+        MintedTrialCheckout::AlreadySubscribed => Ok(TrialCheckoutPrepared::AlreadySubscribed),
+        MintedTrialCheckout::Url(url) => {
+            store_prepared_checkout(url);
+            Ok(TrialCheckoutPrepared::Ready)
+        }
+    }
+}
+
+/// One-click free trial: open the pre-minted Checkout session when one is
+/// cached (the instant path), otherwise mint and open in one go.
+///
+/// A persistent scope failure surfaces as `trial_checkout_needs_reauth` so
+/// the UI can re-run sign-in (picking up the scopes this build requests) and
+/// retry the direct path. Any other failure surfaces as an error the UI
+/// answers with the portal fallback.
+#[tauri::command]
+pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppError> {
+    // Consume the cached session rather than reusing it: each open gets a
+    // session that is known-unused, and the UI re-prepares in the background
+    // after a cancel.
+    if let Some(url) = take_fresh_prepared_checkout() {
+        open_in_browser(&url)?;
+        return Ok(TrialCheckout::CheckoutOpened);
+    }
+    match mint_trial_checkout().await? {
+        MintedTrialCheckout::AlreadySubscribed => Ok(TrialCheckout::AlreadySubscribed),
+        MintedTrialCheckout::Url(url) => {
+            open_in_browser(&url)?;
+            Ok(TrialCheckout::CheckoutOpened)
+        }
+    }
 }
 
 /// Register the deep-link handler at app setup. Drains any in-flight
