@@ -61,6 +61,33 @@ describe("RoutinesView", () => {
     expect(screen.getByText("Summarize my unread notes")).toBeInTheDocument();
   });
 
+  it("shows cron schedules as plain language and matches it in search", async () => {
+    mocks.listRoutines.mockResolvedValue([
+      job({ schedule: "0 9 * * 1-5" }),
+      job({
+        job_id: "def456",
+        name: "Weekly digest",
+        prompt_preview: "Compile a digest of the week",
+        schedule: "0 8 * * 1",
+      }),
+    ]);
+    render(<RoutinesView onCreateRoutine={vi.fn()} onEditRoutine={vi.fn()} />);
+
+    const nine = new Date(2000, 0, 1, 9, 0).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    expect(
+      await screen.findByText(`Weekdays at ${nine}`, { exact: false }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("0 9 * * 1-5", { exact: false })).toBeNull();
+
+    // The search box matches the displayed wording, not just the raw cron.
+    await userEvent.type(screen.getByRole("searchbox"), "weekdays");
+    expect(screen.getByText("Morning summary")).toBeInTheDocument();
+    expect(screen.queryByText("Weekly digest")).toBeNull();
+  });
+
   it("shows the empty state and routes creation through the agent prompt", async () => {
     mocks.listRoutines.mockResolvedValue([]);
     const onCreateRoutine = vi.fn();

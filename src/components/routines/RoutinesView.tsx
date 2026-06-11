@@ -16,6 +16,7 @@ import {
   routineEditPrompt,
   type RoutineJob,
 } from "../../lib/hermes-routines";
+import { humanizeSchedule } from "../../lib/routine-schedule";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -69,7 +70,9 @@ export function RoutinesView({
     const normalized = query.trim().toLowerCase();
     if (!normalized) return routines;
     return routines.filter((routine) =>
-      `${routine.name} ${routine.prompt_preview} ${routine.schedule}`
+      // Match the displayed wording too, so "weekdays" finds a routine whose
+      // stored schedule is "0 9 * * 1-5".
+      `${routine.name} ${routine.prompt_preview} ${routine.schedule} ${humanizeSchedule(routine.schedule)}`
         .toLowerCase()
         .includes(normalized),
     );
@@ -342,7 +345,7 @@ function RoutineRow({
   const paused = routine.state === "paused";
   const completed = routine.state === "completed";
   const meta = [
-    routine.schedule,
+    humanizeSchedule(routine.schedule),
     completed
       ? routine.last_run_at
         ? `Last ran ${formatRunTime(routine.last_run_at)}`
