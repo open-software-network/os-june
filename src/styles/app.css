@@ -3051,9 +3051,9 @@ input:focus-visible,
 }
 
 .agent-composer[data-hero="true"] .agent-composer-box {
-  /* A touch wider than the docked box so the hero reads as the bigger
-   * "start here" statement at every display size. */
-  max-width: calc(min(var(--chat-max), var(--content-max)) + 16px);
+  /* Deliberately compact — the hero box is an invitation, not a reading
+   * column, so it does not track --chat-max up on larger displays. */
+  max-width: 640px;
   box-shadow: var(--shadow-md);
 }
 
