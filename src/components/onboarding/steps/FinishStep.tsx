@@ -1,4 +1,5 @@
-import { StepActions, StepHeading } from "../StepChrome";
+import { IconRocket } from "central-icons/IconRocket";
+import { StepActions, StepHeading, StepSpot } from "../StepChrome";
 
 export function FinishStep({
   shortcutLabel,
@@ -10,6 +11,11 @@ export function FinishStep({
   return (
     <section className="onboarding-step">
       <StepHeading
+        art={
+          <StepSpot>
+            <IconRocket size={28} aria-hidden />
+          </StepSpot>
+        }
         title="You're all set"
         subtitle="Three ways to put June to work right now."
       />

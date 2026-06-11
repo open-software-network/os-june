@@ -15,7 +15,7 @@ import {
   MeetingNotesStep,
 } from "./steps/LearnSteps";
 import { PermissionsStep } from "./steps/PermissionSteps";
-import { DataPracticesStep, PrivacyStep } from "./steps/PrivacySteps";
+import { PrivacyStep } from "./steps/PrivacySteps";
 import { SetupStep } from "./steps/SetupStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TrialStep } from "./steps/TrialStep";
@@ -24,7 +24,6 @@ import { usePermissionStatuses } from "./use-permission-status";
 type StepId =
   | "sign-in"
   | "privacy"
-  | "data-practices"
   | "permissions"
   | "setup"
   | "trial"
@@ -34,31 +33,20 @@ type StepId =
   | "agent-honesty"
   | "finish";
 
-const STAGES = [
-  "Welcome",
-  "Privacy",
-  "Permissions",
-  "Set up",
-  "Free trial",
-  "Learn",
-  "Finish",
-] as const;
-
 // The trial sits after permissions/setup (the user has invested) and right
 // before the hands-on practice — which runs the real, metered pipeline and
 // therefore needs the trial's credits. Pay, then immediately feel the payoff.
-const STEPS: { id: StepId; stage: (typeof STAGES)[number] }[] = [
-  { id: "sign-in", stage: "Welcome" },
-  { id: "privacy", stage: "Privacy" },
-  { id: "data-practices", stage: "Privacy" },
-  { id: "permissions", stage: "Permissions" },
-  { id: "setup", stage: "Set up" },
-  { id: "trial", stage: "Free trial" },
-  { id: "dictation-practice", stage: "Learn" },
-  { id: "meeting-notes", stage: "Learn" },
-  { id: "agent-intro", stage: "Learn" },
-  { id: "agent-honesty", stage: "Learn" },
-  { id: "finish", stage: "Finish" },
+const STEPS: StepId[] = [
+  "sign-in",
+  "privacy",
+  "permissions",
+  "setup",
+  "trial",
+  "dictation-practice",
+  "meeting-notes",
+  "agent-intro",
+  "agent-honesty",
+  "finish",
 ];
 
 type Props = {
@@ -71,7 +59,7 @@ type Props = {
 function initialStepIndex(): number {
   const saved = onboardingResumeStep();
   if (!saved) return 0;
-  const index = STEPS.findIndex((step) => step.id === saved);
+  const index = STEPS.indexOf(saved as StepId);
   return index === -1 ? 0 : index;
 }
 
@@ -82,27 +70,27 @@ export function OnboardingFlow({
   onComplete,
 }: Props) {
   const [stepIndex, setStepIndex] = useState(initialStepIndex);
+  const [direction, setDirection] = useState<"forward" | "back">("forward");
   const [shortcutLabel, setShortcutLabel] = useState("fn");
   const [language, setLanguage] = useState("");
 
-  const step = STEPS[stepIndex];
-  const stageIndex = STAGES.indexOf(step.stage);
+  const stepId = STEPS[stepIndex];
 
   // Everything past sign-in needs an account; a resume point past it with a
   // signed-out account (keychain cleared, signed out elsewhere) would strand
   // the user on steps that can't work.
   useEffect(() => {
-    if (!account.signedIn && step.id !== "sign-in") {
+    if (!account.signedIn && stepId !== "sign-in") {
       setStepIndex(0);
     }
-  }, [account.signedIn, step.id]);
+  }, [account.signedIn, stepId]);
 
   useEffect(() => {
-    setOnboardingResumeStep(step.id);
-  }, [step.id]);
+    setOnboardingResumeStep(stepId);
+  }, [stepId]);
 
   // Only poll the helper while the user is on the permissions screen.
-  const permissionStatuses = usePermissionStatuses(step.id === "permissions");
+  const permissionStatuses = usePermissionStatuses(stepId === "permissions");
 
   useEffect(() => {
     dictationSettings()
@@ -121,15 +109,17 @@ export function OnboardingFlow({
   }, [account.user?.displayName, account.user?.handle]);
 
   function goNext() {
+    setDirection("forward");
     setStepIndex((index) => Math.min(index + 1, STEPS.length - 1));
   }
 
   function goBack() {
+    setDirection("back");
     setStepIndex((index) => {
       let next = Math.max(index - 1, 0);
       // The trial step auto-skips forward for subscribed users; stepping
       // back onto it would just bounce, so hop over it instead.
-      if (STEPS[next].id === "trial" && isSubscriptionActive(account)) {
+      if (STEPS[next] === "trial" && isSubscriptionActive(account)) {
         next = Math.max(next - 1, 0);
       }
       return next;
@@ -138,25 +128,26 @@ export function OnboardingFlow({
 
   return (
     <div className="onboarding-screen">
-      <nav className="onboarding-progress" aria-label="Setup progress">
-        {STAGES.map((stage, index) => (
+      <nav
+        className="onboarding-progress"
+        aria-label={`Setup progress: step ${stepIndex + 1} of ${STEPS.length}`}
+      >
+        {STEPS.map((id, index) => (
           <span
-            key={stage}
-            className="onboarding-progress-stage"
+            key={id}
+            className="onboarding-progress-seg"
+            aria-hidden
             data-state={
-              index < stageIndex
+              index < stepIndex
                 ? "done"
-                : index === stageIndex
+                : index === stepIndex
                   ? "current"
                   : "upcoming"
             }
-            aria-current={index === stageIndex ? "step" : undefined}
-          >
-            {stage}
-          </span>
+          />
         ))}
       </nav>
-      <div className="onboarding-body">
+      <div className="onboarding-body" data-direction={direction}>
         {stepIndex > 0 ? (
           <button
             type="button"
@@ -167,20 +158,18 @@ export function OnboardingFlow({
             ← Back
           </button>
         ) : null}
-        {step.id === "sign-in" ? (
+        {stepId === "sign-in" ? (
           <SignInStep
             account={account}
             name={firstName}
             onAccountChanged={onAccountChanged}
             onContinue={goNext}
           />
-        ) : step.id === "privacy" ? (
+        ) : stepId === "privacy" ? (
           <PrivacyStep onContinue={goNext} />
-        ) : step.id === "data-practices" ? (
-          <DataPracticesStep onContinue={goNext} />
-        ) : step.id === "permissions" ? (
+        ) : stepId === "permissions" ? (
           <PermissionsStep statuses={permissionStatuses} onContinue={goNext} />
-        ) : step.id === "setup" ? (
+        ) : stepId === "setup" ? (
           <SetupStep
             shortcutLabel={shortcutLabel}
             onShortcutLabelChange={setShortcutLabel}
@@ -188,23 +177,23 @@ export function OnboardingFlow({
             onLanguageChange={setLanguage}
             onContinue={goNext}
           />
-        ) : step.id === "trial" ? (
+        ) : stepId === "trial" ? (
           <TrialStep
             account={account}
             onRefresh={onRefreshAccount}
             onContinue={goNext}
           />
-        ) : step.id === "dictation-practice" ? (
+        ) : stepId === "dictation-practice" ? (
           <DictationPracticeStep
             name={firstName}
             shortcutLabel={shortcutLabel}
             onContinue={goNext}
           />
-        ) : step.id === "meeting-notes" ? (
+        ) : stepId === "meeting-notes" ? (
           <MeetingNotesStep onContinue={goNext} />
-        ) : step.id === "agent-intro" ? (
+        ) : stepId === "agent-intro" ? (
           <AgentIntroStep onContinue={goNext} />
-        ) : step.id === "agent-honesty" ? (
+        ) : stepId === "agent-honesty" ? (
           <AgentHonestyStep
             onAcknowledged={() => setAgentRiskAcknowledged(true)}
             onContinue={goNext}

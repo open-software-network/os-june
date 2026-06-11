@@ -160,17 +160,16 @@ export function AgentHonestyStep({
         </li>
         <li>
           <h2>
-            Private inference protects your data. It doesn't approve the
-            agent's actions.
+            Private inference protects your data. It doesn't approve the agent's
+            actions.
           </h2>
           <p>
             When June thinks, your prompts go to zero-retention models: nothing
             stored, nothing trained on. That's always on. When the agent acts
             (visits a site, calls a tool, sends an email you approved), the
             other side sees what it shares, exactly as if you'd done it
-            yourself. June
-            keeps your data private; it can't make the rest of the internet
-            private. That's why you're the approval step.
+            yourself. June keeps your data private; it can't make the rest of
+            the internet private. That's why you're the approval step.
           </p>
         </li>
       </ol>

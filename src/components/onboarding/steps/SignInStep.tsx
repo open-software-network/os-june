@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import mascotUrl from "../../../assets/june-pangolin.svg";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { Spinner } from "../../ui/Spinner";
 import { StepActions, StepHeading } from "../StepChrome";
+
+const mascot = <img className="onboarding-mascot" src={mascotUrl} alt="" />;
 
 /**
  * Step 1: welcome + sign-in, fused into one screen so the wizard's progress
@@ -58,8 +61,9 @@ export function SignInStep({
 
   if (account.signedIn) {
     return (
-      <section className="onboarding-step">
+      <section className="onboarding-step onboarding-step-hero">
         <StepHeading
+          art={mascot}
           title={name ? `Welcome, ${name}!` : "Welcome to June"}
           subtitle={
             account.user?.handle
@@ -78,13 +82,14 @@ export function SignInStep({
   return (
     <section className="onboarding-step">
       <StepHeading
+        art={mascot}
         title="Welcome to June"
         subtitle="June is your private AI assistant: dictate into any app, never take meeting notes again, and hand off real work to an agent that runs on your Mac."
       />
       <ul className="onboarding-feature-list">
         <li>
-          <strong>Talk, don't type</strong>: hold a key and speak; June types
-          at your cursor in whatever app has focus.
+          <strong>Talk, don't type</strong>: hold a key and speak; June types at
+          your cursor in whatever app has focus.
         </li>
         <li>
           <strong>Never take notes again</strong>: decisions, action items, and

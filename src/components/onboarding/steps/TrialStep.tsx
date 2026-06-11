@@ -1,11 +1,31 @@
 import { useEffect, useRef, useState } from "react";
+import { IconCircleCheck } from "central-icons/IconCircleCheck";
+import { IconGift1 } from "central-icons/IconGift1";
 import {
   isSubscriptionActive,
   useTrialCheckout,
 } from "../../../lib/trial-checkout";
 import type { AccountStatus } from "../../../lib/tauri";
 import { Spinner } from "../../ui/Spinner";
-import { StepActions, StepHeading } from "../StepChrome";
+import { StepActions, StepHeading, StepSpot } from "../StepChrome";
+
+// The no-surprise-charge story as a timeline (today / during / when it
+// ends) rather than three look-alike bullets — the card ask reads as a
+// sequence of guarantees, not a feature pitch.
+const TRIAL_TIMELINE = [
+  {
+    title: "Today",
+    body: "Full access to dictation, meeting notes, and the agent. You pay nothing now.",
+  },
+  {
+    title: "During your trial",
+    body: "Use June everywhere. Cancel in one click from your account and keep access through the trial.",
+  },
+  {
+    title: "When the trial ends",
+    body: "Your membership starts. Cancel before then and you won't be charged.",
+  },
+];
 
 /**
  * The free-trial step, deliberately placed after permissions and setup
@@ -53,8 +73,13 @@ export function TrialStep({
 
   if (activated) {
     return (
-      <section className="onboarding-step">
+      <section className="onboarding-step onboarding-step-hero">
         <StepHeading
+          art={
+            <StepSpot tone="success">
+              <IconCircleCheck size={28} aria-hidden />
+            </StepSpot>
+          }
           title="You're in! Your free trial is active"
           subtitle="No charge until the trial ends, and you can cancel anytime from your account. Now for the fun part."
         />
@@ -108,23 +133,26 @@ export function TrialStep({
   return (
     <section className="onboarding-step">
       <StepHeading
+        art={
+          <StepSpot>
+            <IconGift1 size={28} aria-hidden />
+          </StepSpot>
+        }
         title="Start your free trial"
         subtitle="Everything you just set up (dictation, meeting notes, the agent) runs on your June membership."
       />
-      <ul className="onboarding-feature-list">
-        <li>
-          <strong>Free to start</strong>: you won't be charged until the trial
-          ends.
-        </li>
-        <li>
-          <strong>Cancel anytime</strong>: one click in your account, keep
-          access through the trial.
-        </li>
-        <li>
-          <strong>One step left</strong>: checkout opens in your browser, then
-          June brings you right back.
-        </li>
-      </ul>
+      <ol className="onboarding-timeline">
+        {TRIAL_TIMELINE.map((item) => (
+          <li key={item.title}>
+            <h2>{item.title}</h2>
+            <p>{item.body}</p>
+          </li>
+        ))}
+      </ol>
+      <p className="onboarding-footnote">
+        Checkout opens in your browser. June notices the moment you finish and
+        brings you right back.
+      </p>
       <StepActions
         continueLabel={
           checkout.phase === "opening"

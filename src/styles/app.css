@@ -9939,11 +9939,18 @@ input:focus-visible,
 }
 
 .onboarding-progress-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   padding-bottom: var(--sp-1);
   border-bottom: 2px solid transparent;
   transition: color var(--t-med) var(--ease-out);
+}
+
+.onboarding-progress-check {
+  color: var(--brand);
 }
 
 .onboarding-progress-stage[data-state="current"] {
@@ -9990,12 +9997,73 @@ input:focus-visible,
   /* Push the action row toward a stable position so Continue doesn't
      jump around between short and tall steps. */
   min-height: 420px;
+  /* Every step is its own component, so advancing remounts the section and
+     replays this entrance — the same warm fade the intro screen uses. */
+  animation: onboarding-step-in var(--t-slow) var(--ease-out) backwards;
+}
+
+/* Celebration screens (signed-in greet, trial activated): just a heading and
+ * one button, so the action joins the cluster at center instead of holding
+ * the bottom rail above a void. */
+.onboarding-step-hero {
+  justify-content: center;
+}
+
+.onboarding-step-hero .onboarding-actions {
+  margin-top: 0;
+}
+
+@keyframes onboarding-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-step {
+    animation: none;
+  }
 }
 
 .onboarding-heading {
   display: grid;
   gap: var(--sp-3);
   text-align: center;
+}
+
+/* Spot art above a step headline: either the pangolin mascot or a StepSpot
+ * badge. One visual anchor for steps whose body is all text. */
+.onboarding-heading-art {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--sp-2);
+}
+
+.onboarding-mascot {
+  width: 88px;
+  height: auto;
+  image-rendering: pixelated;
+}
+
+.onboarding-spot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--warm-soft) 55%, transparent);
+  color: var(--warm-strong);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklch, var(--warm-strong) 18%, transparent);
+}
+
+.onboarding-spot[data-tone="success"] {
+  background: color-mix(in oklch, var(--success) 22%, transparent);
+  color: var(--success);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklch, var(--success) 32%, transparent);
 }
 
 .onboarding-title {
@@ -10058,6 +10126,67 @@ input:focus-visible,
   line-height: 1.5;
   color: var(--body-copy);
   box-shadow: var(--shadow-sm);
+}
+
+/* The trial pitch's "today / during / when it ends" story as a vertical
+ * timeline — dot, rail, then the next dot — so the no-surprise-charge
+ * sequence reads as a sequence. First dot is filled: that one is now. */
+.onboarding-timeline {
+  margin: 0;
+  padding: 0 var(--sp-3);
+  list-style: none;
+  display: grid;
+  gap: var(--sp-6);
+}
+
+.onboarding-timeline li {
+  position: relative;
+  padding-left: calc(var(--sp-7) + 10px);
+}
+
+.onboarding-timeline li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--r-pill);
+  border: 2px solid var(--brand);
+  background: transparent;
+}
+
+.onboarding-timeline li:first-child::before {
+  background: var(--brand);
+}
+
+/* Rail geometry: the dot occupies 4..14px from the li top; the rail runs
+ * from 3px below it to 3px above the next li's dot (one --sp-6 gap away).
+ * Mixed from the muted foreground, not --border — dark mode's 10%-white
+ * border vanishes against the backdrop and the rail must read as a line. */
+.onboarding-timeline li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 17px;
+  bottom: -17px;
+  width: 2px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--muted-foreground) 40%, transparent);
+}
+
+.onboarding-timeline h2 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.onboarding-timeline p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted-foreground);
 }
 
 .onboarding-card-grid {

@@ -72,3 +72,19 @@ export function setAgentRiskAcknowledged(acknowledged: boolean) {
     // Ignore.
   }
 }
+
+/**
+ * Testing helper: forget that onboarding completed (optionally pinning the
+ * step to land on, e.g. "trial") and reload into the wizard. Exposed on the
+ * devtools console as `june.replayOnboarding()` by main.tsx.
+ */
+export function replayOnboarding(stepId?: string) {
+  try {
+    window.localStorage.removeItem(COMPLETED_KEY);
+    if (stepId) window.localStorage.setItem(RESUME_KEY, stepId);
+    else window.localStorage.removeItem(RESUME_KEY);
+  } catch {
+    // Storage unavailable: the wizard already replays every launch.
+  }
+  window.location.reload();
+}

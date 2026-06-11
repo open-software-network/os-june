@@ -1,4 +1,6 @@
-import { StepActions, StepHeading } from "../StepChrome";
+import { IconLock } from "central-icons/IconLock";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
+import { StepActions, StepHeading, StepSpot } from "../StepChrome";
 
 const PRIVACY_CARDS = [
   {
@@ -19,6 +21,11 @@ export function PrivacyStep({ onContinue }: { onContinue: () => void }) {
   return (
     <section className="onboarding-step">
       <StepHeading
+        art={
+          <StepSpot>
+            <IconShieldCheck size={28} aria-hidden />
+          </StepSpot>
+        }
         title="Private by architecture, not by promise"
         subtitle="Every layer of June defaults to private. The ones that matter most, you can verify."
       />
@@ -37,7 +44,8 @@ export function PrivacyStep({ onContinue }: { onContinue: () => void }) {
           rel="noreferrer"
         >
           Verify it yourself
-        </a>: how routing, retention, and attestation work.
+        </a>
+        : how routing, retention, and attestation work.
       </p>
       <StepActions onContinue={onContinue} />
     </section>
@@ -48,6 +56,11 @@ export function DataPracticesStep({ onContinue }: { onContinue: () => void }) {
   return (
     <section className="onboarding-step">
       <StepHeading
+        art={
+          <StepSpot>
+            <IconLock size={28} aria-hidden />
+          </StepSpot>
+        }
         title="June doesn't collect your data"
         subtitle="We store only what it takes to run the service. Everything else stays yours."
       />
