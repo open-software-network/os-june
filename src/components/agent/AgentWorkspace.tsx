@@ -4904,6 +4904,55 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "text" }> =>
       part.type === "text",
   );
+  const reasoningParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
+      part.type === "reasoning",
+  );
+  const toolParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
+      part.type === "tool",
+  );
+  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
+  // "Thought" disclosure so the conversation isn't littered with terminal rows.
+  const thinkingRunning =
+    reasoningParts.some((part) => part.status === "running") ||
+    toolParts.some((part) => part.status === "running");
+  const completedThinkingKey = `turn:${turn.id}:thinking`;
+  const thinkingKey =
+    thinkingRunning && activeThinkingKey
+      ? activeThinkingKey
+      : completedThinkingKey;
+  const wasThinkingRunningRef = useRef(thinkingRunning);
+  const carriedOpen =
+    !thinkingRunning &&
+    wasThinkingRunningRef.current &&
+    activeThinkingKey !== undefined &&
+    thinkingOpen(activeThinkingKey);
+  const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
+
+  useEffect(() => {
+    const wasRunning = wasThinkingRunningRef.current;
+    wasThinkingRunningRef.current = thinkingRunning;
+    if (
+      !wasRunning ||
+      thinkingRunning ||
+      activeThinkingKey === undefined ||
+      reasoningParts.length + toolParts.length === 0 ||
+      !thinkingOpen(activeThinkingKey)
+    ) {
+      return;
+    }
+    onThinkingOpenChange(completedThinkingKey, true);
+  }, [
+    activeThinkingKey,
+    completedThinkingKey,
+    onThinkingOpenChange,
+    reasoningParts.length,
+    thinkingOpen,
+    thinkingRunning,
+    toolParts.length,
+  ]);
+
   const contextParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "context" }> =>
       part.type === "context",
@@ -4942,24 +4991,6 @@ function AgentChatTurnRow({
     );
   }
 
-  const reasoningParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
-      part.type === "reasoning",
-  );
-  const toolParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
-      part.type === "tool",
-  );
-  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
-  // "Thought" disclosure so the conversation isn't littered with terminal rows.
-  const thinkingRunning =
-    reasoningParts.some((part) => part.status === "running") ||
-    toolParts.some((part) => part.status === "running");
-  const thinkingKey =
-    thinkingRunning && activeThinkingKey
-      ? activeThinkingKey
-      : `turn:${turn.id}:thinking`;
-
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
       <div className="agent-assistant-turn-body">
@@ -4968,7 +4999,7 @@ function AgentChatTurnRow({
             reasoning={reasoningParts}
             tools={toolParts}
             running={thinkingRunning}
-            open={thinkingOpen(thinkingKey)}
+            open={thinkingIsOpen}
             onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
         ) : null}

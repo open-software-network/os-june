@@ -935,6 +935,21 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("Thinking").closest("details")).toHaveAttribute(
       "open",
     );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Thought")).toBeInTheDocument();
+    expect(screen.getByText("Thought").closest("details")).toHaveAttribute(
+      "open",
+    );
   });
 
   it("explains a pending approval before the user chooses", async () => {
