@@ -674,6 +674,9 @@ export function AgentWorkspace({
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
+  // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
+  // the fetch *started*) — the scroll-settling logic needs the landing.
+  const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(false);
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
@@ -1203,6 +1206,7 @@ export function AgentWorkspace({
     getAgentTask(selectedTaskId)
       .then((fullTask) => {
         if (!cancelled) {
+          taskHistoryLoadedIdsRef.current.add(fullTask.id);
           setTasks((current) =>
             current.map((item) => (item.id === fullTask.id ? fullTask : item)),
           );
@@ -2585,6 +2589,19 @@ export function AgentWorkspace({
   // instantly; only turns arriving while the user is already reading glide.
   const settledScrollSelectionRef = useRef<string>();
 
+  // History for the selected conversation has landed: a session gets an entry
+  // in hermesSessionMessages (even an empty one) once its fetch resolves;
+  // tasks either arrive with their turns inline or get recorded when the lazy
+  // hydration resolves. Settling keys off this rather than rendered turns so
+  // a genuinely empty conversation still settles, and its first turn glides.
+  const selectedHistoryLoaded = selectedHermesSessionId
+    ? hermesSessionMessages[selectedHermesSessionId] !== undefined
+    : selectedTask
+      ? selectedTask.messages.length > 0 ||
+        selectedTask.toolEvents.length > 0 ||
+        taskHistoryLoadedIdsRef.current.has(selectedTask.id)
+      : false;
+
   useEffect(() => {
     // The conversation scrolls in .agent-scroll, which sits below the sticky
     // breadcrumb so the scrollbar can't ride up over the bar — drive that
@@ -2594,17 +2611,26 @@ export function AgentWorkspace({
     if (typeof scroller.scrollTo !== "function") return; // jsdom has no scrollTo
     const selectionKey = `${selectedHermesSessionId ?? ""}:${selectedTaskId ?? ""}`;
     const settled = settledScrollSelectionRef.current === selectionKey;
-    // A conversation only counts as settled once turns have rendered, so the
-    // empty frame between selecting a session and its history arriving still
-    // resolves with an instant jump, not an animated scroll from the top.
-    if (renderedTurnsSignature > 0) {
+    if (selectedHistoryLoaded || renderedTurnsSignature > 0) {
+      // The settling run itself still scrolls with the pre-write snapshot, so
+      // the history fill after a switch lands instantly; everything after it
+      // (including the first streamed turn of an empty conversation) glides.
       settledScrollSelectionRef.current = selectionKey;
+    } else if (!settled) {
+      // Mid-load switch: forget the previous conversation so flipping back
+      // before this one settles re-lands instantly instead of gliding.
+      settledScrollSelectionRef.current = undefined;
     }
     scroller.scrollTo({
       top: scroller.scrollHeight,
       behavior: settled ? "smooth" : "auto",
     });
-  }, [renderedTurnsSignature, selectedHermesSessionId, selectedTaskId]);
+  }, [
+    renderedTurnsSignature,
+    selectedHermesSessionId,
+    selectedHistoryLoaded,
+    selectedTaskId,
+  ]);
 
   // Reshuffle the deck each time the hero comes back, so repeat visits start
   // from a fresh hand instead of wherever the last rotation left off.
