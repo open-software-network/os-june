@@ -652,6 +652,8 @@ export function AgentWorkspace({
   const [confirmUnrestricted, setConfirmUnrestricted] = useState(false);
   const sandboxTriggerRef = useRef<HTMLButtonElement | null>(null);
   const sandboxMenuRef = useRef<HTMLDivElement | null>(null);
+  const sandboxFirstItemRef = useRef<HTMLButtonElement | null>(null);
+  const sandboxMenuWasOpenRef = useRef(false);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
@@ -980,7 +982,10 @@ export function AgentWorkspace({
       setSandboxMenuOpen(false);
     }
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setSandboxMenuOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSandboxMenuOpen(false);
+      }
     }
     window.addEventListener("mousedown", onPointer);
     window.addEventListener("keydown", onKey);
@@ -988,6 +993,17 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
+  }, [sandboxMenuOpen]);
+
+  useLayoutEffect(() => {
+    if (sandboxMenuOpen) {
+      sandboxMenuWasOpenRef.current = true;
+      sandboxFirstItemRef.current?.focus();
+      return;
+    }
+    if (!sandboxMenuWasOpenRef.current) return;
+    sandboxMenuWasOpenRef.current = false;
+    sandboxTriggerRef.current?.focus();
   }, [sandboxMenuOpen]);
 
   // The conversation scroller's thumb fades in with scroll activity and back
@@ -2973,9 +2989,10 @@ export function AgentWorkspace({
             aria-label="What can June change?"
           >
             <p className="agent-sandbox-menu-title">What can June change?</p>
-            {SANDBOX_OPTIONS.map((option) => (
+            {SANDBOX_OPTIONS.map((option, index) => (
               <button
                 key={option.title}
+                ref={index === 0 ? sandboxFirstItemRef : undefined}
                 type="button"
                 role="menuitemradio"
                 aria-checked={fullModeDraft === option.unrestricted}

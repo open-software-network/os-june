@@ -3,12 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
 );
-import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
@@ -299,5 +299,19 @@ describe("App shortcuts", () => {
     expect(
       await screen.findByRole("heading", { name: HERO_GREETING }),
     ).toBeInTheDocument();
+  });
+
+  it("bypasses account gates in dev when account status is unavailable", async () => {
+    mocks.osAccountsStatus.mockRejectedValue(new Error("accounts unavailable"));
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: HERO_GREETING }),
+    ).toBeInTheDocument();
+    expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "Continue with OpenSoftware" }),
+    ).toBeNull();
   });
 });

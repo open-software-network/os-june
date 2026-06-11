@@ -244,6 +244,7 @@ export function App() {
       : "microphoneOnly";
   const {
     account,
+    error: accountError,
     loading: accountLoading,
     refresh: refreshAccount,
     setAccount,
@@ -259,7 +260,10 @@ export function App() {
   // can never complete sign-in, so the sign-in and trial gates would be dead
   // ends — skip them and let account-dependent features surface their own
   // errors. Release builds always gate; so do dev builds once configured.
-  const devAccountsUnconfigured = import.meta.env.DEV && !account.configured;
+  const devAccountsUnconfigured =
+    import.meta.env.DEV &&
+    !account.signedIn &&
+    (accountLoading || !!accountError || !account.configured);
   const signInRequired =
     !devAccountsUnconfigured && shouldBlockOnSignIn(account);
   const trialRequired =

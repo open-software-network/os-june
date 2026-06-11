@@ -1686,6 +1686,32 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("moves focus into the sandbox menu and restores it on close", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    const trigger = await screen.findByRole("button", { name: "Sandboxed" });
+    await user.click(trigger);
+
+    const firstOption = screen.getByRole("menuitemradio", {
+      name: /^Sandboxed/,
+    });
+    expect(firstOption).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("menu", { name: "What can June change?" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveFocus();
+  });
+
   it("shows the unrestricted badge while the runtime is unsandboxed by choice", async () => {
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,

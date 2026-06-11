@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { osAccountsStatus } from "./tauri";
 import type { AccountStatus } from "./tauri";
 
-const EMPTY_STATUS: AccountStatus = { signedIn: false, configured: true };
+const EMPTY_STATUS: AccountStatus = { signedIn: false, configured: false };
 
 export type UseAccountStatus = {
   account: AccountStatus;
