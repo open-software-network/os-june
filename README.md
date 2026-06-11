@@ -192,3 +192,9 @@ pnpm tauri:build
 
 Manual recording reliability checks are tracked in `specs/001-tauri-note-mvp/manual-validation.md`.
 Source-mode validation scenarios are tracked in `specs/002-system-audio-source-mode/quickstart.md`.
+
+## License
+
+June is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+Bundled third-party runtime notices are tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
