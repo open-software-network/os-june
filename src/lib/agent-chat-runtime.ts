@@ -199,6 +199,29 @@ export function buildHermesSessionChatTurns(
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+// Contraction/possessive enclitics the gateway tokenizes as their own chunk
+// (`'s`, `'re`, `'t`, …). When it reassembles a streamed message for storage
+// it strips the leading space off the chunk that follows one, so the next
+// word glues on: "it's not" persists as "it'snot", "Mac's camera" as
+// "Mac'scamera". The damage is in the persisted text and survives reloads, so
+// the live-stream reconciliation (whitespaceLossyCopyOf) can't undo it — this
+// repairs it at display time.
+const CONTRACTION_GLUE = /([A-Za-z])('(?:s|re|ve|ll|m|d|t))(?=[A-Za-z])/gi;
+
+/**
+ * Re-inserts the space a gateway streaming-reassembly bug drops after a
+ * contraction or possessive ("it'snot" -> "it's not"). Pure and idempotent:
+ * already-spaced text has no match. Deliberately conservative — it skips an
+ * apostrophe preceded by "s" so a plural possessive glued to the next word
+ * ("kids'toys") is left untouched rather than mis-split into "kids't oys".
+ * Apply only to assistant prose (never code spans, URLs, or user text).
+ */
+export function repairContractionSpacing(text: string): string {
+  return text.replace(CONTRACTION_GLUE, (whole, pre: string, enclitic: string) =>
+    pre.toLowerCase() === "s" ? whole : `${pre}${enclitic} `,
+  );
+}
+
 export function completedHermesMessageText(events: LiveHermesEvent[]) {
   const turn = buildAgentChatTurns([], [], events)
     .filter((item) => item.role === "assistant")

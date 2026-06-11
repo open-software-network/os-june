@@ -152,6 +152,7 @@ import {
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
+  repairContractionSpacing,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -5007,7 +5008,7 @@ function AgentChatTurnRow({
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
             <div key={`${turn.id}:text:${index}`}>
-              <MarkdownContent markdown={part.text} />
+              <MarkdownContent markdown={part.text} repairProse />
             </div>
           ) : part.type === "context" ? (
             <ContextCompactionPart
@@ -6045,13 +6046,18 @@ function isMarkdownPath(path: string) {
 function MarkdownContent({
   markdown,
   highlight,
+  // Repairs the gateway's dropped-space-after-contraction artifact ("it'snot"
+  // -> "it's not"). Only set for assistant prose: it must never touch code or
+  // a user's own text. See repairContractionSpacing.
+  repairProse = false,
 }: {
   markdown: string;
   highlight?: string;
+  repairProse?: boolean;
 }) {
   return (
     <div className="agent-markdown">
-      {renderMarkdownBlocks(markdown, highlight)}
+      {renderMarkdownBlocks(markdown, highlight, repairProse)}
     </div>
   );
 }
@@ -6086,7 +6092,11 @@ function highlightText(
   return nodes;
 }
 
-function renderMarkdownBlocks(markdown: string, highlight?: string) {
+function renderMarkdownBlocks(
+  markdown: string,
+  highlight?: string,
+  repairProse = false,
+) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -6097,7 +6107,9 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
     paragraph = [];
     if (!text) return;
     blocks.push(
-      <p key={`p-${key++}`}>{renderInlineMarkdown(text, key, highlight)}</p>,
+      <p key={`p-${key++}`}>
+        {renderInlineMarkdown(text, key, highlight, repairProse)}
+      </p>,
     );
   };
 
@@ -6149,7 +6161,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
       index -= 1;
       blocks.push(
         <blockquote key={`quote-${key++}`}>
-          {renderMarkdownBlocks(quoted.join("\n"), highlight)}
+          {renderMarkdownBlocks(quoted.join("\n"), highlight, repairProse)}
         </blockquote>,
       );
       continue;
@@ -6184,7 +6196,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
               <tr>
                 {header.map((cell, cellIndex) => (
                   <th key={cellIndex}>
-                    {renderInlineMarkdown(cell, key, highlight)}
+                    {renderInlineMarkdown(cell, key, highlight, repairProse)}
                   </th>
                 ))}
               </tr>
@@ -6194,7 +6206,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex}>
-                      {renderInlineMarkdown(cell, key, highlight)}
+                      {renderInlineMarkdown(cell, key, highlight, repairProse)}
                     </td>
                   ))}
                 </tr>
@@ -6210,7 +6222,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
     if (heading) {
       flushParagraph();
       const level = Math.min(heading[1].length, 3);
-      const content = renderInlineMarkdown(heading[2], key, highlight);
+      const content = renderInlineMarkdown(heading[2], key, highlight, repairProse);
       blocks.push(
         level === 1 ? (
           <h2 key={`h-${key++}`}>{content}</h2>
@@ -6239,7 +6251,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
       index -= 1;
       const listItems = items.map((item, itemIndex) => (
         <li key={`li-${key}-${itemIndex}`}>
-          {renderInlineMarkdown(item, key + itemIndex, highlight)}
+          {renderInlineMarkdown(item, key + itemIndex, highlight, repairProse)}
         </li>
       ));
       blocks.push(
@@ -6263,10 +6275,15 @@ function renderInlineMarkdown(
   text: string,
   keySeed: number,
   highlight?: string,
+  repairProse = false,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   const mark = (value: string, slot: string) =>
     highlightText(value, highlight, `${keySeed}-${slot}`);
+  // Prose runs (plain text, emphasis, link text) get the contraction-spacing
+  // repair; code spans and URLs go through `mark` untouched.
+  const markProse = (value: string, slot: string) =>
+    mark(repairProse ? repairContractionSpacing(value) : value, slot);
   const pattern =
     /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
@@ -6274,22 +6291,24 @@ function renderInlineMarkdown(
   let index = 0;
   while ((match = pattern.exec(text))) {
     if (match.index > lastIndex) {
-      nodes.push(...mark(text.slice(lastIndex, match.index), `g${index}`));
+      nodes.push(...markProse(text.slice(lastIndex, match.index), `g${index}`));
     }
     if (match[2]) {
       nodes.push(
         <strong key={`strong-${keySeed}-${index}`}>
-          {mark(match[2], `s${index}`)}
+          {markProse(match[2], `s${index}`)}
         </strong>,
       );
     } else if (match[3]) {
       nodes.push(
-        <em key={`em-${keySeed}-${index}`}>{mark(match[3], `e${index}`)}</em>,
+        <em key={`em-${keySeed}-${index}`}>
+          {markProse(match[3], `e${index}`)}
+        </em>,
       );
     } else if (match[4]) {
       nodes.push(
         <del key={`del-${keySeed}-${index}`}>
-          {mark(match[4], `d${index}`)}
+          {markProse(match[4], `d${index}`)}
         </del>,
       );
     } else if (match[5]) {
@@ -6306,7 +6325,7 @@ function renderInlineMarkdown(
           rel="noreferrer"
           target="_blank"
         >
-          {mark(match[6], `a${index}`)}
+          {markProse(match[6], `a${index}`)}
         </a>,
       );
     }
@@ -6314,7 +6333,7 @@ function renderInlineMarkdown(
     index += 1;
   }
   if (lastIndex < text.length) {
-    nodes.push(...mark(text.slice(lastIndex), "t"));
+    nodes.push(...markProse(text.slice(lastIndex), "t"));
   }
   return nodes;
 }

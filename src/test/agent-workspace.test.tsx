@@ -721,6 +721,32 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("CLI Run Tracking")).toBeInTheDocument();
   });
 
+  it("repairs gateway-glued contractions in assistant prose but not code or user text", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "what'sthere",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here'swhat I found. Run `git'sstatus` to check.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    // Assistant prose is de-glued…
+    expect(await screen.findByText(/Here's what I found/)).toBeInTheDocument();
+    // …but an inline code span keeps the agent's literal text…
+    expect(screen.getByText("git'sstatus")).toBeInTheDocument();
+    // …and the user's own message is never rewritten.
+    expect(screen.getByText("what'sthere")).toBeInTheDocument();
+  });
+
   it("keeps generated titles that begin with past-tense request words", async () => {
     const generatedTitle = "I Wanted Outcomes";
     mocks.listHermesSessions.mockResolvedValue([
