@@ -54,6 +54,13 @@ services:
       - SCRIBE__OS_ACCOUNTS__APP_API_KEY=${SCRIBE__OS_ACCOUNTS__APP_API_KEY}
       - SCRIBE__UPSTREAMS__OPENAI__API_KEY=${SCRIBE__UPSTREAMS__OPENAI__API_KEY}
       - SCRIBE__UPSTREAMS__VENICE__API_KEY=${SCRIBE__UPSTREAMS__VENICE__API_KEY}
+      # Issue reports → os-platform tracker. Only the API key is secret;
+      # the rest is plain routing config and lives here for visibility.
+      - SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_URL=https://app.opensoftware.co/api
+      - SCRIBE__ISSUE_REPORTS__OS_PLATFORM_ORG=os-scribe
+      - SCRIBE__ISSUE_REPORTS__OS_PLATFORM_PROJECT=internal-launch
+      - SCRIBE__ISSUE_REPORTS__OS_PLATFORM_REWARD_ASSET=POINTS
+      - SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY=${SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY}
 
 volumes:
   cert-data:
