@@ -41,7 +41,10 @@ impl IssueReportSink for WebhookIssueReportSink {
             })?;
         let status = response.status();
         if !status.is_success() {
-            tracing::error!(%status, "issue_reports: webhook rejected report");
+            // Reading the body also drains the connection back to the pool;
+            // an early return would otherwise hold it until drop.
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(%status, body_bytes = body.len(), "issue_reports: webhook rejected report");
             return Err(DomainError::UpstreamProvider);
         }
         tracing::info!(

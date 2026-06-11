@@ -1644,7 +1644,10 @@ export function AgentWorkspace({
         issueReport
           ? {
               issueReport: {
-                description: message,
+                // An attachments-only send has no typed text, but the server
+                // requires a description; the report must not bounce there.
+                description:
+                  message || "No description was typed; see the attachments.",
                 attachmentNames: attachments.map(
                   (attachment) => attachment.name,
                 ),
