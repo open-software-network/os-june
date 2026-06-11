@@ -100,6 +100,7 @@ import type {
   HermesSessionInfo,
 } from "../lib/tauri";
 import type {
+  NoteListItemDto,
   RecordingSourceMode,
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
@@ -223,7 +224,9 @@ export function App() {
   const [folderReturnTarget, setFolderReturnTarget] = useState<
     { noteId: string; label: string } | undefined
   >();
-  const [moveDialogNoteId, setMoveDialogNoteId] = useState<string | null>(null);
+  const [moveDialogNoteIds, setMoveDialogNoteIds] = useState<string[] | null>(
+    null,
+  );
   // User's intent for system audio. Defaults true ("record everything").
   // The actual sourceMode is derived below so that granting/revoking
   // permission in System Settings flips the toggle without losing intent.
@@ -1660,7 +1663,7 @@ export function App() {
         onReportIssue={handleReportIssue}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
-        onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+        onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
         onRemoveNoteFromFolder={(noteId, folderId) =>
           void handleRemoveNoteFromFolder(noteId, folderId)
         }
@@ -1838,12 +1841,12 @@ export function App() {
             ) : activeView === "notes" || activeView === "all-notes" ? (
               <NotesList
                 notes={state.notes}
-                selectedNoteId={state.selectedNoteId}
                 onSelectNote={(noteId) =>
                   void handleSelectNoteFromAllNotes(noteId)
                 }
                 onCreateNote={() => void handleCreateNote(null)}
-                onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+                onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
+                onOpenMoveNotes={(noteIds) => setMoveDialogNoteIds(noteIds)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
                 onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
               />
@@ -1888,7 +1891,7 @@ export function App() {
                 onRemoveNoteFromFolder={(noteId, folderId) =>
                   void handleRemoveNoteFromFolder(noteId, folderId)
                 }
-                onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+                onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
                 onCreateSession={(folderId) =>
                   handleNewAgentSessionInProject(folderId)
@@ -2059,12 +2062,14 @@ export function App() {
         </div>
       </section>
       <MoveNoteToFolderDialog
-        open={moveDialogNoteId !== null}
-        onClose={() => setMoveDialogNoteId(null)}
-        note={
-          moveDialogNoteId
-            ? (state.notes.find((n) => n.id === moveDialogNoteId) ?? null)
-            : null
+        open={moveDialogNoteIds !== null}
+        onClose={() => setMoveDialogNoteIds(null)}
+        notes={
+          moveDialogNoteIds
+            ? moveDialogNoteIds
+                .map((id) => state.notes.find((n) => n.id === id))
+                .filter((note): note is NoteListItemDto => note !== undefined)
+            : []
         }
         folders={state.folders}
         onSetFolder={(noteId, folderId) =>

@@ -8,7 +8,7 @@ import { Dialog } from "../ui/Dialog";
 type Props = {
   open: boolean;
   onClose: () => void;
-  note: NoteListItemDto | null;
+  notes: NoteListItemDto[];
   folders: FolderDto[];
   onSetFolder: (noteId: string, folderId: string) => Promise<unknown> | void;
 };
@@ -16,7 +16,7 @@ type Props = {
 export function MoveNoteToFolderDialog({
   open,
   onClose,
-  note,
+  notes,
   folders,
   onSetFolder,
 }: Props) {
@@ -31,9 +31,17 @@ export function MoveNoteToFolderDialog({
     setSubmitting(false);
   }, [open]);
 
-  const currentFolderId = note?.folderIds[0];
+  const isSingle = notes.length === 1;
+  // The "currently in" exclusion only makes sense when every selected note
+  // shares the same first folder; a mixed selection excludes nothing.
+  const sharedFolderId =
+    notes.length > 0 &&
+    notes.every((note) => note.folderIds[0] === notes[0].folderIds[0])
+      ? notes[0].folderIds[0]
+      : undefined;
+  const currentFolderId = sharedFolderId;
   const currentFolder = folders.find((f) => f.id === currentFolderId);
-  const hasCurrent = Boolean(currentFolder);
+  const hasCurrent = isSingle && Boolean(currentFolder);
 
   const candidates = useMemo(() => {
     const available = folders.filter((folder) => folder.id !== currentFolderId);
@@ -51,23 +59,31 @@ export function MoveNoteToFolderDialog({
   }, [folders, currentFolderId, query]);
 
   async function handleCommit() {
-    if (!note || !selectedId || submitting) return;
+    if (notes.length === 0 || !selectedId || submitting) return;
     setSubmitting(true);
     try {
-      await onSetFolder(note.id, selectedId);
+      // Sequential awaits: handleSetNoteFolder dispatches optimistic state
+      // updates per note, so we let each settle before the next.
+      for (const note of notes) {
+        await onSetFolder(note.id, selectedId);
+      }
       onClose();
     } finally {
       setSubmitting(false);
     }
   }
 
-  const title = hasCurrent
-    ? "Move meeting note"
-    : "Add meeting note to project";
-  const description = hasCurrent
-    ? `This meeting note is in "${currentFolder?.name}". Pick another project to move it to.`
-    : "Pick a project for this meeting note.";
-  const commitLabel = hasCurrent ? "Move" : "Add";
+  const title = isSingle
+    ? hasCurrent
+      ? "Move meeting note"
+      : "Add meeting note to project"
+    : `Move ${notes.length} meeting notes`;
+  const description = isSingle
+    ? hasCurrent
+      ? `This meeting note is in "${currentFolder?.name}". Pick another project to move it to.`
+      : "Pick a project for this meeting note."
+    : "Pick a project to move them to.";
+  const commitLabel = isSingle && !hasCurrent ? "Add" : "Move";
 
   return (
     <Dialog

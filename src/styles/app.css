@@ -8064,18 +8064,153 @@ button.agent-safety-badge:hover {
   color: var(--muted-foreground);
 }
 
-.meetings-bulk-actions {
+/* Floating selection bar — a quiet elevated pill pinned at the bottom of the
+ * notes panel while the list scrolls. Sticky inside the workspace flex column
+ * so it tracks the content center and the scroller; negative margin keeps it
+ * from reserving layout height (it overlaps the list's trailing padding). It
+ * rides above the bottom scroll fade (z-index 2) so it never dissolves. The
+ * all-notes view has no record dock, so the bottom offset only clears the
+ * scroller's own padding. Left to right: count, actions, the × dismiss at the
+ * end. Separation comes from the plain count sitting beside squircle actions
+ * on a faint muted wash that firms up on hover — no dividers. Concentric
+ * corners: bar --r-lg (10px) minus the 4px inset leaves --r-sm (6px) for the
+ * controls inside.
+ *
+ * Two exits, picked by how the selection ended (data-exit): a deliberate
+ * dismiss (×, Escape, post-delete) slides back down, mirroring the entrance;
+ * the selection merely emptying (deselect all, unchecking the last row) fades
+ * — it's become irrelevant, not been pushed away. */
+.meetings-bulk-bar {
+  position: sticky;
+  bottom: var(--sp-4);
+  z-index: 3;
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  min-height: var(--control-lg);
+  gap: var(--sp-1);
+  align-self: center;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: calc(-1 * var(--control-sm));
+  padding: var(--sp-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+  animation: meetings-bulk-bar-in var(--t-slow) var(--ease-spring);
 }
 
-.meetings-selected-count {
+/* During either exit the bar is inert and shows its last real content. */
+.meetings-bulk-bar[data-exit] {
+  pointer-events: none;
+}
+
+.meetings-bulk-bar[data-exit="slide"] {
+  animation: meetings-bulk-bar-out-slide var(--t-med) var(--ease-in-out)
+    forwards;
+}
+
+.meetings-bulk-bar[data-exit="fade"] {
+  animation: meetings-bulk-bar-out-fade var(--t-med) var(--ease-out) forwards;
+}
+
+/* Glides up from below the panel edge and settles with the spring curve; a
+ * fast opacity ramp (front-loaded via the 40% stop) means it's visible early
+ * in the travel instead of popping in mid-glide. */
+@keyframes meetings-bulk-bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  40% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Mirror of the entrance, a touch quicker: slides back down and holds full
+ * opacity through most of the travel so it doesn't vanish mid-slide. The
+ * spring curve is deceleration-heavy and reads wrong in reverse, so the exit
+ * uses the symmetric in-out ease for a clean departure. */
+@keyframes meetings-bulk-bar-out-slide {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  60% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+
+/* The bar quietly drops out: a quick fade with a few px of downward drift. */
+@keyframes meetings-bulk-bar-out-fade {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.meetings-bulk-dismiss {
+  display: inline-grid;
+  place-items: center;
+  margin-left: var(--sp-1);
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.meetings-bulk-dismiss:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.meetings-bulk-count {
+  padding: 0 var(--sp-2);
+  margin-right: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
   white-space: nowrap;
+}
+
+.meetings-bulk-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.meetings-bulk-action:hover {
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 /* Sort dropdown trigger ------------------------------------------- */
@@ -8712,8 +8847,8 @@ button.agent-safety-badge:hover {
 .folder-note-checkbox {
   display: inline-grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   cursor: pointer;
 }
 
@@ -8728,20 +8863,25 @@ button.agent-safety-badge:hover {
 .folder-note-select-box {
   display: inline-grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: 4px;
   background: var(--card);
-  color: var(--primary);
+  color: var(--brand);
   transition:
     background-color var(--t-fast) var(--ease-out),
     border-color var(--t-fast) var(--ease-out);
 }
 
+.folder-note-checkbox:hover .folder-note-select-box {
+  border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--border));
+}
+
 .folder-note-checkbox:has(input:checked) .folder-note-select-box {
-  border-color: var(--primary);
-  background: color-mix(in oklch, var(--primary) 12%, var(--card));
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
 }
 
 .folder-note-checkbox:focus-within .folder-note-select-box {
@@ -8826,8 +8966,40 @@ button.agent-safety-badge:hover {
   gap: 2px;
 }
 
+/* Flush edges, Granola-style: the row's hover/selected background box sits
+ * within the page's exact text bounds (heading, subtitle, search), with the
+ * icon and title inset by the row padding rather than bleeding past the
+ * column. */
 .all-notes-row {
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+}
+
+/* The select box hangs in the page's free left margin, just outside the row's
+ * flush left edge, so the title column keeps the page's text alignment with
+ * the heading and search bar. The label is a roomy hit area butted right up
+ * against that edge (right: 100%, no dead gap) with the 15px box centered in
+ * it, so the pointer never leaves the row on its way to the checkbox and the
+ * reveal can't flicker. It surfaces only on hover, when checked, on focus, or
+ * while a selection is in progress. */
+.all-notes-row .folder-note-checkbox {
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  translate: 0 -50%;
+  width: 28px;
+  height: 28px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.all-notes-row:hover .folder-note-checkbox,
+.all-notes-row:focus-within .folder-note-checkbox,
+.all-notes-row .folder-note-checkbox:has(input:checked),
+.all-notes-list[data-selecting="true"] .folder-note-checkbox {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .dictation-history-groups {
