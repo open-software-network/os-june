@@ -684,6 +684,23 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
+/* Linked badge (attestation walkthrough known): same chrome, but it reads as
+ * clickable and brightens on hover. The wrap keeps HoverTip's anchor span
+ * from adding box styling of its own. */
+.agent-safety-badge-wrap {
+  display: inline-flex;
+}
+
+a.agent-safety-badge {
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+a.agent-safety-badge:hover {
+  background: color-mix(in oklch, var(--brand) 24%, transparent);
+}
+
 .agent-actions {
   display: flex;
   align-items: center;
@@ -7247,6 +7264,33 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 80%, transparent);
 }
 
+/* A text model that can't use tools can't power June's agent: shown so the
+ * lineup stays explainable, but visibly inert and unselectable. */
+.model-picker-option[data-no-tools="true"] {
+  cursor: default;
+}
+
+.model-picker-option[data-no-tools="true"]:hover {
+  background: transparent;
+}
+
+.model-picker-option[data-no-tools="true"] .model-picker-name,
+.model-picker-option[data-no-tools="true"] .model-picker-logo,
+.model-picker-option[data-no-tools="true"] .model-meta-items {
+  opacity: 0.45;
+}
+
+.model-picker-no-tools {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted-foreground) 14%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
 .model-picker-logo {
   grid-area: logo;
   display: inline-grid;
@@ -8117,6 +8161,20 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.meetings-bulk-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-height: var(--control-lg);
+}
+
+.meetings-selected-count {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
 /* Sort dropdown trigger ------------------------------------------- */
 
 .folders-sort {
@@ -8748,6 +8806,46 @@ input:focus-visible,
   min-width: 0;
 }
 
+.folder-note-checkbox {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.folder-note-checkbox input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.folder-note-select-box {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--primary);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.folder-note-checkbox:has(input:checked) .folder-note-select-box {
+  border-color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, var(--card));
+}
+
+.folder-note-checkbox:focus-within .folder-note-select-box {
+  outline: 2px solid color-mix(in oklch, var(--ring) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .folder-note-icon {
   display: inline-grid;
   place-items: center;
@@ -8826,7 +8924,7 @@ input:focus-visible,
 }
 
 .all-notes-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
 }
 
 .dictation-history-groups {

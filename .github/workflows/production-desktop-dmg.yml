@@ -214,6 +214,15 @@ jobs:
             $(security list-keychains -d user | tr -d '"')
           rm -f "$cert"
 
+      # Ship the Hermes runtime inside the app so first launch needs no
+      # multi-minute GitHub download. Must run after the certificate import:
+      # the script signs every Mach-O in the bundle (python, extension .so)
+      # with the Developer ID + hardened runtime, which notarization requires.
+      - name: Bundle Hermes runtime into app resources
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: ./scripts/bundle-hermes-runtime.sh
+
       - name: Build, sign, notarize, and publish updater release
         uses: tauri-apps/tauri-action@v0.6.2
         env:

@@ -215,6 +215,18 @@ describe("AppSettings", () => {
                 pricing: { input: { usd: 0.2 }, output: { usd: 0.8 } },
                 contextTokens: 65536,
                 traits: ["anonymized", "uncensored"],
+                capabilities: ["supportsFunctionCalling"],
+              },
+              {
+                provider: "venice",
+                id: "e2ee-private",
+                name: "E2EE Private",
+                modelType: "text",
+                description: "End-to-end encrypted text model.",
+                privacy: "e2ee",
+                pricing: { input: { usd: 0.3 }, output: { usd: 1.2 } },
+                contextTokens: 32768,
+                traits: ["e2ee"],
                 capabilities: [],
               },
               {
@@ -1138,6 +1150,49 @@ describe("AppSettings", () => {
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "generation",
       "zai-org-glm-5",
+    );
+  });
+
+  it("blocks selecting a text model that cannot use tools", async () => {
+    // June's agent works through tool calls — a tool-less model (Venice's
+    // E2EE models) bricks it, so the picker must not let it be selected.
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Change text model" }),
+    );
+    // Tool-less models are not suggested, so judge them on the All tab.
+    await user.click(await screen.findByRole("tab", { name: "All" }));
+
+    const toolless = await screen.findByRole("option", {
+      name: /E2EE Private/,
+    });
+    expect(toolless).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getAllByText("No tools").length).toBeGreaterThan(0);
+
+    await user.click(toolless);
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+
+    // Tool-capable models stay selectable.
+    await user.click(
+      screen.getByRole("option", { name: /Venice Uncensored/ }),
+    );
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "venice-uncensored",
     );
   });
 

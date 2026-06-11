@@ -25,12 +25,13 @@ use crate::{
             CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
             CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DictionaryEntryDto, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
-            FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
-            ListNotesResponse, MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
+            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
+            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
+            NoteDto, OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource,
+            RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
+            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
+            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
             SessionRequest, SourceReadinessDto, StartRecordingRequest,
             SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
@@ -130,6 +131,37 @@ pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(
         .audio_artifact_paths_for_note(&request.note_id)
         .await?;
     repos.delete_note(&request.note_id).await?;
+    for path in audio_paths {
+        if path.trim().is_empty() {
+            continue;
+        }
+        if let Err(error) = paths.remove_recording_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("failed to remove deleted note audio {path}: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_notes(app: AppHandle, request: DeleteNotesRequest) -> Result<(), AppError> {
+    let note_ids = request
+        .note_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if note_ids.is_empty() {
+        return Ok(());
+    }
+
+    let paths = app_paths(&app)?;
+    let repos = repositories(&app).await?;
+    let audio_paths = repos.audio_artifact_paths_for_notes(&note_ids).await?;
+    repos.delete_notes(&note_ids).await?;
     for path in audio_paths {
         if path.trim().is_empty() {
             continue;

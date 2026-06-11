@@ -123,6 +123,12 @@ pub struct DeleteNoteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteNotesRequest {
+    pub note_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateNoteRequest {
     pub note_id: String,
     pub title: Option<String>,

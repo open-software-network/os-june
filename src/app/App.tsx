@@ -47,6 +47,7 @@ import {
   createNote,
   deleteFolder,
   deleteNote,
+  deleteNotes,
   dictationHelperCommand,
   finishRecording,
   getRecordingStatus,
@@ -1317,6 +1318,29 @@ export function App() {
     }
   }
 
+  async function handleDeleteNotes(noteIds: string[]) {
+    if (state.recordingStatus) {
+      setError("Stop the current recording before deleting meetings.");
+      return;
+    }
+    try {
+      await deleteNotes(noteIds);
+      const response = await listNotes();
+      dispatch({ type: "notesLoaded", notes: response.items });
+      const nextNoteId = response.items[0]?.id;
+      if (nextNoteId) {
+        const note = await getNote(nextNoteId);
+        dispatch({ type: "noteLoaded", note });
+      } else {
+        setActiveView("settings");
+        setOriginFolderId(undefined);
+        setFolderReturnTarget(undefined);
+      }
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   async function handleSelectNoteFromFolder(noteId: string, folderId: string) {
     try {
       const note = await getNote(noteId);
@@ -1801,6 +1825,7 @@ export function App() {
                 onCreateNote={() => void handleCreateNote(null)}
                 onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+                onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
               />
             ) : activeView === "folders" ? (
               <FoldersWorkspace

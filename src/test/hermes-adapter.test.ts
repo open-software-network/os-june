@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  listHermesSessions,
   normalizeHermesSessionMessagesResponse,
   normalizeHermesSessionsResponse,
   sessionTimestamp,
@@ -7,7 +8,34 @@ import {
 } from "../lib/hermes-adapter";
 import type { HermesSessionInfo } from "../lib/tauri";
 
+const mocks = vi.hoisted(() => ({
+  hermesBridgeSessions: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", () => ({
+  hermesBridgeSessions: mocks.hermesBridgeSessions,
+  hermesBridgeSessionMessages: vi.fn(),
+  deleteHermesBridgeSession: vi.fn(),
+}));
+
 describe("Hermes adapter", () => {
+  it("excludes message-less sessions from the default list query", async () => {
+    // Sessions exist before their first message persists (routine runs,
+    // failed submits) — listing them renders empty "Untitled session" rows
+    // that vanish moments later.
+    mocks.hermesBridgeSessions.mockResolvedValue({ sessions: [] });
+
+    await listHermesSessions();
+    expect(mocks.hermesBridgeSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ minMessages: 1 }),
+    );
+
+    await listHermesSessions({ minMessages: 0 });
+    expect(mocks.hermesBridgeSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ minMessages: 0 }),
+    );
+  });
+
   it("normalizes raw gateway session lists and sorts by recent activity", () => {
     const sessions = normalizeHermesSessionsResponse({
       data: [

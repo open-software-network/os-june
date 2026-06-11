@@ -90,6 +90,7 @@ import {
   osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
+  scribeVerifyUrl,
   sendAgentMessage,
   startHermesBridge,
   suggestAgentSessionTitle,
@@ -711,6 +712,11 @@ export function AgentWorkspace({
   const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
   >({});
+  // Per-session ordering for message fetches: the sequence handed out at
+  // fetch start, and the highest sequence whose response was applied. See
+  // listSessionMessagesOrdered.
+  const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
+  const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
@@ -743,6 +749,9 @@ export function AgentWorkspace({
   >(null);
   const [generationPrivacyBadge, setGenerationPrivacyBadge] =
     useState<ModelPrivacyBadge>();
+  // Attestation walkthrough URL served by the backend (same page as Settings
+  // → About → Verify server); the privacy badge links to it when known.
+  const [verifyUrl, setVerifyUrl] = useState<string>();
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
@@ -1185,6 +1194,20 @@ export function AgentWorkspace({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    scribeVerifyUrl()
+      .then((url) => {
+        if (!cancelled && url) setVerifyUrl(url);
+      })
+      // Without a configured backend there is nothing to verify; the badge
+      // stays a plain tooltip.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!bridge.running) return;
     void loadHermesSessions();
   }, [bridge.running, loadHermesSessions]);
@@ -1294,9 +1317,9 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
     let cancelled = false;
-    listHermesSessionMessages(selectedHermesSessionId)
+    listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
-        if (cancelled) return;
+        if (cancelled || !messages) return;
         const retainedPending = retainUnpersistedPendingMessages(
           pendingHermesMessagesRef.current[selectedHermesSessionId] ?? [],
           messages,
@@ -2131,9 +2154,30 @@ export function AgentWorkspace({
     }
   }
 
+  // Message fetches for one session can overlap: the selection effect, the
+  // 2.5s working poll, and the terminal-event refresh all call
+  // listHermesSessionMessages without awaiting each other, and each applies
+  // its response as a whole-list overwrite. Responses can land out of order
+  // (a slow fetch started before a fast one resolves after it), so without
+  // ordering a stale list clobbers a newer one — the classic symptom is a
+  // just-sent user message vanishing (its pending bubble was dropped when the
+  // newer fetch persisted it) until a later refresh restores it. Fetches are
+  // stamped with a per-session sequence at start; a response only applies if
+  // no later-started fetch has applied first.
+  async function listSessionMessagesOrdered(sessionId: string) {
+    const seq = (sessionMessagesFetchSeqRef.current.get(sessionId) ?? 0) + 1;
+    sessionMessagesFetchSeqRef.current.set(sessionId, seq);
+    const messages = await listHermesSessionMessages(sessionId);
+    const applied = sessionMessagesAppliedSeqRef.current.get(sessionId) ?? 0;
+    if (seq < applied) return undefined;
+    sessionMessagesAppliedSeqRef.current.set(sessionId, seq);
+    return messages;
+  }
+
   async function refreshHermesSession(sessionId: string) {
     try {
-      const messages = await listHermesSessionMessages(sessionId);
+      const messages = await listSessionMessagesOrdered(sessionId);
+      if (!messages) return;
       const retainedPending = retainUnpersistedPendingMessages(
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
@@ -3214,7 +3258,10 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <SafetyBadge privacyBadge={generationPrivacyBadge} />
+            <SafetyBadge
+              privacyBadge={generationPrivacyBadge}
+              verifyUrl={verifyUrl}
+            />
           </div>
         </div>
         <div className="agent-actions">
@@ -3296,6 +3343,7 @@ export function AgentWorkspace({
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
           privacyBadge={generationPrivacyBadge}
+          verifyUrl={verifyUrl}
           fullMode={Boolean(bridge.running && bridge.connection?.fullMode)}
           title={
             !newSessionMode && selectedHermesSessionId
@@ -3414,24 +3462,57 @@ export function AgentWorkspace({
   );
 }
 
-function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
+// The badge's claims (zero retention, enclave inference) are verifiable, not
+// just asserted — when the backend's attestation walkthrough URL is known,
+// the badge links straight to it instead of leaving the proof buried in
+// Settings → About.
+function SafetyBadge({
+  privacyBadge,
+  verifyUrl,
+}: {
+  privacyBadge?: ModelPrivacyBadge;
+  verifyUrl?: string;
+}) {
   if (!privacyBadge) return null;
+  const icon =
+    privacyBadge.mode === "e2ee" ? (
+      <IconLock size={13} aria-hidden />
+    ) : privacyBadge.mode === "private" ? (
+      <IconShieldAi size={13} aria-hidden />
+    ) : (
+      <IconAnonymous size={13} aria-hidden />
+    );
+  const label = (
+    <span className="agent-safety-badge-label">{privacyBadge.label}</span>
+  );
+  if (!verifyUrl) {
+    return (
+      <HoverTip
+        tip={privacyBadge.description}
+        className="agent-safety-badge"
+        data-mode={privacyBadge.mode}
+        tabIndex={0}
+        aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
+      >
+        {icon}
+        {label}
+      </HoverTip>
+    );
+  }
+  const description = `${privacyBadge.description} Click to see exactly what code June's server runs and how to verify it yourself.`;
   return (
-    <HoverTip
-      tip={privacyBadge.description}
-      className="agent-safety-badge"
-      data-mode={privacyBadge.mode}
-      tabIndex={0}
-      aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
-    >
-      {privacyBadge.mode === "e2ee" ? (
-        <IconLock size={13} aria-hidden />
-      ) : privacyBadge.mode === "private" ? (
-        <IconShieldAi size={13} aria-hidden />
-      ) : (
-        <IconAnonymous size={13} aria-hidden />
-      )}
-      <span className="agent-safety-badge-label">{privacyBadge.label}</span>
+    <HoverTip tip={description} className="agent-safety-badge-wrap">
+      <a
+        className="agent-safety-badge"
+        data-mode={privacyBadge.mode}
+        href={verifyUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`${privacyBadge.label} - ${description}`}
+      >
+        {icon}
+        {label}
+      </a>
     </HoverTip>
   );
 }
@@ -3463,6 +3544,7 @@ function UnrestrictedBadge() {
 function AgentSessionBar({
   origin,
   privacyBadge,
+  verifyUrl,
   fullMode,
   title,
   artifactCount = 0,
@@ -3473,6 +3555,7 @@ function AgentSessionBar({
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
+  verifyUrl?: string;
   fullMode?: boolean;
   title?: string;
   artifactCount?: number;
@@ -3596,7 +3679,7 @@ function AgentSessionBar({
             <span aria-hidden>{artifactCount}</span>
           </button>
         ) : null}
-        <SafetyBadge privacyBadge={privacyBadge} />
+        <SafetyBadge privacyBadge={privacyBadge} verifyUrl={verifyUrl} />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
             <button

@@ -44,6 +44,24 @@ export const ANONYMOUS_MODEL_DESCRIPTION =
 type ModelPrivacySignals = Pick<VeniceModelDto, "privacy" | "traits"> &
   Partial<Pick<VeniceModelDto, "capabilities">>;
 
+/** The agent drives everything through tool calls, so a text model without
+ * function calling bricks June — prompts run but no file, shell, or memory
+ * tool ever executes. Venice's E2EE models are the common case: encrypted
+ * inference can't expose tools. The capability name comes from Venice's
+ * catalog (`supportsFunctionCalling`); match defensively on the normalized
+ * name so a rename to snake_case or "tool calling" keeps working. */
+export function modelSupportsTools(
+  model: Partial<Pick<VeniceModelDto, "capabilities">>,
+) {
+  return (model.capabilities ?? []).some((capability) => {
+    const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
+    return (
+      normalized.includes("functioncalling") ||
+      normalized.includes("toolcalling")
+    );
+  });
+}
+
 // Strongest claim wins: E2EE models are also private, but "encrypted into the
 // enclave" is the property worth surfacing.
 export function modelPrivacyBadge(

@@ -137,6 +137,11 @@ elif [[ -n "${APPLE_API_KEY_P8:-}" ]]; then
 fi
 
 cd "$ROOT_DIR"
+# Build the bundled Hermes runtime before the app so first launch needs no
+# network install. Runs after the keychain import above so its Mach-O files
+# (python, extension .so) get the Developer ID + hardened runtime signature
+# notarization requires.
+./scripts/bundle-hermes-runtime.sh
 pnpm tauri build --bundles dmg "$@"
 
 shopt -s nullglob
