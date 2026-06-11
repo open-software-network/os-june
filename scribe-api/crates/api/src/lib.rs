@@ -27,6 +27,7 @@ pub use handlers::dictate::{
     DictateCleanupRequest, DictateCleanupResponse, DictateTranscribeResponse,
 };
 pub use handlers::health::HealthDto;
+pub use handlers::issues::{IssueReportRequest, IssueReportResponse};
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
@@ -64,6 +65,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/dictate/cleanup",
             post(handlers::dictate::cleanup).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/issue-reports",
+            post(handlers::issues::submit).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .layer(timeout)
         .layer(TraceLayer::new_for_http())

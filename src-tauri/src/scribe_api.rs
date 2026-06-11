@@ -531,6 +531,44 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueReportWireRequest<'a> {
+    description: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_diagnosis: Option<&'a str>,
+    attachment_names: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<&'a str>,
+    app_version: &'a str,
+    platform: &'a str,
+}
+
+pub async fn submit_issue_report(
+    request: &crate::domain::types::SubmitIssueReportRequest,
+    app_version: &str,
+) -> Result<crate::domain::types::SubmitIssueReportResponse, AppError> {
+    let description = request.description.trim();
+    if description.is_empty() {
+        return Err(AppError::new(
+            "issue_report_empty",
+            "Cannot send an empty issue report.",
+        ));
+    }
+    post_json(
+        "/v1/issue-reports",
+        &IssueReportWireRequest {
+            description,
+            agent_diagnosis: request.agent_diagnosis.as_deref(),
+            attachment_names: &request.attachment_names,
+            session_id: request.session_id.as_deref(),
+            app_version,
+            platform: std::env::consts::OS,
+        },
+    )
+    .await
+}
+
 pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
     crate::providers::transcription_provider_for_model(model_id)
 }

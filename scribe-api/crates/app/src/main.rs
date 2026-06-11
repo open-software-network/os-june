@@ -2,9 +2,9 @@ use clap::{Parser, Subcommand};
 use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 use scribe_config::{AppConfig, ModelPriceConfig, ModelProvider};
 use scribe_providers::{
-    JwksTokenVerifier, MultiFormatDurationProbe, OsAccountsHttpClient, RoutingTranscriber,
-    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, default_client,
-    jwks_client,
+    JwksTokenVerifier, LogIssueReportSink, MultiFormatDurationProbe, OsAccountsHttpClient,
+    RoutingTranscriber, VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog,
+    WebhookIssueReportSink, default_client, jwks_client,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -102,6 +102,14 @@ fn build_router(
     let token_verifier: Arc<dyn scribe_domain::TokenVerifier> = Arc::new(
         JwksTokenVerifier::from_config(jwks_client(), &config.os_accounts),
     );
+    let issue_reports: Arc<dyn scribe_domain::IssueReportSink> = if let Some(sink) =
+        WebhookIssueReportSink::from_config(http.clone(), &config.issue_reports)
+    {
+        Arc::new(sink)
+    } else {
+        tracing::info!("no issue report webhook configured; reports will be logged only");
+        Arc::new(LogIssueReportSink)
+    };
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
 
@@ -147,6 +155,7 @@ fn build_router(
         note_generate,
         agent_chat,
         dictate,
+        issue_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,

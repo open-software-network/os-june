@@ -767,6 +767,23 @@ export async function suggestAgentSessionTitle(prompt: string) {
   );
 }
 
+export type SubmitIssueReportRequest = {
+  /** The user's report as they typed it, before the investigation wrapper. */
+  description: string;
+  /** June's diagnostic assessment from the report session, when available. */
+  agentDiagnosis?: string;
+  attachmentNames: string[];
+  sessionId?: string;
+};
+
+export type SubmitIssueReportResponse = {
+  received: boolean;
+};
+
+export async function submitIssueReport(request: SubmitIssueReportRequest) {
+  return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
+}
+
 export async function cancelAgentTask(taskId: string) {
   return invoke<AgentTaskDto>("cancel_agent_task", { request: { taskId } });
 }

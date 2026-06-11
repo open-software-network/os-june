@@ -53,6 +53,7 @@ const mocks = vi.hoisted(() => ({
   saveAgentHermesSession: vi.fn(),
   sendAgentMessage: vi.fn(),
   startHermesBridge: vi.fn(),
+  submitIssueReport: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
@@ -101,6 +102,7 @@ vi.mock("../lib/tauri", () => ({
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
   startHermesBridge: mocks.startHermesBridge,
+  submitIssueReport: mocks.submitIssueReport,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
@@ -289,6 +291,101 @@ describe("AgentWorkspace", () => {
         onSessionsChanged,
       );
     }
+  });
+
+  it("prefills the issue report template without submitting", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), kind: "issue-report" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    const composer = (await screen.findByPlaceholderText(
+      "Describe a task for June…",
+    )) as HTMLTextAreaElement;
+    await waitFor(() =>
+      expect(composer.value).toContain("I want to report an issue with June."),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "session.create",
+      expect.anything(),
+    );
+    expect(
+      window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
+    ).toBeNull();
+  });
+
+  it("wraps a submitted issue report for June and files it after the turn", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), kind: "issue-report" }),
+    );
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    const composer = (await screen.findByPlaceholderText(
+      "Describe a task for June…",
+    )) as HTMLTextAreaElement;
+    await waitFor(() =>
+      expect(composer.value).toContain("I want to report an issue with June."),
+    );
+    await user.clear(composer);
+    await user.type(composer, "The recorder crashes after long meetings");
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    // June gets the investigation framing, with the user's words inside it.
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain(
+      "The recorder crashes after long meetings",
+    );
+    // The report waits for June's diagnosis; nothing is filed yet.
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: submitted.text,
+        timestamp: "2026-06-11T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "The screenshot shows the recorder stuck on saving.",
+        timestamp: "2026-06-11T10:00:10Z",
+      },
+    ]);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        description: "The recorder crashes after long meetings",
+        agentDiagnosis: "The screenshot shows the recorder stuck on saving.",
+        attachmentNames: [],
+        sessionId: "session-2",
+      }),
+    );
+    expect(
+      await screen.findByText(/Your report was sent to the June team/),
+    ).toBeInTheDocument();
+    // Drain the post-terminal refresh timer before the test ends so its
+    // session refetch cannot land inside a later test's render.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
   it("labels anonymous-only agent models as anonymous mode", async () => {

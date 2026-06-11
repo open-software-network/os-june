@@ -91,6 +91,7 @@ import {
   retryAgentTask,
   sendAgentMessage,
   startHermesBridge,
+  submitIssueReport,
   suggestAgentSessionTitle,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
@@ -576,6 +577,44 @@ export type { AgentSessionsChangedDetail };
 
 export type AgentNewSessionDetail = {
   prompt?: string;
+  /** "issue-report" opens the new session with the bug report template
+   * prefilled instead of auto-submitting the prompt. */
+  kind?: "issue-report";
+};
+
+// Prefilled into the composer when a new session opens in issue-report mode.
+// The user edits it freely; whatever they send becomes the report description.
+export const ISSUE_REPORT_TEMPLATE = `I want to report an issue with June.
+
+What happened:
+
+What I expected:
+
+Extra details (when it started, steps to reproduce, attach a screenshot if you have one):
+`;
+
+/** Frames the user's bug report for June: investigate and write a diagnosis
+ * for the team instead of treating it as a normal request for help. */
+function issueReportPrompt(report: string) {
+  return [
+    "The user is filing a bug report about the June desktop app. This conversation is part of the in-app reporting flow: your reply will be attached to the report and sent to the June development team, so write it for them.",
+    "",
+    "Do not try to fix the issue or walk the user through troubleshooting. Instead:",
+    "1. Read the report below and inspect any attached files or screenshots closely. Describe exactly what they show, including any visible error text.",
+    "2. Give your assessment of what is going wrong and which part of the app is likely involved.",
+    "3. Note anything else the team should look at.",
+    "",
+    "Keep it concise and factual. Close by thanking the user and letting them know the report and your assessment are being sent to the June team.",
+    "",
+    "---USER REPORT---",
+    report,
+    "---END USER REPORT---",
+  ].join("\n");
+}
+
+type PendingIssueReport = {
+  description: string;
+  attachmentNames: string[];
 };
 
 type AgentDeleteSessionDetail = {
@@ -647,6 +686,11 @@ export function AgentWorkspace({
   // Separate from `error` because background session refreshes clear that
   // banner on success — this notice must survive until the turn finishes.
   const [busyNotice, setBusyNotice] = useState<string | null>(null);
+  // Confirmation that a submitted issue report reached the June team; shown
+  // in the composer notice slot until dismissed by the next send.
+  const [issueReportNotice, setIssueReportNotice] = useState<string | null>(
+    null,
+  );
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -789,6 +833,15 @@ export function AgentWorkspace({
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(newSessionMode);
+  // Armed while the composer is prefilled with the issue-report template in
+  // new-session mode; consumed by submit() to wrap the prompt and queue the
+  // report delivery.
+  const issueReportDraftRef = useRef(false);
+  // sessionId -> the report captured at submit time, delivered to the June
+  // team once the agent's diagnostic turn reaches a terminal event.
+  const pendingIssueReportsRef = useRef<Map<string, PendingIssueReport>>(
+    new Map(),
+  );
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -1191,6 +1244,7 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!initialSessionId) return;
     newSessionModeRef.current = false;
+    issueReportDraftRef.current = false;
     setNewSessionMode(false);
     setActivePanel("chat");
     selectedHermesSessionIdRef.current = initialSessionId;
@@ -1263,7 +1317,7 @@ export function AgentWorkspace({
   useEffect(() => {
     function handleNewSession(event: Event) {
       const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
-      void windowEventHandlersRef.current.startNewTask(detail?.prompt);
+      void windowEventHandlersRef.current.startNewTask(detail);
     }
 
     function handleDeleteSession(event: Event) {
@@ -1276,7 +1330,7 @@ export function AgentWorkspace({
 
     const pending = pendingNewSessionRequest();
     if (pending) {
-      void windowEventHandlersRef.current.startNewTask(pending.prompt);
+      void windowEventHandlersRef.current.startNewTask(pending);
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
@@ -1569,15 +1623,35 @@ export function AgentWorkspace({
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
+    // Consumed up front so a successful send can't double-file; re-armed in
+    // the catch so a failed send still submits as a report on retry.
+    const issueReport =
+      newSessionModeRef.current && issueReportDraftRef.current;
+    issueReportDraftRef.current = false;
     const content = promptWithAttachments(message, attachments);
     setSubmitting(true);
     setDraft("");
     setAttachments([]);
+    setIssueReportNotice(null);
     try {
-      await submitHermesSession(content);
+      await submitHermesSession(
+        issueReport ? issueReportPrompt(content) : content,
+        undefined,
+        issueReport
+          ? {
+              issueReport: {
+                description: message,
+                attachmentNames: attachments.map(
+                  (attachment) => attachment.name,
+                ),
+              },
+            }
+          : undefined,
+      );
       setError(null);
       setBusyNotice(null);
     } catch (err) {
+      issueReportDraftRef.current = issueReport;
       // Restore the composer so a failed send doesn't eat the message or its
       // attachments — but only where the user hasn't typed or attached
       // something new during the in-flight send.
@@ -1612,6 +1686,7 @@ export function AgentWorkspace({
     setAttachments([]);
     if (targetSession?.id) {
       newSessionModeRef.current = false;
+      issueReportDraftRef.current = false;
       setNewSessionMode(false);
       selectedHermesSessionIdRef.current = targetSession.id;
       setSelectedHermesSessionId(targetSession.id);
@@ -1752,18 +1827,64 @@ export function AgentWorkspace({
     }
   }
 
+  // A success notice about one report reads fine anywhere, but not stale on
+  // a conversation the user opened later.
+  useEffect(() => {
+    setIssueReportNotice(null);
+  }, [selectedHermesSessionId]);
+
+  /** Sends the captured report plus June's diagnostic reply (the last
+   * assistant message of the turn) to the June team. The diagnosis fetch is
+   * best-effort: a report without June's assessment still beats no report. */
+  async function deliverIssueReport(
+    sessionId: string,
+    report: PendingIssueReport,
+  ) {
+    let agentDiagnosis: string | undefined;
+    try {
+      const messages = await listHermesSessionMessages(sessionId);
+      agentDiagnosis = messages
+        .slice()
+        .reverse()
+        .map((message) =>
+          message.role === "assistant" ? visibleHermesMessageText(message) : "",
+        )
+        .find((text) => text.trim())
+        ?.trim();
+    } catch {
+      // Best-effort; the report ships without the diagnosis.
+    }
+    try {
+      await submitIssueReport({
+        description: report.description,
+        agentDiagnosis,
+        attachmentNames: report.attachmentNames,
+        sessionId,
+      });
+      setIssueReportNotice(
+        "Your report was sent to the June team. Thank you for helping improve June.",
+      );
+    } catch (err) {
+      setError(`The issue report could not be sent. ${messageFromError(err)}`);
+    }
+  }
+
   async function submitHermesSession(
     content: string,
     explicitSession?: HermesSessionInfo,
+    options?: { issueReport?: PendingIssueReport },
   ) {
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
         ? undefined
         : selectedHermesSessionId;
-    const titlePromise = targetSessionId
-      ? undefined
-      : agentSessionTitleForPrompt(content);
+    // Issue reports skip title suggestion: the content is the wrapped
+    // investigation prompt, which would title the session after the wrapper.
+    const titlePromise =
+      targetSessionId || options?.issueReport
+        ? undefined
+        : agentSessionTitleForPrompt(content);
     // Only a session being created applies the unrestricted opt-in;
     // follow-ups on existing sessions never change the runtime's mode under
     // them.
@@ -1774,22 +1895,33 @@ export function AgentWorkspace({
     const created = targetSessionId
       ? undefined
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
-          title: sessionTitle ?? titleFromPrompt(content),
+          title: options?.issueReport
+            ? "Issue report"
+            : (sessionTitle ?? titleFromPrompt(content)),
           cols: 96,
         });
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
-    const sessionDisplayTitle =
-      explicitSession?.title?.trim() ||
-      explicitSession?.preview?.trim() ||
-      sessionTitle ||
-      titleFromPrompt(content);
+    if (options?.issueReport && !targetSessionId) {
+      pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
+    }
+    const sessionDisplayTitle = options?.issueReport
+      ? "Issue report"
+      : explicitSession?.title?.trim() ||
+        explicitSession?.preview?.trim() ||
+        sessionTitle ||
+        titleFromPrompt(content);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
         [storedSessionId]: sessionTitle,
       };
+      // The mount-time session load races this store: when its merge lands
+      // first, the fetched placeholder title is already rendered and nothing
+      // re-reads the override (the post-submit reload can no-op on a stale
+      // bridge closure). Re-map the current list so the order doesn't matter.
+      setHermesSessionItems((current) => applySessionTitleOverrides(current));
     }
     await withTimeout(
       ensureHermesBridgeSession({
@@ -1907,8 +2039,17 @@ export function AgentWorkspace({
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }
+        // The diagnostic turn is over (even on error): file the report now so
+        // the user's description isn't lost to a failed investigation.
+        const issueReport = pendingIssueReportsRef.current.get(storedSessionId);
+        if (issueReport) {
+          pendingIssueReportsRef.current.delete(storedSessionId);
+        }
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
+          if (issueReport) {
+            void deliverIssueReport(storedSessionId, issueReport);
+          }
         }, 300);
       }
     });
@@ -1926,6 +2067,9 @@ export function AgentWorkspace({
       });
       await loadHermesSessions();
     } catch (err) {
+      // A queued report must not outlive its failed prompt; submit() re-arms
+      // issue-report mode so the retry files it again.
+      pendingIssueReportsRef.current.delete(storedSessionId);
       // The prompt never entered the session, so its optimistic bubble must
       // not linger — a retained pending message renders below every later
       // persisted message and reads as a send the agent ignored.
@@ -2273,9 +2417,12 @@ export function AgentWorkspace({
     setLiveEvents(liveEventsRef.current);
   }
 
-  async function startNewTask(prompt?: string) {
+  async function startNewTask(request?: AgentNewSessionDetail) {
     clearPendingNewSessionRequest();
-    const initialPrompt = prompt?.trim() ?? "";
+    const issueReport = request?.kind === "issue-report";
+    // Issue reports never auto-submit: the template lands in the composer for
+    // the user to fill in, whatever prompt the request carried.
+    const initialPrompt = issueReport ? "" : (request?.prompt?.trim() ?? "");
     // The pending-marker mount path and the AGENT_NEW_SESSION_EVENT dispatch
     // can deliver the same request twice (App marks the marker, then fires
     // the event in a setTimeout for already-mounted workspaces). Submitting
@@ -2293,12 +2440,13 @@ export function AgentWorkspace({
       lastAutoSubmittedRef.current = { prompt: initialPrompt, at: Date.now() };
     }
     newSessionModeRef.current = true;
+    issueReportDraftRef.current = issueReport;
     setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     selectedHermesSessionIdRef.current = undefined;
     setSelectedHermesSessionId(undefined);
-    setDraft(initialPrompt);
+    setDraft(issueReport ? ISSUE_REPORT_TEMPLATE : initialPrompt);
     if (!initialPrompt) return;
     dispatchAgentSessionStatus({
       prompt: initialPrompt,
@@ -2938,6 +3086,18 @@ export function AgentWorkspace({
             >
               <PangolinSpinner />
               {busyNotice ?? SESSION_BUSY_NOTICE}
+            </motion.p>
+          ) : issueReportNotice ? (
+            <motion.p
+              key="issue-report-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              {issueReportNotice}
             </motion.p>
           ) : null}
         </AnimatePresence>
@@ -6389,11 +6549,15 @@ function writeLastOpenSessionId(sessionId: string) {
   }
 }
 
-export function markAgentNewSessionPending(prompt?: string) {
+export function markAgentNewSessionPending(
+  prompt?: string,
+  options?: { kind?: "issue-report" },
+) {
   try {
     const payload = JSON.stringify({
       createdAt: Date.now(),
       prompt: prompt?.trim() || undefined,
+      kind: options?.kind,
     });
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, payload);
   } catch {
@@ -6437,6 +6601,7 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       const parsed = JSON.parse(value) as {
         createdAt?: number;
         prompt?: string;
+        kind?: string;
       };
       if (
         typeof parsed.createdAt !== "number" ||
@@ -6444,7 +6609,12 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       ) {
         return undefined;
       }
-      return typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {};
+      return {
+        ...(typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {}),
+        ...(parsed.kind === "issue-report"
+          ? { kind: "issue-report" as const }
+          : {}),
+      };
     } catch {
       return undefined;
     }

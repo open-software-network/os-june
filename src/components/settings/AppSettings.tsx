@@ -202,6 +202,8 @@ type AppSettingsProps = {
   // own nav — the standalone path exercised by app-settings tests.
   activeTab?: SettingsTab;
   onTabChange?: (tab: SettingsTab) => void;
+  // Opens a new agent session prefilled with the bug report template.
+  onReportIssue?: () => void;
 };
 
 export function AppSettings({
@@ -220,6 +222,7 @@ export function AppSettings({
   onEnableSystemAudio,
   activeTab: controlledTab,
   onTabChange,
+  onReportIssue,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -1185,6 +1188,28 @@ export function AppSettings({
                       >
                         Verify server
                       </a>
+                    </div>
+                  </div>
+                ) : null}
+
+                {onReportIssue ? (
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Report an issue</h3>
+                      <p className="settings-row-description">
+                        Something not working? Describe it to June, attach a
+                        screenshot if you have one, and June will send the
+                        report to the team along with its own diagnosis.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={onReportIssue}
+                      >
+                        Report an issue
+                      </button>
                     </div>
                   </div>
                 ) : null}

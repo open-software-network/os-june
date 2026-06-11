@@ -579,6 +579,24 @@ pub struct SuggestAgentSessionTitleResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubmitIssueReportRequest {
+    pub description: String,
+    #[serde(default)]
+    pub agent_diagnosis: Option<String>,
+    #[serde(default)]
+    pub attachment_names: Vec<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitIssueReportResponse {
+    pub received: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTaskRequest {
     pub task_id: String,
 }

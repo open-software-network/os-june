@@ -10,15 +10,20 @@ use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use scribe_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedNote, GenerationRequest, Generator, OsAccountsClient, Receipt, TokenUsage,
-    Transcriber, Transcript, TranscriptionRequest, UserId,
+    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
+    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
     PricingTable,
 };
-use std::{collections::BTreeMap, error::Error, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tower::ServiceExt;
 
 const AUTHORIZATION: &str = "Bearer valid-token";
@@ -90,6 +95,85 @@ async fn integration_note_generate_rejects_wrong_model_kind() -> Result<(), Box<
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["message"], "model_type_invalid");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_requires_auth() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/issue-reports",
+        &serde_json::json!({ "description": "The recorder freezes" }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 3001);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_rejects_blank_description() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/issue-reports",
+        &serde_json::json!({ "description": "   " }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "description_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_delivers_to_the_sink() -> Result<(), Box<dyn Error>> {
+    let sink = Arc::new(RecordingIssueReportSink::default());
+    let router = router(test_state_with_issue_sink(sink.clone(), test_attestation()));
+
+    let response = match router
+        .oneshot(json_request(
+            "/v1/issue-reports",
+            &serde_json::json!({
+                "description": "The recorder freezes after a long meeting",
+                "agentDiagnosis": "Likely the audio capture thread is blocked",
+                "attachmentNames": ["screenshot.png"],
+                "sessionId": "session-9",
+                "appVersion": "0.0.5",
+                "platform": "macos"
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["received"], true);
+
+    let Ok(reports) = sink.reports.lock() else {
+        return Err("sink mutex poisoned".into());
+    };
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].user_id, UserId("usr_test".to_string()));
+    assert_eq!(
+        reports[0].description,
+        "The recorder freezes after a long meeting"
+    );
+    assert_eq!(
+        reports[0].agent_diagnosis.as_deref(),
+        Some("Likely the audio capture thread is blocked")
+    );
+    assert_eq!(reports[0].attachment_names, vec!["screenshot.png"]);
+    assert_eq!(reports[0].session_id.as_deref(), Some("session-9"));
     Ok(())
 }
 
@@ -227,6 +311,13 @@ fn test_state() -> ApiState {
 }
 
 fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
+    test_state_with_issue_sink(Arc::new(RecordingIssueReportSink::default()), attestation)
+}
+
+fn test_state_with_issue_sink(
+    issue_reports: Arc<dyn IssueReportSink>,
+    attestation: AttestationInfo,
+) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
     let transcriber = Arc::new(FakeTranscriber);
@@ -270,6 +361,7 @@ fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
             cleanup_hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
         })),
+        issue_reports,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
@@ -438,6 +530,22 @@ fn multipart_body<const N: usize>(parts: [MultipartPart; N]) -> Vec<u8> {
 
 fn valid_wav() -> Vec<u8> {
     b"RIFF....WAVEfmt ".to_vec()
+}
+
+#[derive(Default)]
+struct RecordingIssueReportSink {
+    reports: Mutex<Vec<IssueReport>>,
+}
+
+#[async_trait]
+impl IssueReportSink for RecordingIssueReportSink {
+    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
+        self.reports
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(report);
+        Ok(())
+    }
 }
 
 struct FakeTokenVerifier;

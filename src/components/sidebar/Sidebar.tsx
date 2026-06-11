@@ -3,6 +3,7 @@ import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBrain2 } from "central-icons/IconBrain2";
+import { IconBug } from "central-icons/IconBug";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
@@ -80,6 +81,7 @@ type SidebarProps = {
   // Notes when not wired, e.g. unit tests).
   onExitSettings?: () => void;
   onSignOut?: () => void;
+  onReportIssue?: () => void;
   onSelectNote: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
@@ -174,6 +176,7 @@ export function Sidebar({
   onChangeView,
   onExitSettings,
   onSignOut,
+  onReportIssue,
   onSelectNote,
   onDeleteNote,
   onOpenMoveDialog,
@@ -796,6 +799,14 @@ export function Sidebar({
             setIdentityMenuOpen(false);
             onChangeView("settings");
           }}
+          onReportIssue={
+            onReportIssue
+              ? () => {
+                  setIdentityMenuOpen(false);
+                  onReportIssue();
+                }
+              : undefined
+          }
           onSignOut={
             onSignOut
               ? () => {
@@ -1161,6 +1172,7 @@ function SidebarIdentity({
   onToggleMenu,
   onCloseMenu,
   onOpenSettings,
+  onReportIssue,
   onSignOut,
 }: {
   account: AccountStatus;
@@ -1168,6 +1180,7 @@ function SidebarIdentity({
   onToggleMenu: () => void;
   onCloseMenu: () => void;
   onOpenSettings: () => void;
+  onReportIssue?: () => void;
   onSignOut?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1210,6 +1223,12 @@ function SidebarIdentity({
             <IconSettingsGear4 size={14} />
             Settings
           </button>
+          {onReportIssue ? (
+            <button type="button" role="menuitem" onClick={onReportIssue}>
+              <IconBug size={14} />
+              Report an issue
+            </button>
+          ) : null}
           {account.signedIn && onSignOut ? (
             <>
               <div className="context-menu-separator" role="separator" />

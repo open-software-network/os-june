@@ -17,6 +17,8 @@ pub struct AppConfig {
     pub os_accounts: OsAccountsConfig,
     pub upstreams: UpstreamsConfig,
     pub attestation: AttestationConfig,
+    #[serde(default)]
+    pub issue_reports: IssueReportsConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
 }
 
@@ -28,7 +30,36 @@ impl Debug for AppConfig {
             .field("os_accounts", &self.os_accounts)
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
+            .field("issue_reports", &self.issue_reports)
             .field("pricing", &self.pricing)
+            .finish()
+    }
+}
+
+/// Where user-submitted issue reports get forwarded. Defaults to empty so the
+/// section is optional: without a webhook, reports land in the structured
+/// logs only.
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct IssueReportsConfig {
+    /// Receives each report as a JSON POST. Often embeds a secret token
+    /// (Slack/Discord-style webhooks), hence the redacted Debug. Set via
+    /// `SCRIBE__ISSUE_REPORTS__WEBHOOK_URL`.
+    #[serde(default)]
+    pub webhook_url: String,
+}
+
+impl Debug for IssueReportsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IssueReportsConfig")
+            .field(
+                "webhook_url",
+                if self.webhook_url.is_empty() {
+                    &"<unset>"
+                } else {
+                    &REDACTED
+                },
+            )
             .finish()
     }
 }
@@ -311,6 +342,7 @@ impl Default for AppConfig {
                     "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
                         .to_string(),
             },
+            issue_reports: IssueReportsConfig::default(),
             pricing,
         }
     }

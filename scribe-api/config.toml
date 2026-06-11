@@ -12,6 +12,13 @@ source_repo_url = "https://github.com/open-software-network/os-scribe"
 image_repo = "ghcr.io/open-software-network/scribe-api"
 trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
 
+[issue_reports]
+# Webhook that receives user-submitted issue reports as a JSON POST. Often
+# embeds a secret token, so set it per environment via
+# SCRIBE__ISSUE_REPORTS__WEBHOOK_URL. Empty keeps reports in the structured
+# logs only.
+webhook_url = ""
+
 [os_accounts]
 # api_url has no default — must come from SCRIBE__OS_ACCOUNTS__API_URL
 # per environment so a missing override fails loud against the dev

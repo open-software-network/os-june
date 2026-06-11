@@ -32,8 +32,9 @@ use crate::{
             RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
             SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
             SendAgentMessageRequest, SessionFolderDto, SessionRequest, SourceReadinessDto,
-            StartRecordingRequest, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -387,6 +388,15 @@ pub async fn suggest_agent_session_title(
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
     let title = crate::scribe_api::suggest_agent_session_title(&request.prompt).await?;
     Ok(SuggestAgentSessionTitleResponse { title })
+}
+
+#[tauri::command]
+pub async fn submit_issue_report(
+    app: AppHandle,
+    request: SubmitIssueReportRequest,
+) -> Result<SubmitIssueReportResponse, AppError> {
+    let app_version = app.package_info().version.to_string();
+    crate::scribe_api::submit_issue_report(&request, &app_version).await
 }
 
 #[tauri::command]

@@ -161,6 +161,19 @@ pub struct ChargeRequest {
     pub idempotency_key: String,
 }
 
+/// A user-submitted bug report from the desktop app, paired with the agent's
+/// own diagnostic assessment of the issue when one was produced.
+#[derive(Clone, Debug)]
+pub struct IssueReport {
+    pub user_id: UserId,
+    pub description: String,
+    pub agent_diagnosis: Option<String>,
+    pub attachment_names: Vec<String>,
+    pub session_id: Option<String>,
+    pub app_version: Option<String>,
+    pub platform: Option<String>,
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum DomainError {
     #[error("model is not priced")]
@@ -212,6 +225,11 @@ pub trait OsAccountsClient: Send + Sync {
 #[async_trait]
 pub trait TokenVerifier: Send + Sync {
     async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError>;
+}
+
+#[async_trait]
+pub trait IssueReportSink: Send + Sync {
+    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError>;
 }
 
 pub trait AudioDurationProbe: Send + Sync {
