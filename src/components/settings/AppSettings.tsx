@@ -65,6 +65,7 @@ import {
   modelPrivacyFlags,
   modelSupportsTools,
 } from "../../lib/model-privacy";
+import { suggestedModelsForMode } from "../../lib/suggested-models";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -1540,17 +1541,49 @@ function ModelPickerDialog({
   onClose: () => void;
   onSelect: (modelId: string) => void;
 }) {
+  // "Suggested" leads with the few models we actually recommend (benchmarks,
+  // price, tool use, privacy — see SUGGESTED_MODELS); "All" is the full
+  // catalog. Suggested is the default on every open; typing a search always
+  // looks across the whole catalog, since three curated rows aren't worth
+  // searching.
+  const [tab, setTab] = useState<"suggested" | "all">("suggested");
+  useEffect(() => {
+    if (open) setTab("suggested");
+  }, [open, mode]);
+  const suggested = useMemo(
+    () => suggestedModelsForMode(mode, options),
+    [mode, options],
+  );
+  const query = search.trim().toLowerCase();
+  const searching = query.length > 0;
+  const reasonsById = useMemo(
+    () => new Map(suggested.map((item) => [item.model.id, item.reason])),
+    [suggested],
+  );
   const filteredOptions = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return options;
-    return options.filter((model) =>
-      [model.name, model.id, model.description, model.privacy, ...model.traits]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [options, search]);
+    if (searching) {
+      return options.filter((model) =>
+        [
+          model.name,
+          model.id,
+          model.description,
+          model.privacy,
+          ...model.traits,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(query),
+      );
+    }
+    // No suggestions in the catalog (drift, still loading): the empty tab
+    // would read as "no models", so fall through to the full list.
+    if (tab === "suggested" && suggested.length > 0) {
+      return suggested.map((item) => item.model);
+    }
+    return options;
+  }, [options, query, searching, suggested, tab]);
+  const showReasons = !searching && tab === "suggested" && suggested.length > 0;
   const title = mode === "transcription" ? "Transcription model" : "Text model";
 
   return (
@@ -1572,9 +1605,34 @@ function ModelPickerDialog({
           aria-label="Search models"
         />
       </label>
+      {!searching && suggested.length > 0 ? (
+        <div
+          className="model-picker-tabs"
+          role="tablist"
+          aria-label="Model groups"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "suggested"}
+            onClick={() => setTab("suggested")}
+          >
+            Suggested
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "all"}
+            onClick={() => setTab("all")}
+          >
+            All
+          </button>
+        </div>
+      ) : null}
       <div className="model-picker-list" role="listbox" aria-label={title}>
         {filteredOptions.map((model) => {
           const selected = model.id === value;
+          const reason = showReasons ? reasonsById.get(model.id) : undefined;
           // The text model powers June's agent, which works through tool
           // calls — a model that can't use tools (Venice's E2EE models)
           // bricks the agent, so it can't be picked. Only catalog entries
@@ -1618,6 +1676,9 @@ function ModelPickerDialog({
                 ) : null}
                 <ModelMeta model={model} />
               </span>
+              {reason ? (
+                <span className="model-picker-reason">{reason}</span>
+              ) : null}
             </button>
           );
         })}

@@ -15,6 +15,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   HERO_GREETINGS,
+  resetAgentSessionContinuity,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import {
@@ -173,6 +174,10 @@ describe("AgentWorkspace", () => {
     vi.clearAllMocks();
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    // Auto-cleanup unmounts the workspace after each test, which snapshots
+    // any still-working session for the next mount — across tests that would
+    // leak one test's mid-run session into the next.
+    resetAgentSessionContinuity();
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
@@ -537,6 +542,45 @@ describe("AgentWorkspace", () => {
       "session-2",
     );
     expect(screen.queryByText("Newer session")).toBeNull();
+  });
+
+  it("restores an in-flight new session across a remount (settings round trip)", async () => {
+    // Start a brand-new session whose first turn is still running: Hermes has
+    // persisted nothing yet (no messages, absent from the server session
+    // list), so every trace of the run lives in component state. Navigating
+    // to Settings and back unmounts and remounts the workspace — without the
+    // continuity snapshot the session came back as an empty "Untitled
+    // session" that nothing ever refreshed.
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "audit the repo" }),
+    );
+    const first = render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "audit the repo",
+      }),
+    );
+    expect(await screen.findByText("audit the repo")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    // The sent message and the session title survive the round trip.
+    expect(await screen.findByText("audit the repo")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
+    // The run is still treated as working, so the reconcile poll can pick it
+    // up: the composer offers the stop control instead of an idle send.
+    expect(
+      await screen.findByRole("button", { name: "Stop June" }),
+    ).toBeInTheDocument();
   });
 
   it("renames prompt-like existing session titles after messages load", async () => {

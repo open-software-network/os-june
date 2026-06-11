@@ -7184,6 +7184,38 @@ a.agent-safety-badge:hover {
   margin: calc(-1 * var(--sp-1));
 }
 
+/* Suggested / All segmented control between search and list — same recipe
+ * as .agent-panel-tabs. */
+.model-picker-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: fit-content;
+  min-height: var(--control-md);
+  margin-top: var(--sp-3);
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.model-picker-tabs [role="tab"] {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.model-picker-tabs [role="tab"][aria-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+}
+
 .model-picker-option {
   /* Check spans both rows so it sits vertically centered against the
    * logo + name + meta stack. Transparent border reserves space so the
@@ -7191,8 +7223,9 @@ a.agent-safety-badge:hover {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 22px;
   grid-template-areas:
-    "logo name  check"
-    "logo meta  check";
+    "logo name   check"
+    "logo meta   check"
+    "logo reason check";
   row-gap: 2px;
   column-gap: var(--sp-3);
   width: 100%;
@@ -7210,6 +7243,15 @@ a.agent-safety-badge:hover {
 
 .model-picker-option:hover {
   background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+/* "Why we recommend it" line on Suggested rows. */
+.model-picker-reason {
+  grid-area: reason;
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
 /* Selected gets the system surface-subtle wash. Hover stacks darker so

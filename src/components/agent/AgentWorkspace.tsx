@@ -635,12 +635,79 @@ type AgentWorkspaceProps = {
 // in its pendingReply state.
 const handledMascotReplyIds = new Set<string>();
 
+// Mid-run continuity across remounts. While June is working, a session has
+// state that exists nowhere outside this component: the optimistic list entry
+// (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
+// the working/waiting flags that drive the reconcile poll, the stored→runtime
+// session mapping, the buffered live events, and the title override.
+// Navigating away (e.g. to Settings) unmounts the workspace; without this
+// snapshot the remount restores only the selected id from localStorage, and a
+// session whose first turn hasn't persisted renders as an empty "Untitled
+// session" that nothing ever polls back to life. Captured on unmount for the
+// sessions with active work, hydrated by the next mount's state initializers
+// so the working poll picks the run straight back up.
+type AgentSessionContinuity = {
+  sessionItems: HermesSessionInfo[];
+  pendingMessages: Record<string, HermesSessionMessage[]>;
+  workingSessionIds: string[];
+  waitingSessionIds: string[];
+  runtimeSessionIds: Record<string, string>;
+  liveEvents: Record<string, LiveHermesEvent[]>;
+  titleOverrides: Record<string, string>;
+};
+
+let sessionContinuity: AgentSessionContinuity | null = null;
+
+function captureSessionContinuity(state: {
+  sessionItems: HermesSessionInfo[];
+  pendingMessages: Record<string, HermesSessionMessage[]>;
+  workingSessionIds: Set<string>;
+  waitingSessionIds: Set<string>;
+  runtimeSessionIds: Record<string, string>;
+  liveEvents: Record<string, LiveHermesEvent[]>;
+  titleOverrides: Record<string, string>;
+}): AgentSessionContinuity | null {
+  const activeIds = new Set([
+    ...state.workingSessionIds,
+    ...state.waitingSessionIds,
+  ]);
+  for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
+    if (pending.length > 0) activeIds.add(sessionId);
+  }
+  if (activeIds.size === 0) return null;
+  const pick = <T,>(record: Record<string, T>) =>
+    Object.fromEntries(
+      Object.entries(record).filter(([sessionId]) => activeIds.has(sessionId)),
+    );
+  return {
+    sessionItems: state.sessionItems.filter((session) =>
+      activeIds.has(session.id),
+    ),
+    pendingMessages: pick(state.pendingMessages),
+    workingSessionIds: [...state.workingSessionIds],
+    waitingSessionIds: [...state.waitingSessionIds],
+    runtimeSessionIds: pick(state.runtimeSessionIds),
+    liveEvents: pick(state.liveEvents),
+    titleOverrides: pick(state.titleOverrides),
+  };
+}
+
+/** Test hook: the snapshot is module state, so a test that unmounts with a
+ * working session (testing-library auto-cleanup) would otherwise leak it into
+ * the next test's mount. */
+export function resetAgentSessionContinuity() {
+  sessionContinuity = null;
+}
+
 export function AgentWorkspace({
   initialSession,
   pendingReply,
   origin,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id;
+  // Read once per mount (lazy initializer): the continuity snapshot the
+  // previous mount captured on unmount, if any session was still mid-run.
+  const [continuity] = useState(() => sessionContinuity);
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
@@ -673,7 +740,15 @@ export function AgentWorkspace({
   const sandboxMenuWasOpenRef = useRef(false);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
-  >(() => (initialSession ? [initialSession] : []));
+  >(() => {
+    const restored = continuity?.sessionItems ?? [];
+    if (!initialSession) return restored;
+    return [
+      initialSession,
+      ...restored.filter((session) => session.id !== initialSession.id),
+    ];
+  });
+  const hermesSessionItemsRef = useRef(hermesSessionItems);
   // False until the first listHermesSessions fetch lands. Until then the
   // items above only hold the mount seed (the clicked session, or nothing),
   // and broadcasting that would wipe the sidebar's already-loaded list.
@@ -714,10 +789,10 @@ export function AgentWorkspace({
   >({});
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
     Record<string, HermesSessionMessage[]>
-  >({});
+  >(() => continuity?.pendingMessages ?? {});
   const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
-  >({});
+  >(pendingHermesMessages);
   // Per-session ordering for message fetches: the sequence handed out at
   // fetch start, and the highest sequence whose response was applied. See
   // listSessionMessagesOrdered.
@@ -726,21 +801,21 @@ export function AgentWorkspace({
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
-  >({});
+  >(() => continuity?.liveEvents ?? {});
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
-    () => new Set(),
+    () => new Set(continuity?.workingSessionIds),
   );
-  const workingSessionIdsRef = useRef<Set<string>>(new Set());
+  const workingSessionIdsRef = useRef<Set<string>>(workingSessionIds);
   const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
-    () => new Set(),
+    () => new Set(continuity?.waitingSessionIds),
   );
-  const waitingSessionIdsRef = useRef<Set<string>>(new Set());
+  const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
-  >({});
+  >(() => continuity?.runtimeSessionIds ?? {});
   const runtimeSessionIdsRef = useRef(runtimeSessionIds);
   // Consecutive runtime-reconcile polls in which a locally-working session was
   // absent from the gateway's live list. Cleared the moment it's seen live.
@@ -804,7 +879,7 @@ export function AgentWorkspace({
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
-  const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
+  const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>(liveEvents);
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
   // the fetch *started*) — the scroll-settling logic needs the landing.
@@ -815,7 +890,9 @@ export function AgentWorkspace({
   // chat hands over to a fresh thread — not when the hero is dismissed by
   // selecting an existing chat from the sidebar (that should swap instantly).
   const heroExitViaThreadRef = useRef(false);
-  const sessionTitleOverridesRef = useRef<Record<string, string>>({});
+  const sessionTitleOverridesRef = useRef<Record<string, string>>(
+    continuity?.titleOverrides ?? {},
+  );
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -831,7 +908,9 @@ export function AgentWorkspace({
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
+    hermesSessionItemsRef.current = hermesSessionItems;
   }, [
+    hermesSessionItems,
     pendingHermesMessages,
     selectedHermesSessionId,
     waitingSessionIds,
@@ -1425,6 +1504,13 @@ export function AgentWorkspace({
 
   useEffect(() => {
     let cancelled = false;
+    // This mount owns the snapshot now — consume it so it can't hydrate a
+    // second mount (error-boundary remount, overlapping test renders) with
+    // data this mount is about to mutate. Consumed here rather than in the
+    // continuity initializer because StrictMode double-invokes lazy
+    // initializers, which must stay pure; the unmount capture below writes
+    // a fresh snapshot either way.
+    sessionContinuity = null;
     void (async () => {
       try {
         const status = await hermesBridgeStatus();
@@ -1436,6 +1522,17 @@ export function AgentWorkspace({
     })();
     return () => {
       cancelled = true;
+      // Keep any mid-run session alive for the next mount before the
+      // gateways (and with them the live event streams) go away.
+      sessionContinuity = captureSessionContinuity({
+        sessionItems: hermesSessionItemsRef.current,
+        pendingMessages: pendingHermesMessagesRef.current,
+        workingSessionIds: workingSessionIdsRef.current,
+        waitingSessionIds: waitingSessionIdsRef.current,
+        runtimeSessionIds: runtimeSessionIdsRef.current,
+        liveEvents: liveEventsRef.current,
+        titleOverrides: sessionTitleOverridesRef.current,
+      });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
       }
