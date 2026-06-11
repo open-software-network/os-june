@@ -4943,6 +4943,7 @@ function AgentChatTurnRow({
       return;
     }
     onThinkingOpenChange(completedThinkingKey, true);
+    onThinkingOpenChange(activeThinkingKey, false);
   }, [
     activeThinkingKey,
     completedThinkingKey,

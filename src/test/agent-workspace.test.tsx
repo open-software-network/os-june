@@ -950,6 +950,29 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("Thought").closest("details")).toHaveAttribute(
       "open",
     );
+
+    await user.type(screen.getByRole("textbox"), "next request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "next request",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Starting the next turn." },
+        });
+      }
+    });
+    expect(await screen.findByText("Thinking")).toBeInTheDocument();
+    expect(screen.getByText("Thinking").closest("details")).not.toHaveAttribute(
+      "open",
+    );
   });
 
   it("explains a pending approval before the user chooses", async () => {
