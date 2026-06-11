@@ -18,7 +18,74 @@ export type RoutineJob = {
   state: "scheduled" | "paused" | "completed";
   paused_at?: string | null;
   paused_reason?: string | null;
+  /** Per-job toolset override (`_format_job` includes it only when set).
+   * Absent means the job runs under the sandboxed cron default the app
+   * writes into config.yaml (CRON_SANDBOXED_TOOLSETS in hermes_bridge.rs);
+   * the scheduler gives this field precedence over that gate, so its
+   * presence with machine-touching toolsets is what makes a routine
+   * unrestricted. */
+  enabled_toolsets?: string[];
+  /** Shell script attached to the job (`_format_job` includes it only when
+   * set). The scheduler runs it as a plain subprocess of the unjailed
+   * gateway on every tick — as the whole job for `no_agent` jobs, as the
+   * wake-gate pre-run otherwise — so it sits entirely outside the toolset
+   * gate. Any script-backed routine is unrestricted no matter what its
+   * toolsets say. */
+  script?: string | null;
+  /** True for script-only jobs (no agent run at all). Implies `script`. */
+  no_agent?: boolean;
 };
+
+/** The toolsets June must put on a routine the user opted into Unrestricted.
+ * Hermes's full default set minus the toolsets its scheduler always strips
+ * from cron agents (cronjob, messaging, clarify) and the default-off niche
+ * sets. Keep in sync with CRON_SANDBOXED_TOOLSETS in hermes_bridge.rs, which
+ * is the sandboxed counterpart this list overrides. */
+export const UNRESTRICTED_ROUTINE_TOOLSETS = [
+  "terminal",
+  "file",
+  "code_execution",
+  "web",
+  "browser",
+  "vision",
+  "image_gen",
+  "tts",
+  "skills",
+  "todo",
+  "memory",
+  "context_engine",
+  "session_search",
+  "delegation",
+  "computer_use",
+];
+
+/** Toolsets that let a routine change the machine or act on it: their
+ * presence in a job's override is what "Unrestricted" means for routines.
+ * The sandboxed cron default contains none of them. */
+const MACHINE_TOOLSETS = new Set([
+  "terminal",
+  "file",
+  "code_execution",
+  "browser",
+  "computer_use",
+  "delegation",
+  "skills",
+]);
+
+/** Whether a routine can touch the machine when it fires. Derived from the
+ * stored job rather than any UI state, so the badge reflects what the
+ * scheduler will actually enforce on the next run. Two paths count:
+ * machine-touching toolsets in the per-job override, and an attached cron
+ * script — scripts run as plain subprocesses of the unjailed gateway,
+ * outside the toolset gate entirely. */
+export function routineUnrestricted(
+  routine: Pick<RoutineJob, "enabled_toolsets" | "script" | "no_agent">,
+): boolean {
+  if (routine.script || routine.no_agent) return true;
+  return (routine.enabled_toolsets ?? []).some((toolset) =>
+    MACHINE_TOOLSETS.has(toolset),
+  );
+}
 
 type CronManageResponse = {
   success?: boolean;
@@ -87,11 +154,21 @@ export function removeRoutine(jobId: string) {
 }
 
 /** Builds the agent prompt for "create a routine": June owns naming and
- * scheduling via its cronjob tool, so the user only describes the outcome. */
-export function routineCreationPrompt(description: string) {
+ * scheduling via its cronjob tool, so the user only describes the outcome.
+ * The mode line carries the user's per-routine sandbox choice: sandboxed
+ * routines must NOT set enabled_toolsets (the cron platform gate in
+ * config.yaml then applies), unrestricted ones set the explicit override. */
+export function routineCreationPrompt(
+  description: string,
+  options?: { unrestricted?: boolean },
+) {
+  const mode = options?.unrestricted
+    ? `I chose to run this routine unrestricted. Create the job with enabled_toolsets set to exactly: ${UNRESTRICTED_ROUTINE_TOOLSETS.join(", ")}.`
+    : "I chose the sandboxed default for this routine. Do not set enabled_toolsets on the job: it then runs with the restricted cron toolset (web reading, vision, todo, memory, session search) and cannot use the terminal, change files, execute code, or drive a browser. Do not attach a script to the job either: cron scripts run as plain shell subprocesses outside that sandbox. If the task clearly needs any of this, stop and tell me it requires an unrestricted routine instead of creating it.";
   return [
     "Set up a new routine (a scheduled cron job) for me using your cronjob tool.",
     `Here is what it should do: ${description.trim()}`,
+    mode,
     "Pick a short descriptive name and an appropriate schedule (ask me if the timing is unclear), create the job, then confirm what you created and when it will first run.",
   ].join("\n\n");
 }
@@ -102,12 +179,17 @@ export function routineCreationPrompt(description: string) {
  * partial updates — it can change just the schedule without ever reading or
  * re-sending the full prompt, which the list API truncates to a preview. */
 export function routineEditPrompt(
-  routine: Pick<RoutineJob, "job_id" | "name" | "schedule">,
+  routine: Pick<
+    RoutineJob,
+    "job_id" | "name" | "schedule" | "enabled_toolsets" | "script" | "no_agent"
+  >,
   changes: string,
 ) {
+  const mode = routineUnrestricted(routine) ? "unrestricted" : "sandboxed";
   return [
     `Update my existing routine "${routine.name}" (cron job id ${routine.job_id}) using your cronjob tool's update action.`,
-    `It currently runs: ${routine.schedule}. Here is what should change: ${changes.trim()}`,
+    `It currently runs: ${routine.schedule}. The routine is currently ${mode}. Here is what should change: ${changes.trim()}`,
+    `If I asked to make it unrestricted, update the job with enabled_toolsets set to exactly: ${UNRESTRICTED_ROUTINE_TOOLSETS.join(", ")}. If I asked to make it sandboxed, clear enabled_toolsets and any script on the job so the restricted cron default applies again (cron scripts run as shell subprocesses outside the sandbox, so a sandboxed routine must not have one).`,
     "Only modify the fields I asked about and leave everything else on the job untouched. Confirm the updated job and when it runs next.",
   ].join("\n\n");
 }

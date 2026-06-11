@@ -16,7 +16,7 @@ mod transcription;
 
 pub use audio_probe::MultiFormatDurationProbe;
 pub use http::{default_client, jwks_client};
-pub use issue_reports::{LogIssueReportSink, WebhookIssueReportSink};
+pub use issue_reports::{LogIssueReportSink, OsPlatformIssueReportSink, WebhookIssueReportSink};
 pub use jwks::{JwksTokenVerifier, JwksTokenVerifierParams};
 pub use m4a_probe::{M4aDurationProbe, M4aProbeError};
 pub use openai::OpenAiTranscriber;

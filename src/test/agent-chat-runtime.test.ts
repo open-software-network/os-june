@@ -3,11 +3,91 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
+  repairContractionSpacing,
   toolEventKey,
 } from "../lib/agent-chat-runtime";
 import type { AgentMessageDto, HermesSessionMessage } from "../lib/tauri";
 
+describe("repairContractionSpacing", () => {
+  it("re-inserts the space the gateway drops after a contraction", () => {
+    // Real cases pulled from the persisted Hermes store.
+    expect(repairContractionSpacing("it'snot")).toBe("it's not");
+    expect(repairContractionSpacing("you'rereferring")).toBe(
+      "you're referring",
+    );
+    expect(repairContractionSpacing("Mac'scamera")).toBe("Mac's camera");
+    expect(repairContractionSpacing("here'swhat'sthere:")).toBe(
+      "here's what's there:",
+    );
+    expect(repairContractionSpacing("we'vechecked and they'lldo it")).toBe(
+      "we've checked and they'll do it",
+    );
+    expect(repairContractionSpacing("I'mdone, don'tworry")).toBe(
+      "I'm done, don't worry",
+    );
+  });
+
+  it("leaves correctly spaced and non-contraction text untouched", () => {
+    // Idempotent: already-spaced text has no match.
+    expect(repairContractionSpacing("it's not there")).toBe("it's not there");
+    expect(repairContractionSpacing("its not a contraction")).toBe(
+      "its not a contraction",
+    );
+    // Trailing punctuation, not a following word, isn't a dropped space.
+    expect(repairContractionSpacing("that's it.")).toBe("that's it.");
+    // Names with apostrophes aren't contraction enclitics.
+    expect(repairContractionSpacing("d'Artagnan and O'Brien")).toBe(
+      "d'Artagnan and O'Brien",
+    );
+  });
+
+  it("does not corrupt a plural possessive glued to the next word", () => {
+    // "kids' toys" glued is ambiguous with "kids'" + a "t…" word; the 's'
+    // guard keeps it untouched rather than mis-splitting into "kids't oys".
+    expect(repairContractionSpacing("kids'toys")).toBe("kids'toys");
+    expect(repairContractionSpacing("the cars'doors")).toBe("the cars'doors");
+  });
+});
+
 describe("Agent chat runtime", () => {
+  it("strips the cron preamble and flags a scheduled-run turn", () => {
+    const preamble =
+      "[IMPORTANT: You are running as a scheduled cron job. SILENT: respond " +
+      'with exactly "[SILENT]" if nothing is new. Never combine [SILENT] ' +
+      "with content — say [SILENT] and nothing more.]";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: `${preamble}\n\nSummarize GitHub activity for the team.`,
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.isScheduledRun).toBe(true);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Summarize GitHub activity for the team.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("leaves an ordinary user turn unflagged", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: "Summarize GitHub activity for the team.",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.isScheduledRun).toBeUndefined();
+  });
+
   it("renders persisted Hermes user and assistant messages", () => {
     const turns = buildHermesSessionChatTurns([
       {

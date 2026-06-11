@@ -1,0 +1,284 @@
+<!doctype html>
+<!--
+  Dev-only onboarding preview. Runs the real wizard in a plain browser by
+  faking the Tauri IPC bridge inline: signed in, permissions grant on
+  request, and "checkout" completes 4 seconds after you click Start free
+  trial so the activation moment is watchable. Nothing here ships: vite
+  builds only index.html, and no app code references this file.
+
+  Usage:
+    npm run dev
+    open http://localhost:1421/onboarding-preview.html
+
+  Console helpers once it's open:
+    june.replayOnboarding()            restart the wizard from step 1
+    june.replayOnboarding("trial")     jump to a step (sign-in, permissions,
+                                       trial, dictation-practice)
+    __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
+    localStorage.setItem("os-scribe:theme", "dark"); location.reload()
+
+  The preview opens signed out — the real first-run experience. Clicking
+  "Continue with OpenSoftware" fake-signs-in as Sam Carter. "Change key" on
+  the practice step pretends the user presses F5 a beat after recording
+  starts.
+
+  URL params (for scripted screenshots): ?theme=dark, ?step=<step id>
+  (a step jump implies a signed-in account), ?perms=missing|denied
+  (permissions start ungranted; the row actions then grant after a beat,
+  so ?step=permissions&perms=missing walks the real grant dance)
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>June onboarding preview</title>
+    <script>
+      // Pre-paint theme bootstrap, same as index.html (plus a ?theme=
+      // override so scripted screenshots can pick a theme per URL).
+      (function () {
+        try {
+          var stored =
+            new URLSearchParams(location.search).get("theme") ||
+            localStorage.getItem("os-scribe:theme");
+          var resolved =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.setAttribute("data-theme", resolved);
+        } catch (e) {}
+      })();
+    </script>
+    <script>
+      // Fake Tauri bridge. Must run before the app module so
+      // @tauri-apps/api finds window.__TAURI_INTERNALS__ at import time.
+      (() => {
+        const callbacks = new Map();
+        const listeners = new Map();
+        let nextId = 1;
+
+        function emitEvent(name, payload) {
+          const ids = listeners.get(name);
+          if (!ids) return;
+          for (const id of ids) {
+            const cb = callbacks.get(id);
+            if (cb) cb({ event: name, id: 0, payload });
+          }
+        }
+
+        // ?step=<id> jumps the wizard to a step (and implies an account,
+        // since every step past sign-in needs one). Without it the preview
+        // opens signed out: the real first-run experience.
+        const params = new URLSearchParams(location.search);
+        const step = params.get("step");
+
+        // ?perms=missing starts both permissions ungranted; ?perms=denied
+        // starts the mic at the System Settings dead end. The row actions
+        // then grant after a beat, like the real TCC dance.
+        const permsMode = params.get("perms");
+        const perms = {
+          microphone:
+            permsMode === "denied"
+              ? "denied"
+              : permsMode
+                ? "undetermined"
+                : "granted",
+          accessibility: permsMode ? "missing" : "granted",
+        };
+
+        // The wizard always replays in the preview.
+        try {
+          localStorage.removeItem("june.onboarding.completedVersion");
+          if (step) localStorage.setItem("june.onboarding.resumeStep", step);
+          else localStorage.removeItem("june.onboarding.resumeStep");
+        } catch (e) {}
+
+        // A plainly-not-June account for the signed-in preview path.
+        const stubUser = { id: "u1", handle: "sam", displayName: "Sam Carter" };
+
+        // The dictation key, rebindable from the practice step. A "capture"
+        // pretends the user pressed F5 a beat after recording starts.
+        let pushToTalkShortcut = {
+          code: "Fn",
+          label: "fn",
+          pressCount: 1,
+          modifiers: {
+            command: false,
+            control: false,
+            option: false,
+            shift: false,
+            function: true,
+          },
+        };
+        let captureTimer;
+        function dictationSettings() {
+          return {
+            pushToTalkShortcut,
+            toggleShortcut: null,
+            microphone: {},
+            style: "standard",
+            language: "",
+          };
+        }
+
+        let account = step
+          ? {
+              signedIn: true,
+              configured: true,
+              user: stubUser,
+              subscription: { subscribed: false },
+            }
+          : { signedIn: false, configured: true };
+
+        window.__JUNE_STUB__ = {
+          emitEvent,
+          setSubscribed(status) {
+            account = {
+              ...account,
+              subscription: { subscribed: true, status },
+            };
+          },
+          signOut() {
+            // The bare URL is the signed-out start.
+            location.href = location.pathname;
+          },
+        };
+
+        window.__TAURI_INTERNALS__ = {
+          transformCallback(cb) {
+            const id = nextId++;
+            callbacks.set(id, cb);
+            return id;
+          },
+          unregisterCallback(id) {
+            callbacks.delete(id);
+          },
+          convertFileSrc(p) {
+            return p;
+          },
+          async invoke(cmd, args = {}) {
+            switch (cmd) {
+              case "plugin:event|listen": {
+                if (!listeners.has(args.event)) {
+                  listeners.set(args.event, new Set());
+                }
+                listeners.get(args.event).add(args.handler);
+                return args.handler;
+              }
+              case "plugin:event|unlisten":
+                return null;
+              case "os_accounts_status":
+                return account;
+              case "os_accounts_login":
+                account = {
+                  signedIn: true,
+                  configured: true,
+                  user: stubUser,
+                  subscription: { subscribed: false },
+                };
+                return account;
+              case "os_accounts_start_trial_checkout":
+                // Pretend the user finishes Stripe checkout 4s from now;
+                // the wizard's poll notices and shows the activated screen.
+                setTimeout(
+                  () => window.__JUNE_STUB__.setSubscribed("trialing"),
+                  4000,
+                );
+                return { outcome: "checkoutOpened" };
+              case "dictation_settings":
+                return { settings: dictationSettings() };
+              case "set_dictation_shortcut":
+                if (args.kind === "push_to_talk") {
+                  pushToTalkShortcut = args.shortcut;
+                }
+                return dictationSettings();
+              case "open_privacy_settings": {
+                // Pretend the user flips the toggle in System Settings and
+                // comes back; the wizard's poll picks it up.
+                const pane = args.request && args.request.pane;
+                setTimeout(() => {
+                  if (pane === "microphone") perms.microphone = "granted";
+                  if (pane === "accessibility") perms.accessibility = "granted";
+                }, 2500);
+                return null;
+              }
+              case "dictation_helper_command": {
+                const type = args.command && args.command.type;
+                if (type === "start_shortcut_capture") {
+                  clearTimeout(captureTimer);
+                  captureTimer = setTimeout(() => {
+                    emitEvent(
+                      "dictation-event",
+                      JSON.stringify({
+                        type: "shortcut_captured",
+                        payload: {
+                          shortcut: {
+                            code: "F5",
+                            label: "F5",
+                            pressCount: 1,
+                            modifiers: {
+                              command: false,
+                              control: false,
+                              option: false,
+                              shift: false,
+                              function: false,
+                            },
+                          },
+                        },
+                      }),
+                    );
+                  }, 1400);
+                  return null;
+                }
+                if (type === "cancel_shortcut_capture") {
+                  clearTimeout(captureTimer);
+                  return null;
+                }
+                if (
+                  type === "request_microphone_permission" &&
+                  perms.microphone === "undetermined"
+                ) {
+                  // Pretend the user clicks Allow on the TCC dialog.
+                  setTimeout(() => {
+                    perms.microphone = "granted";
+                  }, 900);
+                }
+                if (
+                  type === "request_accessibility_permission" &&
+                  perms.accessibility !== "granted"
+                ) {
+                  setTimeout(() => {
+                    perms.accessibility = "granted";
+                  }, 2500);
+                }
+                if (
+                  type === "get_permission_status" ||
+                  type === "request_microphone_permission" ||
+                  type === "request_accessibility_permission"
+                ) {
+                  setTimeout(() => {
+                    emitEvent(
+                      "dictation-event",
+                      JSON.stringify({
+                        type: "permission_status",
+                        payload: { ...perms },
+                      }),
+                    );
+                  }, 150);
+                }
+                return null;
+              }
+              default:
+                return null;
+            }
+          },
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

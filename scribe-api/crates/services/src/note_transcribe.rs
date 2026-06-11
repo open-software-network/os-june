@@ -7,8 +7,8 @@ use crate::{
     util::ceil_seconds,
 };
 use scribe_domain::{
-    ActionSlug, AudioDurationProbe, Credits, ModelId, OsAccountsClient, Receipt, Transcriber,
-    Transcript, TranscriptionRequest, UserId,
+    ActionSlug, AudioDurationProbe, AudioFormat, Credits, ModelId, OsAccountsClient, Receipt,
+    Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use std::sync::Arc;
 
@@ -46,12 +46,15 @@ impl NoteTranscribeService {
         &self,
         params: NoteTranscribeParams,
     ) -> Result<NoteTranscribeOutput, ServiceError> {
+        // The client file name is reduced to its container format right here:
+        // it never reaches a provider and (being user data) never the logs.
+        let format = AudioFormat::from_filename(&params.filename);
         tracing::info!(
             user_id = %params.user_id.0,
             note_id = %params.note_id,
             model = %params.model_id.0,
             audio_bytes = params.audio.len(),
-            filename = %params.filename,
+            audio_format = ?format,
             "note_transcribe: handler entered"
         );
         // Probe duration and price BEFORE taking a hold: corrupt or
@@ -89,8 +92,7 @@ impl NoteTranscribeService {
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
-                filename: params.filename,
-                title: params.title,
+                format,
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),
@@ -130,8 +132,8 @@ pub struct NoteTranscribeParams {
     pub user_id: UserId,
     pub note_id: String,
     pub audio: Vec<u8>,
+    /// Used only to detect the audio container; never forwarded upstream.
     pub filename: String,
-    pub title: String,
     pub context: Option<String>,
     pub language: Option<String>,
     pub model_id: ModelId,

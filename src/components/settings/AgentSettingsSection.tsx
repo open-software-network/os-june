@@ -5,11 +5,13 @@ import {
   SkillsToolsPanel,
 } from "../agent/AgentWorkspace";
 import {
+  hermesAgentCliAccess,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
   hermesBridgeSkills,
   hermesBridgeToolsets,
   agentHudHide,
+  setHermesAgentCliAccess,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
@@ -46,6 +48,39 @@ export function AgentSettingsSection() {
   const [agentHudEnabled, setAgentHudEnabledState] = useState(() =>
     getAgentHudEnabled(),
   );
+  // null until the stored value loads, so the switch never flashes a wrong
+  // default for a setting with security weight.
+  const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(
+    null,
+  );
+  const [cliAccessSaving, setCliAccessSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    hermesAgentCliAccess()
+      .then((status) => {
+        if (!cancelled) setCliAccessEnabled(status.enabled);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleCliAccessChange(enabled: boolean) {
+    setCliAccessSaving(true);
+    try {
+      const status = await setHermesAgentCliAccess(enabled);
+      setCliAccessEnabled(status.enabled);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCliAccessSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (panel === "skills" && (!skills || !toolsets)) {
@@ -253,6 +288,30 @@ export function AgentSettingsSection() {
                   void handleAgentHudEnabledChange(enabled)
                 }
                 aria-label="Show agent HUD"
+              />
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Agent CLI access</h3>
+              <p className="settings-row-description">
+                Let June drive the coding CLIs you already use (Claude Code,
+                Codex, Gemini, opencode). Sandboxed sessions gain write access
+                to those tools' own settings and session folders so they stay
+                logged in and can save their work. Those folders configure
+                software that also runs outside June's sandbox, so leave this
+                off unless you want June operating your CLIs. Applies to new
+                sessions.
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={cliAccessEnabled === true}
+                disabled={cliAccessEnabled === null || cliAccessSaving}
+                onCheckedChange={(enabled) =>
+                  void handleCliAccessChange(enabled)
+                }
+                aria-label="Allow agent CLI access"
               />
             </div>
           </div>

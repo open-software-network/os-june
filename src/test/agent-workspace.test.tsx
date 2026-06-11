@@ -123,7 +123,11 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
 
-vi.mock("../lib/hermes-adapter", () => ({
+vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
+  // Spread the real module so the pure scheduled-run helpers
+  // (isScheduledRunPreamble/stripScheduledRunPreamble) are present for the
+  // chat runtime; only the network-touching calls are overridden.
+  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
   deleteHermesSession: mocks.deleteHermesSession,
   listHermesSessionMessages: mocks.listHermesSessionMessages,
   listHermesSessions: mocks.listHermesSessions,
@@ -187,18 +191,18 @@ describe("AgentWorkspace", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5",
+        generationModel: "zai-org-glm-5-1",
       },
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5",
+      selectedModel: "zai-org-glm-5-1",
       models: [
         {
           provider: "venice",
-          id: "zai-org-glm-5",
-          name: "GLM 5",
+          id: "zai-org-glm-5-1",
+          name: "GLM 5.1",
           modelType: "text",
           privacy: "private",
           traits: [],
@@ -392,6 +396,13 @@ describe("AgentWorkspace", () => {
     expect(submitted.text).toContain(
       "The recorder crashes after long meetings",
     );
+    // The transcript shows the user's words only — the investigation
+    // framing is plumbing between June and the runtime, never UI.
+    expect(
+      await screen.findByText(/The recorder crashes after long meetings/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/in-app reporting flow/)).toBeNull();
+    expect(screen.queryByText(/---USER REPORT---/)).toBeNull();
     // The report waits for June's diagnosis; nothing is filed yet.
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
 
@@ -721,6 +732,32 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("CLI Run Tracking")).toBeInTheDocument();
   });
 
+  it("repairs gateway-glued contractions in assistant prose but not code or user text", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "what'sthere",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here'swhat I found. Run `git'sstatus` to check.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    // Assistant prose is de-glued…
+    expect(await screen.findByText(/Here's what I found/)).toBeInTheDocument();
+    // …but an inline code span keeps the agent's literal text…
+    expect(screen.getByText("git'sstatus")).toBeInTheDocument();
+    // …and the user's own message is never rewritten.
+    expect(screen.getByText("what'sthere")).toBeInTheDocument();
+  });
+
   it("keeps generated titles that begin with past-tense request words", async () => {
     const generatedTitle = "I Wanted Outcomes";
     mocks.listHermesSessions.mockResolvedValue([
@@ -884,6 +921,97 @@ describe("AgentWorkspace", () => {
     // Stopping also tears down the per-session gateway listener, so a
     // straggler "running" event can't flip the session back to working.
     expect(mocks.gatewayEventHandlers.size).toBe(0);
+  });
+
+  it("keeps an opened thinking disclosure open while reasoning streams", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "think out loud",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "think out loud",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Checking the project state." },
+        });
+      }
+    });
+
+    const label = await screen.findByText("Thinking");
+    const details = label.closest("details");
+    expect(details).not.toHaveAttribute("open");
+
+    await user.click(label);
+    await waitFor(() => expect(details).toHaveAttribute("open"));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: " Reading one more file." },
+        });
+      }
+    });
+
+    expect(
+      await screen.findByText(/Reading one more file/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Thinking").closest("details")).toHaveAttribute(
+      "open",
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Thought")).toBeInTheDocument();
+    expect(screen.getByText("Thought").closest("details")).toHaveAttribute(
+      "open",
+    );
+
+    await user.type(screen.getByRole("textbox"), "next request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "next request",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Starting the next turn." },
+        });
+      }
+    });
+    expect(await screen.findByText("Thinking")).toBeInTheDocument();
+    expect(screen.getByText("Thinking").closest("details")).not.toHaveAttribute(
+      "open",
+    );
   });
 
   it("explains a pending approval before the user chooses", async () => {

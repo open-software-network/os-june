@@ -7,7 +7,8 @@ const hermesMocks = vi.hoisted(() => ({
   deleteHermesSession: vi.fn(),
 }));
 
-vi.mock("../lib/hermes-adapter", () => ({
+vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
   deleteHermesSession: hermesMocks.deleteHermesSession,
   sessionTimestamp: (session: HermesSessionInfo) =>
     session.last_active ?? session.started_at ?? "",

@@ -195,9 +195,12 @@ export function App() {
   const [moveDialogSessionId, setMoveDialogSessionId] = useState<string | null>(
     null,
   );
-  // The project an open agent session was drilled into from — drives the
-  // breadcrumb above the agent workspace, mirroring notes-from-folder.
-  const [agentOriginFolderId, setAgentOriginFolderId] = useState<string>();
+  // Where an open agent session was drilled into from — a project or the
+  // Routines run history — drives the breadcrumb above the agent workspace,
+  // mirroring notes-from-folder.
+  const [agentOrigin, setAgentOrigin] = useState<
+    { kind: "project"; folderId: string } | { kind: "routines" }
+  >();
   // Set when "New session" is started from a project: the next brand-new
   // session AgentWorkspace selects gets filed into that project.
   const pendingSessionProjectRef = useRef<{
@@ -301,9 +304,10 @@ export function App() {
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
     : undefined;
-  const agentOriginFolder = agentOriginFolderId
-    ? state.folders.find((folder) => folder.id === agentOriginFolderId)
-    : undefined;
+  const agentOriginFolder =
+    agentOrigin?.kind === "project"
+      ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
+      : undefined;
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
@@ -433,7 +437,7 @@ export function App() {
 
   useEffect(() => {
     function openAgentWorkspace(session?: HermesSessionInfo) {
-      setAgentOriginFolderId(undefined);
+      setAgentOrigin(undefined);
       setActiveAgentSession(session);
       setActiveView("agent");
     }
@@ -464,7 +468,7 @@ export function App() {
   useEffect(() => {
     function handleReply(detail?: AgentReplyDetail) {
       if (!detail?.text.trim()) return;
-      setAgentOriginFolderId(undefined);
+      setAgentOrigin(undefined);
       setActiveAgentSession(detail.session);
       setPendingAgentReply(detail);
       setActiveView("agent");
@@ -587,7 +591,7 @@ export function App() {
         } else {
           // User switched to an existing session — abandon the pending
           // project intent so the workspace doesn't show misleading crumbs.
-          setAgentOriginFolderId(undefined);
+          setAgentOrigin(undefined);
         }
       }
       const nextWorkingSessionIds = new Set(detail.workingSessionIds);
@@ -688,7 +692,7 @@ export function App() {
 
     void installMenuBarListener<void>(AGENT_MENU_BAR_NEW_SESSION_EVENT, () => {
       pendingSessionProjectRef.current = null;
-      setAgentOriginFolderId(undefined);
+      setAgentOrigin(undefined);
       markAgentNewSessionPending();
       setActiveAgentSession(undefined);
       setActiveView("agent");
@@ -702,7 +706,7 @@ export function App() {
     void installMenuBarListener<string>(
       AGENT_MENU_BAR_OPEN_SESSION_EVENT,
       (sessionId) => {
-        setAgentOriginFolderId(undefined);
+        setAgentOrigin(undefined);
         if (!sessionId) {
           setActiveView("agent");
           return;
@@ -1223,7 +1227,7 @@ export function App() {
   // can start a fresh chat with the same pending-session handshake.
   function handleNewAgentSession() {
     pendingSessionProjectRef.current = null;
-    setAgentOriginFolderId(undefined);
+    setAgentOrigin(undefined);
     markAgentNewSessionPending();
     setActiveAgentSession(undefined);
     setActiveView("agent");
@@ -1239,7 +1243,7 @@ export function App() {
   // and files the submitted report (plus June's diagnosis) to the June team.
   function handleReportIssue() {
     pendingSessionProjectRef.current = null;
-    setAgentOriginFolderId(undefined);
+    setAgentOrigin(undefined);
     markAgentNewSessionPending(undefined, { kind: "issue-report" });
     setActiveAgentSession(undefined);
     setActiveView("agent");
@@ -1259,7 +1263,7 @@ export function App() {
       folderId,
       knownSessionIds: new Set(agentSessions.map((session) => session.id)),
     };
-    setAgentOriginFolderId(folderId);
+    setAgentOrigin({ kind: "project", folderId });
     markAgentNewSessionPending();
     setActiveAgentSession(undefined);
     setActiveView("agent");
@@ -1272,18 +1276,25 @@ export function App() {
 
   // Leaves the agent workspace for the project it was entered from.
   function handleReturnToAgentOriginFolder() {
-    if (!agentOriginFolderId) return;
+    if (agentOrigin?.kind !== "project") return;
     setActiveView("folders");
-    dispatch({ type: "folderSelected", folderId: agentOriginFolderId });
+    dispatch({ type: "folderSelected", folderId: agentOrigin.folderId });
     setActiveAgentSession(undefined);
-    setAgentOriginFolderId(undefined);
+    setAgentOrigin(undefined);
   }
 
   // Back target for sessions opened outside a project: the Agents view-all.
   function handleReturnToAgentsList() {
     setActiveView("agent-sessions");
     setActiveAgentSession(undefined);
-    setAgentOriginFolderId(undefined);
+    setAgentOrigin(undefined);
+  }
+
+  // Leaves the agent workspace for the run history it was entered from.
+  function handleReturnToRoutines() {
+    setActiveView("routines");
+    setActiveAgentSession(undefined);
+    setAgentOrigin(undefined);
   }
 
   async function handleSelectNote(noteId: string) {
@@ -1640,7 +1651,7 @@ export function App() {
             setSettingsReturnView(activeView);
           }
           setActiveView(view);
-          setAgentOriginFolderId(undefined);
+          setAgentOrigin(undefined);
           if (view !== "agent") {
             setActiveAgentSession(undefined);
             pendingSessionProjectRef.current = null;
@@ -1666,12 +1677,12 @@ export function App() {
         }
         onNewAgentSession={() => {
           pendingSessionProjectRef.current = null;
-          setAgentOriginFolderId(undefined);
+          setAgentOrigin(undefined);
           setActiveAgentSession(undefined);
           setActiveView("agent");
         }}
         onSelectAgentSession={(session) => {
-          setAgentOriginFolderId(undefined);
+          setAgentOrigin(undefined);
           setActiveAgentSession(session);
           setActiveView("agent");
         }}
@@ -1772,6 +1783,11 @@ export function App() {
                   setActiveAgentSession(undefined);
                   setActiveView("agent");
                 }}
+                onOpenRun={(session) => {
+                  setAgentOrigin({ kind: "routines" });
+                  setActiveAgentSession(session);
+                  setActiveView("agent");
+                }}
               />
             ) : activeView === "agent" ? (
               // The origin crumbs render inside the workspace's own sticky
@@ -1794,7 +1810,7 @@ export function App() {
                                 folderId: undefined,
                               });
                               setActiveAgentSession(undefined);
-                              setAgentOriginFolderId(undefined);
+                              setAgentOrigin(undefined);
                             },
                           },
                           {
@@ -1803,16 +1819,27 @@ export function App() {
                           },
                         ],
                       }
-                    : {
-                        backLabel: "Back to agents",
-                        onBack: handleReturnToAgentsList,
-                        crumbs: [
-                          {
-                            label: "Agents",
-                            onClick: handleReturnToAgentsList,
-                          },
-                        ],
-                      }
+                    : agentOrigin?.kind === "routines"
+                      ? {
+                          backLabel: "Back to routines",
+                          onBack: handleReturnToRoutines,
+                          crumbs: [
+                            {
+                              label: "Routines",
+                              onClick: handleReturnToRoutines,
+                            },
+                          ],
+                        }
+                      : {
+                          backLabel: "Back to agents",
+                          onBack: handleReturnToAgentsList,
+                          crumbs: [
+                            {
+                              label: "Agents",
+                              onClick: handleReturnToAgentsList,
+                            },
+                          ],
+                        }
                 }
               />
             ) : activeView === "agent-sessions" ? (
@@ -1823,7 +1850,7 @@ export function App() {
                 workingSessionIds={agentWorkingSessionIds}
                 waitingSessionIds={agentWaitingSessionIds}
                 onSelectSession={(session) => {
-                  setAgentOriginFolderId(undefined);
+                  setAgentOrigin(undefined);
                   setActiveAgentSession(session);
                   setActiveView("agent");
                 }}
@@ -1896,7 +1923,11 @@ export function App() {
                 onSelectSession={(session) => {
                   // Remember the project so the agent view can breadcrumb
                   // back to it.
-                  setAgentOriginFolderId(state.selectedFolderId);
+                  setAgentOrigin(
+                    state.selectedFolderId
+                      ? { kind: "project", folderId: state.selectedFolderId }
+                      : undefined,
+                  );
                   setActiveAgentSession(session);
                   setActiveView("agent");
                 }}

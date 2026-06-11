@@ -13,10 +13,22 @@ image_repo = "ghcr.io/open-software-network/scribe-api"
 trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
 
 [issue_reports]
-# Webhook that receives user-submitted issue reports as a JSON POST. Often
-# embeds a secret token, so set it per environment via
-# SCRIBE__ISSUE_REPORTS__WEBHOOK_URL. Empty keeps reports in the structured
-# logs only.
+# Where user-submitted issue reports go, first match wins:
+# 1. os-platform issue tracker — reports become Issues tagged with
+#    os_platform_label in the configured Org/Project. The API key is a
+#    fellow key (osk_...) of a bot user that is a member of that Org;
+#    set it per environment via SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY.
+# 2. Webhook — each report as a JSON POST. Often embeds a secret token, so
+#    set it per environment via SCRIBE__ISSUE_REPORTS__WEBHOOK_URL.
+# 3. Neither configured: reports land in the structured logs only.
+os_platform_api_url = ""
+os_platform_api_key = ""
+os_platform_org = ""
+os_platform_project = ""
+os_platform_label = "bug"
+# Reward asset for the zero-reward Issue (required when the target Org has
+# no default reward asset configured).
+os_platform_reward_asset = ""
 webhook_url = ""
 
 [os_accounts]
@@ -75,6 +87,18 @@ credits_per_million_seconds = 100000
 provider = "venice"
 model_type = "asr"
 display_name = "Parakeet TDT 0.6B v3"
+privacy = "private"
+
+# Fallback pricing for the default text model (zai-org-glm-5-1); the live
+# Venice catalog overrides this on boot. Keep in sync with
+# DEFAULT_GENERATION_MODEL in the Tauri providers module.
+[pricing."zai-org-glm-5-1"]
+unit = "tokens"
+input_credits_per_million_tokens = 1750
+output_credits_per_million_tokens = 5500
+provider = "venice"
+model_type = "text"
+display_name = "GLM 5.1"
 privacy = "private"
 
 [pricing."zai-org-glm-5"]

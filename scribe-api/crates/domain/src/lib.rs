@@ -110,11 +110,52 @@ pub struct Receipt {
     pub idempotent_replay: bool,
 }
 
+/// Audio container of a transcription request. The domain request carries
+/// this instead of the client's file name, so upstream providers receive a
+/// canonical, non-identifying part name no matter what the user's files are
+/// called — the anonymization is structural, not a sanitization step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioFormat {
+    Wav,
+    Mp4,
+}
+
+impl AudioFormat {
+    /// Container detection by extension — the same rule the upload pipeline
+    /// has always used: m4a/mp4 are MP4 audio, everything else is WAV.
+    pub fn from_filename(filename: &str) -> Self {
+        let is_mp4 = std::path::Path::new(filename)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("m4a") || extension.eq_ignore_ascii_case("mp4")
+            });
+        if is_mp4 { Self::Mp4 } else { Self::Wav }
+    }
+
+    /// The only file name upstream providers ever see.
+    pub fn upstream_filename(self) -> &'static str {
+        match self {
+            Self::Wav => "audio.wav",
+            Self::Mp4 => "audio.m4a",
+        }
+    }
+
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Wav => "audio/wav",
+            Self::Mp4 => "audio/mp4",
+        }
+    }
+}
+
+/// What a transcriber needs and nothing more: the audio, its container, and
+/// the inference knobs. Deliberately no file name, note title, user id, or
+/// session id — a provider cannot leak metadata it never receives.
 #[derive(Clone, Debug)]
 pub struct TranscriptionRequest {
     pub audio: Vec<u8>,
-    pub filename: String,
-    pub title: String,
+    pub format: AudioFormat,
     pub context: Option<String>,
     pub language: Option<String>,
     pub model: ModelId,
@@ -258,4 +299,28 @@ pub trait IssueReportSink: Send + Sync {
 
 pub trait AudioDurationProbe: Send + Sync {
     fn probe(&self, audio: &[u8]) -> Result<Duration, DomainError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioFormat;
+
+    #[test]
+    fn audio_format_detects_mp4_containers_case_insensitively() {
+        assert_eq!(AudioFormat::from_filename("clip.m4a"), AudioFormat::Mp4);
+        assert_eq!(AudioFormat::from_filename("CLIP.M4A"), AudioFormat::Mp4);
+        assert_eq!(AudioFormat::from_filename("video.mp4"), AudioFormat::Mp4);
+        assert_eq!(AudioFormat::from_filename("take.wav"), AudioFormat::Wav);
+        assert_eq!(AudioFormat::from_filename("noext"), AudioFormat::Wav);
+    }
+
+    #[test]
+    fn upstream_filenames_never_echo_the_input() {
+        // The canonical names are constants by construction; this pins the
+        // exact strings providers send so a regression is loud.
+        assert_eq!(AudioFormat::Wav.upstream_filename(), "audio.wav");
+        assert_eq!(AudioFormat::Mp4.upstream_filename(), "audio.m4a");
+        assert_eq!(AudioFormat::Wav.mime(), "audio/wav");
+        assert_eq!(AudioFormat::Mp4.mime(), "audio/mp4");
+    }
 }

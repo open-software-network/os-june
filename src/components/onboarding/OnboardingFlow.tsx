@@ -1,64 +1,53 @@
-import { useEffect, useMemo, useState } from "react";
+import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
+import { useEffect, useState } from "react";
 import {
   onboardingResumeStep,
-  setAgentRiskAcknowledged,
   setOnboardingResumeStep,
 } from "../../lib/onboarding";
-import { dictationSettings } from "../../lib/tauri";
-import type { AccountStatus } from "../../lib/tauri";
+import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
+import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { isSubscriptionActive } from "../../lib/trial-checkout";
-import { FinishStep } from "./steps/FinishStep";
-import {
-  AgentHonestyStep,
-  AgentIntroStep,
-  DictationPracticeStep,
-  MeetingNotesStep,
-} from "./steps/LearnSteps";
 import { PermissionsStep } from "./steps/PermissionSteps";
-import { DataPracticesStep, PrivacyStep } from "./steps/PrivacySteps";
-import { SetupStep } from "./steps/SetupStep";
+import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TrialStep } from "./steps/TrialStep";
 import { usePermissionStatuses } from "./use-permission-status";
 
-type StepId =
-  | "sign-in"
-  | "privacy"
-  | "data-practices"
-  | "permissions"
-  | "setup"
-  | "trial"
-  | "dictation-practice"
-  | "meeting-notes"
-  | "agent-intro"
-  | "agent-honesty"
-  | "finish";
+type StepId = "sign-in" | "permissions" | "trial" | "dictation-practice";
 
-const STAGES = [
-  "Welcome",
-  "Privacy",
-  "Permissions",
-  "Set up",
-  "Free trial",
-  "Learn",
-  "Finish",
-] as const;
+// The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
+// on the Rust side.
+const FN_SHORTCUT = {
+  code: "Fn",
+  modifiers: {
+    command: false,
+    control: false,
+    option: false,
+    shift: false,
+    function: true,
+  },
+  label: "Fn",
+  pressCount: 1 as const,
+};
 
-// The trial sits after permissions/setup (the user has invested) and right
-// before the hands-on practice — which runs the real, metered pipeline and
-// therefore needs the trial's credits. Pay, then immediately feel the payoff.
-const STEPS: { id: StepId; stage: (typeof STAGES)[number] }[] = [
-  { id: "sign-in", stage: "Welcome" },
-  { id: "privacy", stage: "Privacy" },
-  { id: "data-practices", stage: "Privacy" },
-  { id: "permissions", stage: "Permissions" },
-  { id: "setup", stage: "Set up" },
-  { id: "trial", stage: "Free trial" },
-  { id: "dictation-practice", stage: "Learn" },
-  { id: "meeting-notes", stage: "Learn" },
-  { id: "agent-intro", stage: "Learn" },
-  { id: "agent-honesty", stage: "Learn" },
-  { id: "finish", stage: "Finish" },
+// Mirrors DictationShortcutSetting::control_option_d() on the Rust side: the
+// factory default a fresh install carries before anyone has touched it.
+function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
+  return (
+    shortcut.code === "KeyD" &&
+    shortcut.modifiers.control &&
+    shortcut.modifiers.option &&
+    !shortcut.modifiers.command &&
+    !shortcut.modifiers.shift &&
+    !shortcut.modifiers.function
+  );
+}
+
+const STEPS: StepId[] = [
+  "sign-in",
+  "permissions",
+  "trial",
+  "dictation-practice",
 ];
 
 type Props = {
@@ -71,7 +60,7 @@ type Props = {
 function initialStepIndex(): number {
   const saved = onboardingResumeStep();
   if (!saved) return 0;
-  const index = STEPS.findIndex((step) => step.id === saved);
+  const index = STEPS.indexOf(saved as StepId);
   return index === -1 ? 0 : index;
 }
 
@@ -81,44 +70,62 @@ export function OnboardingFlow({
   onRefreshAccount,
   onComplete,
 }: Props) {
-  const [stepIndex, setStepIndex] = useState(initialStepIndex);
+  const [stepIndex, setStepIndex] = useState(() => {
+    const initial = initialStepIndex();
+    return account.signedIn && STEPS[initial] === "sign-in" ? 1 : initial;
+  });
   const [shortcutLabel, setShortcutLabel] = useState("fn");
-  const [language, setLanguage] = useState("");
 
-  const step = STEPS[stepIndex];
-  const stageIndex = STAGES.indexOf(step.stage);
+  const stepId = STEPS[stepIndex];
 
   // Everything past sign-in needs an account; a resume point past it with a
   // signed-out account (keychain cleared, signed out elsewhere) would strand
   // the user on steps that can't work.
   useEffect(() => {
-    if (!account.signedIn && step.id !== "sign-in") {
+    if (!account.signedIn && stepId !== "sign-in") {
       setStepIndex(0);
     }
-  }, [account.signedIn, step.id]);
+  }, [account.signedIn, stepId]);
 
   useEffect(() => {
-    setOnboardingResumeStep(step.id);
-  }, [step.id]);
+    if (account.signedIn && stepId === "sign-in") {
+      setStepIndex(1);
+    }
+  }, [account.signedIn, stepId]);
+
+  const firstReachableStepIndex = account.signedIn ? 1 : 0;
+
+  useEffect(() => {
+    setOnboardingResumeStep(stepId);
+  }, [stepId]);
 
   // Only poll the helper while the user is on the permissions screen.
-  const permissionStatuses = usePermissionStatuses(step.id === "permissions");
+  const permissionStatuses = usePermissionStatuses(stepId === "permissions");
 
+  // Onboarding pitches the bare-fn default, but a version bump replays the
+  // wizard for existing users, so it must not clobber a key they customized
+  // in Settings. Read first: only the untouched factory default (Ctrl+Opt+D)
+  // gets normalized to fn; anything else is reflected as-is. Runs once per
+  // wizard run, not per practice-step mount, so a key rebound on the
+  // practice screen survives stepping back and forward.
   useEffect(() => {
     dictationSettings()
       .then(({ settings }) => {
-        if (settings.pushToTalkShortcut.label) {
-          setShortcutLabel(settings.pushToTalkShortcut.label);
+        const current = settings.pushToTalkShortcut;
+        if (current && !isFactoryDefaultShortcut(current)) {
+          if (current.label) setShortcutLabel(current.label);
+          return undefined;
         }
-        setLanguage(settings.language ?? "");
+        return setDictationShortcut("push_to_talk", FN_SHORTCUT).then(
+          (saved) => {
+            setShortcutLabel(
+              saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label,
+            );
+          },
+        );
       })
       .catch(() => undefined);
   }, []);
-
-  const firstName = useMemo(() => {
-    const display = account.user?.displayName ?? account.user?.handle;
-    return display?.split(/\s+/)[0];
-  }, [account.user?.displayName, account.user?.handle]);
 
   function goNext() {
     setStepIndex((index) => Math.min(index + 1, STEPS.length - 1));
@@ -126,11 +133,11 @@ export function OnboardingFlow({
 
   function goBack() {
     setStepIndex((index) => {
-      let next = Math.max(index - 1, 0);
+      let next = Math.max(index - 1, firstReachableStepIndex);
       // The trial step auto-skips forward for subscribed users; stepping
       // back onto it would just bounce, so hop over it instead.
-      if (STEPS[next].id === "trial" && isSubscriptionActive(account)) {
-        next = Math.max(next - 1, 0);
+      if (STEPS[next] === "trial" && isSubscriptionActive(account)) {
+        next = Math.max(next - 1, firstReachableStepIndex);
       }
       return next;
     });
@@ -138,80 +145,60 @@ export function OnboardingFlow({
 
   return (
     <div className="onboarding-screen">
-      <nav className="onboarding-progress" aria-label="Setup progress">
-        {STAGES.map((stage, index) => (
-          <span
-            key={stage}
-            className="onboarding-progress-stage"
-            data-state={
-              index < stageIndex
-                ? "done"
-                : index === stageIndex
-                  ? "current"
-                  : "upcoming"
-            }
-            aria-current={index === stageIndex ? "step" : undefined}
-          >
-            {stage}
-          </span>
-        ))}
-      </nav>
-      <div className="onboarding-body">
-        {stepIndex > 0 ? (
+      <header className="onboarding-topbar">
+        {stepIndex > firstReachableStepIndex ? (
           <button
             type="button"
             className="onboarding-back"
             onClick={goBack}
             aria-label="Back"
+            title="Back"
           >
-            ← Back
+            <IconChevronLeftSmall size={18} aria-hidden />
           </button>
         ) : null}
-        {step.id === "sign-in" ? (
+        <nav
+          className="onboarding-progress"
+          aria-label={`Setup progress: step ${stepIndex + 1} of ${STEPS.length}`}
+        >
+          {STEPS.map((id, index) => (
+            <span
+              key={id}
+              className="onboarding-progress-seg"
+              aria-hidden
+              data-state={
+                index < stepIndex
+                  ? "done"
+                  : index === stepIndex
+                    ? "current"
+                    : "upcoming"
+              }
+            />
+          ))}
+        </nav>
+      </header>
+      <div className="onboarding-body">
+        {stepId === "sign-in" ? (
           <SignInStep
             account={account}
-            name={firstName}
             onAccountChanged={onAccountChanged}
             onContinue={goNext}
           />
-        ) : step.id === "privacy" ? (
-          <PrivacyStep onContinue={goNext} />
-        ) : step.id === "data-practices" ? (
-          <DataPracticesStep onContinue={goNext} />
-        ) : step.id === "permissions" ? (
+        ) : stepId === "permissions" ? (
           <PermissionsStep statuses={permissionStatuses} onContinue={goNext} />
-        ) : step.id === "setup" ? (
-          <SetupStep
-            shortcutLabel={shortcutLabel}
-            onShortcutLabelChange={setShortcutLabel}
-            language={language}
-            onLanguageChange={setLanguage}
-            onContinue={goNext}
-          />
-        ) : step.id === "trial" ? (
+        ) : stepId === "trial" ? (
           <TrialStep
             account={account}
             onRefresh={onRefreshAccount}
             onContinue={goNext}
           />
-        ) : step.id === "dictation-practice" ? (
+        ) : stepId === "dictation-practice" ? (
           <DictationPracticeStep
-            name={firstName}
             shortcutLabel={shortcutLabel}
-            onContinue={goNext}
+            onShortcutLabelChange={setShortcutLabel}
+            onContinue={onComplete}
           />
-        ) : step.id === "meeting-notes" ? (
-          <MeetingNotesStep onContinue={goNext} />
-        ) : step.id === "agent-intro" ? (
-          <AgentIntroStep onContinue={goNext} />
-        ) : step.id === "agent-honesty" ? (
-          <AgentHonestyStep
-            onAcknowledged={() => setAgentRiskAcknowledged(true)}
-            onContinue={goNext}
-          />
-        ) : (
-          <FinishStep shortcutLabel={shortcutLabel} onComplete={onComplete} />
-        )}
+        ) : null}
       </div>
     </div>
   );

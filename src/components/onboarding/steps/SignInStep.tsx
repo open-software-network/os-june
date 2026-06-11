@@ -1,23 +1,46 @@
 import { useCallback, useEffect, useState } from "react";
+import { IconLock } from "central-icons/IconLock";
+import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconSparkle } from "central-icons/IconSparkle";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
+import { OsMark } from "../../account/AccountGate";
 import { Spinner } from "../../ui/Spinner";
-import { StepActions, StepHeading } from "../StepChrome";
+import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
+
+// What June is, in three rows: the agent is the product, dictation and
+// meeting notes are how you talk to it, and private is why it's safe to.
+const JUNE_POINTS = [
+  {
+    icon: IconSparkle,
+    title: "An agent on your Mac",
+    detail: "Hand June real work. It runs the session and comes back done.",
+  },
+  {
+    icon: IconMicrophone,
+    title: "Talk instead of type",
+    detail: "Dictate into any app. June writes your meeting notes too.",
+  },
+  {
+    icon: IconLock,
+    title: "Private by default",
+    detail:
+      "Prompts leave your Mac only for inference, on zero-retention models by default.",
+  },
+];
 
 /**
- * Step 1: welcome + sign-in, fused into one screen so the wizard's progress
- * bar frames the very first thing a new user sees. The browser handoff
- * resolves through the deep link; when `osAccountsLogin` returns the step
- * flips to a signed-in greeting — one continue, no re-finding the app.
+ * Step 1: welcome + sign-in, fused into one screen so the wizard frames the
+ * very first thing a new user sees. The browser handoff resolves through the
+ * deep link; when `osAccountsLogin` returns the step flips to a signed-in
+ * greeting — one continue, no re-finding the app.
  */
 export function SignInStep({
   account,
-  name,
   onAccountChanged,
   onContinue,
 }: {
   account: AccountStatus;
-  name?: string;
   onAccountChanged: (next: AccountStatus) => void;
   onContinue: () => void;
 }) {
@@ -46,6 +69,7 @@ export function SignInStep({
       const next = await osAccountsLogin();
       if (next.signedIn) {
         onAccountChanged(next);
+        onContinue();
       } else {
         setStatus("Sign-in did not complete. Please try again.");
       }
@@ -56,80 +80,60 @@ export function SignInStep({
     }
   }
 
-  if (account.signedIn) {
-    return (
-      <section className="onboarding-step">
-        <StepHeading
-          title={name ? `Welcome, ${name}!` : "Welcome to June"}
-          subtitle={
-            account.user?.handle
-              ? `You're signed in as @${account.user.handle}. Let's get June set up.`
-              : "You're signed in. Let's get June set up."
-          }
-        />
-        <StepActions
-          continueLabel="Let's get you set up"
-          onContinue={onContinue}
-        />
-      </section>
-    );
-  }
-
   return (
-    <section className="onboarding-step">
-      <StepHeading
-        title="Welcome to June"
-        subtitle="June is your private AI assistant: dictate into any app, never take meeting notes again, and hand off real work to an agent that runs on your Mac."
-      />
-      <ul className="onboarding-feature-list">
-        <li>
-          <strong>Talk, don't type</strong>: hold a key and speak; June types
-          at your cursor in whatever app has focus.
-        </li>
-        <li>
-          <strong>Never take notes again</strong>: decisions, action items, and
-          who said what, written for you.
-        </li>
-        <li>
-          <strong>Hand off real work</strong>: give June a task, not just a
-          question. It comes back with it done.
-        </li>
+    <StepCard
+      title="Welcome to June"
+      subtitle="Your private AI assistant."
+      mark
+      wide
+    >
+      <ul className="onboarding-points">
+        {JUNE_POINTS.map(({ icon: Icon, title, detail }) => (
+          <li key={title}>
+            <span className="onboarding-point-icon" aria-hidden>
+              <Icon size={15} />
+            </span>
+            <div>
+              <span className="onboarding-point-label">{title}</span>
+              <span className="onboarding-point-detail">{detail}</span>
+            </div>
+          </li>
+        ))}
       </ul>
       {account.configured ? (
-        busy ? (
-          <div
-            className="onboarding-browser-wait"
-            role="status"
-            aria-live="polite"
-          >
-            <span className="onboarding-browser-wait-label">
-              <Spinner aria-hidden />
-              <span>Complete sign-in in your browser</span>
-            </span>
-            <span className="onboarding-browser-wait-hint">
-              June picks up where you left off the moment you're done.
-            </span>
-            <button
-              type="button"
-              className="onboarding-skip"
-              onClick={() => void cancelInFlight()}
+        <div className="welcome-providers">
+          {busy ? (
+            <div
+              className="welcome-auth-progress onboarding-waiting"
+              role="status"
+              aria-live="polite"
             >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <StepActions
-            continueLabel="Continue with OpenSoftware"
-            onContinue={() => void handleSignIn()}
-          />
-        )
+              <span className="welcome-progress-label">
+                <Spinner className="welcome-spinner" aria-hidden />
+                <span>Complete sign-in in browser</span>
+              </span>
+              <button
+                type="button"
+                className="welcome-cancel-btn"
+                onClick={() => void cancelInFlight()}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <OnboardingPrimaryButton onClick={() => void handleSignIn()}>
+              <OsMark />
+              <span>Continue with OpenSoftware</span>
+            </OnboardingPrimaryButton>
+          )}
+        </div>
       ) : (
         <p className="welcome-status welcome-status-info">
           OpenSoftware sign-in is not configured for this build.
         </p>
       )}
       {status ? <p className="welcome-status">{status}</p> : null}
-      <p className="onboarding-footnote">
+      <p className="welcome-terms">
         By continuing, you agree to the{" "}
         <a
           href="https://accounts.opensoftware.co/terms"
@@ -148,7 +152,7 @@ export function SignInStep({
         </a>
         .
       </p>
-    </section>
+    </StepCard>
   );
 }
 

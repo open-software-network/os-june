@@ -181,6 +181,18 @@ describe("meeting start transcription event", () => {
       ],
     });
     mocks.startRecording.mockResolvedValue(recording());
+    // The active-recording poll (App.tsx ~20Hz waveform interval) calls this
+    // on a timer; without a resolved value the tick throws on undefined.then
+    // as an unhandled error after the assertions finish - a timing-dependent
+    // CI failure that coverage instrumentation reliably triggers.
+    mocks.getRecordingStatus.mockResolvedValue({
+      sessionId: "rec-1",
+      state: "recording",
+      elapsedMs: 500,
+      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+      silenceWarning: false,
+      bytesWritten: 2048,
+    });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],

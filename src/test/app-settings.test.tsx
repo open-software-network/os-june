@@ -31,6 +31,8 @@ const mocks = vi.hoisted(() => ({
   updateHermesBridgeMessagingPlatform: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
+  hermesAgentCliAccess: vi.fn(),
+  setHermesAgentCliAccess: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
@@ -65,6 +67,8 @@ vi.mock("../lib/tauri", () => ({
     mocks.updateHermesBridgeMessagingPlatform,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
+  hermesAgentCliAccess: mocks.hermesAgentCliAccess,
+  setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
@@ -137,7 +141,7 @@ describe("AppSettings", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5",
+        generationModel: "zai-org-glm-5-1",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -146,7 +150,7 @@ describe("AppSettings", () => {
       selectedModel:
         mode === "transcription"
           ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5",
+          : "zai-org-glm-5-1",
       models:
         mode === "transcription"
           ? [
@@ -191,8 +195,8 @@ describe("AppSettings", () => {
           : [
               {
                 provider: "venice",
-                id: "zai-org-glm-5",
-                name: "GLM 5",
+                id: "zai-org-glm-5-1",
+                name: "GLM 5.1",
                 modelType: "text",
                 description: "Text model for writing notes.",
                 privacy: "private",
@@ -248,12 +252,16 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "zai-org-glm-5",
+      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-1",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
+    mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
+    mocks.setHermesAgentCliAccess.mockImplementation(
+      async (enabled: boolean) => ({ enabled }),
+    );
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
       ...(kind === "toggle"
@@ -1122,7 +1130,7 @@ describe("AppSettings", () => {
     // Suggested is the default view: only the curated picks present in the
     // catalog show, each with its recommendation reason.
     expect(
-      await screen.findByRole("option", { name: /GLM 5/ }),
+      await screen.findByRole("option", { name: /GLM 5\.1/ }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("option", { name: /Venice Uncensored/ }),
@@ -1144,10 +1152,10 @@ describe("AppSettings", () => {
       screen.getByRole("option", { name: /Venice Uncensored/ }),
     ).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Search models"));
-    await user.click(screen.getByRole("option", { name: /GLM 5/ }));
+    await user.click(screen.getByRole("option", { name: /GLM 5\.1/ }));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "generation",
-      "zai-org-glm-5",
+      "zai-org-glm-5-1",
     );
   });
 
@@ -1292,5 +1300,43 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).not.toHaveBeenCalled();
+  });
+
+  it("opts into agent CLI access from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const cliSwitch = await screen.findByRole("switch", {
+      name: "Allow agent CLI access",
+    });
+    // The disclosure names the deferred-execution risk, not just the benefit.
+    expect(screen.getByText(/runs outside June's sandbox/)).toBeInTheDocument();
+
+    await waitFor(() => expect(cliSwitch).toBeEnabled());
+    expect(cliSwitch).toHaveAttribute("aria-checked", "false");
+
+    await user.click(cliSwitch);
+    await waitFor(() =>
+      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true),
+    );
+    expect(cliSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(cliSwitch);
+    await waitFor(() =>
+      expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false),
+    );
+    expect(cliSwitch).toHaveAttribute("aria-checked", "false");
   });
 });

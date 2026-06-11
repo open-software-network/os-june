@@ -8,8 +8,9 @@ use crate::{
     util::ceil_seconds,
 };
 use scribe_domain::{
-    ActionSlug, AudioDurationProbe, CleanedText, Cleaner, CleanupRequest, Credits, ModelId,
-    ModelKind, OsAccountsClient, Receipt, Transcriber, Transcript, TranscriptionRequest, UserId,
+    ActionSlug, AudioDurationProbe, AudioFormat, CleanedText, Cleaner, CleanupRequest, Credits,
+    ModelId, ModelKind, OsAccountsClient, Receipt, Transcriber, Transcript, TranscriptionRequest,
+    UserId,
 };
 use std::sync::Arc;
 
@@ -74,8 +75,7 @@ impl DictateService {
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
-                filename: params.filename,
-                title: "Dictation".to_string(),
+                format: AudioFormat::from_filename(&params.filename),
                 context: params.context,
                 language: params.language,
                 model: params.model_id.clone(),

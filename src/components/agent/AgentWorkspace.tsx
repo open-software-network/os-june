@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
@@ -116,6 +117,7 @@ import {
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
+  stripScheduledRunPreamble,
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
 import {
@@ -143,6 +145,10 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { messageFromError } from "../../lib/errors";
+import {
+  displayedUserMessageText,
+  issueReportPrompt,
+} from "../../lib/issue-report-prompt";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -152,6 +158,7 @@ import {
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
+  repairContractionSpacing,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -603,23 +610,6 @@ Extra details (when it started, steps to reproduce, attach a screenshot if you h
 
 /** Frames the user's bug report for June: investigate and write a diagnosis
  * for the team instead of treating it as a normal request for help. */
-function issueReportPrompt(report: string) {
-  return [
-    "The user is filing a bug report about the June desktop app. This conversation is part of the in-app reporting flow: your reply will be attached to the report and sent to the June development team, so write it for them.",
-    "",
-    "Do not try to fix the issue or walk the user through troubleshooting. Instead:",
-    "1. Read the report below and inspect any attached files or screenshots closely. Describe exactly what they show, including any visible error text.",
-    "2. Give your assessment of what is going wrong and which part of the app is likely involved.",
-    "3. Note anything else the team should look at.",
-    "",
-    "Keep it concise and factual. Close by thanking the user and letting them know the report and your assessment are being sent to the June team.",
-    "",
-    "---USER REPORT---",
-    report,
-    "---END USER REPORT---",
-  ].join("\n");
-}
-
 type PendingIssueReport = {
   description: string;
   attachmentNames: string[];
@@ -849,6 +839,9 @@ export function AgentWorkspace({
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
   >(() => continuity?.liveEvents ?? {});
+  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<
+    Record<string, boolean>
+  >({});
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -3061,6 +3054,20 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
     chatArtifacts,
   );
+  const activeThinkingKey = selectedHermesSessionId
+    ? `session:${selectedHermesSessionId}:active`
+    : selectedTask
+      ? `task:${selectedTask.id}:active`
+      : undefined;
+  const thinkingOpen = useCallback(
+    (key: string) => thinkingOpenByKey[key] ?? false,
+    [thinkingOpenByKey],
+  );
+  const setThinkingOpen = useCallback((key: string, open: boolean) => {
+    setThinkingOpenByKey((current) =>
+      current[key] === open ? current : { ...current, [key]: open },
+    );
+  }, []);
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
   const surfacedArtifacts = [...turnArtifacts.values()]
@@ -3532,9 +3539,12 @@ export function AgentWorkspace({
         <AgentChatTurnRow
           key={turn.id}
           turn={turn}
+          activeThinkingKey={activeThinkingKey}
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
+          thinkingOpen={thinkingOpen}
+          onThinkingOpenChange={setThinkingOpen}
           onDownloadArtifact={downloadArtifact}
           onOpenArtifact={openArtifact}
           onApproval={(part, choice) =>
@@ -3609,9 +3619,12 @@ export function AgentWorkspace({
           <AgentChatTurnRow
             key={turn.id}
             turn={turn}
+            activeThinkingKey={activeThinkingKey}
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
+            thinkingOpen={thinkingOpen}
+            onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
             onTopUp={() =>
@@ -4785,6 +4798,14 @@ function AgentResponseGallery({
   errors?: boolean;
   onClose: () => void;
 }) {
+  const [thinkingOpenByKey, setThinkingOpenByKey] = useState<
+    Record<string, boolean>
+  >({});
+  const setThinkingOpen = useCallback((key: string, open: boolean) => {
+    setThinkingOpenByKey((current) =>
+      current[key] === open ? current : { ...current, [key]: open },
+    );
+  }, []);
   return (
     <div className="agent-timeline agent-gallery">
       <div className="agent-gallery-banner">
@@ -4822,9 +4843,11 @@ function AgentResponseGallery({
               artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
+              thinkingOpen={(key) => thinkingOpenByKey[key] ?? false}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
             />
           ))}
@@ -4835,19 +4858,24 @@ function AgentResponseGallery({
 }
 
 function AgentChatTurnRow({
+  activeThinkingKey,
   approvalSubmitting,
   artifacts,
   clarifySubmitting,
+  thinkingOpen,
   onApproval,
   onClarify,
   onDownloadArtifact,
   onOpenArtifact,
+  onThinkingOpenChange,
   onTopUp,
   turn,
 }: {
+  activeThinkingKey?: string;
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
+  thinkingOpen: (key: string) => boolean;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: AgentApprovalChoice,
@@ -4858,6 +4886,7 @@ function AgentChatTurnRow({
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
+  onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   turn: AgentChatTurn;
 }) {
@@ -4865,6 +4894,56 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "text" }> =>
       part.type === "text",
   );
+  const reasoningParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
+      part.type === "reasoning",
+  );
+  const toolParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
+      part.type === "tool",
+  );
+  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
+  // "Thought" disclosure so the conversation isn't littered with terminal rows.
+  const thinkingRunning =
+    reasoningParts.some((part) => part.status === "running") ||
+    toolParts.some((part) => part.status === "running");
+  const completedThinkingKey = `turn:${turn.id}:thinking`;
+  const thinkingKey =
+    thinkingRunning && activeThinkingKey
+      ? activeThinkingKey
+      : completedThinkingKey;
+  const wasThinkingRunningRef = useRef(thinkingRunning);
+  const carriedOpen =
+    !thinkingRunning &&
+    wasThinkingRunningRef.current &&
+    activeThinkingKey !== undefined &&
+    thinkingOpen(activeThinkingKey);
+  const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
+
+  useEffect(() => {
+    const wasRunning = wasThinkingRunningRef.current;
+    wasThinkingRunningRef.current = thinkingRunning;
+    if (
+      !wasRunning ||
+      thinkingRunning ||
+      activeThinkingKey === undefined ||
+      reasoningParts.length + toolParts.length === 0 ||
+      !thinkingOpen(activeThinkingKey)
+    ) {
+      return;
+    }
+    onThinkingOpenChange(completedThinkingKey, true);
+    onThinkingOpenChange(activeThinkingKey, false);
+  }, [
+    activeThinkingKey,
+    completedThinkingKey,
+    onThinkingOpenChange,
+    reasoningParts.length,
+    thinkingOpen,
+    thinkingRunning,
+    toolParts.length,
+  ]);
+
   const contextParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "context" }> =>
       part.type === "context",
@@ -4890,32 +4969,29 @@ function AgentChatTurnRow({
 
   if (turn.role === "user") {
     return (
-      <article className="agent-user-turn">
+      <article
+        className="agent-user-turn"
+        data-scheduled-run={turn.isScheduledRun ? "true" : undefined}
+      >
+        {turn.isScheduledRun ? (
+          <span className="agent-user-turn-eyebrow">
+            <IconArrowsRepeat size={12} aria-hidden />
+            Scheduled routine run
+          </span>
+        ) : null}
         <div className="agent-user-turn-body">
           {textParts.map((part, index) => (
             <MarkdownContent
               key={`${turn.id}:text:${index}`}
-              markdown={part.text}
+              // Issue-report sessions open with the wrapped investigation
+              // prompt; the transcript shows only what the user typed.
+              markdown={displayedUserMessageText(part.text)}
             />
           ))}
         </div>
       </article>
     );
   }
-
-  const reasoningParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "reasoning" }> =>
-      part.type === "reasoning",
-  );
-  const toolParts = turn.parts.filter(
-    (part): part is Extract<AgentChatPart, { type: "tool" }> =>
-      part.type === "tool",
-  );
-  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
-  // "Thought" disclosure so the conversation isn't littered with terminal rows.
-  const thinkingRunning =
-    reasoningParts.some((part) => part.status === "running") ||
-    toolParts.some((part) => part.status === "running");
 
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
@@ -4925,12 +5001,14 @@ function AgentChatTurnRow({
             reasoning={reasoningParts}
             tools={toolParts}
             running={thinkingRunning}
+            open={thinkingIsOpen}
+            onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
         ) : null}
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
             <div key={`${turn.id}:text:${index}`}>
-              <MarkdownContent markdown={part.text} />
+              <MarkdownContent markdown={part.text} repairProse />
             </div>
           ) : part.type === "context" ? (
             <ContextCompactionPart
@@ -5243,7 +5321,11 @@ function ApprovalPart({
                 <span>Working out what this request does…</span>
               </p>
             ) : explainState === "ready" && explanation ? (
-              <p>{explanation}</p>
+              explanation
+                .split(/\n{2,}/)
+                .map((paragraph) => paragraph.trim())
+                .filter(Boolean)
+                .map((paragraph, index) => <p key={index}>{paragraph}</p>)
             ) : (
               // Generation unavailable (offline, signed out): keep the
               // static framing rather than an empty panel.
@@ -5341,19 +5423,21 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
 }
 
 function AgentThinkingGroup({
+  open,
+  onOpenChange,
   reasoning,
   tools,
   running,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
   tools: Extract<AgentChatPart, { type: "tool" }>[];
   running: boolean;
 }) {
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
   // Collapsed by default to a short label — "Thinking" while it works, "Thought"
   // once done (terracotta while live). Expanding reveals the reasoning prose and
   // any terminal calls it ran, nested together.
-  const open = userOpen ?? false;
   const reasoningText = reasoning
     .map((part) => part.text)
     .join("\n\n")
@@ -5363,7 +5447,7 @@ function AgentThinkingGroup({
       className="agent-reasoning"
       data-status={running ? "running" : "completed"}
       open={open}
-      onToggle={(event) => setUserOpen(event.currentTarget.open)}
+      onToggle={(event) => onOpenChange(event.currentTarget.open)}
     >
       <summary>
         <span className={running ? "text-shimmer" : undefined}>
@@ -5966,13 +6050,18 @@ function isMarkdownPath(path: string) {
 function MarkdownContent({
   markdown,
   highlight,
+  // Repairs the gateway's dropped-space-after-contraction artifact ("it'snot"
+  // -> "it's not"). Only set for assistant prose: it must never touch code or
+  // a user's own text. See repairContractionSpacing.
+  repairProse = false,
 }: {
   markdown: string;
   highlight?: string;
+  repairProse?: boolean;
 }) {
   return (
     <div className="agent-markdown">
-      {renderMarkdownBlocks(markdown, highlight)}
+      {renderMarkdownBlocks(markdown, highlight, repairProse)}
     </div>
   );
 }
@@ -6007,7 +6096,11 @@ function highlightText(
   return nodes;
 }
 
-function renderMarkdownBlocks(markdown: string, highlight?: string) {
+function renderMarkdownBlocks(
+  markdown: string,
+  highlight?: string,
+  repairProse = false,
+) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -6018,7 +6111,9 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
     paragraph = [];
     if (!text) return;
     blocks.push(
-      <p key={`p-${key++}`}>{renderInlineMarkdown(text, key, highlight)}</p>,
+      <p key={`p-${key++}`}>
+        {renderInlineMarkdown(text, key, highlight, repairProse)}
+      </p>,
     );
   };
 
@@ -6070,7 +6165,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
       index -= 1;
       blocks.push(
         <blockquote key={`quote-${key++}`}>
-          {renderMarkdownBlocks(quoted.join("\n"), highlight)}
+          {renderMarkdownBlocks(quoted.join("\n"), highlight, repairProse)}
         </blockquote>,
       );
       continue;
@@ -6105,7 +6200,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
               <tr>
                 {header.map((cell, cellIndex) => (
                   <th key={cellIndex}>
-                    {renderInlineMarkdown(cell, key, highlight)}
+                    {renderInlineMarkdown(cell, key, highlight, repairProse)}
                   </th>
                 ))}
               </tr>
@@ -6115,7 +6210,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex}>
-                      {renderInlineMarkdown(cell, key, highlight)}
+                      {renderInlineMarkdown(cell, key, highlight, repairProse)}
                     </td>
                   ))}
                 </tr>
@@ -6131,7 +6226,12 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
     if (heading) {
       flushParagraph();
       const level = Math.min(heading[1].length, 3);
-      const content = renderInlineMarkdown(heading[2], key, highlight);
+      const content = renderInlineMarkdown(
+        heading[2],
+        key,
+        highlight,
+        repairProse,
+      );
       blocks.push(
         level === 1 ? (
           <h2 key={`h-${key++}`}>{content}</h2>
@@ -6160,7 +6260,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string) {
       index -= 1;
       const listItems = items.map((item, itemIndex) => (
         <li key={`li-${key}-${itemIndex}`}>
-          {renderInlineMarkdown(item, key + itemIndex, highlight)}
+          {renderInlineMarkdown(item, key + itemIndex, highlight, repairProse)}
         </li>
       ));
       blocks.push(
@@ -6184,10 +6284,15 @@ function renderInlineMarkdown(
   text: string,
   keySeed: number,
   highlight?: string,
+  repairProse = false,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   const mark = (value: string, slot: string) =>
     highlightText(value, highlight, `${keySeed}-${slot}`);
+  // Prose runs (plain text, emphasis, link text) get the contraction-spacing
+  // repair; code spans and URLs go through `mark` untouched.
+  const markProse = (value: string, slot: string) =>
+    mark(repairProse ? repairContractionSpacing(value) : value, slot);
   const pattern =
     /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;
@@ -6195,22 +6300,24 @@ function renderInlineMarkdown(
   let index = 0;
   while ((match = pattern.exec(text))) {
     if (match.index > lastIndex) {
-      nodes.push(...mark(text.slice(lastIndex, match.index), `g${index}`));
+      nodes.push(...markProse(text.slice(lastIndex, match.index), `g${index}`));
     }
     if (match[2]) {
       nodes.push(
         <strong key={`strong-${keySeed}-${index}`}>
-          {mark(match[2], `s${index}`)}
+          {markProse(match[2], `s${index}`)}
         </strong>,
       );
     } else if (match[3]) {
       nodes.push(
-        <em key={`em-${keySeed}-${index}`}>{mark(match[3], `e${index}`)}</em>,
+        <em key={`em-${keySeed}-${index}`}>
+          {markProse(match[3], `e${index}`)}
+        </em>,
       );
     } else if (match[4]) {
       nodes.push(
         <del key={`del-${keySeed}-${index}`}>
-          {mark(match[4], `d${index}`)}
+          {markProse(match[4], `d${index}`)}
         </del>,
       );
     } else if (match[5]) {
@@ -6227,7 +6334,7 @@ function renderInlineMarkdown(
           rel="noreferrer"
           target="_blank"
         >
-          {mark(match[6], `a${index}`)}
+          {markProse(match[6], `a${index}`)}
         </a>,
       );
     }
@@ -6235,7 +6342,7 @@ function renderInlineMarkdown(
     index += 1;
   }
   if (lastIndex < text.length) {
-    nodes.push(...mark(text.slice(lastIndex), "t"));
+    nodes.push(...markProse(text.slice(lastIndex), "t"));
   }
   return nodes;
 }
@@ -6655,9 +6762,11 @@ function stripHermesVisibleContext(value: string) {
     "",
   );
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
-  return (
-    marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings
-  ).trim();
+  const visible =
+    marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
+  // Drop the scheduled-run delivery preamble so a routine's title and dedup
+  // key come from its actual prompt, not the cron scaffolding.
+  return stripScheduledRunPreamble(visible.trim());
 }
 
 function compactPath(path: string) {

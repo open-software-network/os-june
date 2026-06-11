@@ -72,6 +72,45 @@ Your environment: sessions run by default inside a macOS kernel sandbox (Seatbel
 - If the user asks whether you can damage their system, answer honestly: in a sandboxed session, destructive writes outside your workspace are blocked at the kernel level, not just by policy; in an Unrestricted session that protection is off because they chose to turn it off.
 "#;
 
+/// Appended after the sandbox section when the user has NOT enabled Agent
+/// CLI access: the agent must recognize CLI failures as sandbox-caused and
+/// say so instead of misdiagnosing them as the user's auth problem.
+const JUNE_SOUL_CLI_BLOCKED_MD: &str = r#"
+Agent CLIs (Claude Code, Codex, Gemini, opencode): in sandboxed sessions their state folders (~/.claude and ~/.claude.json, ~/.codex, ~/.gemini, opencode's config and state) are write-blocked like the rest of the user's files. Those tools then fail to save sessions or store refreshed logins, and often report "not logged in" even when the user is. When a CLI fails this way, name the sandbox as the cause first, then give the user their real options: enable "Agent CLI access" in Settings, Agent tab (covers new sessions), or start this work in an Unrestricted session. Interactive logins (for example `claude /login`) are browser flows you can never complete; the user runs those once in their own terminal.
+"#;
+
+/// Appended after the sandbox section when the user HAS enabled Agent CLI
+/// access in Settings.
+const JUNE_SOUL_CLI_ALLOWED_MD: &str = r#"
+Agent CLIs (Claude Code, Codex, Gemini, opencode): the user enabled Agent CLI access, so sandboxed sessions can also write those tools' own state folders (~/.claude and ~/.claude.json, ~/.codex, ~/.gemini, opencode's config and state). Driving the user's installed CLIs is a first-class job: run them directly; they can keep sessions and refreshed credentials. Everything else stays jailed. Do not edit their settings or hook files unless the user explicitly asks, because configuration in those folders runs outside this sandbox later. Interactive logins (for example `claude /login`) are browser flows you can never complete; ask the user to run them once in their own terminal.
+"#;
+
+/// Flag file in the app data dir that records the "Agent CLI access"
+/// opt-in. A file rather than a DB row so the synchronous spawn path can
+/// read it without async storage plumbing.
+const AGENT_CLI_ACCESS_FLAG_FILE: &str = "agent-cli-access";
+
+/// State locations of the agent CLIs the opt-in covers, relative to $HOME.
+/// Directories become `subpath` grants. Kept in sync with the SOUL.md
+/// sections above and the Settings copy.
+const AGENT_CLI_STATE_DIRS: &[&str] = &[
+    // Claude Code: sessions, todos, settings, plugins.
+    ".claude",
+    // Codex: sessions and auth.json.
+    ".codex",
+    // Gemini CLI.
+    ".gemini",
+    // opencode.
+    ".config/opencode",
+    ".local/share/opencode",
+    ".local/state/opencode",
+];
+
+/// Top-level state FILES in $HOME (Claude Code's config). Granted via a
+/// prefix regex rather than literals because the CLI writes them atomically
+/// through randomly suffixed temp names (`.claude.json.<hash>` + rename).
+const AGENT_CLI_STATE_FILE_PREFIXES: &[&str] = &[".claude.json"];
+
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
     "HERMES_CONFIG",
@@ -472,10 +511,11 @@ async fn start_hermes_bridge_inner(
     // are denied by the kernel rather than by Hermes' own pattern checks.
     // Resolved before the soul write so June's self-knowledge about the jail
     // matches what sandboxed spawns actually enforce.
+    let agent_cli_access = agent_cli_access_enabled(app);
     let sandbox_profile = if full_mode {
         None
     } else {
-        prepare_sandbox(app, &hermes_home)
+        prepare_sandbox(app, &hermes_home, agent_cli_access)
     };
     let sandboxed = sandbox_profile.is_some();
     // SOUL.md is shared by both processes (single home), so its sandbox
@@ -485,7 +525,7 @@ async fn start_hermes_bridge_inner(
     } else {
         sandboxed
     };
-    sync_june_soul(&hermes_home, sandbox_available)?;
+    sync_june_soul(&hermes_home, sandbox_available, agent_cli_access)?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -660,6 +700,71 @@ pub async fn toggle_hermes_bridge_skill(
         })),
     )
     .await
+}
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCliAccessStatus {
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn hermes_agent_cli_access(app: AppHandle) -> AgentCliAccessStatus {
+    AgentCliAccessStatus {
+        enabled: agent_cli_access_enabled(&app),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentCliAccessRequest {
+    pub enabled: bool,
+}
+
+/// Records the Agent CLI access opt-in and retires the sandboxed runtime so
+/// the next session spawns with the matching Seatbelt grants (the profile is
+/// applied at spawn and can't change on a live process). The unrestricted
+/// runtime is untouched: it has no jail to widen.
+#[tauri::command]
+pub fn set_hermes_agent_cli_access(
+    app: AppHandle,
+    bridge: State<'_, HermesBridge>,
+    request: SetAgentCliAccessRequest,
+) -> Result<AgentCliAccessStatus, AppError> {
+    let path = agent_cli_access_flag_path(&app).ok_or_else(|| {
+        AppError::new(
+            "agent_cli_access_unavailable",
+            "Could not resolve the app data directory.",
+        )
+    })?;
+    if request.enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| AppError::new("agent_cli_access_failed", error.to_string()))?;
+        }
+        std::fs::write(&path, b"1")
+            .map_err(|error| AppError::new("agent_cli_access_failed", error.to_string()))?;
+    } else if let Err(error) = std::fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(AppError::new("agent_cli_access_failed", error.to_string()));
+        }
+    }
+    stop_hermes_mode(&bridge, false)?;
+    Ok(AgentCliAccessStatus {
+        enabled: request.enabled,
+    })
+}
+
+/// Stops the runtime in one mode slot, leaving the other mode running.
+fn stop_hermes_mode(bridge: &HermesBridge, full_mode: bool) -> Result<(), AppError> {
+    let process = {
+        let mut guard = bridge.processes.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        guard.remove(&full_mode)
+    };
+    shutdown_hermes_process(process);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1697,7 +1802,7 @@ fn apply_isolated_hermes_env(cmd: &mut Command, hermes_home: &std::path::Path, t
 /// jailed agent can't rewrite the policy that governs it or the one the next
 /// spawn will read.
 #[cfg(target_os = "macos")]
-fn prepare_sandbox(app: &AppHandle, hermes_home: &Path) -> Option<PathBuf> {
+fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) -> Option<PathBuf> {
     // The caller logs the sandboxed/unsandboxed outcome; this only short-circuits.
     if env_flag_enabled(SCRIBE_HERMES_DISABLE_SANDBOX_ENV) {
         return None;
@@ -1708,7 +1813,7 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
-    let profile = build_sandbox_profile(&home, &write_roots);
+    let profile = build_sandbox_profile(&home, &write_roots, agent_cli_access);
     let app_data_dir = app.path().app_data_dir().ok()?;
     if std::fs::create_dir_all(&app_data_dir).is_err() {
         return None;
@@ -1724,8 +1829,24 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn prepare_sandbox(_app: &AppHandle, _hermes_home: &Path) -> Option<PathBuf> {
+fn prepare_sandbox(
+    _app: &AppHandle,
+    _hermes_home: &Path,
+    _agent_cli_access: bool,
+) -> Option<PathBuf> {
     None
+}
+
+fn agent_cli_access_flag_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join(AGENT_CLI_ACCESS_FLAG_FILE))
+}
+
+/// Whether the user opted into Agent CLI access (Settings, Agent tab).
+pub(crate) fn agent_cli_access_enabled(app: &AppHandle) -> bool {
+    agent_cli_access_flag_path(app).is_some_and(|path| path.exists())
 }
 
 /// Whether a *sandboxed* spawn on this machine would actually engage the
@@ -1804,7 +1925,7 @@ fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
 /// and re-grant only the app-owned roots, and deny reads of credential stores.
 /// Pure (no IO) so it can be unit-tested.
 #[cfg(target_os = "macos")]
-fn build_sandbox_profile(home: &Path, write_roots: &[PathBuf]) -> String {
+fn build_sandbox_profile(home: &Path, write_roots: &[PathBuf], agent_cli_access: bool) -> String {
     let mut out = String::new();
     out.push_str("(version 1)\n");
     out.push_str(";; June desktop agent sandbox — generated by Scribe, do not edit.\n");
@@ -1823,6 +1944,30 @@ fn build_sandbox_profile(home: &Path, write_roots: &[PathBuf]) -> String {
         ));
     }
     out.push_str(")\n\n");
+
+    if agent_cli_access {
+        out.push_str(";; Agent CLI state (explicit user opt-in from Settings > Agent):\n");
+        out.push_str(";; lets installed coding CLIs (Claude Code, Codex, Gemini, opencode)\n");
+        out.push_str(";; run under the jail while keeping their sessions and refreshed\n");
+        out.push_str(";; logins. These folders configure tools that later run OUTSIDE the\n");
+        out.push_str(";; sandbox (hooks, settings), which is why this is off by default.\n");
+        out.push_str("(allow file-write*\n");
+        for relative in AGENT_CLI_STATE_DIRS {
+            out.push_str(&format!(
+                "  (subpath {})\n",
+                sbpl_quote(&home.join(relative).to_string_lossy())
+            ));
+        }
+        for prefix in AGENT_CLI_STATE_FILE_PREFIXES {
+            // Prefix regex instead of a literal: the CLIs write these files
+            // atomically through randomly suffixed temp names + rename.
+            out.push_str(&format!(
+                "  (regex #\"^{}.*$\")\n",
+                sbpl_regex_escape(&home.join(prefix).to_string_lossy())
+            ));
+        }
+        out.push_str(")\n\n");
+    }
 
     out.push_str(";; Character devices and pipes the runtime needs to write.\n");
     out.push_str("(allow file-write*\n");
@@ -1888,6 +2033,27 @@ fn sbpl_quote(value: &str) -> String {
     quoted
 }
 
+/// Escapes a path for embedding in an SBPL `(regex #"...")` pattern so it
+/// matches itself literally — dots in file names and any other regex
+/// metacharacters must not widen the grant.
+fn sbpl_regex_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|'
+        ) {
+            escaped.push('\\');
+        }
+        if ch == '"' {
+            // SBPL string layer: a quote would end the #"..." pattern.
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
 fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
     let path = app
         .path()
@@ -1898,6 +2064,30 @@ fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
         .map_err(|error| AppError::new("hermes_bridge_home_failed", error.to_string()))?;
     Ok(path)
 }
+
+/// Toolsets a routine (cron job) runs with when it carries no per-job
+/// `enabled_toolsets` override. Hermes resolves a cron run's toolsets as:
+/// per-job `enabled_toolsets` first, then `platform_toolsets.cron` from
+/// config.yaml (`_resolve_cron_enabled_toolsets` in cron/scheduler.py).
+/// Routines execute inside the launchd gateway daemon, which must run
+/// outside the Seatbelt jail so launchd accepts it (see
+/// `spawn_hermes_gateway_start`), so this allowlist is what "Sandboxed"
+/// means for a routine: no terminal, file, code-execution, browser,
+/// computer-use, skill-management, or delegation toolsets — the job can
+/// read the web, think, remember, and deliver its report, but cannot touch
+/// the machine. The per-routine Unrestricted opt-in writes an explicit
+/// per-job `enabled_toolsets` (see CRON_UNRESTRICTED_TOOLSETS in
+/// src/lib/hermes-routines.ts), which takes precedence over this gate.
+/// The scheduler always strips `cronjob`, `messaging`, and `clarify` from
+/// cron agents on top of either list.
+const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
+    "web",
+    "vision",
+    "todo",
+    "memory",
+    "session_search",
+    "context_engine",
+];
 
 fn sync_hermes_config(
     hermes_home: &std::path::Path,
@@ -1917,10 +2107,13 @@ agent:
   max_turns: 90
 display:
   skin: mono
+platform_toolsets:
+  cron: [{cron_toolsets}]
 "#,
         model = yaml_string(&model),
         base_url = yaml_string(&base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+        cron_toolsets = CRON_SANDBOXED_TOOLSETS.join(", "),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -1934,9 +2127,18 @@ display:
 /// this machine actually engage the jail (it's omitted when sandbox-exec is
 /// missing or the escape-hatch env var disabled it, so the agent never
 /// claims a protection that isn't enforced).
-fn sync_june_soul(hermes_home: &std::path::Path, sandbox_available: bool) -> Result<(), AppError> {
+fn sync_june_soul(
+    hermes_home: &std::path::Path,
+    sandbox_available: bool,
+    agent_cli_access: bool,
+) -> Result<(), AppError> {
     let soul = if sandbox_available {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}")
+        let cli_section = if agent_cli_access {
+            JUNE_SOUL_CLI_ALLOWED_MD
+        } else {
+            JUNE_SOUL_CLI_BLOCKED_MD
+        };
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
     } else {
         JUNE_SOUL_MD.to_string()
     };
@@ -2532,6 +2734,33 @@ mod tests {
     }
 
     #[test]
+    fn synced_config_gates_cron_runs_to_the_sandboxed_toolsets() {
+        // Routines execute in the unjailed launchd gateway, so the only
+        // default-deny boundary they have is this config gate: a cron job
+        // with no per-job enabled_toolsets must resolve to the sandboxed
+        // allowlist, never the full default toolset.
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_hermes_config(home.path(), 4242, "proxy-token").expect("sync config");
+
+        let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
+        assert!(config.contains("platform_toolsets:"));
+        assert!(config.contains(&format!("cron: [{}]", CRON_SANDBOXED_TOOLSETS.join(", "))));
+        for toolset in [
+            "terminal",
+            "file",
+            "code_execution",
+            "browser",
+            "computer_use",
+        ] {
+            assert!(
+                !CRON_SANDBOXED_TOOLSETS.contains(&toolset),
+                "machine-touching toolset {toolset} must not be in the cron default",
+            );
+        }
+    }
+
+    #[test]
     fn sync_june_soul_replaces_default_hermes_identity() {
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -2540,7 +2769,7 @@ mod tests {
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true).expect("sync soul");
+        sync_june_soul(home.path(), true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -2552,19 +2781,37 @@ mod tests {
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true).expect("sync soul");
+        sync_june_soul(home.path(), true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
         assert!(soul.contains("write-jail"));
         assert!(soul.contains("operation not permitted"));
+        // CLI access off: the soul teaches the failure mode and the remedy.
+        assert!(soul.contains("Agent CLI access"));
+        assert!(soul.contains("name the sandbox as the cause"));
+        assert!(!soul.contains("first-class job"));
+    }
+
+    #[test]
+    fn sandboxed_soul_with_cli_access_describes_the_grant() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), true, true).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("the user enabled Agent CLI access"));
+        assert!(soul.contains("first-class job"));
+        // Both variants tell June it can never complete interactive logins.
+        assert!(soul.contains("claude /login"));
+        assert!(!soul.contains("name the sandbox as the cause"));
     }
 
     #[test]
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false).expect("sync soul");
+        sync_june_soul(home.path(), false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -2603,7 +2850,7 @@ mod tests {
     fn sandbox_profile_jails_writes_to_allowed_roots() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
-        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace));
+        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), false);
 
         // Allow-everything base, then a hard write-jail re-granting the root.
         assert!(profile.contains("(allow default)"));
@@ -2622,6 +2869,51 @@ mod tests {
         assert!(profile.contains("(deny file-read*"));
         assert!(profile.contains("(subpath \"/Users/test/.ssh\")"));
         assert!(profile.contains("(subpath \"/Users/test/Library/Keychains\")"));
+
+        // Without the opt-in, no agent CLI state dir is writable.
+        assert!(!profile.contains(".claude"));
+        assert!(!profile.contains(".codex"));
+        assert!(!profile.contains(".gemini"));
+        assert!(!profile.contains("opencode"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_profile_opt_in_grants_agent_cli_state_only() {
+        let home = PathBuf::from("/Users/test");
+        let workspace = PathBuf::from("/Users/test/Library/Application Support/scribe/hermes");
+        let profile = build_sandbox_profile(&home, std::slice::from_ref(&workspace), true);
+
+        // The CLI state dirs become writable...
+        assert!(profile.contains("(subpath \"/Users/test/.claude\")"));
+        assert!(profile.contains("(subpath \"/Users/test/.codex\")"));
+        assert!(profile.contains("(subpath \"/Users/test/.gemini\")"));
+        assert!(profile.contains("(subpath \"/Users/test/.config/opencode\")"));
+        // ...including Claude Code's atomically written top-level config (a
+        // prefix regex, because writes go through random temp suffixes), with
+        // the path's dots escaped so the grant can't widen.
+        assert!(profile.contains("(regex #\"^/Users/test/\\.claude\\.json.*$\")"));
+
+        // The jail and the secret-read denylist are unchanged.
+        assert!(profile.contains("(deny file-write*)"));
+        assert!(profile.contains("(subpath \"/Users/test/.ssh\")"));
+        assert!(profile.contains("(subpath \"/Users/test/Library/Keychains\")"));
+        // The CLI grant must come after the blanket write deny to take effect.
+        let deny_at = profile.find("(deny file-write*)").expect("deny present");
+        let cli_grant_at = profile
+            .find("(subpath \"/Users/test/.claude\")")
+            .expect("cli grant present");
+        assert!(deny_at < cli_grant_at);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sbpl_regex_escape_neutralizes_metacharacters() {
+        assert_eq!(
+            sbpl_regex_escape("/Users/test/.claude.json"),
+            "/Users/test/\\.claude\\.json"
+        );
+        assert_eq!(sbpl_regex_escape("a+b(c)[d]"), "a\\+b\\(c\\)\\[d\\]");
     }
 
     #[cfg(target_os = "macos")]
@@ -2648,7 +2940,7 @@ mod tests {
         std::fs::create_dir_all(home.join(".ssh")).expect("create .ssh");
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
-        let profile_text = build_sandbox_profile(&home, std::slice::from_ref(&workspace));
+        let profile_text = build_sandbox_profile(&home, std::slice::from_ref(&workspace), false);
         let profile_path = home.join("test.sb");
         std::fs::write(&profile_path, &profile_text).expect("write profile");
 
@@ -2688,6 +2980,68 @@ mod tests {
         assert!(
             !String::from_utf8_lossy(&out.stdout).contains("TOPSECRET"),
             "secret read must be denied, but the contents leaked"
+        );
+    }
+
+    /// Same kernel-level proof for the Agent CLI access opt-in: the CLI state
+    /// paths become writable (including Claude Code's atomic temp-name
+    /// config writes) while the rest of the jail holds.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cli_access_profile_is_enforced_by_the_kernel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = std::fs::canonicalize(dir.path()).expect("canonicalize home");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let profile_text = build_sandbox_profile(&home, std::slice::from_ref(&workspace), true);
+        let profile_path = home.join("test.sb");
+        std::fs::write(&profile_path, &profile_text).expect("write profile");
+
+        let run = |script: &str| {
+            std::process::Command::new(SANDBOX_EXEC_PATH)
+                .arg("-f")
+                .arg(&profile_path)
+                .arg("/bin/bash")
+                .arg("-c")
+                .arg(script)
+                .output()
+                .expect("run sandbox-exec")
+        };
+
+        // Allowed: create ~/.claude itself and write session state under it.
+        let claude_state = home.join(".claude").join("session.json");
+        let out = run(&format!(
+            "mkdir -p {} && echo state > {}",
+            sbpl_shell_quote(&home.join(".claude")),
+            sbpl_shell_quote(&claude_state)
+        ));
+        assert!(
+            out.status.success() && claude_state.exists(),
+            "CLI state write should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Allowed: the atomic config write pattern (temp suffix + rename).
+        let config_tmp = home.join(".claude.json.1a2b3c");
+        let config = home.join(".claude.json");
+        let out = run(&format!(
+            "echo cfg > {tmp} && mv {tmp} {cfg}",
+            tmp = sbpl_shell_quote(&config_tmp),
+            cfg = sbpl_shell_quote(&config)
+        ));
+        assert!(
+            out.status.success() && config.exists(),
+            "atomic CLI config write should be allowed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Still denied: anything else in the home directory.
+        let outside = home.join("escaped.txt");
+        run(&format!("echo bad > {}", sbpl_shell_quote(&outside)));
+        assert!(
+            !outside.exists(),
+            "write outside the jail must stay denied with CLI access on"
         );
     }
 
