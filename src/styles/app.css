@@ -684,6 +684,23 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
+/* Linked badge (attestation walkthrough known): same chrome, but it reads as
+ * clickable and brightens on hover. The wrap keeps HoverTip's anchor span
+ * from adding box styling of its own. */
+.agent-safety-badge-wrap {
+  display: inline-flex;
+}
+
+a.agent-safety-badge {
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+a.agent-safety-badge:hover {
+  background: color-mix(in oklch, var(--brand) 24%, transparent);
+}
+
 .agent-actions {
   display: flex;
   align-items: center;

@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsTopUp: vi.fn(),
+  scribeVerifyUrl: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -98,6 +99,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
+  scribeVerifyUrl: mocks.scribeVerifyUrl,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
@@ -188,6 +190,9 @@ describe("AgentWorkspace", () => {
       ],
     });
     mocks.getAgentTask.mockResolvedValue(existingTask);
+    // Empty by default so badge tests assert the plain (unlinked) badge; the
+    // verify-link test overrides this with a real URL.
+    mocks.scribeVerifyUrl.mockResolvedValue("");
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
@@ -372,6 +377,22 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
     );
+  });
+
+  it("links the privacy badge to the server verification page", async () => {
+    mocks.scribeVerifyUrl.mockResolvedValue(
+      "https://scribe-api.example.test/verify",
+    );
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const badge = await screen.findByRole("link", { name: /Private mode/ });
+    expect(badge).toHaveAttribute(
+      "href",
+      "https://scribe-api.example.test/verify",
+    );
+    expect(badge).toHaveAttribute("target", "_blank");
+    expect(badge).toHaveAccessibleName(/how to verify it yourself/i);
   });
 
   it("refreshes the model privacy label when generation model settings change", async () => {
