@@ -55,6 +55,12 @@ const unsubscribedAccount: AccountStatus = {
   subscription: { subscribed: false },
 };
 
+const creditsAccount: AccountStatus = {
+  ...account,
+  subscription: { subscribed: false },
+  balance: { credits: 250, usdMillis: 250 },
+};
+
 const signedOutAccount: AccountStatus = {
   signedIn: false,
   configured: true,
@@ -232,6 +238,33 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Start your free trial" });
   }
+
+  it("skips the trial step for accounts with plan credits", async () => {
+    const user = userEvent.setup();
+    render(<OnboardingFlow {...flowProps({ account: creditsAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await user.click(
+      screen.getByRole("button", { name: "Let's get you set up" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", {
+      name: "Give June permissions on your Mac",
+    });
+    grantPermissions();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Set up dictation" });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    // Straight to dictation practice: no trial pitch, no checkout.
+    await screen.findByPlaceholderText(/Hold fn/i);
+    expect(mocks.osAccountsStartTrialCheckout).not.toHaveBeenCalled();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
 
   it("signs the user in from the first step", async () => {
     const user = userEvent.setup();

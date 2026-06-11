@@ -6,6 +6,7 @@ import {
 } from "../../lib/onboarding";
 import { dictationSettings } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
+import { hasPlanCredits } from "../../lib/account-gate";
 import { isSubscriptionActive } from "../../lib/trial-checkout";
 import { FinishStep } from "./steps/FinishStep";
 import {
@@ -127,9 +128,13 @@ export function OnboardingFlow({
   function goBack() {
     setStepIndex((index) => {
       let next = Math.max(index - 1, 0);
-      // The trial step auto-skips forward for subscribed users; stepping
-      // back onto it would just bounce, so hop over it instead.
-      if (STEPS[next].id === "trial" && isSubscriptionActive(account)) {
+      // The trial step auto-skips forward for users who already have access
+      // (subscription or plan credits); stepping back onto it would just
+      // bounce, so hop over it instead.
+      if (
+        STEPS[next].id === "trial" &&
+        (isSubscriptionActive(account) || hasPlanCredits(account))
+      ) {
         next = Math.max(next - 1, 0);
       }
       return next;

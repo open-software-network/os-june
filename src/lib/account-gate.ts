@@ -9,14 +9,27 @@ export function shouldBlockOnSignIn(account: AccountStatus): boolean {
   return !account.signedIn;
 }
 
-// Membership is mandatory: every user must be on a subscription (trialing or
-// active) to use the app at all — credits alone do NOT grant access, so a
-// leftover promo balance or a cancelled subscriber with unspent top-ups still
-// lands on the trial gate. An unknown subscription state (transient fetch
-// failure) also blocks; the gate's poll and the account hook's focus refresh
-// recover it within seconds, which beats silently admitting non-members.
+// A positive balance means the account can already pay for metered AI calls,
+// whether the credits came from a prepaid plan, a top-up, or a promo. Those
+// users are members in every way that matters to the backend (authorize →
+// charge succeeds), so pitching them a trial would be asking them to pay
+// twice.
+export function hasPlanCredits(account: AccountStatus): boolean {
+  const balance = account.balance;
+  if (!balance) return false;
+  return (balance.credits ?? 0) > 0 || balance.usdMillis > 0;
+}
+
+// Membership requires a subscription (trialing or active) OR a positive
+// credit balance. Credits-based plans predate subscriptions; their users can
+// already pay for usage, so the trial gate stays out of their way until the
+// balance runs dry. An unknown subscription state (transient fetch failure)
+// with no credits still blocks; the gate's poll and the account hook's focus
+// refresh recover it within seconds, which beats silently admitting
+// non-members.
 export function shouldBlockOnTrial(account: AccountStatus): boolean {
   if (!account.signedIn) return false;
+  if (hasPlanCredits(account)) return false;
   const status = account.subscription?.status;
   return status !== "trialing" && status !== "active";
 }

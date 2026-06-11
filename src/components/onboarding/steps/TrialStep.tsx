@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { hasPlanCredits } from "../../../lib/account-gate";
 import {
   isSubscriptionActive,
   useTrialCheckout,
@@ -24,10 +25,12 @@ export function TrialStep({
   onRefresh: () => Promise<AccountStatus | undefined>;
   onContinue: () => void;
 }) {
-  // Already on a subscription when arriving here (wizard re-run after an
-  // update, second machine): skip silently instead of pitching a trial to a
-  // paying user.
-  const initiallySubscribed = useRef(isSubscriptionActive(account)).current;
+  // Already on a subscription or holding plan credits when arriving here
+  // (wizard re-run after an update, second machine, prepaid plan): skip
+  // silently instead of pitching a trial to a paying user.
+  const initiallySubscribed = useRef(
+    isSubscriptionActive(account) || hasPlanCredits(account),
+  ).current;
   const [activated, setActivated] = useState(false);
 
   const checkout = useTrialCheckout({

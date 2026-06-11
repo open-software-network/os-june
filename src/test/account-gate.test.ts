@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
+import {
+  hasPlanCredits,
+  shouldBlockOnSignIn,
+  shouldBlockOnTrial,
+} from "../lib/account-gate";
 import type { AccountStatus } from "../lib/tauri";
 
 describe("shouldBlockOnSignIn", () => {
@@ -48,7 +52,7 @@ describe("shouldBlockOnTrial", () => {
     ).toBe(true);
   });
 
-  it("blocks credit holders without a subscription — membership is mandatory", () => {
+  it("allows credit holders without a subscription (prepaid plans)", () => {
     expect(
       shouldBlockOnTrial(
         signedIn({
@@ -56,14 +60,25 @@ describe("shouldBlockOnTrial", () => {
           subscription: { subscribed: false },
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("blocks a cancelled subscriber even with unspent credits", () => {
+  it("allows a cancelled subscriber with unspent credits until they run dry", () => {
     expect(
       shouldBlockOnTrial(
         signedIn({
           balance: { credits: 1200, usdMillis: 1200 },
+          subscription: { subscribed: false, status: "canceled" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("still blocks a cancelled subscriber once the balance is spent", () => {
+    expect(
+      shouldBlockOnTrial(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
           subscription: { subscribed: false, status: "canceled" },
         }),
       ),
@@ -108,5 +123,31 @@ describe("shouldBlockOnTrial", () => {
       true,
     );
     expect(shouldBlockOnTrial(signedIn())).toBe(true);
+  });
+});
+
+describe("hasPlanCredits", () => {
+  const base: AccountStatus = { signedIn: true, configured: true };
+
+  it("is false without a balance snapshot", () => {
+    expect(hasPlanCredits(base)).toBe(false);
+  });
+
+  it("is false at zero balance", () => {
+    expect(
+      hasPlanCredits({ ...base, balance: { credits: 0, usdMillis: 0 } }),
+    ).toBe(false);
+  });
+
+  it("is true with credits", () => {
+    expect(
+      hasPlanCredits({ ...base, balance: { credits: 250, usdMillis: 0 } }),
+    ).toBe(true);
+  });
+
+  it("is true with a USD balance even when credits are absent", () => {
+    expect(hasPlanCredits({ ...base, balance: { usdMillis: 1500 } })).toBe(
+      true,
+    );
   });
 });
