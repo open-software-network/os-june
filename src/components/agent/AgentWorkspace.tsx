@@ -60,6 +60,7 @@ import {
   useState,
 } from "react";
 import { BackButton } from "../ui/BackButton";
+import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -344,6 +345,49 @@ function sampleImageBytes(): Uint8Array {
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
+/**
+ * The two write-access modes a new session can start the runtime in. The
+ * sandbox is a kernel write-jail (reads are unrestricted either way), chosen
+ * per new session — switching restarts June's runtime, so the picker only
+ * appears in the hero composer.
+ */
+// The Unrestricted confirm is a speed bump, not a recurring gate: one
+// acknowledgment per app session, after which picking it arms directly.
+// sessionStorage scopes that to the running app (a relaunch asks again) and
+// survives the workspace remounting on view switches.
+const UNRESTRICTED_ACK_KEY = "june.agent.unrestrictedAcknowledged";
+
+function unrestrictedAcknowledged(): boolean {
+  try {
+    return window.sessionStorage.getItem(UNRESTRICTED_ACK_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function rememberUnrestrictedAcknowledged() {
+  try {
+    window.sessionStorage.setItem(UNRESTRICTED_ACK_KEY, "true");
+  } catch {
+    // Ignore; worst case the dialog shows again.
+  }
+}
+
+const SANDBOX_OPTIONS = [
+  {
+    unrestricted: false,
+    icon: <IconShieldCheck size={16} aria-hidden />,
+    title: "Sandboxed",
+    description: "June can read your files but only change its own workspace.",
+  },
+  {
+    unrestricted: true,
+    icon: <IconShieldCrossed size={16} aria-hidden />,
+    title: "Unrestricted",
+    description: "June can change any file your account can.",
+  },
+] as const;
+
 type AgentShortcut = {
   key: string;
   icon: ReactNode;
@@ -458,6 +502,40 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
   },
 ];
 
+/**
+ * Hero greetings, one per visit: the heading cycles through this pool each
+ * time the hero is entered, tracked in localStorage so the rotation continues
+ * across launches. Exported so tests can match "any greeting".
+ */
+export const HERO_GREETINGS = [
+  "What can June do for you?",
+  "What should we work on?",
+  "Where should June start?",
+  "What can June take off your plate?",
+] as const;
+
+const HERO_GREETING_INDEX_KEY = "scribe:agent:hero-greeting";
+
+function advanceHeroGreeting(): string {
+  try {
+    const index =
+      Math.abs(
+        Number.parseInt(
+          window.localStorage.getItem(HERO_GREETING_INDEX_KEY) ?? "0",
+          10,
+        ) || 0,
+      ) % HERO_GREETINGS.length;
+    window.localStorage.setItem(
+      HERO_GREETING_INDEX_KEY,
+      String((index + 1) % HERO_GREETINGS.length),
+    );
+    return HERO_GREETINGS[index];
+  } catch {
+    // Storage unavailable: any greeting beats none.
+    return HERO_GREETINGS[Math.floor(Math.random() * HERO_GREETINGS.length)];
+  }
+}
+
 // Three per hand so the row never wraps — a row-count jump mid-rotation would
 // shove the footnote around every cycle.
 const HERO_SHORTCUT_COUNT = 3;
@@ -568,6 +646,12 @@ export function AgentWorkspace({
   // without the OS sandbox. Read through a ref inside the async submit path.
   const [fullModeDraft, setFullModeDraft] = useState(false);
   const fullModeDraftRef = useRef(false);
+  const [sandboxMenuOpen, setSandboxMenuOpen] = useState(false);
+  // Codex-style speed bump: picking Unrestricted from the menu confirms in a
+  // dialog before arming, instead of a persistent warning line.
+  const [confirmUnrestricted, setConfirmUnrestricted] = useState(false);
+  const sandboxTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const sandboxMenuRef = useRef<HTMLDivElement | null>(null);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
@@ -582,6 +666,8 @@ export function AgentWorkspace({
   );
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(false);
+  const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
+  const heroGreetingConsumedRef = useRef(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
   const [heroDeckStart, setHeroDeckStart] = useState(0);
   const [heroChipPhase, setHeroChipPhase] = useState<"in" | "out">("in");
@@ -686,7 +772,6 @@ export function AgentWorkspace({
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
-  const [composerMultiline, setComposerMultiline] = useState(false);
 
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
@@ -860,13 +945,50 @@ export function AgentWorkspace({
   // what advances it each render.
   const prevHeroModeRef = useRef(heroMode);
 
-  // Full mode is an opt-in made per new session, so the toggle re-arms to off
-  // every time the hero is entered — it never carries over from the last one.
+  // A fresh greeting each time the hero is landed on. The state initializer
+  // already consumed one for the mount, so the first hero entry (which may be
+  // the mount itself) keeps it; later entries advance the cycle. Pre-paint so
+  // a re-entry never flashes the previous greeting.
+  useLayoutEffect(() => {
+    if (!heroMode) return;
+    if (!heroGreetingConsumedRef.current) {
+      heroGreetingConsumedRef.current = true;
+      return;
+    }
+    setHeroGreeting(advanceHeroGreeting());
+  }, [heroMode]);
+
+  // Unrestricted is an opt-in made per new session, so the picker re-arms to
+  // sandboxed every time the hero is entered — it never carries over from the
+  // last one.
   useEffect(() => {
     if (!heroMode) return;
     fullModeDraftRef.current = false;
     setFullModeDraft(false);
+    setSandboxMenuOpen(false);
+    setConfirmUnrestricted(false);
   }, [heroMode]);
+
+  // The sandbox picker closes on a click anywhere outside it or Esc, same as
+  // the session-bar overflow menu.
+  useEffect(() => {
+    if (!sandboxMenuOpen) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (sandboxMenuRef.current?.contains(target)) return;
+      if (sandboxTriggerRef.current?.contains(target)) return;
+      setSandboxMenuOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setSandboxMenuOpen(false);
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [sandboxMenuOpen]);
 
   // The conversation scroller's thumb fades in with scroll activity and back
   // out when idle (native-overlay feel; see scroll-thumb-fade.ts). The hero
@@ -1280,26 +1402,6 @@ export function AgentWorkspace({
       for (const animation of el.getAnimations()) animation.cancel();
       for (const animation of box.getAnimations()) animation.cancel();
     }
-    // The toolbar drops below the input once the text can't fit on one line
-    // beside the buttons — so probe that at the narrow single-line width.
-    // Deciding at the *current* width feeds back into itself: text that
-    // overflows the narrow slot can fit on one full-width line, so the modes
-    // would flip-flop on every keystroke right at the wrap boundary.
-    box.dataset.multiline = "false";
-    el.style.height = "auto";
-    const styles = getComputedStyle(el);
-    const lineHeight = parseFloat(styles.lineHeight) || 20;
-    const padding =
-      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const lines = Math.round((el.scrollHeight - padding) / lineHeight);
-    const multiline = lines >= 2;
-    setComposerMultiline(multiline);
-    // Flip the layout attribute now rather than waiting for the re-render so
-    // the height below and the FLIP "last" measurement both see the final
-    // layout in this same effect (none of the probe states ever paint).
-    box.dataset.multiline = multiline ? "true" : "false";
-    // Size to the content at the final width, never the probe width — a
-    // narrow-width height on a full-width textarea leaves a phantom line.
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     const nextBoxHeight = box.offsetHeight;
@@ -1331,8 +1433,7 @@ export function AgentWorkspace({
       grow,
     );
     // Glide the textarea from its old spot, bottom-left anchored so the line
-    // being typed stays put while space opens above it (most visible on the
-    // one→two line hop, where it leaves the slot between the +/mic buttons).
+    // being typed stays put while space opens above it.
     const nextRect = el.getBoundingClientRect();
     const dx = prevRect.left - nextRect.left;
     const dy = prevRect.bottom - nextRect.bottom;
@@ -1345,10 +1446,9 @@ export function AgentWorkspace({
         grow,
       );
     }
-    // heroMode is a dependency because the hero composer is a different shape
-    // (full-width textarea, taller min-height): leaving the hero must re-probe
-    // the line count and clear the stale inline height, or the docked
-    // composer keeps the hero's 76px textarea and multiline toolbar.
+    // heroMode is a dependency because the hero textarea is taller at rest:
+    // leaving the hero must re-measure and clear the stale inline height, or
+    // the docked composer keeps the hero's 76px field.
   }, [draft, attachments.length, heroMode]);
 
   useEffect(() => {
@@ -1608,8 +1708,9 @@ export function AgentWorkspace({
     const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
-    // Only a session being created applies the Full mode opt-in; follow-ups
-    // on existing sessions never change the runtime's mode under them.
+    // Only a session being created applies the unrestricted opt-in;
+    // follow-ups on existing sessions never change the runtime's mode under
+    // them.
     const gateway = await ensureHermesGateway(
       targetSessionId ? undefined : fullModeDraftRef.current,
     );
@@ -2728,12 +2829,7 @@ export function AgentWorkspace({
             </motion.p>
           ) : null}
         </AnimatePresence>
-        <div
-          ref={composerBoxRef}
-          className="agent-composer-box"
-          data-dirty={draft.trim() || attachments.length ? "true" : "false"}
-          data-multiline={composerMultiline ? "true" : "false"}
-        >
+        <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
               {attachments.map((attachment) => (
@@ -2765,7 +2861,30 @@ export function AgentWorkspace({
               ))}
             </div>
           ) : null}
-          <div className="agent-composer-row">
+          <textarea
+            ref={composerRef}
+            value={draft}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            placeholder={
+              importingFiles
+                ? "Attaching file…"
+                : heroMode
+                  ? "Describe a task for June…"
+                  : "Send a message"
+            }
+            rows={1}
+            onKeyDown={(event) => {
+              // Ignore the Enter that commits an IME composition
+              // (Japanese/Chinese/Korean input) — only a real Enter
+              // press should send the message.
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+          />
+          <div className="agent-composer-toolbar">
             <button
               type="button"
               className="agent-composer-attach"
@@ -2775,29 +2894,30 @@ export function AgentWorkspace({
             >
               <IconPlusMedium size={18} />
             </button>
-            <textarea
-              ref={composerRef}
-              value={draft}
-              onChange={(event) => setDraft(event.currentTarget.value)}
-              placeholder={
-                importingFiles
-                  ? "Attaching file…"
-                  : heroMode
-                    ? "Describe a task for June…"
-                    : "Send a message"
-              }
-              rows={1}
-              onKeyDown={(event) => {
-                // Ignore the Enter that commits an IME composition
-                // (Japanese/Chinese/Korean input) — only a real Enter
-                // press should send the message.
-                if (event.nativeEvent.isComposing) return;
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
+            {heroMode ? (
+              // Unrestricted only applies to the session being created, so
+              // the picker lives in the hero composer's toolbar and nowhere
+              // else. The menu itself renders as a sibling of the box (below)
+              // because the box clips its overflow for the FLIP glide.
+              <button
+                type="button"
+                ref={sandboxTriggerRef}
+                className="agent-sandbox-trigger"
+                data-unrestricted={fullModeDraft ? "true" : undefined}
+                aria-haspopup="menu"
+                aria-expanded={sandboxMenuOpen}
+                title="Change what June can touch"
+                onClick={() => setSandboxMenuOpen((open) => !open)}
+              >
+                {fullModeDraft ? (
+                  <IconShieldCrossed size={14} aria-hidden />
+                ) : (
+                  <IconShieldCheck size={14} aria-hidden />
+                )}
+                {fullModeDraft ? "Unrestricted" : "Sandboxed"}
+                <IconChevronDownSmall size={12} aria-hidden />
+              </button>
+            ) : null}
             <div className="agent-composer-actions">
               <button
                 type="button"
@@ -2833,10 +2953,6 @@ export function AgentWorkspace({
                     importingFiles ||
                     (!draft.trim() && !attachments.length)
                   }
-                  tabIndex={draft.trim() || attachments.length ? 0 : -1}
-                  aria-hidden={
-                    draft.trim() || attachments.length ? undefined : true
-                  }
                   aria-label={
                     selectedHermesSessionId || selectedTask
                       ? "Send message"
@@ -2849,6 +2965,88 @@ export function AgentWorkspace({
             </div>
           </div>
         </div>
+        {heroMode && sandboxMenuOpen ? (
+          <div
+            ref={sandboxMenuRef}
+            className="agent-sandbox-menu"
+            role="menu"
+            aria-label="What can June change?"
+          >
+            <p className="agent-sandbox-menu-title">What can June change?</p>
+            {SANDBOX_OPTIONS.map((option) => (
+              <button
+                key={option.title}
+                type="button"
+                role="menuitemradio"
+                aria-checked={fullModeDraft === option.unrestricted}
+                onClick={() => {
+                  setSandboxMenuOpen(false);
+                  // First arm of the app session goes through the confirm
+                  // dialog; once acknowledged it arms directly, and going
+                  // back to sandboxed never asks.
+                  if (
+                    option.unrestricted &&
+                    !fullModeDraft &&
+                    !unrestrictedAcknowledged()
+                  ) {
+                    setConfirmUnrestricted(true);
+                    return;
+                  }
+                  fullModeDraftRef.current = option.unrestricted;
+                  setFullModeDraft(option.unrestricted);
+                }}
+              >
+                {option.icon}
+                <span className="agent-sandbox-option">
+                  <span className="agent-sandbox-option-title">
+                    {option.title}
+                  </span>
+                  <span className="agent-sandbox-option-desc">
+                    {option.description}
+                  </span>
+                </span>
+                {fullModeDraft === option.unrestricted ? (
+                  <IconCheckmark1Small
+                    size={16}
+                    aria-hidden
+                    className="agent-sandbox-option-check"
+                  />
+                ) : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <Dialog
+          open={confirmUnrestricted}
+          onClose={() => setConfirmUnrestricted(false)}
+          title="Turn on Unrestricted?"
+          description="June will be able to change any file your account can, not just its own workspace. This comes with risks like data loss if something goes wrong."
+          footer={
+            <>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => setConfirmUnrestricted(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-action primary-solid"
+                onClick={() => {
+                  rememberUnrestrictedAcknowledged();
+                  fullModeDraftRef.current = true;
+                  setFullModeDraft(true);
+                  setConfirmUnrestricted(false);
+                }}
+              >
+                Turn on Unrestricted
+              </button>
+            </>
+          }
+        >
+          {null}
+        </Dialog>
       </form>
     ) : null;
 
@@ -3021,34 +3219,9 @@ export function AgentWorkspace({
             />
           ) : null}
           <div className="agent-hero-heading">
-            <h2 className="agent-hero-title">What can June do for you?</h2>
+            <h2 className="agent-hero-title">{heroGreeting}</h2>
           </div>
           {composer}
-          {activePanel === "chat" ? (
-            <div className="agent-fullmode-row">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={fullModeDraft}
-                className="agent-fullmode-toggle"
-                title="Start this session without the file sandbox. June can then change any file your account can. Switching modes restarts June's runtime and stops sessions that are still working."
-                onClick={() => {
-                  const next = !fullModeDraft;
-                  fullModeDraftRef.current = next;
-                  setFullModeDraft(next);
-                }}
-              >
-                <IconShieldCrossed size={14} aria-hidden />
-                Full mode
-              </button>
-              {fullModeDraft ? (
-                <p className="agent-fullmode-hint" role="alert">
-                  June won't be sandboxed and can change any file your account
-                  can.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
           {activePanel === "chat" ? (
             <div className="agent-hero-suggestions">
               <div
@@ -3147,19 +3320,19 @@ function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
 }
 
 // Honest indicator of the live runtime, not of any one session: the jail is
-// per-process, so while the user has it in Full mode every session it serves
+// per-process, so while the user has it unrestricted every session it serves
 // runs unsandboxed.
-function FullModeBadge() {
+function UnrestrictedBadge() {
   const description =
-    "June is running without the file sandbox and can change any file your account can. Start a session with Full mode off to restore the sandbox.";
+    "June is running without the file sandbox and can change any file your account can. Start a session with Unrestricted off to restore the sandbox.";
   return (
     <span
-      className="agent-safety-badge agent-fullmode-badge"
+      className="agent-safety-badge agent-sandbox-badge"
       title={description}
-      aria-label={`Full mode - ${description}`}
+      aria-label={`Unrestricted - ${description}`}
     >
       <IconShieldCrossed size={13} aria-hidden />
-      Full mode
+      Unrestricted
     </span>
   );
 }
@@ -3291,7 +3464,7 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
-        {fullMode ? <FullModeBadge /> : null}
+        {fullMode ? <UnrestrictedBadge /> : null}
         {onToggleArtifacts && artifactCount > 0 ? (
           <button
             type="button"

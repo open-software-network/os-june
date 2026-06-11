@@ -14,10 +14,16 @@ import {
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
+  HERO_GREETINGS,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
+
+// The hero greeting cycles per visit, so tests match any entry in the pool.
+const HERO_GREETING = new RegExp(
+  `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
+);
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -237,9 +243,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace />);
 
-    expect(
-      await screen.findByText("What can June do for you?"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
     expect(screen.queryByText("Existing session")).toBeNull();
     expect(screen.queryByText("Existing task")).toBeNull();
@@ -499,9 +503,7 @@ describe("AgentWorkspace", () => {
 
     window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
 
-    expect(
-      await screen.findByText("What can June do for you?"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     expect(screen.queryByText("Existing session")).toBeNull();
   });
 
@@ -1083,9 +1085,7 @@ describe("AgentWorkspace", () => {
 
     // The source toggle swaps the rendered document for the raw markdown.
     await user.click(within(panel).getByRole("button", { name: "Source" }));
-    expect(
-      within(panel).getByText(/# Quarterly summary/),
-    ).toBeInTheDocument();
+    expect(within(panel).getByText(/# Quarterly summary/)).toBeInTheDocument();
 
     await user.click(
       within(panel).getByRole("button", { name: "Close files" }),
@@ -1607,7 +1607,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("starts a new session in full mode only after the explicit opt-in", async () => {
+  it("starts a new session unrestricted only after the explicit opt-in", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now() }),
@@ -1615,8 +1615,9 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
 
-    const toggle = await screen.findByRole("switch", { name: "Full mode" });
-    expect(toggle).toHaveAttribute("aria-checked", "false");
+    // The picker rests on Sandboxed for a fresh hero.
+    const trigger = await screen.findByRole("button", { name: "Sandboxed" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
 
     // Submitting without the opt-in must not touch the runtime's mode — the
     // running sandboxed bridge is reused as-is.
@@ -1633,17 +1634,29 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.startHermesBridge).not.toHaveBeenCalled();
 
-    // Re-entering the hero re-arms the opt-in to off, then opting in and
-    // submitting restarts the runtime in full mode.
+    // Re-entering the hero re-arms the picker to Sandboxed. Choosing
+    // Unrestricted from the menu routes through the confirm dialog before
+    // arming; submitting then restarts the runtime unsandboxed.
     act(() => {
       window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
     });
-    const rearmed = await screen.findByRole("switch", { name: "Full mode" });
-    expect(rearmed).toHaveAttribute("aria-checked", "false");
+    const rearmed = await screen.findByRole("button", { name: "Sandboxed" });
     await user.click(rearmed);
-    expect(rearmed).toHaveAttribute("aria-checked", "true");
+    await user.click(
+      screen.getByRole("menuitemradio", { name: /^Unrestricted/ }),
+    );
     expect(
-      screen.getByText(/won't be sandboxed and can change any file/),
+      screen.queryByRole("menu", { name: "What can June change?" }),
+    ).not.toBeInTheDocument();
+    // Not armed until the dialog confirms.
+    expect(
+      screen.getByRole("button", { name: "Sandboxed" }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Turn on Unrestricted" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Unrestricted" }),
     ).toBeInTheDocument();
 
     await user.type(
@@ -1655,9 +1668,25 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
     );
+
+    // The confirm is once per app session: with the acknowledgment stored,
+    // the next arm goes straight through without the dialog.
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    await user.click(await screen.findByRole("button", { name: "Sandboxed" }));
+    await user.click(
+      screen.getByRole("menuitemradio", { name: /^Unrestricted/ }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Turn on Unrestricted" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Unrestricted" }),
+    ).toBeInTheDocument();
   });
 
-  it("shows the full mode badge while the runtime is unsandboxed by choice", async () => {
+  it("shows the unrestricted badge while the runtime is unsandboxed by choice", async () => {
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: {
@@ -1669,9 +1698,9 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(await screen.findByText("Full mode")).toBeInTheDocument();
+    expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
     expect(
-      screen.getByLabelText(/Full mode - June is running without the file/),
+      screen.getByLabelText(/Unrestricted - June is running without the file/),
     ).toBeInTheDocument();
   });
 
@@ -1835,9 +1864,7 @@ describe("AgentWorkspace", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("What can June do for you?"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     expect(screen.getByText("Projects")).toBeInTheDocument();
     expect(screen.getByText("Scribe")).toBeInTheDocument();
     expect(screen.getByText("New session")).toBeInTheDocument();
