@@ -163,15 +163,8 @@ describe("OnboardingFlow", () => {
     );
     await user.click(screen.getByRole("button", { name: "Continue" }));
     // The trial auto-skips (already subscribed), landing on the practice
-    // step. The flow applied the fn dictation default when it mounted.
-    // Typing into the field stands in for dictation.
+    // step. Typing into the field stands in for dictation.
     const input = await screen.findByPlaceholderText(/Tell June what to do/i);
-    await waitFor(() =>
-      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
-        "push_to_talk",
-        expect.objectContaining({ code: "Fn" }),
-      ),
-    );
     await user.type(input, "hello there");
     await screen.findByRole("status", { name: "Dictation is working" });
     await user.click(screen.getByRole("button", { name: "Start using June" }));
@@ -189,6 +182,74 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByPlaceholderText(/Tell June what to do/i);
   }
+
+  it("normalizes the factory-default shortcut to fn", async () => {
+    // A fresh install still carries the Rust-side Ctrl+Opt+D default; only
+    // then does onboarding write the bare-fn product default.
+    mocks.dictationSettings.mockResolvedValue({
+      settings: {
+        pushToTalkShortcut: {
+          keyCode: 0x02,
+          code: "KeyD",
+          label: "Ctrl+Opt+D",
+          pressCount: 1,
+          modifiers: {
+            command: false,
+            control: true,
+            option: true,
+            shift: false,
+            function: false,
+          },
+        },
+        toggleShortcut: shortcut("fn fn"),
+        microphone: {},
+        style: "standard",
+        language: undefined,
+      },
+    });
+    setOnboardingResumeStep("dictation-practice");
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "Talk to June" });
+
+    await waitFor(() =>
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
+        "push_to_talk",
+        expect.objectContaining({ code: "Fn" }),
+      ),
+    );
+  });
+
+  it("keeps a customized shortcut on a wizard replay", async () => {
+    // A version bump replays the wizard for existing users; a key they set
+    // in Settings must survive untouched and show in the hint keycaps.
+    mocks.dictationSettings.mockResolvedValue({
+      settings: {
+        pushToTalkShortcut: {
+          keyCode: 0x60,
+          code: "F5",
+          label: "F5",
+          pressCount: 1,
+          modifiers: {
+            command: false,
+            control: false,
+            option: false,
+            shift: false,
+            function: false,
+          },
+        },
+        toggleShortcut: shortcut("fn fn"),
+        microphone: {},
+        style: "standard",
+        language: undefined,
+      },
+    });
+    setOnboardingResumeStep("dictation-practice");
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "Talk to June" });
+
+    await waitFor(() => expect(screen.getAllByText("F5")).toHaveLength(2));
+    expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
+  });
 
   it("rebinds the dictation key from the practice screen", async () => {
     const user = userEvent.setup();

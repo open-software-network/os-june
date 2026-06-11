@@ -4,8 +4,8 @@ import {
   onboardingResumeStep,
   setOnboardingResumeStep,
 } from "../../lib/onboarding";
-import { setDictationShortcut } from "../../lib/tauri";
-import type { AccountStatus } from "../../lib/tauri";
+import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
+import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { isSubscriptionActive } from "../../lib/trial-checkout";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
@@ -29,6 +29,19 @@ const FN_SHORTCUT = {
   label: "Fn",
   pressCount: 1 as const,
 };
+
+// Mirrors DictationShortcutSetting::control_option_d() on the Rust side: the
+// factory default a fresh install carries before anyone has touched it.
+function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
+  return (
+    shortcut.code === "KeyD" &&
+    shortcut.modifiers.control &&
+    shortcut.modifiers.option &&
+    !shortcut.modifiers.command &&
+    !shortcut.modifiers.shift &&
+    !shortcut.modifiers.function
+  );
+}
 
 const STEPS: StepId[] = [
   "sign-in",
@@ -89,13 +102,27 @@ export function OnboardingFlow({
   // Only poll the helper while the user is on the permissions screen.
   const permissionStatuses = usePermissionStatuses(stepId === "permissions");
 
-  // Onboarding normalizes dictation to the bare-fn default — once per wizard
-  // run, not per practice-step mount, so a key rebound on the practice screen
-  // survives stepping back and forward.
+  // Onboarding pitches the bare-fn default, but a version bump replays the
+  // wizard for existing users, so it must not clobber a key they customized
+  // in Settings. Read first: only the untouched factory default (Ctrl+Opt+D)
+  // gets normalized to fn; anything else is reflected as-is. Runs once per
+  // wizard run, not per practice-step mount, so a key rebound on the
+  // practice screen survives stepping back and forward.
   useEffect(() => {
-    setDictationShortcut("push_to_talk", FN_SHORTCUT)
-      .then((saved) => {
-        setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
+    dictationSettings()
+      .then(({ settings }) => {
+        const current = settings.pushToTalkShortcut;
+        if (current && !isFactoryDefaultShortcut(current)) {
+          if (current.label) setShortcutLabel(current.label);
+          return undefined;
+        }
+        return setDictationShortcut("push_to_talk", FN_SHORTCUT).then(
+          (saved) => {
+            setShortcutLabel(
+              saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label,
+            );
+          },
+        );
       })
       .catch(() => undefined);
   }, []);
