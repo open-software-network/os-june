@@ -224,10 +224,16 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
               <button
                 type="button"
                 className="primary-action"
-                disabled={checkout.phase === "opening"}
+                disabled={
+                  checkout.phase === "opening" || checkout.phase === "reauth"
+                }
                 onClick={() => void checkout.start()}
               >
-                {checkout.phase === "opening" ? "Opening checkout…" : copy.cta}
+                {checkout.phase === "reauth"
+                  ? "Confirming your sign-in…"
+                  : checkout.phase === "opening"
+                    ? "Opening checkout…"
+                    : copy.cta}
               </button>
               {trialPitch ? (
                 <p className="trial-hint">Due today: $0</p>

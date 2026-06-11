@@ -342,6 +342,117 @@ describe("OnboardingFlow", () => {
     await screen.findByText(/We opened your account portal/);
   });
 
+  // A grant from a sign-in that predates billing:write can't mint the
+  // checkout session and refreshing can't broaden it. The hook re-runs
+  // sign-in and retries so the user still lands on Stripe, never the portal.
+  it("re-authenticates and retries when the grant lacks the billing scope", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStartTrialCheckout
+      .mockRejectedValueOnce({
+        code: "trial_checkout_needs_reauth",
+        message: "Sign in again to continue.",
+      })
+      .mockResolvedValueOnce({ outcome: "checkoutOpened" });
+    let finishLogin: (() => void) | undefined;
+    mocks.osAccountsLogin.mockImplementation(
+      () =>
+        new Promise<typeof unsubscribedAccount>((resolve) => {
+          finishLogin = () => resolve(unsubscribedAccount);
+        }),
+    );
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+
+    // While the sign-in bounce is in flight the button says what's happening
+    // (and stays disabled) instead of pretending checkout is opening.
+    const reauthButton = await screen.findByRole("button", {
+      name: "Confirming your sign-in…",
+    });
+    expect(reauthButton).toBeDisabled();
+    finishLogin?.();
+
+    await waitFor(() =>
+      expect(mocks.osAccountsStartTrialCheckout).toHaveBeenCalledTimes(2),
+    );
+    expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+    await screen.findByRole("heading", {
+      name: "Finish checkout in your browser",
+    });
+    await screen.findByText(/We opened a secure Stripe checkout/);
+  });
+
+  it("falls back to the portal when the re-auth itself fails", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStartTrialCheckout.mockRejectedValue({
+      code: "trial_checkout_needs_reauth",
+      message: "Sign in again to continue.",
+    });
+    mocks.osAccountsLogin.mockRejectedValue({
+      code: "network_error",
+      message: "Could not reach OS Accounts.",
+    });
+    mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+
+    await waitFor(() =>
+      expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce(),
+    );
+    // No retry without a fresh grant: the direct path was attempted once.
+    expect(mocks.osAccountsStartTrialCheckout).toHaveBeenCalledOnce();
+    await screen.findByText(/We opened your account portal/);
+  });
+
+  it("falls back to the portal when re-auth does not unblock checkout", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStartTrialCheckout.mockRejectedValue({
+      code: "trial_checkout_needs_reauth",
+      message: "Sign in again to continue.",
+    });
+    mocks.osAccountsLogin.mockResolvedValue(unsubscribedAccount);
+    mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+
+    await waitFor(() =>
+      expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce(),
+    );
+    expect(mocks.osAccountsStartTrialCheckout).toHaveBeenCalledTimes(2);
+    await screen.findByText(/We opened your account portal/);
+  });
+
+  it("returns to the pitch when the user cancels the re-auth", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStartTrialCheckout.mockRejectedValue({
+      code: "trial_checkout_needs_reauth",
+      message: "Sign in again to continue.",
+    });
+    mocks.osAccountsLogin.mockRejectedValue({
+      code: "login_canceled",
+      message: "Sign-in canceled.",
+    });
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+
+    // Back at the pitch with a friendly note; no portal page forced open.
+    await screen.findByRole("heading", { name: "Start your free trial" });
+    await screen.findByText(/Sign-in canceled/);
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
   it("resumes a half-finished run at the saved step", async () => {
     setOnboardingResumeStep("setup");
     render(<OnboardingFlow {...flowProps()} />);
