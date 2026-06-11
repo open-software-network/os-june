@@ -1470,6 +1470,13 @@ export function AgentWorkspace({
 
   useEffect(() => {
     let cancelled = false;
+    // This mount owns the snapshot now — consume it so it can't hydrate a
+    // second mount (error-boundary remount, overlapping test renders) with
+    // data this mount is about to mutate. Consumed here rather than in the
+    // continuity initializer because StrictMode double-invokes lazy
+    // initializers, which must stay pure; the unmount capture below writes
+    // a fresh snapshot either way.
+    sessionContinuity = null;
     void (async () => {
       try {
         const status = await hermesBridgeStatus();
