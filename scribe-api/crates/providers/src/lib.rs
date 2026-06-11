@@ -2,6 +2,7 @@
 
 pub mod audio_probe;
 pub mod http;
+pub mod issue_reports;
 pub mod jwks;
 pub mod m4a_probe;
 pub mod openai;
@@ -15,6 +16,7 @@ mod transcription;
 
 pub use audio_probe::MultiFormatDurationProbe;
 pub use http::{default_client, jwks_client};
+pub use issue_reports::{LogIssueReportSink, WebhookIssueReportSink};
 pub use jwks::{JwksTokenVerifier, JwksTokenVerifierParams};
 pub use m4a_probe::{M4aDurationProbe, M4aProbeError};
 pub use openai::OpenAiTranscriber;

@@ -110,11 +110,52 @@ pub struct Receipt {
     pub idempotent_replay: bool,
 }
 
+/// Audio container of a transcription request. The domain request carries
+/// this instead of the client's file name, so upstream providers receive a
+/// canonical, non-identifying part name no matter what the user's files are
+/// called — the anonymization is structural, not a sanitization step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioFormat {
+    Wav,
+    Mp4,
+}
+
+impl AudioFormat {
+    /// Container detection by extension — the same rule the upload pipeline
+    /// has always used: m4a/mp4 are MP4 audio, everything else is WAV.
+    pub fn from_filename(filename: &str) -> Self {
+        let is_mp4 = std::path::Path::new(filename)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("m4a") || extension.eq_ignore_ascii_case("mp4")
+            });
+        if is_mp4 { Self::Mp4 } else { Self::Wav }
+    }
+
+    /// The only file name upstream providers ever see.
+    pub fn upstream_filename(self) -> &'static str {
+        match self {
+            Self::Wav => "audio.wav",
+            Self::Mp4 => "audio.m4a",
+        }
+    }
+
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Wav => "audio/wav",
+            Self::Mp4 => "audio/mp4",
+        }
+    }
+}
+
+/// What a transcriber needs and nothing more: the audio, its container, and
+/// the inference knobs. Deliberately no file name, note title, user id, or
+/// session id — a provider cannot leak metadata it never receives.
 #[derive(Clone, Debug)]
 pub struct TranscriptionRequest {
     pub audio: Vec<u8>,
-    pub filename: String,
-    pub title: String,
+    pub format: AudioFormat,
     pub context: Option<String>,
     pub language: Option<String>,
     pub model: ModelId,
@@ -159,6 +200,43 @@ pub struct ChargeRequest {
     pub action_token: String,
     pub credits: Credits,
     pub idempotency_key: String,
+}
+
+/// A user-submitted bug report from the desktop app, paired with the agent's
+/// own diagnostic assessment of the issue when one was produced.
+#[derive(Clone, Debug)]
+pub struct IssueReport {
+    pub user_id: UserId,
+    pub description: String,
+    pub agent_diagnosis: Option<String>,
+    /// Names of everything the user attached, including files whose bytes
+    /// were too large or unreadable to upload.
+    pub attachment_names: Vec<String>,
+    /// The attachment files (typically screenshots) that were uploaded.
+    pub attachments: Vec<IssueReportAttachment>,
+    pub session_id: Option<String>,
+    pub app_version: Option<String>,
+    pub platform: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct IssueReportAttachment {
+    pub name: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Manual Debug: the bytes are image-sized payloads that must never be
+/// dumped into logs or error messages.
+impl std::fmt::Debug for IssueReportAttachment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IssueReportAttachment")
+            .field("name", &self.name)
+            .field("content_type", &self.content_type)
+            .field("byte_len", &self.bytes.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -214,6 +292,35 @@ pub trait TokenVerifier: Send + Sync {
     async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError>;
 }
 
+#[async_trait]
+pub trait IssueReportSink: Send + Sync {
+    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError>;
+}
+
 pub trait AudioDurationProbe: Send + Sync {
     fn probe(&self, audio: &[u8]) -> Result<Duration, DomainError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioFormat;
+
+    #[test]
+    fn audio_format_detects_mp4_containers_case_insensitively() {
+        assert_eq!(AudioFormat::from_filename("clip.m4a"), AudioFormat::Mp4);
+        assert_eq!(AudioFormat::from_filename("CLIP.M4A"), AudioFormat::Mp4);
+        assert_eq!(AudioFormat::from_filename("video.mp4"), AudioFormat::Mp4);
+        assert_eq!(AudioFormat::from_filename("take.wav"), AudioFormat::Wav);
+        assert_eq!(AudioFormat::from_filename("noext"), AudioFormat::Wav);
+    }
+
+    #[test]
+    fn upstream_filenames_never_echo_the_input() {
+        // The canonical names are constants by construction; this pins the
+        // exact strings providers send so a regression is loud.
+        assert_eq!(AudioFormat::Wav.upstream_filename(), "audio.wav");
+        assert_eq!(AudioFormat::Mp4.upstream_filename(), "audio.m4a");
+        assert_eq!(AudioFormat::Wav.mime(), "audio/wav");
+        assert_eq!(AudioFormat::Mp4.mime(), "audio/mp4");
+    }
 }

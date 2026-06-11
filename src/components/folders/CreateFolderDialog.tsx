@@ -50,7 +50,7 @@ export function CreateFolderDialog({
         onClose();
       }}
       title="Create project"
-      description="Group meetings and agent sessions by project, client, or topic."
+      description="Group meeting notes and agent sessions by project, client, or topic."
       initialFocusSelector='input[name="folder-name"]'
       footer={
         <>

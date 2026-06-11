@@ -152,9 +152,11 @@ impl VeniceTranscriber {
         request: &TranscriptionRequest,
     ) -> Result<Transcript, UpstreamAttemptError> {
         let model_id = &request.model.0;
+        // Same canonical part name as every other transcriber — providers
+        // never see the user's own file name.
         let audio_part = Part::bytes(request.audio.clone())
-            .file_name(request.filename.clone())
-            .mime_str(crate::transcription::audio_mime(&request.filename))
+            .file_name(request.format.upstream_filename())
+            .mime_str(request.format.mime())
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %model_id, "venice: audio mime build failed");
                 UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
@@ -1053,8 +1055,7 @@ mod tests {
             &transcriber,
             scribe_domain::TranscriptionRequest {
                 audio: b"fake wav".to_vec(),
-                filename: "dictation.wav".to_string(),
-                title: "Dictation".to_string(),
+                format: scribe_domain::AudioFormat::Wav,
                 context: None,
                 language: None,
                 model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
@@ -1063,6 +1064,16 @@ mod tests {
         .await;
 
         assert_eq!(transcript.map(|value| value.text), Ok("Hello".to_string()));
+
+        // Same anonymization property as the OpenAI path: the part is named
+        // canonically, never after the user's file.
+        let received = server.received_requests().await.unwrap_or_default();
+        let body = received
+            .iter()
+            .map(|request| String::from_utf8_lossy(&request.body).to_string())
+            .find(|body| body.contains("filename="))
+            .unwrap_or_default();
+        assert!(body.contains("filename=\"audio.wav\""), "body: {body}");
     }
 
     #[tokio::test]

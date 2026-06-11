@@ -45,8 +45,8 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsTopUp: vi.fn(),
-  mascotShow: vi.fn(),
-  mascotHide: vi.fn(),
+  agentHudShow: vi.fn(),
+  agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
 }));
@@ -95,12 +95,13 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsTopUp: mocks.osAccountsTopUp,
-  mascotShow: mocks.mascotShow,
-  mascotHide: mocks.mascotHide,
+  agentHudShow: mocks.agentHudShow,
+  agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
   listAgentTasks: vi.fn(async () => ({ items: [] })),
+  scribeVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: vi.fn(async () => ({
     settings: { generationModel: "" },
   })),
@@ -180,6 +181,18 @@ describe("meeting start transcription event", () => {
       ],
     });
     mocks.startRecording.mockResolvedValue(recording());
+    // The active-recording poll (App.tsx ~20Hz waveform interval) calls this
+    // on a timer; without a resolved value the tick throws on undefined.then
+    // as an unhandled error after the assertions finish - a timing-dependent
+    // CI failure that coverage instrumentation reliably triggers.
+    mocks.getRecordingStatus.mockResolvedValue({
+      sessionId: "rec-1",
+      state: "recording",
+      elapsedMs: 500,
+      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+      silenceWarning: false,
+      bytesWritten: 2048,
+    });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -241,7 +254,7 @@ describe("meeting start transcription event", () => {
 
     await fireMeetingStartUntilRecording();
     expect(mocks.startRecording).toHaveBeenCalledOnce();
-    expect(screen.getByLabelText("Meeting title")).toHaveValue("First note");
+    expect(screen.getByLabelText("Note title")).toHaveValue("First note");
 
     await act(async () => {
       await mocks.listeners.get("meeting-hud-action")?.({
@@ -250,7 +263,7 @@ describe("meeting start transcription event", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Meeting title")).toHaveValue("First note"),
+      expect(screen.getByLabelText("Note title")).toHaveValue("First note"),
     );
   });
 

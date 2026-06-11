@@ -3,6 +3,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs, io,
     net::TcpListener,
     path::{Path, PathBuf},
@@ -63,12 +64,12 @@ You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertain
 /// write-jail, so the soul never claims protections that aren't active (the
 /// escape hatch and non-macOS spawns run unsandboxed).
 const JUNE_SOUL_SANDBOX_MD: &str = r#"
-Your environment: you run inside a macOS kernel sandbox (Seatbelt) that the June app applies to you and to every subprocess you start. It is a write-jail, part of the same privacy-by-architecture story:
+Your environment: sessions run by default inside a macOS kernel sandbox (Seatbelt) that the June app applies to you and to every subprocess you start. It is a write-jail, part of the same privacy-by-architecture story. The user chooses the mode per session: sessions are Sandboxed unless they explicitly started this one in Unrestricted mode. In a sandboxed session:
 
 - You can write only inside your own area — your Hermes home (including your workspace), your runtime directory, and your temp directory. Writes anywhere else (the user's dotfiles, Desktop, Documents, system settings) are denied by the kernel.
 - Reads stay broad so you can work with the user's files, except credential stores (~/.ssh, ~/.aws, ~/.gnupg, keychains, .netrc), which are blocked.
-- When a command fails with "operation not permitted" on a write outside your area, that is the sandbox working as designed. Don't retry or look for workarounds: produce the file in your workspace and tell the user where it is, or ask them to do that one step.
-- If the user asks whether you can damage their system, answer honestly: destructive writes outside your workspace are blocked at the kernel level, not just by policy.
+- When a command fails with "operation not permitted" on a write outside your area, that is the sandbox working as designed. Don't retry or look for workarounds: produce the file in your workspace and tell the user where it is, or ask them to do that one step. If the user wants you to write outside the jail, they can start a new session in Unrestricted mode.
+- If the user asks whether you can damage their system, answer honestly: in a sandboxed session, destructive writes outside your workspace are blocked at the kernel level, not just by policy; in an Unrestricted session that protection is off because they chose to turn it off.
 "#;
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
@@ -97,28 +98,42 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
 
 #[derive(Default)]
 pub struct HermesBridge {
-    process: Mutex<Option<HermesProcess>>,
+    /// Up to one runtime process per write-access mode, keyed by `full_mode`.
+    /// The Seatbelt jail is applied at spawn and can't change on a live
+    /// process, so per-session modes are served by a *pair* of processes —
+    /// sandboxed and unrestricted — over the same Hermes home (sessions live
+    /// in the runtime's WAL-mode SQLite store, which is built for
+    /// multi-process access). Starting one mode never disturbs the other.
+    processes: Mutex<HashMap<bool, HermesProcess>>,
     /// Serializes the whole start sequence (config sync, runtime install,
     /// spawn, readiness wait). Concurrent starts would otherwise write
-    /// `config.yaml` with different proxy ports/tokens and could run two
-    /// installers at once. This must be an async mutex because it is held
-    /// across awaits; the `process` mutex above is std::sync and must never
-    /// be held across an await.
+    /// `config.yaml` concurrently and could run two installers at once.
+    /// This must be an async mutex because it is held across awaits; the
+    /// `processes` mutex above is std::sync and must never be held across
+    /// an await.
     start_lock: tokio::sync::Mutex<()>,
     /// Monotonic id assigned to each spawned Hermes process so a start
     /// attempt only tears down the exact process it launched (and not a
     /// replacement that arrived after a stop/restart).
     next_generation: AtomicU64,
+    /// One local provider proxy shared by both runtime processes. The
+    /// runtime reads its model endpoint from the single shared
+    /// `HERMES_HOME/config.yaml` (no per-process override exists upstream),
+    /// so the proxy coordinates must be identical for every spawn — a
+    /// per-process proxy would rewrite the file under the other process.
+    /// Started lazily on the first spawn, lives until app shutdown.
+    provider_proxy: Mutex<Option<SharedProviderProxy>>,
 }
 
 struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
-    proxy: Option<ScribeProviderProxy>,
 }
 
-struct ScribeProviderProxy {
+struct SharedProviderProxy {
+    port: u16,
+    token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -163,8 +178,16 @@ pub struct HermesBridgeConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HermesBridgeStatus {
+    /// True when any runtime process is up.
     pub running: bool,
+    /// The primary connection — the requested mode's process for a start
+    /// call, otherwise sandboxed-first. Kept alongside `connections` so
+    /// existing callers that only care about "the runtime" keep working.
     pub connection: Option<HermesBridgeConnection>,
+    /// Every live runtime process (at most one per mode). Mode-aware
+    /// callers pick by `full_mode`.
+    #[serde(default)]
+    pub connections: Vec<HermesBridgeConnection>,
     pub message: Option<String>,
 }
 
@@ -173,11 +196,11 @@ pub struct HermesBridgeStatus {
 pub struct StartHermesBridgeRequest {
     #[serde(default)]
     pub cwd: Option<String>,
-    /// `Some(_)` is an explicit, user-chosen mode: a running runtime whose
-    /// mode differs is restarted to honor it. `None` means "no preference" —
-    /// reuse whatever is running, and start sandboxed when starting fresh —
-    /// so background callers (auto-start, routines) can never flip a mode the
-    /// user opted into, and Full mode never survives an app relaunch.
+    /// `Some(_)` names the mode to ensure; the other mode's process (if
+    /// any) is left untouched — the two run side by side. `None` means "no
+    /// preference": ensure the sandboxed default, so background callers
+    /// (auto-start, routines) never widen write access, and Full mode never
+    /// survives an app relaunch on its own.
     #[serde(default)]
     pub full_mode: Option<bool>,
 }
@@ -287,35 +310,65 @@ pub struct HermesFilesystemEntry {
 pub async fn hermes_bridge_status(
     bridge: State<'_, HermesBridge>,
 ) -> Result<HermesBridgeStatus, AppError> {
+    let connections = live_connections(&bridge)?;
+    Ok(status_for(connections, None))
+}
+
+/// Reap-and-collect: drops map entries whose process has exited and returns
+/// the connections that are still live, sandboxed first.
+fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>, AppError> {
     let mut guard = bridge
-        .process
+        .processes
         .lock()
         .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
-    let Some(process) = guard.as_mut() else {
-        return Ok(HermesBridgeStatus {
-            running: false,
-            connection: None,
-            message: Some("Hermes bridge is not running.".to_string()),
-        });
-    };
-    match process.child.try_wait() {
-        Ok(Some(status)) => {
-            *guard = None;
-            Ok(HermesBridgeStatus {
-                running: false,
-                connection: None,
-                message: Some(format!("Hermes exited with status {status}.")),
-            })
+    let mut connections = Vec::new();
+    for full_mode in [false, true] {
+        let exited = match guard.get_mut(&full_mode) {
+            None => continue,
+            Some(process) => match process.child.try_wait() {
+                Ok(Some(_)) => true,
+                Ok(None) => false,
+                Err(error) => {
+                    return Err(AppError::new(
+                        "hermes_bridge_status_failed",
+                        error.to_string(),
+                    ));
+                }
+            },
+        };
+        if exited {
+            guard.remove(&full_mode);
+        } else if let Some(process) = guard.get(&full_mode) {
+            connections.push(process.connection.clone());
         }
-        Ok(None) => Ok(HermesBridgeStatus {
-            running: true,
-            connection: Some(process.connection.clone()),
-            message: None,
-        }),
-        Err(error) => Err(AppError::new(
-            "hermes_bridge_status_failed",
-            error.to_string(),
-        )),
+    }
+    Ok(connections)
+}
+
+/// Builds the wire status. `primary_mode` selects which connection fills the
+/// legacy `connection` field (a start call reports the mode it ensured);
+/// `None` prefers the sandboxed process.
+fn status_for(
+    connections: Vec<HermesBridgeConnection>,
+    primary_mode: Option<bool>,
+) -> HermesBridgeStatus {
+    let primary = match primary_mode {
+        Some(mode) => connections
+            .iter()
+            .find(|connection| connection.full_mode == mode)
+            .cloned(),
+        None => connections.first().cloned(),
+    };
+    let running = !connections.is_empty();
+    HermesBridgeStatus {
+        running,
+        connection: primary,
+        message: if running {
+            None
+        } else {
+            Some("Hermes bridge is not running.".to_string())
+        },
+        connections,
     }
 }
 
@@ -375,22 +428,18 @@ async fn start_hermes_bridge_inner(
     // sees the winner's running process.
     let _start_guard = bridge.start_lock.lock().await;
 
-    if let Some(status) = existing_running_status(bridge)? {
-        let running_full_mode = status
-            .connection
-            .as_ref()
-            .is_some_and(|connection| connection.full_mode);
-        match request.full_mode {
-            // An explicit mode choice that differs from the running runtime
-            // restarts it; the jail is applied at spawn and can't be changed
-            // on a live process. Implicit (None) callers reuse what's up.
-            Some(requested) if requested != running_full_mode => {
-                stop_hermes_bridge_inner(bridge)?;
-            }
-            _ => return Ok(status),
-        }
-    }
+    // Ensure the requested mode (None = the sandboxed default). The other
+    // mode's process — if one is up — is deliberately untouched: the pair
+    // runs side by side so a session in one mode never kills the other's
+    // in-flight work.
     let full_mode = request.full_mode.unwrap_or(false);
+    let connections = live_connections(bridge)?;
+    if connections
+        .iter()
+        .any(|connection| connection.full_mode == full_mode)
+    {
+        return Ok(status_for(connections, Some(full_mode)));
+    }
 
     let port = pick_port()?;
     let token = random_token();
@@ -414,23 +463,29 @@ async fn start_hermes_bridge_inner(
         .map(std::path::PathBuf::from)
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
-    let provider_proxy_token = random_token();
-    let provider_proxy = start_scribe_provider_proxy(provider_proxy_token.clone()).await?;
-    sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
+    let provider_proxy = ensure_provider_proxy(bridge).await?;
+    sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy.token)?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
     // destructive writes (rm -rf of user dirs, dotfile rewrites, TCC db edits)
     // are denied by the kernel rather than by Hermes' own pattern checks.
     // Resolved before the soul write so June's self-knowledge about the jail
-    // matches what this spawn actually enforces.
+    // matches what sandboxed spawns actually enforce.
     let sandbox_profile = if full_mode {
         None
     } else {
         prepare_sandbox(app, &hermes_home)
     };
     let sandboxed = sandbox_profile.is_some();
-    sync_june_soul(&hermes_home, sandboxed)?;
+    // SOUL.md is shared by both processes (single home), so its sandbox
+    // section describes the per-session mode split rather than this spawn.
+    let sandbox_available = if full_mode {
+        sandbox_would_engage(app, &hermes_home)
+    } else {
+        sandboxed
+    };
+    sync_june_soul(&hermes_home, sandbox_available)?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -495,35 +550,30 @@ async fn start_hermes_bridge_inner(
 
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     {
-        let mut guard = bridge.process.lock().map_err(|_| {
+        let mut guard = bridge.processes.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
         // The start guard serializes starts, so no concurrent start can have
-        // populated the slot since the `existing_running_status` check above.
+        // populated this mode's slot since the live-connections check above.
         // Keep a defensive check anyway: if a live process is somehow present
         // we keep it and tear down the redundant one we just launched instead
         // of leaking it.
-        if let Some(existing) = guard.as_mut() {
+        if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(existing.child.try_wait(), Ok(None)) {
-                let existing_connection = existing.connection.clone();
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = provider_proxy.shutdown.send(());
-                return Ok(HermesBridgeStatus {
-                    running: true,
-                    connection: Some(existing_connection),
-                    message: None,
-                });
+                drop(guard);
+                return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
         }
-        *guard = Some(HermesProcess {
-            generation,
-            child,
-            connection: connection.clone(),
-            proxy: Some(ScribeProviderProxy {
-                shutdown: Some(provider_proxy.shutdown),
-            }),
-        });
+        guard.insert(
+            full_mode,
+            HermesProcess {
+                generation,
+                child,
+                connection: connection.clone(),
+            },
+        );
     }
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
@@ -534,11 +584,45 @@ async fn start_hermes_bridge_inner(
         return Err(error);
     }
 
-    Ok(HermesBridgeStatus {
-        running: true,
-        connection: Some(connection),
-        message: None,
+    Ok(status_for(live_connections(bridge)?, Some(full_mode)))
+}
+
+/// The shared provider proxy's coordinates, starting it on first use. Both
+/// runtime processes point at it through the one shared config.yaml.
+async fn ensure_provider_proxy(bridge: &HermesBridge) -> Result<SharedProviderProxyInfo, AppError> {
+    {
+        let guard = bridge.provider_proxy.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        if let Some(proxy) = guard.as_ref() {
+            return Ok(SharedProviderProxyInfo {
+                port: proxy.port,
+                token: proxy.token.clone(),
+            });
+        }
+    }
+    let token = random_token();
+    let started = start_scribe_provider_proxy(token.clone()).await?;
+    let mut guard = bridge
+        .provider_proxy
+        .lock()
+        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
+    // The start_lock serializes callers, so the slot is still empty here;
+    // insert unconditionally.
+    *guard = Some(SharedProviderProxy {
+        port: started.port,
+        token: token.clone(),
+        shutdown: Some(started.shutdown),
+    });
+    Ok(SharedProviderProxyInfo {
+        port: started.port,
+        token,
     })
+}
+
+struct SharedProviderProxyInfo {
+    port: u16,
+    token: String,
 }
 
 #[tauri::command]
@@ -549,6 +633,7 @@ pub async fn stop_hermes_bridge(
     Ok(HermesBridgeStatus {
         running: false,
         connection: None,
+        connections: Vec::new(),
         message: Some("Hermes bridge stopped.".to_string()),
     })
 }
@@ -1115,42 +1200,35 @@ fn image_mime_type(path: &Path) -> Option<&'static str> {
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
     let _ = stop_hermes_bridge_inner(&bridge);
+    let proxy = bridge
+        .provider_proxy
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    if let Some(mut proxy) = proxy {
+        if let Some(shutdown) = proxy.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
 }
 
+/// Sends a dashboard API request to any live runtime process, sandboxed
+/// first. Sessions, skills, and platform state all live in the shared
+/// Hermes home, so either process answers these identically.
 async fn hermes_api_json(
     bridge: &State<'_, HermesBridge>,
     method: reqwest::Method,
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
-    let connection = {
-        let mut guard = bridge.process.lock().map_err(|_| {
-            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
-        })?;
-        let Some(process) = guard.as_mut() else {
-            return Err(AppError::new(
-                "hermes_bridge_not_running",
-                "Hermes bridge is not running.",
-            ));
-        };
-        match process.child.try_wait() {
-            Ok(Some(status)) => {
-                *guard = None;
-                return Err(AppError::new(
-                    "hermes_bridge_not_running",
-                    format!("Hermes exited with status {status}."),
-                ));
-            }
-            Ok(None) => process.connection.clone(),
-            Err(error) => {
-                return Err(AppError::new(
-                    "hermes_bridge_status_failed",
-                    error.to_string(),
-                ));
-            }
-        }
+    let connections = live_connections(bridge)?;
+    let Some(connection) = connections.first() else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running.",
+        ));
     };
-    hermes_connection_json(&connection, method, path, body).await
+    hermes_connection_json(connection, method, path, body).await
 }
 
 async fn start_hermes_gateway_if_needed(
@@ -1294,58 +1372,36 @@ async fn hermes_connection_json(
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))
 }
 
-fn existing_running_status(bridge: &HermesBridge) -> Result<Option<HermesBridgeStatus>, AppError> {
-    let mut guard = bridge
-        .process
-        .lock()
-        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
-    let Some(process) = guard.as_mut() else {
-        return Ok(None);
-    };
-    match process.child.try_wait() {
-        Ok(Some(_)) => {
-            *guard = None;
-            Ok(None)
-        }
-        Ok(None) => Ok(Some(HermesBridgeStatus {
-            running: true,
-            connection: Some(process.connection.clone()),
-            message: None,
-        })),
-        Err(error) => Err(AppError::new(
-            "hermes_bridge_status_failed",
-            error.to_string(),
-        )),
-    }
-}
-
+/// Stops every runtime process. The shared provider proxy stays up — it is
+/// process-independent and the next start reuses it; `shutdown()` is the
+/// only place that tears it down.
 fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
-    let process = bridge
-        .process
-        .lock()
-        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?
-        .take();
-    shutdown_hermes_process(process);
+    let processes: Vec<HermesProcess> = {
+        let mut guard = bridge.processes.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        guard.drain().map(|(_, process)| process).collect()
+    };
+    for process in processes {
+        shutdown_hermes_process(Some(process));
+    }
     Ok(())
 }
 
-/// Stops the bridge only if the slot still holds the process spawned by the
-/// start attempt identified by `generation`. A stop (or stop+restart) that
-/// raced with that start leaves a different process in the slot, which must
-/// not be killed by the stale start attempt's cleanup.
+/// Stops only the process spawned by the start attempt identified by
+/// `generation`, whichever mode slot it sits in. A stop (or stop+restart)
+/// that raced with that start leaves a different process in the slot, which
+/// must not be killed by the stale start attempt's cleanup.
 fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Result<(), AppError> {
     let process = {
-        let mut guard = bridge.process.lock().map_err(|_| {
+        let mut guard = bridge.processes.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
-        if guard
-            .as_ref()
-            .is_some_and(|process| process.generation == generation)
-        {
-            guard.take()
-        } else {
-            None
-        }
+        let key = guard
+            .iter()
+            .find(|(_, process)| process.generation == generation)
+            .map(|(key, _)| *key);
+        key.and_then(|key| guard.remove(&key))
     };
     shutdown_hermes_process(process);
     Ok(())
@@ -1355,11 +1411,6 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
         let _ = process.child.kill();
         let _ = process.child.wait();
-        if let Some(proxy) = process.proxy.as_mut() {
-            if let Some(shutdown) = proxy.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-        }
     }
 }
 
@@ -1677,6 +1728,26 @@ fn prepare_sandbox(_app: &AppHandle, _hermes_home: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Whether a *sandboxed* spawn on this machine would actually engage the
+/// jail. Used by unrestricted spawns to keep the shared SOUL.md's sandbox
+/// section accurate without touching the profile on disk.
+#[cfg(target_os = "macos")]
+fn sandbox_would_engage(app: &AppHandle, hermes_home: &Path) -> bool {
+    if env_flag_enabled(SCRIBE_HERMES_DISABLE_SANDBOX_ENV) {
+        return false;
+    }
+    if !Path::new(SANDBOX_EXEC_PATH).exists() {
+        return false;
+    }
+    let _ = hermes_home;
+    std::env::var_os("HOME").is_some() && managed_hermes_runtime_dir(app).is_ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sandbox_would_engage(_app: &AppHandle, _hermes_home: &Path) -> bool {
+    false
+}
+
 #[cfg(target_os = "macos")]
 fn env_flag_enabled(name: &str) -> bool {
     match std::env::var(name) {
@@ -1858,10 +1929,13 @@ display:
 /// Writes the June persona to `SOUL.md` in the Scribe-managed Hermes home.
 /// Runs on every start so the app-owned identity wins over the default soul
 /// Hermes seeds on first run (and over any stale copy from earlier versions).
-/// The sandbox section is included only when this spawn's jail engaged, so
-/// the agent's self-knowledge tracks the actual enforcement.
-fn sync_june_soul(hermes_home: &std::path::Path, sandboxed: bool) -> Result<(), AppError> {
-    let soul = if sandboxed {
+/// Both mode processes read this one file, so the sandbox section describes
+/// the per-session mode split; it is included only when sandboxed spawns on
+/// this machine actually engage the jail (it's omitted when sandbox-exec is
+/// missing or the escape-hatch env var disabled it, so the agent never
+/// claims a protection that isn't enforced).
+fn sync_june_soul(hermes_home: &std::path::Path, sandbox_available: bool) -> Result<(), AppError> {
+    let soul = if sandbox_available {
         format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}")
     } else {
         JUNE_SOUL_MD.to_string()

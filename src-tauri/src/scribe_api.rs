@@ -531,6 +531,154 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
     })
 }
 
+// Matches the server's per-attachment cap; bigger files are listed by name
+// in the report but their bytes stay local.
+const ISSUE_ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+pub async fn submit_issue_report(
+    request: &crate::domain::types::SubmitIssueReportRequest,
+    app_version: &str,
+) -> Result<crate::domain::types::SubmitIssueReportResponse, AppError> {
+    let description = request.description.trim();
+    if description.is_empty() {
+        return Err(AppError::new(
+            "issue_report_empty",
+            "Cannot send an empty issue report.",
+        ));
+    }
+    let mut form = Form::new()
+        .text("description", description.to_string())
+        .text("appVersion", app_version.to_string())
+        .text("platform", std::env::consts::OS);
+    if let Some(session_id) = request
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("sessionId", session_id.to_string());
+    }
+    if let Some(diagnosis) = request
+        .agent_diagnosis
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("agentDiagnosis", diagnosis.to_string());
+    }
+    for name in &request.attachment_names {
+        form = form.text("attachmentName", name.clone());
+    }
+    // Attachment uploads are best-effort: an unreadable or oversized file
+    // must not block the report, and its name above still tells the team it
+    // existed.
+    for path in &request.attachment_paths {
+        let bytes = match tokio::fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("skipping unreadable issue report attachment {path}: {error}");
+                continue;
+            }
+        };
+        if bytes.is_empty() || bytes.len() > ISSUE_ATTACHMENT_MAX_BYTES {
+            eprintln!(
+                "skipping issue report attachment {path}: {} bytes",
+                bytes.len()
+            );
+            continue;
+        }
+        let filename = Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "attachment".to_string());
+        let part = Part::bytes(bytes)
+            .file_name(filename)
+            .mime_str(issue_attachment_mime(path))
+            .map_err(|error| AppError::new("issue_report_attachment_invalid", error.to_string()))?;
+        form = form.part("attachment", part);
+    }
+    post_multipart("/v1/issue-reports", form).await
+}
+
+fn issue_attachment_mime(path: &str) -> &'static str {
+    let extension = Path::new(path)
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase());
+    match extension.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("heic") => "image/heic",
+        Some("pdf") => "application/pdf",
+        Some("txt" | "log") => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Plain-language explanation of a pending approval request, written by the
+/// generation model. The agent runtime is parked waiting on the approval, so
+/// this is a one-shot side call — it never touches the paused session.
+pub async fn explain_agent_approval(
+    description: &str,
+    command: Option<&str>,
+) -> Result<String, AppError> {
+    let description = description.trim();
+    let command = command.map(str::trim).filter(|value| !value.is_empty());
+    if description.is_empty() && command.is_none() {
+        return Err(AppError::new(
+            "approval_explanation_empty",
+            "There is nothing to explain for this approval request.",
+        ));
+    }
+    let mut request_text = format!("Permission request: {description}");
+    if let Some(command) = command {
+        request_text.push_str("\nExact command or action:\n");
+        request_text.push_str(command);
+    }
+    let response = proxy_agent_chat_completions(serde_json::json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": "An AI agent paused mid-task to ask its user for permission. Explain what this specific request would actually do, in plain language the user can act on: name the files, hosts, or data involved, decode any flags or shell syntax, and call out anything risky or hard to undo (deleting or overwriting files, sending data off the machine, spending money). Use 2 to 4 short sentences. Never be generic, never use markdown or headings, and never tell the user which button to press."
+            },
+            {
+                "role": "user",
+                "content": request_text
+            }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 220
+    }))
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(AppError::new(
+            "approval_explanation_failed",
+            format!(
+                "Explanation generation returned status {}.",
+                response.status
+            ),
+        ));
+    }
+    let body = response.collect_body().await?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|error| AppError::new("approval_explanation_invalid", error.to_string()))?;
+    let text = extract_chat_completion_text(&value).ok_or_else(|| {
+        AppError::new(
+            "approval_explanation_invalid",
+            "Explanation generation did not return text.",
+        )
+    })?;
+    let explanation = text.trim();
+    if explanation.is_empty() {
+        return Err(AppError::new(
+            "approval_explanation_empty",
+            "Explanation generation returned an empty explanation.",
+        ));
+    }
+    Ok(explanation.to_string())
+}
+
 pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
     crate::providers::transcription_provider_for_model(model_id)
 }

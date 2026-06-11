@@ -17,6 +17,8 @@ pub struct AppConfig {
     pub os_accounts: OsAccountsConfig,
     pub upstreams: UpstreamsConfig,
     pub attestation: AttestationConfig,
+    #[serde(default)]
+    pub issue_reports: IssueReportsConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
 }
 
@@ -28,7 +30,36 @@ impl Debug for AppConfig {
             .field("os_accounts", &self.os_accounts)
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
+            .field("issue_reports", &self.issue_reports)
             .field("pricing", &self.pricing)
+            .finish()
+    }
+}
+
+/// Where user-submitted issue reports get forwarded. Defaults to empty so the
+/// section is optional: without a webhook, reports land in the structured
+/// logs only.
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct IssueReportsConfig {
+    /// Receives each report as a JSON POST. Often embeds a secret token
+    /// (Slack/Discord-style webhooks), hence the redacted Debug. Set via
+    /// `SCRIBE__ISSUE_REPORTS__WEBHOOK_URL`.
+    #[serde(default)]
+    pub webhook_url: String,
+}
+
+impl Debug for IssueReportsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IssueReportsConfig")
+            .field(
+                "webhook_url",
+                if self.webhook_url.is_empty() {
+                    &"<unset>"
+                } else {
+                    &REDACTED
+                },
+            )
             .finish()
     }
 }
@@ -215,63 +246,94 @@ pub struct ModelPriceConfig {
     pub capabilities: Vec<String>,
 }
 
+/// Built-in pricing fallback, used only when the live Venice catalog can't be
+/// reached at startup so metered charges still settle. The catalog carries the
+/// authoritative numbers and extends over this on every boot. Split out of
+/// `AppConfig::default` to keep that constructor under the line limit.
+fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
+    let mut pricing = BTreeMap::new();
+    pricing.insert(
+        "gpt-4o-mini-transcribe".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Seconds,
+            credits_per_million_seconds: Some(1_000_000),
+            input_credits_per_million_tokens: None,
+            output_credits_per_million_tokens: None,
+            provider: ModelProvider::Openai,
+            model_type: ModelType::Asr,
+            display_name: "GPT-4o mini transcribe".to_string(),
+            description: Some("Fast OpenAI speech-to-text model.".to_string()),
+            privacy: Some("anonymized".to_string()),
+            pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
+            context_tokens: Some(16_000),
+            traits: vec!["prompt".to_string()],
+            capabilities: Vec::new(),
+        },
+    );
+    pricing.insert(
+        "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Seconds,
+            credits_per_million_seconds: Some(100_000),
+            input_credits_per_million_tokens: None,
+            output_credits_per_million_tokens: None,
+            provider: ModelProvider::Venice,
+            model_type: ModelType::Asr,
+            display_name: "Parakeet TDT 0.6B v3".to_string(),
+            description: None,
+            privacy: Some("private".to_string()),
+            pricing: None,
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+        },
+    );
+    // Fallback pricing for the default text model, used only when the live
+    // Venice catalog can't be reached at startup so metered charges still
+    // settle. The live catalog (which carries the authoritative numbers)
+    // extends over this on every boot. Keep the first entry in sync with
+    // DEFAULT_GENERATION_MODEL in the Tauri providers module.
+    pricing.insert(
+        "zai-org-glm-5-1".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Tokens,
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: Some(1_750),
+            output_credits_per_million_tokens: Some(5_500),
+            provider: ModelProvider::Venice,
+            model_type: ModelType::Text,
+            display_name: "GLM 5.1".to_string(),
+            description: None,
+            privacy: Some("private".to_string()),
+            pricing: None,
+            context_tokens: Some(200_000),
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+        },
+    );
+    pricing.insert(
+        "zai-org-glm-5".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Tokens,
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: Some(1_000),
+            output_credits_per_million_tokens: Some(3_200),
+            provider: ModelProvider::Venice,
+            model_type: ModelType::Text,
+            display_name: "GLM 5".to_string(),
+            description: None,
+            privacy: Some("private".to_string()),
+            pricing: None,
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+        },
+    );
+    pricing
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
-        let mut pricing = BTreeMap::new();
-        pricing.insert(
-            "gpt-4o-mini-transcribe".to_string(),
-            ModelPriceConfig {
-                unit: PriceUnit::Seconds,
-                credits_per_million_seconds: Some(1_000_000),
-                input_credits_per_million_tokens: None,
-                output_credits_per_million_tokens: None,
-                provider: ModelProvider::Openai,
-                model_type: ModelType::Asr,
-                display_name: "GPT-4o mini transcribe".to_string(),
-                description: Some("Fast OpenAI speech-to-text model.".to_string()),
-                privacy: Some("anonymized".to_string()),
-                pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
-                context_tokens: Some(16_000),
-                traits: vec!["prompt".to_string()],
-                capabilities: Vec::new(),
-            },
-        );
-        pricing.insert(
-            "nvidia/parakeet-tdt-0.6b-v3".to_string(),
-            ModelPriceConfig {
-                unit: PriceUnit::Seconds,
-                credits_per_million_seconds: Some(100_000),
-                input_credits_per_million_tokens: None,
-                output_credits_per_million_tokens: None,
-                provider: ModelProvider::Venice,
-                model_type: ModelType::Asr,
-                display_name: "Parakeet TDT 0.6B v3".to_string(),
-                description: None,
-                privacy: Some("private".to_string()),
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        );
-        pricing.insert(
-            "zai-org-glm-5".to_string(),
-            ModelPriceConfig {
-                unit: PriceUnit::Tokens,
-                credits_per_million_seconds: None,
-                input_credits_per_million_tokens: Some(1_000),
-                output_credits_per_million_tokens: Some(3_200),
-                provider: ModelProvider::Venice,
-                model_type: ModelType::Text,
-                display_name: "GLM 5".to_string(),
-                description: None,
-                privacy: Some("private".to_string()),
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        );
         Self {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
@@ -311,7 +373,8 @@ impl Default for AppConfig {
                     "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
                         .to_string(),
             },
-            pricing,
+            issue_reports: IssueReportsConfig::default(),
+            pricing: default_pricing(),
         }
     }
 }

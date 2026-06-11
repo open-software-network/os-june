@@ -46,8 +46,8 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsTopUp: vi.fn(),
-  mascotShow: vi.fn(),
-  mascotHide: vi.fn(),
+  agentHudShow: vi.fn(),
+  agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
 }));
@@ -96,12 +96,13 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsTopUp: mocks.osAccountsTopUp,
-  mascotShow: mocks.mascotShow,
-  mascotHide: mocks.mascotHide,
+  agentHudShow: mocks.agentHudShow,
+  agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
   listAgentTasks: vi.fn(async () => ({ items: [] })),
+  scribeVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: vi.fn(async () => ({
     settings: { generationModel: "" },
   })),
@@ -254,7 +255,7 @@ describe("notes recording reliability", () => {
 
     // Browse to another note while the recording keeps running on note-1.
     await userEvent.click(
-      screen.getByRole("button", { name: "Meetings", current: "page" }),
+      screen.getByRole("button", { name: "Meeting notes", current: "page" }),
     );
     await userEvent.click(
       screen.getByRole("button", { name: /Second note Preview/ }),
@@ -324,7 +325,7 @@ describe("notes recording reliability", () => {
     // The app launches on the agent view; open the note from the Meetings
     // list so the editor (and its failure banner) is on screen.
     await userEvent.click(
-      await screen.findByRole("button", { name: "Meetings" }),
+      await screen.findByRole("button", { name: "Meeting notes" }),
     );
     await userEvent.click(
       screen.getByRole("button", { name: /First note Preview/ }),

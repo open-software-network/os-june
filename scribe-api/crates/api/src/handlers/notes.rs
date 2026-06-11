@@ -27,8 +27,12 @@ pub(crate) async fn transcribe(
     let model_id = form.required_text("model")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id, ModelKind::Asr)?;
+    // Accepted and validated for wire compatibility, but deliberately not
+    // carried into the transcription pipeline: the note title is user data
+    // an ASR provider has no business seeing.
     let title = form.required_text("title")?;
     validation::validate_text_len("title", &title, validation::MAX_TITLE_CHARS)?;
+    drop(title);
     let context = form.optional_text("context");
     validation::validate_optional_text_len(
         "context",
@@ -53,7 +57,6 @@ pub(crate) async fn transcribe(
             note_id,
             audio,
             filename,
-            title,
             context,
             language,
             model_id: ModelId(model_id),

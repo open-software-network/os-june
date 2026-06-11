@@ -8,6 +8,11 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  listScheduledRunSessions,
+  scheduledRunJobId,
+  sessionTimestamp,
+} from "../../lib/hermes-adapter";
+import {
   listRoutines,
   pauseRoutine,
   removeRoutine,
@@ -16,6 +21,8 @@ import {
   routineEditPrompt,
   type RoutineJob,
 } from "../../lib/hermes-routines";
+import { humanizeSchedule } from "../../lib/routine-schedule";
+import type { HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -26,11 +33,14 @@ type RoutinesViewProps = {
    * cron-job update. */
   onCreateRoutine: (prompt: string) => void;
   onEditRoutine: (prompt: string) => void;
+  /** Opens a past run (a cron-sourced Hermes session) in the agent view. */
+  onOpenRun: (session: HermesSessionInfo) => void;
 };
 
 export function RoutinesView({
   onCreateRoutine,
   onEditRoutine,
+  onOpenRun,
 }: RoutinesViewProps) {
   const [routines, setRoutines] = useState<RoutineJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,6 +53,8 @@ export function RoutinesView({
   const [draft, setDraft] = useState("");
   const [editTarget, setEditTarget] = useState<RoutineJob | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [runs, setRuns] = useState<HermesSessionInfo[]>([]);
+  const [runsUnavailable, setRunsUnavailable] = useState(false);
 
   // `loading` gates the whole list and only covers the first fetch;
   // `refreshing` covers every fetch so reloads keep the list visible while
@@ -61,19 +73,64 @@ export function RoutinesView({
     }
   }, []);
 
+  // Run history comes from a different backend (the session store, not the
+  // cron manager), so its failure must not take the routines list down with
+  // it — it degrades to a quiet notice inside the section instead.
+  const loadRuns = useCallback(async () => {
+    try {
+      setRuns(await listScheduledRunSessions());
+      setRunsUnavailable(false);
+    } catch {
+      setRunsUnavailable(true);
+    }
+  }, []);
+
+  const refresh = useCallback(
+    () => Promise.all([loadRoutines(), loadRuns()]),
+    [loadRoutines, loadRuns],
+  );
+
   useEffect(() => {
-    void loadRoutines();
-  }, [loadRoutines]);
+    void refresh();
+  }, [refresh]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return routines;
     return routines.filter((routine) =>
-      `${routine.name} ${routine.prompt_preview} ${routine.schedule}`
+      // Match the displayed wording too, so "weekdays" finds a routine whose
+      // stored schedule is "0 9 * * 1-5".
+      `${routine.name} ${routine.prompt_preview} ${routine.schedule} ${humanizeSchedule(routine.schedule)}`
         .toLowerCase()
         .includes(normalized),
     );
   }, [routines, query]);
+
+  const routinesById = useMemo(
+    () => new Map(routines.map((routine) => [routine.job_id, routine])),
+    [routines],
+  );
+
+  // A run is labeled with its routine's current name; once the routine is
+  // deleted, the session's own derived title is the best label left.
+  const runLabel = useCallback(
+    (run: HermesSessionInfo) => {
+      const jobId = scheduledRunJobId(run.id);
+      const routine = jobId ? routinesById.get(jobId) : undefined;
+      return routine?.name || run.title?.trim() || "Routine run";
+    },
+    [routinesById],
+  );
+
+  const filteredRuns = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return runs;
+    return runs.filter((run) =>
+      `${runLabel(run)} ${run.title ?? ""} ${run.preview ?? ""}`
+        .toLowerCase()
+        .includes(normalized),
+    );
+  }, [runs, query, runLabel]);
 
   function markBusy(jobId: string, busy: boolean) {
     setBusyIds((current) => {
@@ -182,7 +239,7 @@ export function RoutinesView({
             aria-busy={refreshing}
             data-busy={refreshing || undefined}
             disabled={refreshing}
-            onClick={() => void loadRoutines()}
+            onClick={() => void refresh()}
           >
             <IconArrowRotateClockwise size={14} />
           </button>
@@ -230,6 +287,45 @@ export function RoutinesView({
           ))}
         </ul>
       )}
+
+      {/* Hidden while everything is empty (the routines empty state owns the
+       * page) and while a search matches no runs; shown otherwise, including
+       * when only orphaned runs of deleted routines remain. */}
+      {!loading &&
+      (query.trim()
+        ? filteredRuns.length > 0
+        : routines.length > 0 || runs.length > 0 || runsUnavailable) ? (
+        <section className="routines-runs" aria-label="Run history">
+          <header className="routines-runs-header">
+            <h2>
+              Run history
+              {runs.length > 0 ? (
+                <span className="folders-count">{runs.length}</span>
+              ) : null}
+            </h2>
+          </header>
+          {runsUnavailable ? (
+            <p className="routines-runs-empty">
+              Run history is unavailable right now.
+            </p>
+          ) : runs.length === 0 ? (
+            <p className="routines-runs-empty">
+              No runs yet. When a routine fires, its session appears here.
+            </p>
+          ) : (
+            <ul className="routines-list routines-runs-list" role="list">
+              {filteredRuns.map((run) => (
+                <RunRow
+                  key={run.id}
+                  run={run}
+                  label={runLabel(run)}
+                  onOpen={() => onOpenRun(run)}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
       <Dialog
         open={createOpen}
@@ -342,7 +438,7 @@ function RoutineRow({
   const paused = routine.state === "paused";
   const completed = routine.state === "completed";
   const meta = [
-    routine.schedule,
+    humanizeSchedule(routine.schedule),
     completed
       ? routine.last_run_at
         ? `Last ran ${formatRunTime(routine.last_run_at)}`
@@ -406,6 +502,38 @@ function RoutineRow({
           <IconTrashCanSimple size={14} />
         </button>
       </span>
+    </li>
+  );
+}
+
+/** One past run: a cron-sourced session, labeled with its routine's name and
+ * opened in the agent view on click so the whole conversation is readable. */
+function RunRow({
+  run,
+  label,
+  onOpen,
+}: {
+  run: HermesSessionInfo;
+  label: string;
+  onOpen: () => void;
+}) {
+  const preview = run.preview?.trim();
+  return (
+    <li className="routines-run">
+      <button type="button" className="routines-run-button" onClick={onOpen}>
+        <span className="routines-item-icon" aria-hidden>
+          <IconArrowsRepeat size={14} />
+        </span>
+        <span className="routines-run-body">
+          <span className="routines-run-name">{label}</span>
+          {preview ? (
+            <span className="routines-run-preview">{preview}</span>
+          ) : null}
+        </span>
+        <span className="routines-run-time">
+          {formatRunTime(sessionTimestamp(run))}
+        </span>
+      </button>
     </li>
   );
 }

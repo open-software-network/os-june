@@ -898,9 +898,28 @@ impl Repositories {
         Ok(rows.into_iter().map(|row| row.get("path")).collect())
     }
 
+    pub async fn audio_artifact_paths_for_notes(
+        &self,
+        note_ids: &[String],
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let mut paths = Vec::new();
+        for note_id in note_ids {
+            paths.extend(self.audio_artifact_paths_for_note(note_id).await?);
+        }
+        Ok(paths)
+    }
+
     pub async fn delete_note(&self, note_id: &str) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         delete_note_records(&mut tx, note_id).await?;
+        tx.commit().await
+    }
+
+    pub async fn delete_notes(&self, note_ids: &[String]) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        for note_id in note_ids {
+            delete_note_records(&mut tx, note_id).await?;
+        }
         tx.commit().await
     }
 

@@ -56,7 +56,7 @@ impl MultipartFields {
     }
 }
 
-fn multipart_invalid<E>(error: E) -> ApiError
+pub(crate) fn multipart_invalid<E>(error: E) -> ApiError
 where
     E: std::fmt::Display,
 {

@@ -48,6 +48,9 @@ const notes: NoteListItemDto[] = [
 describe("folders UI", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (
+      window as unknown as { __sidebarStates?: (show?: boolean) => string }
+    ).__sidebarStates?.(false);
     hermesMocks.listHermesSessions.mockResolvedValue([]);
     hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
   });
@@ -73,12 +76,12 @@ describe("folders UI", () => {
 
     expect(screen.getByText("June")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Meetings" }),
+      screen.getByRole("button", { name: "Meeting notes" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
     expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Meetings" }));
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     await user.click(screen.getByRole("button", { name: "New session" }));
 
     expect(onChangeView).toHaveBeenCalledWith("notes");
@@ -228,6 +231,56 @@ describe("folders UI", () => {
     expect(screen.queryByLabelText("Working")).toBeNull();
   });
 
+  it("seeds the sidebar state preview from the dev console hook", async () => {
+    const onChangeView = vi.fn();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        onChangeView={onChangeView}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    const sidebarStates = (
+      window as unknown as { __sidebarStates?: (show?: boolean) => string }
+    ).__sidebarStates;
+    expect(sidebarStates).toBeTypeOf("function");
+
+    act(() => {
+      sidebarStates?.();
+    });
+
+    expect(await screen.findByText("Selected session")).toBeInTheDocument();
+    expect(screen.getByText("Working spinner")).toBeInTheDocument();
+    expect(screen.getByLabelText("Working")).toBeInTheDocument();
+    expect(screen.getByText("Needs you")).toBeInTheDocument();
+    expect(screen.getByLabelText("Needs you")).toBeInTheDocument();
+    expect(screen.getByText("New reply")).toBeInTheDocument();
+    expect(screen.getByLabelText("New reply")).toBeInTheDocument();
+    expect(screen.getByText("Recent timestamp")).toBeInTheDocument();
+    expect(screen.getByText("Older timestamp")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Very long session title that should truncate cleanly before the right edge state slot",
+      ),
+    ).toBeInTheDocument();
+    expect(onChangeView).toHaveBeenCalledWith("agent");
+
+    act(() => {
+      sidebarStates?.(false);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("No sessions yet")).toBeInTheDocument(),
+    );
+  });
+
   it("keeps the sidebar agent session list capped after workspace refreshes", async () => {
     render(
       <Sidebar
@@ -345,6 +398,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
     const list = within(
@@ -367,6 +421,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
 
@@ -374,7 +429,7 @@ describe("folders UI", () => {
       name: "Actions for Second",
     });
     const newMeetingActions = screen.getByRole("button", {
-      name: "Actions for New meeting",
+      name: "Actions for New note",
     });
 
     await user.click(secondActions);
@@ -413,6 +468,7 @@ describe("folders UI", () => {
           onCreateNote={vi.fn()}
           onOpenMoveDialog={vi.fn()}
           onDeleteNote={vi.fn()}
+          onDeleteNotes={vi.fn()}
         />,
       );
 
@@ -464,6 +520,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
 
@@ -478,12 +535,88 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("No meetings yet.")).toBeInTheDocument();
+    expect(screen.getByText("No notes yet.")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Create your first meeting" }),
+      screen.getByRole("button", { name: "Create your first note" }),
     ).toBeInTheDocument();
+  });
+
+  it("bulk deletes selected meetings from the main list", async () => {
+    const user = userEvent.setup();
+    const onDeleteNotes = vi.fn();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={onDeleteNotes}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Select" })).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "Select Second" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
+    await user.click(screen.getByRole("button", { name: "Delete 2 notes" }));
+    await user.click(screen.getByRole("button", { name: "Delete notes" }));
+
+    expect(onDeleteNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
+  });
+
+  it("selects all visible meetings after one meeting is selected", async () => {
+    const user = userEvent.setup();
+    const onDeleteNotes = vi.fn();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={onDeleteNotes}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Delete 2 notes" }));
+    await user.click(screen.getByRole("button", { name: "Delete notes" }));
+
+    expect(onDeleteNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
+  });
+
+  it("deselects all visible meetings after all visible meetings are selected", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Deselect all" }));
+
+    expect(screen.queryByRole("button", { name: "Delete 2 notes" })).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "Select Second" }),
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Select New note" }),
+    ).not.toBeChecked();
   });
 });

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>June Agents</title>
+  </head>
+  <body>
+    <main id="agent-hud" class="agent-hud" data-expanded="false">
+      <section class="agent-hud-surface" aria-label="Agent activity">
+        <button
+          id="agent-hud-pill"
+          class="agent-hud-pill"
+          type="button"
+          aria-expanded="false"
+          aria-label="Expand agent activity"
+        >
+          <span
+            id="agent-hud-mark"
+            class="agent-hud-mark"
+            aria-hidden="true"
+          ></span>
+          <span id="agent-hud-pill-label" class="agent-hud-pill-label"></span>
+          <span class="agent-hud-pill-end">
+            <span
+              id="agent-hud-pill-badge"
+              class="agent-hud-pill-badge"
+              hidden
+            ></span>
+            <span
+              id="agent-hud-chevron"
+              class="agent-hud-chevron"
+              aria-hidden="true"
+            ></span>
+          </span>
+        </button>
+        <div class="agent-hud-reveal">
+          <ul
+            id="agent-hud-stack"
+            class="agent-hud-stack"
+            role="list"
+            aria-label="Agent sessions"
+          ></ul>
+        </div>
+      </section>
+      <div
+        id="agent-hud-menu"
+        class="agent-hud-menu"
+        role="menu"
+        aria-hidden="true"
+        hidden
+      >
+        <button id="agent-hud-hide" type="button" role="menuitem">
+          Hide agent HUD
+        </button>
+      </div>
+    </main>
+    <script type="module" src="/src/agent-hud.ts"></script>
+  </body>
+</html>

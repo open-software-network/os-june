@@ -2989,7 +2989,7 @@ dependencies = [
 
 [[package]]
 name = "os-scribe"
-version = "0.0.5"
+version = "0.0.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

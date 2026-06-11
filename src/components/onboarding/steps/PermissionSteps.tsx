@@ -121,7 +121,7 @@ export function PermissionsStep({
           detail={
             micDenied
               ? "Turned off in System Settings. Flip the toggle and June will notice."
-              : "Hears you only while you hold the dictation key."
+              : "Hears you only when you ask June to listen."
           }
           onAllow={
             showPermissionRows

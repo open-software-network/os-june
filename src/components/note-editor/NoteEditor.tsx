@@ -21,7 +21,7 @@ import type {
   RecoverableRecordingDto,
   TranscriptDto,
 } from "../../lib/tauri";
-import { PangolinSpinner } from "../PangolinSpinner";
+import { DotSpinner } from "../DotSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
@@ -252,13 +252,13 @@ export function NoteEditor({
         </div>
         <input
           className="note-title"
-          aria-label="Meeting title"
-          placeholder="New meeting"
+          aria-label="Note title"
+          placeholder="New note"
           value={note.title}
           onChange={(event) => onTitleChange(event.currentTarget.value)}
         />
         <SegmentedControl
-          aria-label="Meeting views"
+          aria-label="Note views"
           value={activeTab}
           options={TABS}
           onValueChange={onTabChange}
@@ -337,7 +337,7 @@ export function NoteEditor({
             />
             {processingLock ? (
               <div className="note-generating" role="status" aria-live="polite">
-                <PangolinSpinner className="note-generating-spinner" />
+                <DotSpinner className="note-generating-spinner" />
                 <span className="note-generating-label">
                   {note.processingStatus === "generating"
                     ? "Generating notes…"

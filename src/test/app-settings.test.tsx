@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
-import { MASCOT_ENABLED_KEY } from "../lib/mascot-settings";
+import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
@@ -29,13 +29,13 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
-  mascotShow: vi.fn(),
-  mascotHide: vi.fn(),
+  agentHudShow: vi.fn(),
+  agentHudHide: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
   deleteDictionaryEntry: vi.fn(),
-  scribeVerifyUrl: vi.fn(),
+  scribeOpenVerifyPage: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -63,13 +63,13 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
     mocks.updateHermesBridgeMessagingPlatform,
-  mascotShow: mocks.mascotShow,
-  mascotHide: mocks.mascotHide,
+  agentHudShow: mocks.agentHudShow,
+  agentHudHide: mocks.agentHudHide,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
-  scribeVerifyUrl: mocks.scribeVerifyUrl,
+  scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -132,14 +132,12 @@ describe("AppSettings", () => {
       language,
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
-    mocks.scribeVerifyUrl.mockResolvedValue(
-      "https://scribe-api.example.test/verify",
-    );
+    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5",
+        generationModel: "zai-org-glm-5-1",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -148,7 +146,7 @@ describe("AppSettings", () => {
       selectedModel:
         mode === "transcription"
           ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5",
+          : "zai-org-glm-5-1",
       models:
         mode === "transcription"
           ? [
@@ -193,8 +191,8 @@ describe("AppSettings", () => {
           : [
               {
                 provider: "venice",
-                id: "zai-org-glm-5",
-                name: "GLM 5",
+                id: "zai-org-glm-5-1",
+                name: "GLM 5.1",
                 modelType: "text",
                 description: "Text model for writing notes.",
                 privacy: "private",
@@ -215,6 +213,18 @@ describe("AppSettings", () => {
                 pricing: { input: { usd: 0.2 }, output: { usd: 0.8 } },
                 contextTokens: 65536,
                 traits: ["anonymized", "uncensored"],
+                capabilities: ["supportsFunctionCalling"],
+              },
+              {
+                provider: "venice",
+                id: "e2ee-private",
+                name: "E2EE Private",
+                modelType: "text",
+                description: "End-to-end encrypted text model.",
+                privacy: "e2ee",
+                pricing: { input: { usd: 0.3 }, output: { usd: 1.2 } },
+                contextTokens: 32768,
+                traits: ["e2ee"],
                 capabilities: [],
               },
               {
@@ -238,12 +248,12 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "zai-org-glm-5",
+      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-1",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
-    mocks.mascotShow.mockResolvedValue(undefined);
-    mocks.mascotHide.mockResolvedValue(undefined);
+    mocks.agentHudShow.mockResolvedValue(undefined);
+    mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
       ...(kind === "toggle"
@@ -1032,6 +1042,8 @@ describe("AppSettings", () => {
       expect(
         await screen.findByRole("option", { name: /Parakeet/ }),
       ).toBeInTheDocument();
+      // The non-suggested catalog lives under the All tab.
+      await user.click(screen.getByRole("tab", { name: "All" }));
       expect(
         screen.getAllByText("$0.0001 per second audio").length,
       ).toBeGreaterThan(0);
@@ -1057,6 +1069,7 @@ describe("AppSettings", () => {
           name: "Change text model",
         }),
       );
+      await user.click(screen.getByRole("tab", { name: "All" }));
       expect(
         screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
       ).toBeGreaterThan(0);
@@ -1086,6 +1099,99 @@ describe("AppSettings", () => {
     }
   });
 
+  it("defaults the model picker to curated suggestions", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Change text model" }),
+    );
+
+    // Suggested is the default view: only the curated picks present in the
+    // catalog show, each with its recommendation reason.
+    expect(
+      await screen.findByRole("option", { name: /GLM 5\.1/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /Venice Uncensored/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Best overall/)).toBeInTheDocument();
+
+    // All shows the full catalog, without recommendation copy.
+    await user.click(screen.getByRole("tab", { name: "All" }));
+    expect(
+      screen.getByRole("option", { name: /Venice Uncensored/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Best overall/)).not.toBeInTheDocument();
+
+    // Searching looks across the whole catalog even from Suggested, and a
+    // suggested pick stays selectable.
+    await user.click(screen.getByRole("tab", { name: "Suggested" }));
+    await user.type(screen.getByLabelText("Search models"), "uncensored");
+    expect(
+      screen.getByRole("option", { name: /Venice Uncensored/ }),
+    ).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Search models"));
+    await user.click(screen.getByRole("option", { name: /GLM 5\.1/ }));
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "zai-org-glm-5-1",
+    );
+  });
+
+  it("blocks selecting a text model that cannot use tools", async () => {
+    // June's agent works through tool calls — a tool-less model (Venice's
+    // E2EE models) bricks it, so the picker must not let it be selected.
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Change text model" }),
+    );
+    // Tool-less models are not suggested, so judge them on the All tab.
+    await user.click(await screen.findByRole("tab", { name: "All" }));
+
+    const toolless = await screen.findByRole("option", {
+      name: /E2EE Private/,
+    });
+    expect(toolless).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getAllByText("No tools").length).toBeGreaterThan(0);
+
+    await user.click(toolless);
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+
+    // Tool-capable models stay selectable.
+    await user.click(screen.getByRole("option", { name: /Venice Uncensored/ }));
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "venice-uncensored",
+    );
+  });
+
   it("shows app build metadata", async () => {
     render(
       <AppSettings
@@ -1108,7 +1214,9 @@ describe("AppSettings", () => {
     expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
   });
 
-  it("links to the server attestation page from About", async () => {
+  it("opens the server attestation page from About through Rust", async () => {
+    // Not an anchor: the webview drops target="_blank" navigations, so the
+    // button must invoke the scribe_open_verify_page command instead.
     render(
       <AppSettings
         account={signedInAccount}
@@ -1124,12 +1232,10 @@ describe("AppSettings", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: "About" }));
-    const link = await screen.findByRole("link", { name: "Verify server" });
-    expect(link).toHaveAttribute(
-      "href",
-      "https://scribe-api.example.test/verify",
+    await user.click(
+      await screen.findByRole("button", { name: "Verify server" }),
     );
-    expect(link).toHaveAttribute("target", "_blank");
+    expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
   it("shows agent workspace and memory files inside Agent settings", async () => {
@@ -1157,7 +1263,7 @@ describe("AppSettings", () => {
     expect(screen.queryByText("Logs")).toBeNull();
   });
 
-  it("toggles the desktop mascot from Agent settings", async () => {
+  it("toggles the agent HUD from Agent settings", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -1173,18 +1279,18 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Agent" }));
-    const mascotSwitch = await screen.findByRole("switch", {
-      name: "Show desktop mascot",
+    const hudSwitch = await screen.findByRole("switch", {
+      name: "Show agent HUD",
     });
 
-    expect(mascotSwitch).toHaveAttribute("aria-checked", "true");
+    expect(hudSwitch).toHaveAttribute("aria-checked", "true");
 
-    await user.click(mascotSwitch);
-    expect(localStorage.getItem(MASCOT_ENABLED_KEY)).toBe("false");
-    expect(mocks.mascotHide).toHaveBeenCalledTimes(1);
+    await user.click(hudSwitch);
+    expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("false");
+    expect(mocks.agentHudHide).toHaveBeenCalledTimes(1);
 
-    await user.click(mascotSwitch);
-    expect(localStorage.getItem(MASCOT_ENABLED_KEY)).toBe("true");
-    expect(mocks.mascotShow).toHaveBeenCalledTimes(1);
+    await user.click(hudSwitch);
+    expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
+    expect(mocks.agentHudShow).not.toHaveBeenCalled();
   });
 });

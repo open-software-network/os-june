@@ -23,8 +23,9 @@ const JUNE_POINTS = [
   },
   {
     icon: IconLock,
-    title: "Private by design",
-    detail: "Your data stays on your Mac and is never trained on.",
+    title: "Private by default",
+    detail:
+      "Prompts leave your Mac only for inference, on zero-retention models by default.",
   },
 ];
 

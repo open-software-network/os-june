@@ -214,6 +214,15 @@ jobs:
             $(security list-keychains -d user | tr -d '"')
           rm -f "$cert"
 
+      # Ship the Hermes runtime inside the app so first launch needs no
+      # multi-minute GitHub download. Must run after the certificate import:
+      # the script signs every Mach-O in the bundle (python, extension .so)
+      # with the Developer ID + hardened runtime, which notarization requires.
+      - name: Bundle Hermes runtime into app resources
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: ./scripts/bundle-hermes-runtime.sh
+
       - name: Build, sign, notarize, and publish updater release
         uses: tauri-apps/tauri-action@v0.6.2
         env:
@@ -245,6 +254,32 @@ jobs:
           # .sig updater signatures are uploaded alongside it automatically.
           includeUpdaterJson: true
 
+      - name: Upload stable macOS download alias
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg
+          )
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one production DMG, found ${#dmgs[@]}"
+            printf 'DMG candidates:\n'
+            if [ "${#dmgs[@]}" -eq 0 ]; then
+              printf ' - <none>\n'
+            else
+              printf ' - %s\n' "${dmgs[@]}"
+            fi
+            exit 1
+          fi
+          stable_dmg="$RUNNER_TEMP/June_aarch64.dmg"
+          cp "${dmgs[0]}" "$stable_dmg"
+          gh release upload "v$VERSION" "$stable_dmg" \
+            --repo open-software-network/os-june-releases \
+            --clobber
+
       # Push the version bump to main only AFTER the release is published, so a
       # build/notarize failure never leaves an orphan `release:` commit on main
       # with no matching release. The push is authenticated as the release App
@@ -270,4 +305,5 @@ jobs:
             echo "- Version: \`$VERSION\`"
             echo "- Release repo: \`open-software-network/os-june-releases\`"
             echo "- Update manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
+            echo "- Marketing download: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_aarch64.dmg\`"
           } >> "$GITHUB_STEP_SUMMARY"

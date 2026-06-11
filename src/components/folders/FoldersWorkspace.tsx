@@ -1,4 +1,5 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolder1 } from "central-icons/IconFolder1";
@@ -19,7 +20,6 @@ import {
   type NoteListItemDto,
 } from "../../lib/tauri";
 import { sessionTimestamp } from "../../lib/hermes-adapter";
-import { IconSparkle } from "central-icons/IconSparkle";
 import {
   type DragEvent,
   type ReactNode,
@@ -230,7 +230,8 @@ function FolderList({
         <div className="folders-heading">
           <h1>Projects</h1>
           <p className="folders-subtitle">
-            Group meetings and agent sessions around the work they belong to.
+            Group meeting notes and agent sessions around the work they belong
+            to.
           </p>
         </div>
         <button
@@ -287,7 +288,7 @@ function FolderList({
           return onDeleteFolder(deleteFolderTarget.id, false);
         }}
         title={`Delete "${deleteFolderTarget?.name ?? ""}"?`}
-        description="Meetings and sessions in this project stay in your library."
+        description="Meeting notes and sessions in this project stay in your library."
         confirmLabel="Delete project"
         destructive
       />
@@ -494,13 +495,13 @@ function FolderCard({
           </span>
           <span>
             {folderNotes.length}{" "}
-            {folderNotes.length === 1 ? "meeting" : "meetings"}
+            {folderNotes.length === 1 ? "meeting note" : "meeting notes"}
           </span>
           {folderSessions.length > 0 ? (
             <>
               <span className="metadata-dot" aria-hidden />
               <span className="folder-card-footer-icon" aria-hidden>
-                <IconSparkle size={11} />
+                <IconBubble3 size={11} />
               </span>
               <span>
                 {folderSessions.length}{" "}
@@ -774,12 +775,12 @@ function FolderDetail({
               <IconNoteText size={12} />
             </span>
             {folderNotes.length}{" "}
-            {folderNotes.length === 1 ? "meeting" : "meetings"}
+            {folderNotes.length === 1 ? "meeting note" : "meeting notes"}
             {folderSessions.length > 0 ? (
               <>
                 <span className="metadata-dot" aria-hidden />
                 <span className="folder-detail-meta-pill" aria-hidden>
-                  <IconSparkle size={12} />
+                  <IconBubble3 size={12} />
                 </span>
                 {folderSessions.length}{" "}
                 {folderSessions.length === 1 ? "session" : "sessions"}
@@ -811,7 +812,7 @@ function FolderDetail({
             {folderNotes.length > 0 ? (
               <>
                 <div className="folder-actions-row">
-                  <h2 className="folder-notes-title">Meetings</h2>
+                  <h2 className="folder-notes-title">Meeting notes</h2>
                 </div>
                 <FolderNoteList
                   folder={folder}
@@ -826,11 +827,14 @@ function FolderDetail({
           </>
         ) : (
           <FolderEmptyState
+            onCreateSession={() => onCreateSession(folder.id)}
             onCreateNote={() => onCreateNote(folder.id)}
             onAddExisting={() => setAddOpen(true)}
+            onAddSessions={() => setAddSessionsOpen(true)}
             hasNotesElsewhere={notes.some(
               (note) => !note.folderIds.includes(folder.id),
             )}
+            hasSessionsElsewhere={hasSessionsElsewhere}
           />
         )}
       </div>
@@ -892,7 +896,7 @@ function FolderDetail({
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => onDeleteFolder(folder.id, false)}
         title={`Delete "${folder.name}"?`}
-        description="Meetings and sessions in this project stay in your library."
+        description="Meeting notes and sessions in this project stay in your library."
         confirmLabel="Delete project"
         destructive
       />
@@ -1010,7 +1014,7 @@ function FolderSessionRow({
       >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconSparkle size={15} />
+            <IconBubble3 size={15} />
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>
@@ -1146,7 +1150,7 @@ function FolderAddMenu({
               onCreateSession();
             }}
           >
-            <IconSparkle size={14} />
+            <IconBubble3 size={14} />
             New session
           </button>
           <button
@@ -1158,7 +1162,7 @@ function FolderAddMenu({
             }}
           >
             <IconNoteText size={14} />
-            New meeting
+            New meeting note
           </button>
           {hasNotesElsewhere || hasSessionsElsewhere ? (
             <div className="context-menu-separator" role="separator" />
@@ -1173,7 +1177,7 @@ function FolderAddMenu({
               }}
             >
               <IconPageSearch size={14} />
-              Add existing meeting
+              Add existing meeting note
             </button>
           ) : null}
           {hasSessionsElsewhere ? (
@@ -1196,13 +1200,19 @@ function FolderAddMenu({
 }
 
 function FolderEmptyActions({
+  onCreateSession,
   onCreateNote,
   onAddExisting,
+  onAddSessions,
   hasNotesElsewhere,
+  hasSessionsElsewhere,
 }: {
+  onCreateSession: () => void;
   onCreateNote: () => void;
   onAddExisting: () => void;
+  onAddSessions: () => void;
   hasNotesElsewhere: boolean;
+  hasSessionsElsewhere: boolean;
 }) {
   return (
     <div className="folder-empty-actions">
@@ -1212,16 +1222,33 @@ function FolderEmptyActions({
           className="primary-action"
           onClick={onAddExisting}
         >
-          Add existing meeting
+          Add existing meeting note
         </button>
       ) : null}
+      {hasSessionsElsewhere ? (
+        <button
+          type="button"
+          className="primary-action"
+          onClick={onAddSessions}
+        >
+          Add agent session
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="primary-action"
+        onClick={onCreateSession}
+      >
+        <IconBubble3 size={13} />
+        New session
+      </button>
       <button
         type="button"
         className="primary-action primary-solid"
         onClick={onCreateNote}
       >
         <IconPlusMedium size={13} />
-        New meeting
+        New meeting note
       </button>
     </div>
   );
@@ -1274,7 +1301,7 @@ function FolderNoteRow({
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">
-              {note.title.trim() || "New meeting"}
+              {note.title.trim() || "New note"}
             </span>
             <span className="folder-note-subtitle">
               {note.preview.trim()
@@ -1290,7 +1317,7 @@ function FolderNoteRow({
           <button
             type="button"
             className="folder-note-menu"
-            aria-label={`Actions for ${note.title.trim() || "this meeting"}`}
+            aria-label={`Actions for ${note.title.trim() || "this meeting note"}`}
             aria-haspopup="menu"
             aria-expanded={menu !== null}
             onClick={(event) => {
@@ -1350,7 +1377,7 @@ function FolderNoteRow({
               }}
             >
               <IconTrashCan size={14} />
-              Delete meeting
+              Delete meeting note
             </button>
           </div>
         ) : null}
@@ -1359,9 +1386,9 @@ function FolderNoteRow({
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         onConfirm={onDelete}
-        title={`Delete "${note.title.trim() || "New meeting"}"?`}
+        title={`Delete "${note.title.trim() || "New note"}"?`}
         description="This cannot be undone."
-        confirmLabel="Delete meeting"
+        confirmLabel="Delete meeting note"
         destructive
       />
     </li>
@@ -1369,23 +1396,33 @@ function FolderNoteRow({
 }
 
 function FolderEmptyState({
+  onCreateSession,
   onCreateNote,
   onAddExisting,
+  onAddSessions,
   hasNotesElsewhere,
+  hasSessionsElsewhere,
 }: {
+  onCreateSession: () => void;
   onCreateNote: () => void;
   onAddExisting: () => void;
+  onAddSessions: () => void;
   hasNotesElsewhere: boolean;
+  hasSessionsElsewhere: boolean;
 }) {
   return (
     <div className="folder-empty-surface" role="group">
       <p className="folder-empty-hint">
-        Capture a meeting, a phone call, or a half-formed thought
+        Capture a meeting, a phone call, or a half-formed thought. Or start an
+        agent session on this project.
       </p>
       <FolderEmptyActions
+        onCreateSession={onCreateSession}
         onCreateNote={onCreateNote}
         onAddExisting={onAddExisting}
+        onAddSessions={onAddSessions}
         hasNotesElsewhere={hasNotesElsewhere}
+        hasSessionsElsewhere={hasSessionsElsewhere}
       />
     </div>
   );

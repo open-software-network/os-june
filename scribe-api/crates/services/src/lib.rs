@@ -347,7 +347,6 @@ mod tests {
                 note_id: "note_1".to_string(),
                 audio: vec![1, 2, 3],
                 filename: "recording.wav".to_string(),
-                title: "Title".to_string(),
                 context: None,
                 language: None,
                 model_id: ModelId("audio-model".to_string()),

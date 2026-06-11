@@ -22,7 +22,7 @@ import {
   listVeniceModels,
   localAudioFileSrc,
   providerModelSettings,
-  scribeVerifyUrl,
+  scribeOpenVerifyPage,
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
@@ -64,7 +64,9 @@ import {
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
   modelPrivacyFlags,
+  modelSupportsTools,
 } from "../../lib/model-privacy";
+import { suggestedModelsForMode } from "../../lib/suggested-models";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -155,7 +157,9 @@ const DEFAULT_SHORTCUTS: Record<
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionProvider: "venice",
   transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-  generationModel: "zai-org-glm-5",
+  // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
+  // leading Suggested pick in lib/suggested-models.ts.
+  generationModel: "zai-org-glm-5-1",
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -203,6 +207,8 @@ type AppSettingsProps = {
   // own nav — the standalone path exercised by app-settings tests.
   activeTab?: SettingsTab;
   onTabChange?: (tab: SettingsTab) => void;
+  // Opens a new agent session prefilled with the bug report template.
+  onReportIssue?: () => void;
 };
 
 export function AppSettings({
@@ -221,6 +227,7 @@ export function AppSettings({
   onEnableSystemAudio,
   activeTab: controlledTab,
   onTabChange,
+  onReportIssue,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -259,7 +266,6 @@ export function AppSettings({
   const [micTestSampleSrc, setMicTestSampleSrc] = useState<string>();
   const [micTestError, setMicTestError] = useState<string>();
   const [micTestPlaying, setMicTestPlaying] = useState(false);
-  const [verifyUrl, setVerifyUrl] = useState<string>();
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
   const activeTab = controlled ? controlledTab : internalTab;
   const setActiveTab = (tab: SettingsTab) => {
@@ -293,18 +299,6 @@ export function AppSettings({
       void resetMicTestState(true);
     }
   }, [activeTab]);
-
-  useEffect(() => {
-    let cancelled = false;
-    scribeVerifyUrl()
-      .then((url) => {
-        if (!cancelled && url) setVerifyUrl(url);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1165,27 +1159,45 @@ export function AppSettings({
                   </div>
                 </div>
 
-                {verifyUrl ? (
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Server verification</h3>
+                    <p className="settings-row-description">
+                      June&apos;s server runs in a confidential VM. See exactly
+                      what code is running and how to verify it yourself.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        void scribeOpenVerifyPage().catch(() => undefined)
+                      }
+                    >
+                      Verify server
+                    </button>
+                  </div>
+                </div>
+
+                {onReportIssue ? (
                   <div className="settings-row">
                     <div className="settings-row-info">
-                      <h3 className="settings-row-title">
-                        Server verification
-                      </h3>
+                      <h3 className="settings-row-title">Report an issue</h3>
                       <p className="settings-row-description">
-                        June&apos;s server runs in a confidential VM. See
-                        exactly what code is running and how to verify it
-                        yourself.
+                        Something not working? Describe it to June, attach a
+                        screenshot if you have one, and June will send the
+                        report to the team along with its own diagnosis.
                       </p>
                     </div>
                     <div className="settings-row-control">
-                      <a
+                      <button
+                        type="button"
                         className="btn btn-secondary"
-                        href={verifyUrl}
-                        target="_blank"
-                        rel="noreferrer"
+                        onClick={onReportIssue}
                       >
-                        Verify server
-                      </a>
+                        Report an issue
+                      </button>
                     </div>
                   </div>
                 ) : null}
@@ -1518,6 +1530,9 @@ function ShortcutRow({
   );
 }
 
+const NO_TOOLS_MODEL_EXPLANATION =
+  "This model can't use tools, so June's agent can't work with it. Pick a tool-capable model to use June.";
+
 function ModelPickerDialog({
   open,
   mode,
@@ -1537,17 +1552,49 @@ function ModelPickerDialog({
   onClose: () => void;
   onSelect: (modelId: string) => void;
 }) {
+  // "Suggested" leads with the few models we actually recommend (benchmarks,
+  // price, tool use, privacy — see SUGGESTED_MODELS); "All" is the full
+  // catalog. Suggested is the default on every open; typing a search always
+  // looks across the whole catalog, since three curated rows aren't worth
+  // searching.
+  const [tab, setTab] = useState<"suggested" | "all">("suggested");
+  useEffect(() => {
+    if (open) setTab("suggested");
+  }, [open, mode]);
+  const suggested = useMemo(
+    () => suggestedModelsForMode(mode, options),
+    [mode, options],
+  );
+  const query = search.trim().toLowerCase();
+  const searching = query.length > 0;
+  const reasonsById = useMemo(
+    () => new Map(suggested.map((item) => [item.model.id, item.reason])),
+    [suggested],
+  );
   const filteredOptions = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return options;
-    return options.filter((model) =>
-      [model.name, model.id, model.description, model.privacy, ...model.traits]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [options, search]);
+    if (searching) {
+      return options.filter((model) =>
+        [
+          model.name,
+          model.id,
+          model.description,
+          model.privacy,
+          ...model.traits,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(query),
+      );
+    }
+    // No suggestions in the catalog (drift, still loading): the empty tab
+    // would read as "no models", so fall through to the full list.
+    if (tab === "suggested" && suggested.length > 0) {
+      return suggested.map((item) => item.model);
+    }
+    return options;
+  }, [options, query, searching, suggested, tab]);
+  const showReasons = !searching && tab === "suggested" && suggested.length > 0;
   const title = mode === "transcription" ? "Transcription model" : "Text model";
 
   return (
@@ -1569,9 +1616,43 @@ function ModelPickerDialog({
           aria-label="Search models"
         />
       </label>
+      {!searching && suggested.length > 0 ? (
+        <div
+          className="model-picker-tabs"
+          role="tablist"
+          aria-label="Model groups"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "suggested"}
+            onClick={() => setTab("suggested")}
+          >
+            Suggested
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "all"}
+            onClick={() => setTab("all")}
+          >
+            All
+          </button>
+        </div>
+      ) : null}
       <div className="model-picker-list" role="listbox" aria-label={title}>
         {filteredOptions.map((model) => {
           const selected = model.id === value;
+          const reason = showReasons ? reasonsById.get(model.id) : undefined;
+          // The text model powers June's agent, which works through tool
+          // calls — a model that can't use tools (Venice's E2EE models)
+          // bricks the agent, so it can't be picked. Only catalog entries
+          // are judged: the synthesized placeholder for a selection the
+          // catalog hasn't loaded yet has no capability data to judge by.
+          const noTools =
+            mode === "generation" &&
+            Boolean(model.provider) &&
+            !modelSupportsTools(model);
           return (
             <button
               key={model.id}
@@ -1579,8 +1660,13 @@ function ModelPickerDialog({
               className="model-picker-option"
               role="option"
               aria-selected={selected}
+              aria-disabled={noTools || undefined}
               data-selected={selected}
-              onClick={() => onSelect(model.id)}
+              data-no-tools={noTools || undefined}
+              title={noTools ? NO_TOOLS_MODEL_EXPLANATION : undefined}
+              onClick={() => {
+                if (!noTools) onSelect(model.id);
+              }}
             >
               <span className="model-picker-logo" aria-hidden>
                 <ProviderLogo
@@ -1596,8 +1682,14 @@ function ModelPickerDialog({
                 {selected ? <IconCheckmark2Small size={14} /> : null}
               </span>
               <span className="model-picker-meta">
+                {noTools ? (
+                  <span className="model-picker-no-tools">No tools</span>
+                ) : null}
                 <ModelMeta model={model} />
               </span>
+              {reason ? (
+                <span className="model-picker-reason">{reason}</span>
+              ) : null}
             </button>
           );
         })}
