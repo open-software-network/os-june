@@ -554,10 +554,11 @@ input:focus-visible,
    * fixed composer's axis. Percentage padding resolves against the workspace
    * (the containing block), which the scrollbar can't touch, so the column's
    * left edge lands exactly where the composer's does on every engine. The
-   * scrollbar then eats rightward slack beyond the 624px column instead.
+   * scrollbar then eats rightward slack beyond the chat column instead.
    * .agent-main pairs with this via margin:0 below. */
   padding-left: calc(
-    var(--sp-8) + max(0px, (100% - min(624px, var(--content-max))) / 2)
+    var(--sp-8) +
+      max(0px, (100% - min(var(--chat-max), var(--content-max))) / 2)
   );
   /* The global standard props (scrollbar-width/color, top of file) make the
    * engine IGNORE all ::-webkit-scrollbar styling and draw a native overlay
@@ -579,7 +580,7 @@ input:focus-visible,
    * when long; max-width keeps the column centred inside the full-bleed scroller. */
   flex: 1;
   width: 100%;
-  max-width: min(624px, var(--content-max));
+  max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto;
 }
 
@@ -2647,7 +2648,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-3);
   width: fit-content;
-  max-width: min(624px, var(--content-max));
+  max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-md);
@@ -2692,7 +2693,7 @@ input:focus-visible,
   justify-content: flex-end;
   gap: var(--sp-1);
   width: 100%;
-  max-width: min(624px, var(--content-max));
+  max-width: min(var(--chat-max), var(--content-max));
   padding: var(--sp-1);
   border: 1px solid var(--border-subtle);
   /* Squircle, not a pill — a calmer rounded-rect. */
@@ -3050,7 +3051,9 @@ input:focus-visible,
 }
 
 .agent-composer[data-hero="true"] .agent-composer-box {
-  max-width: 640px;
+  /* A touch wider than the docked box so the hero reads as the bigger
+   * "start here" statement at every display size. */
+  max-width: calc(min(var(--chat-max), var(--content-max)) + 16px);
   box-shadow: var(--shadow-md);
 }
 

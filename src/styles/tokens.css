@@ -92,6 +92,11 @@
    * so the column doesn't feel marooned in whitespace on big monitors. */
   --content-max: 760px;
 
+  /* Agent chat column: the thread rail and the docked composer share this
+   * width so they stay concentric. Narrower than --content-max (chat reads
+   * as a conversation, not a document) but steps up with it below. */
+  --chat-max: 680px;
+
   /* Color — light theme.  Mirrors Fellow's globals.css so the two apps
    * read like siblings. ------------------------------------------------ */
   /* Border color for focused inputs. Mixes 30% of the foreground in so
@@ -196,12 +201,14 @@
 @media (min-width: 1440px) {
   :root {
     --content-max: 880px;
+    --chat-max: 768px;
   }
 }
 
 @media (min-width: 1920px) {
   :root {
     --content-max: 1000px;
+    --chat-max: 820px;
   }
 }
 
