@@ -56,6 +56,40 @@ async fn deleting_note_removes_it_from_all_note_lists() {
 }
 
 #[tokio::test]
+async fn deleting_notes_removes_multiple_notes_from_all_note_lists() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Work", None).await.expect("folder");
+    let first = repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("first note");
+    let second = repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("second note");
+    let retained = repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("retained note");
+
+    repos
+        .delete_notes(&[first.id.clone(), second.id.clone()])
+        .await
+        .expect("delete notes");
+
+    let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
+    assert_eq!(all_notes.items.len(), 1);
+    assert_eq!(all_notes.items[0].id, retained.id);
+
+    let folder_notes = repos
+        .list_notes(Some(folder.id), 50, None)
+        .await
+        .expect("folder notes");
+    assert_eq!(folder_notes.items.len(), 1);
+    assert_eq!(folder_notes.items[0].id, retained.id);
+}
+
+#[tokio::test]
 async fn generated_note_returns_to_notes_tab() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");

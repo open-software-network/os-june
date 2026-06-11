@@ -63,6 +63,7 @@ import {
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
   modelPrivacyFlags,
+  modelSupportsTools,
 } from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
@@ -1517,6 +1518,9 @@ function ShortcutRow({
   );
 }
 
+const NO_TOOLS_MODEL_EXPLANATION =
+  "This model can't use tools, so June's agent can't work with it. Pick a tool-capable model to use June.";
+
 function ModelPickerDialog({
   open,
   mode,
@@ -1571,6 +1575,15 @@ function ModelPickerDialog({
       <div className="model-picker-list" role="listbox" aria-label={title}>
         {filteredOptions.map((model) => {
           const selected = model.id === value;
+          // The text model powers June's agent, which works through tool
+          // calls — a model that can't use tools (Venice's E2EE models)
+          // bricks the agent, so it can't be picked. Only catalog entries
+          // are judged: the synthesized placeholder for a selection the
+          // catalog hasn't loaded yet has no capability data to judge by.
+          const noTools =
+            mode === "generation" &&
+            Boolean(model.provider) &&
+            !modelSupportsTools(model);
           return (
             <button
               key={model.id}
@@ -1578,8 +1591,13 @@ function ModelPickerDialog({
               className="model-picker-option"
               role="option"
               aria-selected={selected}
+              aria-disabled={noTools || undefined}
               data-selected={selected}
-              onClick={() => onSelect(model.id)}
+              data-no-tools={noTools || undefined}
+              title={noTools ? NO_TOOLS_MODEL_EXPLANATION : undefined}
+              onClick={() => {
+                if (!noTools) onSelect(model.id);
+              }}
             >
               <span className="model-picker-logo" aria-hidden>
                 <ProviderLogo
@@ -1595,6 +1613,9 @@ function ModelPickerDialog({
                 {selected ? <IconCheckmark2Small size={14} /> : null}
               </span>
               <span className="model-picker-meta">
+                {noTools ? (
+                  <span className="model-picker-no-tools">No tools</span>
+                ) : null}
                 <ModelMeta model={model} />
               </span>
             </button>

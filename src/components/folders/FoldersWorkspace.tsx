@@ -826,11 +826,14 @@ function FolderDetail({
           </>
         ) : (
           <FolderEmptyState
+            onCreateSession={() => onCreateSession(folder.id)}
             onCreateNote={() => onCreateNote(folder.id)}
             onAddExisting={() => setAddOpen(true)}
+            onAddSessions={() => setAddSessionsOpen(true)}
             hasNotesElsewhere={notes.some(
               (note) => !note.folderIds.includes(folder.id),
             )}
+            hasSessionsElsewhere={hasSessionsElsewhere}
           />
         )}
       </div>
@@ -1196,13 +1199,19 @@ function FolderAddMenu({
 }
 
 function FolderEmptyActions({
+  onCreateSession,
   onCreateNote,
   onAddExisting,
+  onAddSessions,
   hasNotesElsewhere,
+  hasSessionsElsewhere,
 }: {
+  onCreateSession: () => void;
   onCreateNote: () => void;
   onAddExisting: () => void;
+  onAddSessions: () => void;
   hasNotesElsewhere: boolean;
+  hasSessionsElsewhere: boolean;
 }) {
   return (
     <div className="folder-empty-actions">
@@ -1215,6 +1224,23 @@ function FolderEmptyActions({
           Add existing meeting
         </button>
       ) : null}
+      {hasSessionsElsewhere ? (
+        <button
+          type="button"
+          className="primary-action"
+          onClick={onAddSessions}
+        >
+          Add agent session
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="primary-action"
+        onClick={onCreateSession}
+      >
+        <IconPangolin size={13} />
+        New session
+      </button>
       <button
         type="button"
         className="primary-action primary-solid"
@@ -1369,23 +1395,33 @@ function FolderNoteRow({
 }
 
 function FolderEmptyState({
+  onCreateSession,
   onCreateNote,
   onAddExisting,
+  onAddSessions,
   hasNotesElsewhere,
+  hasSessionsElsewhere,
 }: {
+  onCreateSession: () => void;
   onCreateNote: () => void;
   onAddExisting: () => void;
+  onAddSessions: () => void;
   hasNotesElsewhere: boolean;
+  hasSessionsElsewhere: boolean;
 }) {
   return (
     <div className="folder-empty-surface" role="group">
       <p className="folder-empty-hint">
-        Capture a meeting, a phone call, or a half-formed thought
+        Capture a meeting, a phone call, or a half-formed thought. Or start an
+        agent session on this project.
       </p>
       <FolderEmptyActions
+        onCreateSession={onCreateSession}
         onCreateNote={onCreateNote}
         onAddExisting={onAddExisting}
+        onAddSessions={onAddSessions}
         hasNotesElsewhere={hasNotesElsewhere}
+        hasSessionsElsewhere={hasSessionsElsewhere}
       />
     </div>
   );

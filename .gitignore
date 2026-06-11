@@ -27,3 +27,4 @@ Thumbs.db
 keys/
 .tmp/
 coverage
+.tauri-hermes/

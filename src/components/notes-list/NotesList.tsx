@@ -1,3 +1,4 @@
+import { IconCheckmark2Medium } from "central-icons-filled/IconCheckmark2Medium";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
@@ -15,6 +16,7 @@ type NotesListProps = {
   onCreateNote: () => void;
   onOpenMoveDialog: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
+  onDeleteNotes: (noteIds: string[]) => void | Promise<unknown>;
 };
 
 type MenuPosition = {
@@ -38,19 +40,85 @@ export function NotesList({
   onCreateNote,
   onOpenMoveDialog,
   onDeleteNote,
+  onDeleteNotes,
 }: NotesListProps) {
   const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<OpenMenu | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+
+  const sortedNotes = useMemo(
+    () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [notes],
+  );
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const sorted = [...notes].sort((a, b) =>
-      b.updatedAt.localeCompare(a.updatedAt),
-    );
-    if (!normalized) return sorted;
-    return sorted.filter((note) => {
+    if (!normalized) return sortedNotes;
+    return sortedNotes.filter((note) => {
       return `${note.title} ${note.preview}`.toLowerCase().includes(normalized);
     });
-  }, [notes, query]);
+  }, [sortedNotes, query]);
+
+  const selectedNoteIds = useMemo(
+    () =>
+      sortedNotes
+        .filter((note) => selectedIds.has(note.id))
+        .map((note) => note.id),
+    [sortedNotes, selectedIds],
+  );
+  const visibleSelectedCount = filteredNotes.filter((note) =>
+    selectedIds.has(note.id),
+  ).length;
+  const selectedCount = selectedNoteIds.length;
+  const hasUnselectedVisibleNotes =
+    filteredNotes.length > 0 && visibleSelectedCount < filteredNotes.length;
+  const allVisibleNotesSelected =
+    filteredNotes.length > 0 && visibleSelectedCount === filteredNotes.length;
+
+  useEffect(() => {
+    const noteIds = new Set(notes.map((note) => note.id));
+    setSelectedIds((previous) => {
+      const next = new Set([...previous].filter((id) => noteIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    if (notes.length === 0) {
+      setConfirmBulkDelete(false);
+    }
+  }, [notes]);
+
+  function toggleSelected(noteId: string) {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(noteId)) next.delete(noteId);
+      else next.add(noteId);
+      return next;
+    });
+  }
+
+  function resetSelection() {
+    setSelectedIds(new Set());
+    setConfirmBulkDelete(false);
+  }
+
+  function selectAllVisibleNotes() {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const note of filteredNotes) {
+        next.add(note.id);
+      }
+      return next;
+    });
+  }
+
+  function deselectAllVisibleNotes() {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const note of filteredNotes) {
+        next.delete(note.id);
+      }
+      return next;
+    });
+  }
 
   return (
     <section className="all-notes-workspace" aria-label="Meetings">
@@ -88,6 +156,51 @@ export function NotesList({
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </label>
+          <div className="meetings-bulk-actions">
+            {selectedCount > 0 ? (
+              <>
+                <span className="meetings-selected-count">
+                  {selectedCount} selected
+                </span>
+                {hasUnselectedVisibleNotes ? (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    onClick={selectAllVisibleNotes}
+                  >
+                    Select all
+                  </button>
+                ) : null}
+                {allVisibleNotesSelected ? (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    onClick={deselectAllVisibleNotes}
+                  >
+                    Deselect all
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={resetSelection}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary-action primary-solid primary-destructive"
+                  disabled={selectedCount === 0}
+                  onClick={() => setConfirmBulkDelete(true)}
+                >
+                  <IconTrashCan size={13} />
+                  {selectedCount === 1
+                    ? "Delete 1 meeting"
+                    : `Delete ${selectedCount} meetings`}
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -120,6 +233,8 @@ export function NotesList({
                   : null
               }
               onSelect={() => onSelectNote(note.id)}
+              checked={selectedIds.has(note.id)}
+              onToggleSelected={() => toggleSelected(note.id)}
               onOpenMenu={(position) =>
                 setOpenMenu({ noteId: note.id, ...position })
               }
@@ -130,6 +245,22 @@ export function NotesList({
           ))}
         </ul>
       )}
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        onClose={() => setConfirmBulkDelete(false)}
+        onConfirm={async () => {
+          await onDeleteNotes(selectedNoteIds);
+          resetSelection();
+        }}
+        title={`Delete ${selectedCount} ${
+          selectedCount === 1 ? "meeting" : "meetings"
+        }?`}
+        description="This cannot be undone. Audio, transcripts, and generated notes for these meetings will be removed."
+        confirmLabel={
+          selectedCount === 1 ? "Delete meeting" : "Delete meetings"
+        }
+        destructive
+      />
     </section>
   );
 }
@@ -139,6 +270,8 @@ function AllNoteRow({
   selected,
   menu,
   onSelect,
+  checked,
+  onToggleSelected,
   onOpenMenu,
   onCloseMenu,
   onOpenMove,
@@ -148,6 +281,8 @@ function AllNoteRow({
   selected: boolean;
   menu: MenuPosition | null;
   onSelect: () => void;
+  checked: boolean;
+  onToggleSelected: () => void;
   onOpenMenu: (position: MenuPosition) => void;
   onCloseMenu: () => void;
   onOpenMove: () => void;
@@ -177,18 +312,23 @@ function AllNoteRow({
     <li>
       <div
         className="folder-note-row all-notes-row"
-        data-selected={selected}
+        data-selected={selected || checked}
         data-has-actions="true"
         data-menu-open={menu !== null}
       >
+        <label className="folder-note-checkbox">
+          <input
+            type="checkbox"
+            checked={checked}
+            aria-label={`Select ${title}`}
+            onChange={onToggleSelected}
+          />
+          <span className="folder-note-select-box" aria-hidden>
+            {checked ? <IconCheckmark2Medium size={11} /> : null}
+          </span>
+        </label>
         <button type="button" className="folder-note-main" onClick={onSelect}>
-          <span className="folder-note-icon" aria-hidden>
-            <IconNoteText size={14} />
-          </span>
-          <span className="folder-note-body">
-            <span className="folder-note-title">{title}</span>
-            <span className="folder-note-subtitle">{preview}</span>
-          </span>
+          <MeetingRowContent title={title} preview={preview} />
         </button>
         <span className="folder-note-time">
           {formatNoteTime(note.updatedAt)}
@@ -257,6 +397,26 @@ function AllNoteRow({
         destructive
       />
     </li>
+  );
+}
+
+function MeetingRowContent({
+  title,
+  preview,
+}: {
+  title: string;
+  preview: string;
+}) {
+  return (
+    <>
+      <span className="folder-note-icon" aria-hidden>
+        <IconNoteText size={14} />
+      </span>
+      <span className="folder-note-body">
+        <span className="folder-note-title">{title}</span>
+        <span className="folder-note-subtitle">{preview}</span>
+      </span>
+    </>
   );
 }
 

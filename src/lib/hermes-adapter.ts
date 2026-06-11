@@ -22,7 +22,14 @@ export async function listHermesSessions(
     limit: 100,
     offset: 0,
     archived: "exclude",
-    minMessages: 0,
+    // Sessions exist before their first message persists (a routine run that
+    // hasn't produced a turn yet, or a created session whose submit failed) —
+    // listed at minMessages 0 they render as empty "Untitled session" rows
+    // that vanish or morph moments later. A just-created session the user is
+    // typing into is not affected: every list surface shows the workspace's
+    // merged list, which carries the optimistic local entry until the first
+    // message persists.
+    minMessages: 1,
     order: "recent",
     ...options,
   });

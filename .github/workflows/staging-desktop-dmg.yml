@@ -1,22 +1,10 @@
 name: staging-desktop-dmg
 
+# Manual-only: a signed + notarized staging DMG costs a long macOS runner job
+# and an Apple notarization round-trip per merge, and back-to-back merges just
+# cancelled each other's builds anyway. Dispatch it from the Actions tab (or
+# `gh workflow run staging-desktop-dmg.yml`) when a staging artifact is needed.
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/staging-desktop-dmg.yml"
-      - "hud.html"
-      - "index.html"
-      - "mascot.html"
-      - "meeting-hud.html"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "public/**"
-      - "scripts/**"
-      - "src/**"
-      - "src-tauri/**"
-      - "tsconfig.json"
-      - "vite.config.ts"
   workflow_dispatch:
 
 permissions:

@@ -65,6 +65,7 @@ pub fn run() {
             commands::get_note,
             commands::update_note,
             commands::delete_note,
+            commands::delete_notes,
             commands::create_folder,
             commands::list_folders,
             commands::delete_folder,

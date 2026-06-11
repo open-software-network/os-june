@@ -64,8 +64,13 @@ The workflow performs the release steps in order:
    `package.json`, refreshes `src-tauri/Cargo.lock`, commits
    `release: vX.Y.Z`, and pushes to `main`.
 5. Runs `pnpm lint`, `pnpm test`, and `pnpm test:rust`.
-6. Builds the `aarch64-apple-darwin` app and DMG with `tauri-action`.
-7. Signs with the Apple Developer ID cert, notarizes with Apple API key
+6. Builds the bundled Hermes runtime (`scripts/bundle-hermes-runtime.sh`):
+   the pinned hermes-agent checkout, a relocatable CPython, hash-verified
+   Python deps, and the prebuilt dashboard UI, signed Mach-O by Mach-O and
+   shipped under `Resources/native/hermes` so first launch needs no network
+   install. Adds roughly 110 MB compressed to the DMG.
+7. Builds the `aarch64-apple-darwin` app and DMG with `tauri-action`.
+8. Signs with the Apple Developer ID cert, notarizes with Apple API key
    credentials, signs updater artifacts with the Ed25519 updater key, and
    publishes the release assets plus `latest.json` to
    `open-software-network/os-scribe-releases`.

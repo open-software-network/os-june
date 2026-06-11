@@ -345,6 +345,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
     const list = within(
@@ -367,6 +368,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
 
@@ -413,6 +415,7 @@ describe("folders UI", () => {
           onCreateNote={vi.fn()}
           onOpenMoveDialog={vi.fn()}
           onDeleteNote={vi.fn()}
+          onDeleteNotes={vi.fn()}
         />,
       );
 
@@ -464,6 +467,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
 
@@ -478,6 +482,7 @@ describe("folders UI", () => {
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
       />,
     );
 
@@ -485,5 +490,84 @@ describe("folders UI", () => {
     expect(
       screen.getByRole("button", { name: "Create your first meeting" }),
     ).toBeInTheDocument();
+  });
+
+  it("bulk deletes selected meetings from the main list", async () => {
+    const user = userEvent.setup();
+    const onDeleteNotes = vi.fn();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={onDeleteNotes}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Select" })).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "Select Second" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select New meeting" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Delete 2 meetings" }));
+    await user.click(screen.getByRole("button", { name: "Delete meetings" }));
+
+    expect(onDeleteNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
+  });
+
+  it("selects all visible meetings after one meeting is selected", async () => {
+    const user = userEvent.setup();
+    const onDeleteNotes = vi.fn();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={onDeleteNotes}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Delete 2 meetings" }));
+    await user.click(screen.getByRole("button", { name: "Delete meetings" }));
+
+    expect(onDeleteNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
+  });
+
+  it("deselects all visible meetings after all visible meetings are selected", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Deselect all" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Delete 2 meetings" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "Select Second" }),
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Select New meeting" }),
+    ).not.toBeChecked();
   });
 });

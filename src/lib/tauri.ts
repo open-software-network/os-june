@@ -948,6 +948,10 @@ export async function deleteNote(noteId: string) {
   return invoke<void>("delete_note", { request: { noteId } });
 }
 
+export async function deleteNotes(noteIds: string[]) {
+  return invoke<void>("delete_notes", { request: { noteIds } });
+}
+
 export async function updateNote(input: {
   noteId: string;
   title?: string;
