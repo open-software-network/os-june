@@ -1571,6 +1571,11 @@ export function AgentWorkspace({
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
     const content = promptWithAttachments(message, attachments);
+    // A typed hero submit plays the same teardown as a run shortcut: greeting
+    // up, suggestions down during the session-create latency. Without it they
+    // sit frozen through the wait and then vanish in a single frame when the
+    // conversation takes over.
+    if (heroMode) setHeroLeaving(true);
     setSubmitting(true);
     setDraft("");
     setAttachments([]);
@@ -1594,6 +1599,9 @@ export function AgentWorkspace({
       }
     } finally {
       setSubmitting(false);
+      // On success the hero is gone; on failure this fades the greeting and
+      // suggestions back in behind the restored draft.
+      setHeroLeaving(false);
     }
   }
 
@@ -2841,8 +2849,10 @@ export function AgentWorkspace({
   );
 
   // FLIP the composer from its hero spot (centered, big) down to the bottom
-  // dock when the hero hands over to a conversation — the same form stays
-  // mounted, so this glide is what sells the transition instead of a teleport.
+  // dock when the hero hands over to a conversation — this glide is what
+  // sells the transition instead of a teleport. The form is recreated across
+  // the handoff (the conversation branch wraps it in .agent-scroll), which is
+  // why the glide works off snapshotted rects rather than DOM identity.
   // While the hero is up, every render snapshots the box; the first render
   // after leaving measures the docked position and animates the delta.
   const heroExitRectRef = useRef<DOMRect | null>(null);

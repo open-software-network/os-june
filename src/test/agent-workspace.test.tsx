@@ -284,8 +284,9 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace />);
 
       expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
-      await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
-      expect(sessionDetails.length).toBeGreaterThan(0);
+      // The broadcast lands a few microtasks after the fetch resolves, so
+      // wait for the event itself rather than just the fetch call.
+      await waitFor(() => expect(sessionDetails.length).toBeGreaterThan(0));
       expect(
         sessionDetails.every((detail) => detail.selectedSessionId == null),
       ).toBe(true);
@@ -1779,6 +1780,56 @@ describe("AgentWorkspace", () => {
     } finally {
       randomSpy.mockRestore();
     }
+  });
+
+  it("plays the hero teardown while a typed submit creates the session", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    // Hold session.create open so the in-flight teardown is observable —
+    // without it the greeting and chips sat frozen through the create
+    // latency and vanished in a single frame at the handoff.
+    let releaseCreate: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return new Promise((resolve) => {
+          releaseCreate = () =>
+            resolve({
+              session_id: "runtime-session-2",
+              stored_session_id: "session-2",
+            });
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    await user.type(
+      await screen.findByPlaceholderText("Describe a task for June…"),
+      "first task",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    // Mid-flight: still the hero, but tearing down.
+    const hero = screen.getByRole("region", { name: "Agent task details" });
+    await waitFor(() =>
+      expect(hero).toHaveAttribute("data-hero-leaving", "true"),
+    );
+    expect(screen.getByText(HERO_GREETING)).toBeInTheDocument();
+
+    await waitFor(() => expect(releaseCreate).toBeDefined());
+    act(() => releaseCreate?.());
+
+    // The handoff lands in the conversation with the pending message.
+    await waitFor(() =>
+      expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("first task")).toBeInTheDocument();
   });
 
   it("prefills the composer from a prefill shortcut without submitting", async () => {
