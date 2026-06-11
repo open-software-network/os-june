@@ -6792,6 +6792,13 @@ button.agent-safety-badge:hover {
   background: var(--muted);
 }
 
+/* Anchor for the self-contained Select control's popover (settings rows
+ * anchor to .settings-row-control instead). */
+.select-control {
+  position: relative;
+  display: inline-flex;
+}
+
 /* Select trigger — transparent bg, subtle border only; hover deepens the
  * border. Chevron absolutely positioned at right. */
 .select-trigger {
@@ -10992,4 +10999,25 @@ button.agent-safety-badge:hover {
   background: color-mix(in oklch, var(--success) 12%, transparent);
   color: var(--success);
   animation: onboarding-rise var(--t-med) var(--ease-out);
+}
+
+/* One last question: where the user discovered June. A quiet form row —
+   muted label over a full-width select — sitting between the practice card
+   and the primary action, never gating it. */
+.onboarding-discovery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  text-align: left;
+}
+
+.onboarding-discovery-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.onboarding-discovery .select-control,
+.onboarding-discovery .select-trigger {
+  width: 100%;
+  min-width: 0;
 }

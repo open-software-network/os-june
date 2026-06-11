@@ -51,6 +51,11 @@ import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import { shortcutFromCapturePayload } from "../shortcuts/use-shortcut-capture";
 import { Dialog } from "../ui/Dialog";
 import { HoverTip } from "../ui/HoverTip";
+import {
+  selectPopoverPlacement,
+  selectPopoverStyle,
+  type SelectPopoverPlacement,
+} from "../ui/Select";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
@@ -173,8 +178,6 @@ export type SettingsTab =
   | "models"
   | "agent"
   | "about";
-
-type SelectPopoverPlacement = "align-selected" | "below" | "above";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
@@ -1853,55 +1856,6 @@ function shortcutsMatch(
     first.modifiers.shift === second.modifiers.shift &&
     first.modifiers.function === second.modifiers.function
   );
-}
-
-function selectPopoverPlacement(
-  anchor: HTMLElement | null,
-  optionCount: number,
-  selectedIndex: number,
-): SelectPopoverPlacement {
-  if (!anchor) return "align-selected";
-  const rect = anchor.getBoundingClientRect();
-
-  const viewportPadding = 12;
-  const rowHeight = 28;
-  const popoverPadding = 8;
-  const popoverHeight = optionCount * rowHeight + popoverPadding;
-  const selectedOffset = 2 + selectedIndex * rowHeight;
-  const panel = anchor.closest(".main-panel");
-  const panelRect = panel?.getBoundingClientRect();
-  const topBound = Math.max(viewportPadding, (panelRect?.top ?? 0) + 12);
-  const bottomBound = Math.min(
-    window.innerHeight - viewportPadding,
-    (panelRect?.bottom ?? window.innerHeight) - 12,
-  );
-  const alignedTop = rect.top - selectedOffset;
-  const alignedBottom = alignedTop + popoverHeight;
-  const belowBottom = rect.bottom + 4 + popoverHeight;
-  const aboveTop = rect.top - 4 - popoverHeight;
-  const spaceBelow = bottomBound - rect.bottom;
-  const spaceAbove = rect.top - topBound;
-
-  if (alignedTop >= topBound && alignedBottom <= bottomBound) {
-    return "align-selected";
-  }
-  if (belowBottom <= bottomBound || spaceBelow >= spaceAbove) {
-    return "below";
-  }
-  return aboveTop >= topBound ? "above" : "below";
-}
-
-function selectPopoverStyle(
-  placement: SelectPopoverPlacement,
-  selectedIndex: number,
-): CSSProperties {
-  if (placement === "below") {
-    return { top: "calc(100% + 4px)" };
-  }
-  if (placement === "above") {
-    return { bottom: "calc(100% + 4px)" };
-  }
-  return { top: -(2 + selectedIndex * 28) };
 }
 
 function stringPayloadValue(value: unknown) {
