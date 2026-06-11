@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { osAccountsStatus } from "./tauri";
+import { osAccountsLogout, osAccountsStatus } from "./tauri";
 import type { AccountStatus } from "./tauri";
 
 const EMPTY_STATUS: AccountStatus = { signedIn: false, configured: false };
+
+export type UseAccountStatusOptions = {
+  forceLogoutOnMount?: boolean;
+};
 
 export type UseAccountStatus = {
   account: AccountStatus;
@@ -12,7 +16,10 @@ export type UseAccountStatus = {
   setAccount: (next: AccountStatus) => void;
 };
 
-export function useAccountStatus(): UseAccountStatus {
+export function useAccountStatus(
+  options: UseAccountStatusOptions = {},
+): UseAccountStatus {
+  const { forceLogoutOnMount = false } = options;
   const [account, setAccount] = useState<AccountStatus>(EMPTY_STATUS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -32,13 +39,19 @@ export function useAccountStatus(): UseAccountStatus {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    refresh().finally(() => {
+    async function loadInitialStatus() {
+      if (forceLogoutOnMount) {
+        await osAccountsLogout();
+      }
+      await refresh();
+    }
+    loadInitialStatus().finally(() => {
       if (!cancelled) setLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [refresh]);
+  }, [forceLogoutOnMount, refresh]);
 
   // Refetch when the app regains attention so the user sees their post-top-up
   // balance without hunting for a refresh button. `focus` and `visibilitychange`

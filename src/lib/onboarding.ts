@@ -11,6 +11,25 @@ const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
 
+type OnboardingReplayEnv = {
+  readonly DEV?: boolean;
+  readonly VITE_JUNE_REPLAY_ONBOARDING?: string;
+};
+
+export function applyOnboardingReplayFlag(
+  env: OnboardingReplayEnv = import.meta.env,
+) {
+  if (shouldReplayOnboarding(env)) {
+    resetOnboardingForReplay();
+  }
+}
+
+export function shouldReplayOnboarding(
+  env: OnboardingReplayEnv = import.meta.env,
+) {
+  return env.DEV === true && env.VITE_JUNE_REPLAY_ONBOARDING === "1";
+}
+
 export function isOnboardingComplete(): boolean {
   try {
     const raw = window.localStorage.getItem(COMPLETED_KEY);
@@ -27,6 +46,15 @@ export function markOnboardingComplete() {
     window.localStorage.removeItem(RESUME_KEY);
   } catch {
     // Ignore; worst case the wizard shows again next launch.
+  }
+}
+
+export function resetOnboardingForReplay() {
+  try {
+    window.localStorage.removeItem(COMPLETED_KEY);
+    window.localStorage.removeItem(RESUME_KEY);
+  } catch {
+    // Ignore; storage unavailable already behaves like a completed wizard.
   }
 }
 

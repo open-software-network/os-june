@@ -3,8 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
+  applyOnboardingReplayFlag,
   isAgentRiskAcknowledged,
   isOnboardingComplete,
+  markOnboardingComplete,
+  onboardingResumeStep,
+  resetOnboardingForReplay,
   setOnboardingResumeStep,
 } from "../lib/onboarding";
 import type { AccountStatus } from "../lib/tauri";
@@ -342,6 +346,39 @@ describe("OnboardingFlow", () => {
     setOnboardingResumeStep("setup");
     render(<OnboardingFlow {...flowProps()} />);
     await screen.findByRole("heading", { name: "Set up dictation" });
+  });
+
+  it("resets only onboarding progress when replaying the wizard", () => {
+    markOnboardingComplete();
+    setOnboardingResumeStep("setup");
+    localStorage.setItem("june.agent.riskAcknowledged", "true");
+
+    resetOnboardingForReplay();
+
+    expect(isOnboardingComplete()).toBe(false);
+    expect(onboardingResumeStep()).toBeNull();
+    expect(isAgentRiskAcknowledged()).toBe(true);
+  });
+
+  it("applies the replay flag only in development", () => {
+    markOnboardingComplete();
+    setOnboardingResumeStep("setup");
+
+    applyOnboardingReplayFlag({
+      DEV: false,
+      VITE_JUNE_REPLAY_ONBOARDING: "1",
+    });
+
+    expect(isOnboardingComplete()).toBe(true);
+    expect(onboardingResumeStep()).toBe("setup");
+
+    applyOnboardingReplayFlag({
+      DEV: true,
+      VITE_JUNE_REPLAY_ONBOARDING: "1",
+    });
+
+    expect(isOnboardingComplete()).toBe(false);
+    expect(onboardingResumeStep()).toBeNull();
   });
 
   it("requests the mic permission when the mic screen shows", async () => {

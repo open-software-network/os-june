@@ -104,8 +104,10 @@ import type {
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import {
+  applyOnboardingReplayFlag,
   isOnboardingComplete,
   markOnboardingComplete,
+  shouldReplayOnboarding,
 } from "../lib/onboarding";
 import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
 import {
@@ -148,6 +150,7 @@ function sidebarMaxWidth() {
 }
 
 export function App() {
+  const replayOnboarding = shouldReplayOnboarding();
   const [state, dispatch] = useReducer(
     notesReducer,
     undefined,
@@ -248,7 +251,7 @@ export function App() {
     loading: accountLoading,
     refresh: refreshAccount,
     setAccount,
-  } = useAccountStatus();
+  } = useAccountStatus({ forceLogoutOnMount: replayOnboarding });
   // The note the active recording session belongs to. recordingStatus carries
   // no noteId, so without this the finish flow could only guess from the
   // currently selected note — wrong whenever the user browsed away while
@@ -268,9 +271,10 @@ export function App() {
     !devAccountsUnconfigured && shouldBlockOnSignIn(account);
   const trialRequired =
     !devAccountsUnconfigured && !signInRequired && shouldBlockOnTrial(account);
-  const [onboardingDone, setOnboardingDone] = useState(() =>
-    isOnboardingComplete(),
-  );
+  const [onboardingDone, setOnboardingDone] = useState(() => {
+    applyOnboardingReplayFlag();
+    return isOnboardingComplete();
+  });
   // The wizard handles sign-in and the free trial itself, so it gates on
   // onboarding state alone; AccountGate/TrialGate remain for users who
   // finished onboarding and later signed out or lapsed.

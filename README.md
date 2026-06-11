@@ -25,6 +25,13 @@ pnpm install
 pnpm tauri:dev
 ```
 
+To replay first-run onboarding, clear the saved onboarding checkpoint, and log
+out of OS Accounts without wiping the rest of your local app data:
+
+```sh
+pnpm tauri:dev --replay-onboarding
+```
+
 The desktop app talks to Scribe API for transcription, dictation cleanup,
 model listing, and note generation. Provider API keys belong only in the
 Scribe API server env; never put OpenAI, Venice, or OS Accounts App API keys in
