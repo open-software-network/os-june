@@ -101,6 +101,24 @@ for prune in tests website apps .github; do
   rm -rf "$out/hermes-agent/$prune"
 done
 
+hermes_license_files="$(find "$out/hermes-agent" -type f \( \
+  -name 'LICENSE' -o -name 'LICENSE.*' -o \
+  -name 'NOTICE' -o -name 'NOTICE.*' -o \
+  -name 'COPYING' -o -name 'COPYING.*' \
+\) | sort)"
+[ -f "$out/hermes-agent/LICENSE" ] || die "hermes-agent LICENSE missing from pinned tarball"
+[ -n "$hermes_license_files" ] || die "no Hermes license or notice files found"
+mkdir -p "$out/third_party_notices"
+{
+  printf 'Third-party notices for bundled Hermes runtime\n\n'
+  printf 'Hermes Agent source: %s\n' "$tarball_url"
+  printf 'Hermes Agent commit: %s\n\n' "$commit"
+  printf 'Preserved upstream license and notice files:\n'
+  while IFS= read -r license_file; do
+    printf -- '- hermes-agent/%s\n' "${license_file#$out/hermes-agent/}"
+  done <<<"$hermes_license_files"
+} > "$out/third_party_notices/THIRD_PARTY_NOTICES.txt"
+
 # The tarball has no prebuilt dashboard assets — on-device installs build them
 # in the "node-deps" stage. Build them here instead (vite outputs to
 # hermes_cli/web_dist per web/vite.config.ts) and drop node_modules afterwards.

@@ -2,6 +2,7 @@
   "name": "os-scribe",
   "version": "0.0.8",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
