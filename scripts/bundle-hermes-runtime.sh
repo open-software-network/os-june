@@ -41,23 +41,9 @@ bridge_rs="$root/src-tauri/src/hermes_bridge.rs"
 log() { printf '\033[1;34m[bundle-hermes]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[bundle-hermes]\033[0m %s\n' "$*" >&2; exit 1; }
 
-# --ensure-placeholder: cheap guard for `tauri build` runs that don't bundle
-# the runtime (local dev). The resources mapping in tauri.conf.json must point
-# at an existing path; an empty marker keeps the build green while
-# `bundled_hermes_command` finds no launcher and falls back to the managed
-# install.
-if [ "${1:-}" = "--ensure-placeholder" ]; then
-  if [ -x "$out/bin/hermes" ]; then
-    exit 0
-  fi
-  mkdir -p "$out"
-  cat > "$out/PLACEHOLDER.md" <<'EOF'
-No bundled Hermes runtime in this build. The app installs the managed runtime
-on first launch instead. Release CI runs scripts/bundle-hermes-runtime.sh to
-ship the runtime inside the app.
-EOF
-  exit 0
-fi
+# Builds that skip this script still compile: build.rs creates a placeholder
+# at the resources mapping (`ensure_bundled_hermes_dir`), and the app falls
+# back to the managed on-device install when no launcher is present.
 
 # ---- pins, read from the Rust source of truth -------------------------------
 # Values may sit on the declaration line or (rustfmt) on the next line.

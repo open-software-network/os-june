@@ -13,7 +13,43 @@ fn main() {
     clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();
+    ensure_bundled_hermes_dir();
     tauri_build::build();
+}
+
+/// `tauri_build::build()` validates every `bundle.resources` source path at
+/// compile time, so the `../.tauri-hermes/hermes` mapping must exist for ANY
+/// cargo invocation (`cargo test`, rust-analyzer, dev builds) — not just for
+/// `tauri build`. Release CI populates the real runtime via
+/// scripts/bundle-hermes-runtime.sh before compiling; everywhere else this
+/// placeholder keeps the build green and the app falls back to the managed
+/// on-device install (`bundled_hermes_command` finds no launcher in it).
+fn ensure_bundled_hermes_dir() {
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let Some(hermes_dir) = manifest_dir
+        .parent()
+        .map(|repo_dir| repo_dir.join(".tauri-hermes").join("hermes"))
+    else {
+        return;
+    };
+    if hermes_dir.exists() {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&hermes_dir) {
+        println!(
+            "cargo:warning=could not create {}: {error}",
+            hermes_dir.display()
+        );
+        return;
+    }
+    let note = "No bundled Hermes runtime in this build. The app installs the managed \
+runtime on first launch instead. Release CI runs scripts/bundle-hermes-runtime.sh to \
+ship the runtime inside the app.\n";
+    if let Err(error) = std::fs::write(hermes_dir.join("PLACEHOLDER.md"), note) {
+        println!("cargo:warning=could not write hermes placeholder: {error}");
+    }
 }
 
 /// Remove pre-rename ("OS Scribe") helper bundles from `.tauri-helper` so
