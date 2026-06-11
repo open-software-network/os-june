@@ -11,6 +11,7 @@ type Props = {
   notes: NoteListItemDto[];
   folders: FolderDto[];
   onSetFolder: (noteId: string, folderId: string) => Promise<unknown> | void;
+  onMoved?: () => void;
 };
 
 export function MoveNoteToFolderDialog({
@@ -19,6 +20,7 @@ export function MoveNoteToFolderDialog({
   notes,
   folders,
   onSetFolder,
+  onMoved,
 }: Props) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -67,6 +69,7 @@ export function MoveNoteToFolderDialog({
       for (const note of notes) {
         await onSetFolder(note.id, selectedId);
       }
+      onMoved?.();
       onClose();
     } finally {
       setSubmitting(false);

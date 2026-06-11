@@ -29,7 +29,10 @@ import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
-import { NotesList } from "../components/notes-list/NotesList";
+import {
+  NotesList,
+  type NotesListHandle,
+} from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import {
   AppSettings,
@@ -211,6 +214,7 @@ export function App() {
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
   const mainPanelBodyRef = useRef<HTMLDivElement | null>(null);
   const noteDetailScrollRef = useRef<HTMLDivElement | null>(null);
+  const notesListRef = useRef<NotesListHandle | null>(null);
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] =
@@ -1840,6 +1844,7 @@ export function App() {
               />
             ) : activeView === "notes" || activeView === "all-notes" ? (
               <NotesList
+                ref={notesListRef}
                 notes={state.notes}
                 onSelectNote={(noteId) =>
                   void handleSelectNoteFromAllNotes(noteId)
@@ -2075,6 +2080,7 @@ export function App() {
         onSetFolder={(noteId, folderId) =>
           handleSetNoteFolder(noteId, folderId)
         }
+        onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
         open={moveDialogSessionId !== null}

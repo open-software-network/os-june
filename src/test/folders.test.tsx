@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { createRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,7 +15,10 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../components/agent/AgentWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
-import { NotesList } from "../components/notes-list/NotesList";
+import {
+  NotesList,
+  type NotesListHandle,
+} from "../components/notes-list/NotesList";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { FolderDto, NoteListItemDto } from "../lib/tauri";
 
@@ -615,6 +619,39 @@ describe("folders UI", () => {
     expect(onOpenMoveNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
   });
 
+  it("can clear selected meetings after a bulk move succeeds", async () => {
+    const user = userEvent.setup();
+    const notesListRef = createRef<NotesListHandle>();
+    render(
+      <NotesList
+        ref={notesListRef}
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
+
+    expect(
+      screen.getByRole("toolbar", { name: "Selection" }),
+    ).toHaveTextContent("2 selected");
+
+    act(() => notesListRef.current?.resetSelection());
+
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(bar).toHaveAttribute("data-exit", "slide");
+    fireEvent.animationEnd(bar, {
+      animationName: "meetings-bulk-bar-out-slide",
+    });
+    expect(screen.queryByRole("toolbar", { name: "Selection" })).toBeNull();
+  });
+
   it("selects all visible meetings after one meeting is selected", async () => {
     const user = userEvent.setup();
     const onDeleteNotes = vi.fn();
@@ -751,6 +788,7 @@ describe("MoveNoteToFolderDialog", () => {
     const user = userEvent.setup();
     const onSetFolder = vi.fn().mockResolvedValue(undefined);
     const onClose = vi.fn();
+    const onMoved = vi.fn();
     render(
       <MoveNoteToFolderDialog
         open
@@ -758,6 +796,7 @@ describe("MoveNoteToFolderDialog", () => {
         notes={notes}
         folders={moveFolders}
         onSetFolder={onSetFolder}
+        onMoved={onMoved}
       />,
     );
 
@@ -771,6 +810,7 @@ describe("MoveNoteToFolderDialog", () => {
     expect(onSetFolder).toHaveBeenCalledTimes(2);
     expect(onSetFolder).toHaveBeenNthCalledWith(1, "note-2", "folder-2");
     expect(onSetFolder).toHaveBeenNthCalledWith(2, "note-1", "folder-2");
+    expect(onMoved).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
 
