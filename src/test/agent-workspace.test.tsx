@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
   sendAgentMessage: vi.fn(),
   startHermesBridge: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
+  explainAgentApproval: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
@@ -102,6 +103,7 @@ vi.mock("../lib/tauri", () => ({
   sendAgentMessage: mocks.sendAgentMessage,
   startHermesBridge: mocks.startHermesBridge,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
+  explainAgentApproval: mocks.explainAgentApproval,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
@@ -224,6 +226,10 @@ describe("AgentWorkspace", () => {
     mocks.deleteHermesSession.mockResolvedValue(undefined);
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
+    });
+    mocks.explainAgentApproval.mockResolvedValue({
+      explanation:
+        "This deletes the build folder, then rebuilds the project from scratch.",
     });
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -712,9 +718,15 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Approval required")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Explain first" }));
 
+    // The explanation comes from the generation model, scoped to this
+    // request — not canned copy.
+    expect(mocks.explainAgentApproval).toHaveBeenCalledWith({
+      description: "Security scan requires approval.",
+      command: "npm run build",
+    });
     expect(
-      screen.getByText(
-        "June is paused because this request needs your explicit permission before it can continue.",
+      await screen.findByText(
+        "This deletes the build folder, then rebuilds the project from scratch.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -728,10 +740,68 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve once" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Always" })).toBeEnabled();
+    // Asking for an explanation never answers the approval.
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
       "approval.respond",
       expect.anything(),
     );
+
+    // Reopening reuses the cached answer instead of paying for another call.
+    await user.click(screen.getByRole("button", { name: "Hide explanation" }));
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+    expect(
+      await screen.findByText(
+        "This deletes the build folder, then rebuilds the project from scratch.",
+      ),
+    ).toBeInTheDocument();
+    expect(mocks.explainAgentApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to static copy when the explanation call fails", async () => {
+    const user = userEvent.setup();
+    mocks.explainAgentApproval.mockRejectedValue(new Error("offline"));
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-1",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+
+    expect(
+      await screen.findByText(
+        "June is paused because this request needs your explicit permission before it can continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve once allows only this request/),
+    ).toBeInTheDocument();
   });
 
   it("omits the permanent approval explanation when Always is unavailable", async () => {

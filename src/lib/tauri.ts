@@ -767,6 +767,21 @@ export async function suggestAgentSessionTitle(prompt: string) {
   );
 }
 
+export type ExplainAgentApprovalResponse = {
+  explanation: string;
+};
+
+/** One-shot generation call that explains a pending approval request in
+ * plain language — the agent runtime stays parked on the approval. */
+export async function explainAgentApproval(input: {
+  description: string;
+  command?: string;
+}) {
+  return invoke<ExplainAgentApprovalResponse>("explain_agent_approval", {
+    request: input,
+  });
+}
+
 export async function cancelAgentTask(taskId: string) {
   return invoke<AgentTaskDto>("cancel_agent_task", { request: { taskId } });
 }

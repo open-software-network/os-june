@@ -71,6 +71,7 @@ import {
   cancelAgentTask,
   createAgentTask,
   dictationHelperCommand,
+  explainAgentApproval,
   getAgentTask,
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
@@ -4762,7 +4763,36 @@ function ApprovalPart({
   const activeChoice = part.choice ?? submitting;
   const resolved = part.status !== "pending" || activeChoice !== undefined;
   const [explainOpen, setExplainOpen] = useState(false);
+  // "Explain first" asks the generation model what this specific request
+  // would do — the request stays parked, nothing is approved by asking.
+  // The answer is cached for the card's lifetime; an error retries on the
+  // next open and falls back to static copy meanwhile.
+  const [explanation, setExplanation] = useState<string>();
+  const [explainState, setExplainState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const explanationId = useId();
+
+  function toggleExplain() {
+    const nextOpen = !explainOpen;
+    setExplainOpen(nextOpen);
+    if (!nextOpen || explainState === "loading" || explainState === "ready") {
+      return;
+    }
+    setExplainState("loading");
+    explainAgentApproval({
+      description: part.description,
+      command: part.command || undefined,
+    })
+      .then((response) => {
+        setExplanation(response.explanation);
+        setExplainState("ready");
+      })
+      .catch(() => {
+        setExplainState("error");
+      });
+  }
+
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
@@ -4782,10 +4812,25 @@ function ApprovalPart({
         {part.command ? <pre>{part.command}</pre> : null}
         {!resolved && explainOpen ? (
           <div className="agent-approval-explanation" id={explanationId}>
-            <p>
-              June is paused because this request needs your explicit permission
-              before it can continue.
-            </p>
+            {explainState === "loading" ? (
+              <p
+                className="agent-approval-explanation-loading"
+                role="status"
+                aria-live="polite"
+              >
+                <Spinner aria-hidden />
+                <span>Working out what this request does…</span>
+              </p>
+            ) : explainState === "ready" && explanation ? (
+              <p>{explanation}</p>
+            ) : (
+              // Generation unavailable (offline, signed out): keep the
+              // static framing rather than an empty panel.
+              <p>
+                June is paused because this request needs your explicit
+                permission before it can continue.
+              </p>
+            )}
             <p>
               Approve once allows only this request. This session allows
               matching requests until the session ends.{" "}
@@ -4818,7 +4863,7 @@ function ApprovalPart({
               aria-expanded={explainOpen}
               aria-controls={explanationId}
               disabled={disabled}
-              onClick={() => setExplainOpen((value) => !value)}
+              onClick={toggleExplain}
             >
               <IconCircleQuestionmark size={14} />
               {explainOpen ? "Hide explanation" : "Explain first"}

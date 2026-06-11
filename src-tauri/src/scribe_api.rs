@@ -531,6 +531,69 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
     })
 }
 
+/// Plain-language explanation of a pending approval request, written by the
+/// generation model. The agent runtime is parked waiting on the approval, so
+/// this is a one-shot side call — it never touches the paused session.
+pub async fn explain_agent_approval(
+    description: &str,
+    command: Option<&str>,
+) -> Result<String, AppError> {
+    let description = description.trim();
+    let command = command.map(str::trim).filter(|value| !value.is_empty());
+    if description.is_empty() && command.is_none() {
+        return Err(AppError::new(
+            "approval_explanation_empty",
+            "There is nothing to explain for this approval request.",
+        ));
+    }
+    let mut request_text = format!("Permission request: {description}");
+    if let Some(command) = command {
+        request_text.push_str("\nExact command or action:\n");
+        request_text.push_str(command);
+    }
+    let response = proxy_agent_chat_completions(serde_json::json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": "An AI agent paused mid-task to ask its user for permission. Explain what this specific request would actually do, in plain language the user can act on: name the files, hosts, or data involved, decode any flags or shell syntax, and call out anything risky or hard to undo (deleting or overwriting files, sending data off the machine, spending money). Use 2 to 4 short sentences. Never be generic, never use markdown or headings, and never tell the user which button to press."
+            },
+            {
+                "role": "user",
+                "content": request_text
+            }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 220
+    }))
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(AppError::new(
+            "approval_explanation_failed",
+            format!(
+                "Explanation generation returned status {}.",
+                response.status
+            ),
+        ));
+    }
+    let body = response.collect_body().await?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|error| AppError::new("approval_explanation_invalid", error.to_string()))?;
+    let text = extract_chat_completion_text(&value).ok_or_else(|| {
+        AppError::new(
+            "approval_explanation_invalid",
+            "Explanation generation did not return text.",
+        )
+    })?;
+    let explanation = text.trim();
+    if explanation.is_empty() {
+        return Err(AppError::new(
+            "approval_explanation_empty",
+            "Explanation generation returned an empty explanation.",
+        ));
+    }
+    Ok(explanation.to_string())
+}
+
 pub fn dictation_provider_for_model(model_id: &str) -> &'static str {
     crate::providers::transcription_provider_for_model(model_id)
 }

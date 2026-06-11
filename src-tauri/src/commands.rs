@@ -25,15 +25,16 @@ use crate::{
             CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
             CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DictionaryEntryDto, FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest,
-            ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
-            OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource, RecordingSourceMode,
-            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
-            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
-            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
-            SendAgentMessageRequest, SessionFolderDto, SessionRequest, SourceReadinessDto,
-            StartRecordingRequest, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            DictionaryEntryDto, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
+            FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
+            ListNotesResponse, MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
+            SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -387,6 +388,16 @@ pub async fn suggest_agent_session_title(
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
     let title = crate::scribe_api::suggest_agent_session_title(&request.prompt).await?;
     Ok(SuggestAgentSessionTitleResponse { title })
+}
+
+#[tauri::command]
+pub async fn explain_agent_approval(
+    request: ExplainAgentApprovalRequest,
+) -> Result<ExplainAgentApprovalResponse, AppError> {
+    let explanation =
+        crate::scribe_api::explain_agent_approval(&request.description, request.command.as_deref())
+            .await?;
+    Ok(ExplainAgentApprovalResponse { explanation })
 }
 
 #[tauri::command]
