@@ -5,6 +5,8 @@ import { IconPause } from "central-icons/IconPause";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPlay } from "central-icons/IconPlay";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
+import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -19,6 +21,7 @@ import {
   resumeRoutine,
   routineCreationPrompt,
   routineEditPrompt,
+  routineUnrestricted,
   type RoutineJob,
 } from "../../lib/hermes-routines";
 import { humanizeSchedule } from "../../lib/routine-schedule";
@@ -26,6 +29,7 @@ import type { HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
+import { HoverTip } from "../ui/HoverTip";
 
 type RoutinesViewProps = {
   /** Hands off a composed agent prompt; the app opens a new June session with
@@ -51,6 +55,10 @@ export function RoutinesView({
   const [pendingDelete, setPendingDelete] = useState<RoutineJob | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  // Per-routine mode choice for the routine being composed. Defaults to
+  // sandboxed on every open: like the chat picker, Unrestricted is a
+  // deliberate per-creation opt-in, never a sticky preference.
+  const [draftUnrestricted, setDraftUnrestricted] = useState(false);
   const [editTarget, setEditTarget] = useState<RoutineJob | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [runs, setRuns] = useState<HermesSessionInfo[]>([]);
@@ -174,6 +182,7 @@ export function RoutinesView({
 
   function openCreate() {
     setDraft("");
+    setDraftUnrestricted(false);
     setCreateOpen(true);
   }
 
@@ -194,7 +203,9 @@ export function RoutinesView({
     const description = draft.trim();
     if (!description) return;
     setCreateOpen(false);
-    onCreateRoutine(routineCreationPrompt(description));
+    onCreateRoutine(
+      routineCreationPrompt(description, { unrestricted: draftUnrestricted }),
+    );
   }
 
   return (
@@ -366,6 +377,35 @@ export function RoutinesView({
             }
           }}
         />
+        <div
+          className="routines-mode-picker"
+          role="radiogroup"
+          aria-label="What can this routine change?"
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!draftUnrestricted}
+            onClick={() => setDraftUnrestricted(false)}
+          >
+            <IconShieldCheck size={14} aria-hidden />
+            Sandboxed
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={draftUnrestricted}
+            onClick={() => setDraftUnrestricted(true)}
+          >
+            <IconShieldCrossed size={14} aria-hidden />
+            Unrestricted
+          </button>
+        </div>
+        <p className="routines-mode-hint">
+          {draftUnrestricted
+            ? "When it fires, June can run commands and change any file your account can."
+            : "The routine can read the web, use memory, and message you. It cannot run commands or change your files."}
+        </p>
       </Dialog>
 
       <Dialog
@@ -456,6 +496,16 @@ function RoutineRow({
       <div className="routines-item-body">
         <span className="routines-item-title">
           <span className="routines-item-name">{routine.name}</span>
+          {routineUnrestricted(routine) ? (
+            <HoverTip
+              tip="This routine runs with full access: when it fires, June can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
+              className="routines-item-badge routines-item-badge-warm"
+              tabIndex={0}
+            >
+              <IconShieldCrossed size={11} aria-hidden />
+              Unrestricted
+            </HoverTip>
+          ) : null}
           {paused ? <span className="routines-item-badge">Paused</span> : null}
           {completed ? (
             <span className="routines-item-badge">Completed</span>

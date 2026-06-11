@@ -122,6 +122,112 @@ describe("RoutinesView", () => {
     expect(screen.queryByText("Weekly digest")).toBeNull();
   });
 
+  it("defaults a new routine to sandboxed and says so in the prompt", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    const onCreateRoutine = vi.fn();
+    render(
+      <RoutinesView
+        onCreateRoutine={onCreateRoutine}
+        onEditRoutine={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: /new routine/i }))[0],
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("radio", { name: "Sandboxed" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(dialog).toHaveTextContent(
+      "It cannot run commands or change your files.",
+    );
+
+    await userEvent.type(
+      within(dialog).getByRole("textbox"),
+      "watch the weather and message me",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Ask June to set it up" }),
+    );
+
+    const prompt = onCreateRoutine.mock.calls[0][0] as string;
+    expect(prompt).toContain("Do not set enabled_toolsets");
+    // Cron scripts run as shell subprocesses outside the toolset gate, so a
+    // sandboxed routine must not get one either.
+    expect(prompt).toContain("Do not attach a script");
+    expect(prompt).not.toContain("Create the job with enabled_toolsets");
+  });
+
+  it("creates an unrestricted routine only after the explicit opt-in", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    const onCreateRoutine = vi.fn();
+    render(
+      <RoutinesView
+        onCreateRoutine={onCreateRoutine}
+        onEditRoutine={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: /new routine/i }))[0],
+    );
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("radio", { name: "Unrestricted" }),
+    );
+    expect(dialog).toHaveTextContent(
+      "June can run commands and change any file your account can.",
+    );
+
+    await userEvent.type(
+      within(dialog).getByRole("textbox"),
+      "clean up my downloads folder nightly",
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Ask June to set it up" }),
+    );
+
+    const prompt = onCreateRoutine.mock.calls[0][0] as string;
+    expect(prompt).toContain(
+      "Create the job with enabled_toolsets set to exactly: terminal, file, code_execution",
+    );
+  });
+
+  it("badges routines that carry machine toolsets or a cron script", async () => {
+    mocks.listRoutines.mockResolvedValue([
+      job(),
+      job({
+        job_id: "def456",
+        name: "Nightly cleanup",
+        enabled_toolsets: ["terminal", "file", "web"],
+      }),
+      // Scripts run as shell subprocesses of the unjailed gateway, outside
+      // the toolset gate, so a script-backed job is unrestricted even with
+      // no enabled_toolsets override.
+      job({
+        job_id: "ghi789",
+        name: "Disk watchdog",
+        script: "/Users/junho/bin/check-disk.sh",
+        no_agent: true,
+      }),
+    ]);
+    render(
+      <RoutinesView
+        onCreateRoutine={vi.fn()}
+        onEditRoutine={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Nightly cleanup")).toBeInTheDocument();
+    // Badges for the toolset-widened and the script-backed routines, none
+    // for the sandboxed one.
+    expect(screen.getAllByText("Unrestricted")).toHaveLength(2);
+  });
+
   it("shows the empty state and routes creation through the agent prompt", async () => {
     mocks.listRoutines.mockResolvedValue([]);
     const onCreateRoutine = vi.fn();
@@ -182,6 +288,9 @@ describe("RoutinesView", () => {
     expect(prompt).toContain("abc123");
     expect(prompt).toContain("Morning summary");
     expect(prompt).toContain("update action");
+    // No enabled_toolsets on the fixture, so the prompt reports the
+    // sandboxed default and carries the mode-change instructions.
+    expect(prompt).toContain("currently sandboxed");
   });
 
   it("does not send an edit with an empty description", async () => {
@@ -337,7 +446,9 @@ describe("RoutinesView", () => {
     // embedded in the cron session id), not the session's own title.
     expect(within(history).getByText("Morning summary")).toBeInTheDocument();
     expect(
-      within(history).getByText("Here is today's summary of your unread notes."),
+      within(history).getByText(
+        "Here is today's summary of your unread notes.",
+      ),
     ).toBeInTheDocument();
 
     await userEvent.click(

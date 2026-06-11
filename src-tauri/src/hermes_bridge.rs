@@ -1899,6 +1899,30 @@ fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
+/// Toolsets a routine (cron job) runs with when it carries no per-job
+/// `enabled_toolsets` override. Hermes resolves a cron run's toolsets as:
+/// per-job `enabled_toolsets` first, then `platform_toolsets.cron` from
+/// config.yaml (`_resolve_cron_enabled_toolsets` in cron/scheduler.py).
+/// Routines execute inside the launchd gateway daemon, which must run
+/// outside the Seatbelt jail so launchd accepts it (see
+/// `spawn_hermes_gateway_start`), so this allowlist is what "Sandboxed"
+/// means for a routine: no terminal, file, code-execution, browser,
+/// computer-use, skill-management, or delegation toolsets — the job can
+/// read the web, think, remember, and deliver its report, but cannot touch
+/// the machine. The per-routine Unrestricted opt-in writes an explicit
+/// per-job `enabled_toolsets` (see CRON_UNRESTRICTED_TOOLSETS in
+/// src/lib/hermes-routines.ts), which takes precedence over this gate.
+/// The scheduler always strips `cronjob`, `messaging`, and `clarify` from
+/// cron agents on top of either list.
+const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
+    "web",
+    "vision",
+    "todo",
+    "memory",
+    "session_search",
+    "context_engine",
+];
+
 fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
@@ -1917,10 +1941,13 @@ agent:
   max_turns: 90
 display:
   skin: mono
+platform_toolsets:
+  cron: [{cron_toolsets}]
 "#,
         model = yaml_string(&model),
         base_url = yaml_string(&base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+        cron_toolsets = CRON_SANDBOXED_TOOLSETS.join(", "),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -2529,6 +2556,33 @@ mod tests {
             Some("1")
         );
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
+    }
+
+    #[test]
+    fn synced_config_gates_cron_runs_to_the_sandboxed_toolsets() {
+        // Routines execute in the unjailed launchd gateway, so the only
+        // default-deny boundary they have is this config gate: a cron job
+        // with no per-job enabled_toolsets must resolve to the sandboxed
+        // allowlist, never the full default toolset.
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_hermes_config(home.path(), 4242, "proxy-token").expect("sync config");
+
+        let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
+        assert!(config.contains("platform_toolsets:"));
+        assert!(config.contains(&format!("cron: [{}]", CRON_SANDBOXED_TOOLSETS.join(", "))));
+        for toolset in [
+            "terminal",
+            "file",
+            "code_execution",
+            "browser",
+            "computer_use",
+        ] {
+            assert!(
+                !CRON_SANDBOXED_TOOLSETS.contains(&toolset),
+                "machine-touching toolset {toolset} must not be in the cron default",
+            );
+        }
     }
 
     #[test]

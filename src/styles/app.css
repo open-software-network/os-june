@@ -7643,6 +7643,66 @@ button.agent-safety-badge:hover {
   gap: var(--sp-3);
 }
 
+/* Per-routine mode picker in the create dialog: the same Sandboxed vs
+ * Unrestricted split as the chat composer's shield menu, rendered as a
+ * two-option radio row. The selected option borrows the sandbox trigger's
+ * warm accent when Unrestricted is armed. */
+.routines-mode-picker {
+  margin-top: var(--sp-3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+
+.routines-mode-picker button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 3px var(--sp-3);
+  border: 0;
+  border-radius: calc(var(--r-md) - 2px);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.routines-mode-picker button[aria-checked="true"] {
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--foreground);
+}
+
+.routines-mode-picker button[aria-checked="true"]:last-child {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.routines-mode-hint {
+  margin: var(--sp-2) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Warm twin of .routines-item-badge for routines that run with full machine
+ * access (same family as the session bar's Unrestricted badge). */
+.routines-item-badge-warm {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.routines-item-badge-warm svg {
+  color: var(--warm-strong);
+}
+
 .routines-refresh {
   display: inline-grid;
   place-items: center;
