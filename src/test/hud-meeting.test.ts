@@ -85,7 +85,10 @@ describe("meeting detection HUD", () => {
     expect(mocks.emit).toHaveBeenCalledWith(
       "scribe://meeting-start-transcription",
     );
-    await vi.runAllTimersAsync();
+    // A bounded advance, not runAllTimersAsync: jsdom drives rAF off the
+    // faked setTimeout while the alpha ramp measures real time, so running
+    // "all" timers re-queues the ramp until sinon's 10000-timer abort.
+    await vi.advanceTimersByTimeAsync(220);
     expect(mocks.hide).toHaveBeenCalledOnce();
     expect(
       document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.disabled,
@@ -131,12 +134,17 @@ describe("meeting detection HUD", () => {
   });
 
   it("clears the prompt when microphone usage stops", async () => {
+    vi.useFakeTimers();
     await loadHud();
     await emit("meeting-detection-event", { type: "meeting_detected" });
 
     await emit("meeting-detection-event", { type: "meeting_cleared" });
 
     expect(hudElement().dataset.state).toBe("exiting");
+    // Drain the in-flight exit: on real timers its hide() fires ~220ms after
+    // this test ends and lands mid-way through a later test's call counts.
+    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
   it("hides and suppresses the prompt after 30 seconds without a click", async () => {
@@ -246,6 +254,11 @@ describe("meeting detection HUD", () => {
 
     await vi.advanceTimersByTimeAsync(900);
     expect(hudElement().dataset.state).toBe("exiting");
+    // Drain the in-flight exit. Its fallback timeout dies with the fake
+    // clock, but the rAF alpha ramp keeps running on real time after this
+    // test ends and would land its hide() inside the next test's counts.
+    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
   it("hides when a Hey June prompt starts an agent session", async () => {
@@ -280,6 +293,9 @@ describe("meeting detection HUD", () => {
 
     await vi.advanceTimersByTimeAsync(4000);
     expect(hudElement().dataset.state).toBe("exiting");
+    // Drain the in-flight exit so its hide() can't leak into a later test.
+    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
   it("keeps the agent handoff visible when it races the dictation handoff hide", async () => {
@@ -302,6 +318,9 @@ describe("meeting detection HUD", () => {
 
     await vi.advanceTimersByTimeAsync(4000);
     expect(hudElement().dataset.state).toBe("exiting");
+    // Drain the in-flight exit so its hide() can't leak into a later test.
+    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
   it("does not claim the HUD for ongoing agent progress", async () => {

@@ -374,8 +374,13 @@ export type HermesBridgeConnection = {
 };
 
 export type HermesBridgeStatus = {
+  /** True when any runtime process is up. */
   running: boolean;
+  /** Primary connection (the requested mode for a start call, otherwise
+   * sandboxed-first). Mode-aware callers should use `connections`. */
   connection?: HermesBridgeConnection;
+  /** Every live runtime process — at most one per write-access mode. */
+  connections?: HermesBridgeConnection[];
   message?: string;
 };
 
@@ -601,8 +606,11 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
-export async function scribeVerifyUrl() {
-  return invoke<string>("scribe_verify_url");
+/** Opens the scribe-api /verify page (attestation, routing, retention) in
+ * the default browser. Routed through Rust because the webview drops
+ * target="_blank" anchors. */
+export async function scribeOpenVerifyPage() {
+  return invoke<void>("scribe_open_verify_page");
 }
 
 export async function createNote(folderId?: string) {
@@ -698,25 +706,29 @@ export async function listAgentTasks() {
   return invoke<AgentTaskListResponse>("list_agent_tasks");
 }
 
-export async function mascotShow() {
-  return invoke<void>("mascot_show");
+export async function agentHudShow() {
+  return invoke<void>("agent_hud_show");
 }
 
-export async function mascotHide() {
-  return invoke<void>("mascot_hide");
+export async function agentHudHide() {
+  return invoke<void>("agent_hud_hide");
 }
 
-export async function mascotSetLayout(input: {
+export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   replying?: boolean;
   contextMenuOpen?: boolean;
 }) {
-  return invoke<void>("mascot_set_layout", { request: input });
+  return invoke<void>("agent_hud_set_layout", { request: input });
 }
 
-export async function mascotOpenAgent(session?: HermesSessionInfo) {
-  return invoke<void>("mascot_open_agent", { session });
+export async function agentHudFocusReply() {
+  return invoke<void>("agent_hud_focus_reply");
+}
+
+export async function agentHudOpenAgent(session?: HermesSessionInfo) {
+  return invoke<void>("agent_hud_open_agent", { session });
 }
 
 export async function createAgentTask(input: {
@@ -765,6 +777,26 @@ export async function suggestAgentSessionTitle(prompt: string) {
       request: { prompt },
     },
   );
+}
+
+export type SubmitIssueReportRequest = {
+  /** The user's report as they typed it, before the investigation wrapper. */
+  description: string;
+  /** June's diagnostic assessment from the report session, when available. */
+  agentDiagnosis?: string;
+  attachmentNames: string[];
+  /** Workspace paths of the attached files; their bytes are uploaded with
+   * the report. */
+  attachmentPaths: string[];
+  sessionId?: string;
+};
+
+export type SubmitIssueReportResponse = {
+  received: boolean;
+};
+
+export async function submitIssueReport(request: SubmitIssueReportRequest) {
+  return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
 }
 
 export type ExplainAgentApprovalResponse = {
@@ -948,6 +980,10 @@ export async function deleteNote(noteId: string) {
   return invoke<void>("delete_note", { request: { noteId } });
 }
 
+export async function deleteNotes(noteIds: string[]) {
+  return invoke<void>("delete_notes", { request: { noteIds } });
+}
+
 export async function updateNote(input: {
   noteId: string;
   title?: string;
@@ -1088,6 +1124,20 @@ export async function osAccountsOpenPortal() {
 export type TrialCheckoutResult = {
   outcome: "checkoutOpened" | "alreadySubscribed";
 };
+
+export type TrialCheckoutPreparedResult = {
+  outcome: "ready" | "alreadySubscribed";
+};
+
+/** Pre-mints the free-trial Stripe Checkout session and caches it in the
+ * Rust core, so the next start call only has to open the browser. Call it
+ * while the user is reading the trial pitch; failures are safe to swallow,
+ * the start path falls back to minting on the spot. */
+export async function osAccountsPrepareTrialCheckout() {
+  return invoke<TrialCheckoutPreparedResult>(
+    "os_accounts_prepare_trial_checkout",
+  );
+}
 
 /** Mints the free-trial Stripe Checkout session with the user's own token and
  * opens it in the system browser — no portal detour. Rejects with code

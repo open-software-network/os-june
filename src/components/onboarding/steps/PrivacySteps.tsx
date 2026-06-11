@@ -1,3 +1,4 @@
+import { scribeOpenVerifyPage } from "../../../lib/tauri";
 import { StepActions, StepHeading } from "../StepChrome";
 
 const PRIVACY_CARDS = [
@@ -31,13 +32,13 @@ export function PrivacyStep({ onContinue }: { onContinue: () => void }) {
         ))}
       </div>
       <p className="onboarding-footnote">
-        <a
-          href="https://opensoftware.network/privacy"
-          target="_blank"
-          rel="noreferrer"
+        <button
+          type="button"
+          className="onboarding-footnote-link"
+          onClick={() => void scribeOpenVerifyPage().catch(() => undefined)}
         >
           Verify it yourself
-        </a>: how routing, retention, and attestation work.
+        </button>: how routing, retention, and attestation work.
       </p>
       <StepActions onContinue={onContinue} />
     </section>

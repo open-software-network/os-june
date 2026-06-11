@@ -1,6 +1,6 @@
-import { PangolinSpinner } from "../PangolinSpinner";
+import { DotSpinner } from "../DotSpinner";
 
-// The app-wide loading indicator: the rolling pangolin (see PangolinSpinner).
+// The app-wide loading indicator: the rolling dot spinner (see DotSpinner).
 // This wrapper owns the accessibility contract — the glyph itself is decorative.
 // The mark is a fixed-size 2×2 dot square by design (no size knob); wrappers
 // only set color via currentColor.
@@ -23,7 +23,7 @@ export function Spinner({
       aria-label={ariaHidden ? undefined : (ariaLabel ?? "Loading")}
       className={classes}
     >
-      <PangolinSpinner />
+      <DotSpinner />
     </span>
   );
 }

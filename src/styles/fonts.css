@@ -1,0 +1,47 @@
+/*
+ * App typefaces. Shared by every page entry (main app, agent HUD, ...);
+ * the token stacks in tokens.css name these families, so any page that
+ * uses the tokens must import this file or it silently falls back to
+ * system fonts. Faces only download once a rule uses them, so unused
+ * families cost nothing on small overlay pages.
+ */
+
+@font-face {
+  font-family: "ABC Diatype";
+  src: url("/ABCDiatype-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "ABC Diatype";
+  src: url("/ABCDiatype-Medium.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("/martina-plantijn-light.woff2") format("woff2");
+  font-weight: 300 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("/BerkeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("/BerkeleyMono-Oblique.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}

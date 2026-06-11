@@ -1,9 +1,9 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useState } from "react";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
-import { IconPangolin } from "../icons/IconPangolin";
 
 type AddSessionsToProjectDialogProps = {
   open: boolean;
@@ -135,7 +135,7 @@ export function AddSessionsToProjectDialog({
                     onClick={() => toggle(session.id)}
                   >
                     <span className="add-notes-icon" aria-hidden>
-                      <IconPangolin size={14} />
+                      <IconBubble3 size={14} />
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">

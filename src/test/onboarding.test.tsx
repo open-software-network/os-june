@@ -20,7 +20,9 @@ const mocks = vi.hoisted(() => ({
   setDictationLanguage: vi.fn(),
   setDictationShortcut: vi.fn(),
   osAccountsLogin: vi.fn(),
+  scribeOpenVerifyPage: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
+  osAccountsPrepareTrialCheckout: vi.fn(),
   osAccountsStartTrialCheckout: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   focusMainWindow: vi.fn(),
@@ -34,7 +36,9 @@ vi.mock("../lib/tauri", () => ({
   setDictationLanguage: mocks.setDictationLanguage,
   setDictationShortcut: mocks.setDictationShortcut,
   osAccountsLogin: mocks.osAccountsLogin,
+  scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
+  osAccountsPrepareTrialCheckout: mocks.osAccountsPrepareTrialCheckout,
   osAccountsStartTrialCheckout: mocks.osAccountsStartTrialCheckout,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   focusMainWindow: mocks.focusMainWindow,
@@ -102,6 +106,9 @@ describe("OnboardingFlow", () => {
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
+    mocks.osAccountsPrepareTrialCheckout.mockResolvedValue({
+      outcome: "ready",
+    });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.focusMainWindow.mockResolvedValue(undefined);
     mocks.setDictationLanguage.mockResolvedValue(undefined);
@@ -290,6 +297,81 @@ describe("OnboardingFlow", () => {
     await screen.findByPlaceholderText(/Hold fn/i);
   });
 
+  it("pre-mints the checkout session on the pitch and again after a cancel", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStartTrialCheckout.mockResolvedValue({
+      outcome: "checkoutOpened",
+    });
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+    // The pitch isn't on screen yet, so nothing should be minted.
+    expect(mocks.osAccountsPrepareTrialCheckout).not.toHaveBeenCalled();
+
+    await walkToTrial(user);
+    await waitFor(() =>
+      expect(mocks.osAccountsPrepareTrialCheckout).toHaveBeenCalledOnce(),
+    );
+    // Prefetching is invisible: the pitch keeps its ready button.
+    expect(
+      screen.getByRole("button", { name: "Start free trial" }),
+    ).toBeEnabled();
+
+    // A canceled checkout consumed the prepared session; landing back on
+    // the pitch must mint a fresh one in the background.
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+    await screen.findByRole("heading", {
+      name: "Finish checkout in your browser",
+    });
+    emitBillingCallback?.({ payload: "cancel" });
+    await screen.findByRole("heading", { name: "Start your free trial" });
+    await waitFor(() =>
+      expect(mocks.osAccountsPrepareTrialCheckout).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it("keeps a failed pre-mint silent and lets the click mint on the spot", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsPrepareTrialCheckout.mockRejectedValue({
+      code: "trial_checkout_unavailable",
+      message: "Could not start the free trial checkout.",
+    });
+    mocks.osAccountsStartTrialCheckout.mockResolvedValue({
+      outcome: "checkoutOpened",
+    });
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await waitFor(() =>
+      expect(mocks.osAccountsPrepareTrialCheckout).toHaveBeenCalled(),
+    );
+    // The background failure must not leak into the pitch.
+    expect(screen.queryByText(/Could not start/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Start free trial" }));
+    await screen.findByRole("heading", {
+      name: "Finish checkout in your browser",
+    });
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the snapshot when the pre-mint reports an existing subscription", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsPrepareTrialCheckout.mockResolvedValue({
+      outcome: "alreadySubscribed",
+    });
+    const onRefreshAccount = vi.fn(async () => account);
+    render(
+      <OnboardingFlow
+        {...flowProps({ account: unsubscribedAccount, onRefreshAccount })}
+      />,
+    );
+    await screen.findByRole("heading", { name: /Welcome, Gaut!/ });
+
+    await walkToTrial(user);
+    await waitFor(() => expect(onRefreshAccount).toHaveBeenCalled());
+  });
+
   it("reacts to the post-checkout deep link without waiting out the poll", async () => {
     const user = userEvent.setup();
     mocks.osAccountsStartTrialCheckout.mockResolvedValue({
@@ -451,6 +533,26 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Start your free trial" });
     await screen.findByText(/Sign-in canceled/);
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
+  it("opens the scribe-api verify page from the privacy step", async () => {
+    // The footnote is a Rust-routed button, not an anchor: the webview drops
+    // target="_blank" navigations, so it invokes scribe_open_verify_page.
+    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    await renderFlow();
+    await user.click(
+      screen.getByRole("button", { name: "Let's get you set up" }),
+    );
+    await screen.findByRole("heading", {
+      name: "Private by architecture, not by promise",
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Verify it yourself" }),
+    );
+
+    expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
   it("resumes a half-finished run at the saved step", async () => {

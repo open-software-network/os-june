@@ -1,3 +1,4 @@
+import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
@@ -14,7 +15,6 @@ import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { IconPangolin } from "../icons/IconPangolin";
 
 type AgentSessionsListProps = {
   sessions: HermesSessionInfo[];
@@ -260,7 +260,7 @@ function AgentSessionListRow({
       >
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
-            <IconPangolin size={15} />
+            <IconBubble3 size={15} />
           </span>
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>

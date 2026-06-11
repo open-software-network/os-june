@@ -76,8 +76,8 @@ export function AddNotesToFolderDialog({
         if (submitting) return;
         onClose();
       }}
-      title={`Add meetings to ${folder.name}`}
-      description="Pick the meetings you want in this project."
+      title={`Add meeting notes to ${folder.name}`}
+      description="Pick the meeting notes you want in this project."
       initialFocusSelector='input[name="add-notes-search"]'
       footer={
         <>
@@ -98,8 +98,8 @@ export function AddNotesToFolderDialog({
             {submitting
               ? "Adding…"
               : count === 0
-                ? "Add meetings"
-                : `Add ${count} ${count === 1 ? "meeting" : "meetings"}`}
+                ? "Add meeting notes"
+                : `Add ${count} ${count === 1 ? "meeting note" : "meeting notes"}`}
           </button>
         </>
       }
@@ -110,7 +110,7 @@ export function AddNotesToFolderDialog({
           <input
             type="search"
             name="add-notes-search"
-            placeholder="Search meetings"
+            placeholder="Search meeting notes"
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
             autoComplete="off"
@@ -135,7 +135,7 @@ export function AddNotesToFolderDialog({
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">
-                        {note.title.trim() || "New meeting"}
+                        {note.title.trim() || "New note"}
                       </span>
                       <span className="add-notes-preview">
                         {note.preview.trim() ? note.preview : "No preview yet"}
@@ -152,8 +152,8 @@ export function AddNotesToFolderDialog({
         ) : (
           <p className="add-notes-empty">
             {notes.some((note) => !note.folderIds.includes(folder.id))
-              ? "No meetings match that search."
-              : "Every meeting already lives in this project."}
+              ? "No meeting notes match that search."
+              : "Every meeting note already lives in this project."}
           </p>
         )}
       </div>

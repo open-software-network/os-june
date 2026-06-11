@@ -90,7 +90,7 @@ describe("Sidebar primary navigation", () => {
     );
 
     expect(screen.queryByRole("button", { name: /Folders/ })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Meetings" }));
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     expect(onChangeView).toHaveBeenCalledWith("notes");
     await user.click(screen.getByRole("button", { name: "Projects" }));
     expect(onChangeView).toHaveBeenCalledWith("folders");
@@ -123,7 +123,7 @@ describe("Sidebar primary navigation", () => {
     await waitFor(() => expect(search).toHaveFocus());
     expect(
       within(palette).getByPlaceholderText(
-        "Search meetings, sessions, or jump to...",
+        "Search meeting notes, sessions, or jump to...",
       ),
     ).toBeInTheDocument();
     expect(within(palette).getByText("Recents")).toBeInTheDocument();
@@ -284,7 +284,7 @@ describe("FoldersWorkspace — list view", () => {
     ).toBeInTheDocument();
     const ideasCard = screen.getByText("Ideas").closest("article");
     expect(
-      within(ideasCard as HTMLElement).getByText(/0 meetings/),
+      within(ideasCard as HTMLElement).getByText(/0 meeting notes/),
     ).toBeInTheDocument();
   });
 
@@ -468,7 +468,9 @@ describe("FoldersWorkspace — detail view", () => {
 
     // The empty surface is visual-only — no helper text — just the
     // primary action and "Add existing note" when other notes exist.
-    await user.click(screen.getByRole("button", { name: /^New meeting$/ }));
+    await user.click(
+      screen.getByRole("button", { name: /^New meeting note$/ }),
+    );
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-1");
   });
 
@@ -482,7 +484,9 @@ describe("FoldersWorkspace — detail view", () => {
     expect(props.onCreateSession).toHaveBeenCalledWith("folder-2");
 
     await user.click(screen.getByRole("button", { name: "Add to project" }));
-    await user.click(screen.getByRole("menuitem", { name: "New meeting" }));
+    await user.click(
+      screen.getByRole("menuitem", { name: "New meeting note" }),
+    );
     expect(props.onCreateNote).toHaveBeenCalledWith("folder-2");
   });
 

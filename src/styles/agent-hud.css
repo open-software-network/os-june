@@ -1,0 +1,608 @@
+@import "./tokens.css";
+@import "./fonts.css";
+@import "./dot-spinner.css";
+
+/*
+ * Agent HUD.
+ *
+ * A small always-on-top overlay pinned to the top right of the screen
+ * (agent_hud.rs owns the window position and sizes the window to the
+ * layout the controller requests). Collapsed it is a single quiet pill:
+ * the June mark, tinted by the aggregate state, plus "2 running". Click,
+ * keyboard focus, or a session needing input expands it into a compact
+ * list with open/reply actions.
+ *
+ * Forced dark regardless of system theme, like the dictation HUD: a
+ * transient overlay has to read consistently against any wallpaper or
+ * app behind it. The window is transparent with click-through gutters;
+ * depth comes from CSS shadows, so the window keeps a margin around the
+ * surface for them to paint into (the Rust size math accounts for it).
+ */
+
+:root {
+  /* Force dark surface tokens for the HUD, ignoring prefers-color-scheme. */
+  --background: oklch(0.165 0.0015 84.59);
+  --foreground: oklch(0.985 0.0015 84.59);
+  --popover: oklch(0.195 0.0015 84.59);
+  --muted: oklch(0.268 0.0015 84.59);
+  --muted-foreground: oklch(0.709 0.0015 84.59);
+  --border: oklch(1 0 0 / 12%);
+  --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.72 0.14 150);
+  /* The brand terracotta (--brand: #c25a33 ~ oklch(0.58 0.14 40) in
+   * tokens.css), lifted for legibility on the dark glass. */
+  --attention: oklch(0.74 0.13 42);
+  --attention-bright: oklch(0.88 0.09 55);
+
+  color: var(--foreground);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+.agent-hud {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  /* Only the surface is interactive; the transparent gutter around it
+   * (shadow room) is click-through. */
+  pointer-events: none;
+}
+
+/* Shared surface recipe: near-opaque dark glass with a hairline border.
+ * Matches the dictation pill's tint family; CSS backdrop-filter can't
+ * sample other apps' pixels, so opacity does the legibility work.
+ *
+ * Shared geometry: the header and every row place their leading icon in
+ * the same 14px column at the same inset, so the header label and row
+ * titles sit on one left edge no matter which icon leads. */
+.agent-hud-surface {
+  --hud-inset-x: 12px;
+  --hud-icon-col: 14px;
+  --hud-col-gap: var(--sp-2);
+
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-4);
+  display: grid;
+  width: fit-content;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  /* Half the collapsed pill height, NOT --r-pill: a 999px radius
+   * interpolating down to 14px mid-expansion produced blob shapes. */
+  border-radius: 16px;
+  background: color-mix(in oklch, var(--popover) 92%, transparent);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px) scale(0.98);
+  /* Out (base state): a longer, calmer fade; agent-hud.ts keeps the last
+   * content rendered underneath it and delays the native hide to match.
+   * Width is in the list for the JS FLIP that animates expand/collapse. */
+  transition:
+    opacity var(--t-slow) var(--ease-out),
+    transform var(--t-slow) var(--ease-out),
+    width var(--t-med) var(--ease-out),
+    border-radius var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-visible="true"] .agent-hud-surface {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  /* In: quick. */
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    width var(--t-med) var(--ease-out),
+    border-radius var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-surface {
+  width: min(280px, calc(100vw - 2 * var(--sp-4)));
+  border-radius: var(--r-xl);
+}
+
+.agent-hud-icon,
+.agent-hud-icon svg {
+  display: block;
+}
+
+.agent-hud-icon {
+  flex: none;
+  line-height: 0;
+}
+
+/* Pill / header row ---------------------------------------------------- */
+
+.agent-hud-pill {
+  display: grid;
+  grid-template-columns: var(--hud-icon-col) 1fr auto;
+  column-gap: var(--hud-col-gap);
+  align-items: center;
+  height: 28px;
+  min-width: 88px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: height var(--t-med) var(--ease-out);
+}
+
+.agent-hud-pill[data-count-only="true"] {
+  grid-template-columns: var(--hud-icon-col) auto auto;
+  min-width: 68px;
+  padding: 0 8px;
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-pill {
+  height: 36px;
+  padding: 0 var(--hud-inset-x);
+  border-radius: 0;
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-pill[data-count-only="true"] {
+  grid-template-columns: var(--hud-icon-col) 1fr auto;
+}
+
+.agent-hud-pill-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+/* Active-agent count, shown next to "1 needs input" when sessions are
+ * still working behind the one that needs attention. */
+.agent-hud-pill-badge {
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.agent-hud-pill-badge[hidden] {
+  display: none;
+}
+
+.agent-hud-pill-label {
+  overflow: hidden;
+  padding-bottom: 1px;
+  line-height: 1.18;
+  transform: translateY(1px);
+  text-overflow: ellipsis;
+}
+
+.agent-hud-chevron {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+  transform: translateY(1px);
+  transition: transform var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-chevron {
+  transform: translateY(1px) rotate(180deg);
+}
+
+/* June mark ------------------------------------------------------------- */
+
+/* The agents mark carries the aggregate state through color alone:
+ * neutral at rest, a white shimmer while working, a terracotta shimmer
+ * when a session needs input, green/red on the way out. The glyph is a
+ * CSS mask so gradients (the shimmer) can paint through its shape. */
+.agent-hud-mark {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 14'%3E%3Cpath d='M11.5 6.5C11.7761 6.5 12 6.72386 12 7V8.5C12 8.77614 11.7761 9 11.5 9H10.4141C10.2815 9.00002 10.1543 9.05273 10.0605 9.14648L9.64648 9.56055C9.55273 9.6543 9.50002 9.78148 9.5 9.91406V11C9.5 11.2761 9.27614 11.5 9 11.5H3.41406C3.28148 11.5 3.1543 11.5527 3.06055 11.6465L2.64648 12.0605C2.55273 12.1543 2.50002 12.2815 2.5 12.4141V13.5C2.5 13.7761 2.27614 14 2 14H0.5C0.223858 14 0 13.7761 0 13.5V12C0 11.7239 0.223858 11.5 0.5 11.5H1.58594C1.71852 11.5 1.8457 11.4473 1.93945 11.3535L2.35352 10.9395C2.44727 10.8457 2.49998 10.7185 2.5 10.5859V9.5C2.5 9.22386 2.72386 9 3 9H8.58594C8.71852 8.99998 8.8457 8.94727 8.93945 8.85352L9.35352 8.43945C9.44727 8.3457 9.49998 8.21852 9.5 8.08594V7C9.5 6.72386 9.72386 6.5 10 6.5H11.5Z'/%3E%3Cpath d='M11.5 0C11.7761 0 12 0.223858 12 0.5V2C12 2.27614 11.7761 2.5 11.5 2.5H10.4141C10.2815 2.50002 10.1543 2.55273 10.0605 2.64648L9.64648 3.06055C9.55273 3.1543 9.50002 3.28148 9.5 3.41406V4.5C9.5 4.77614 9.27614 5 9 5H3.41406C3.28148 5.00002 3.1543 5.05273 3.06055 5.14648L2.64648 5.56055C2.55273 5.6543 2.50002 5.78148 2.5 5.91406V7C2.5 7.27614 2.27614 7.5 2 7.5H0.5C0.223858 7.5 0 7.27614 0 7V5.5C0 5.22386 0.223858 5 0.5 5H1.58594C1.71852 4.99998 1.8457 4.94727 1.93945 4.85352L2.35352 4.43945C2.44727 4.3457 2.49998 4.21852 2.5 4.08594V3C2.5 2.72386 2.72386 2.5 3 2.5H8.58594C8.71852 2.49998 8.8457 2.44727 8.93945 2.35352L9.35352 1.93945C9.44727 1.8457 9.49998 1.71852 9.5 1.58594V0.5C9.5 0.223858 9.72386 0 10 0H11.5Z'/%3E%3C/svg%3E");
+  --mark-base: var(--muted-foreground);
+  --mark-shine: var(--foreground);
+
+  position: relative;
+  width: var(--hud-icon-col);
+  height: 14px;
+  overflow: hidden;
+  mask: var(--mark) center / 10px 12px no-repeat;
+  -webkit-mask: var(--mark) center / 10px 12px no-repeat;
+  background-color: var(--mark-base);
+  transform: translateY(1px);
+  transition: background-color var(--t-med) var(--ease-out);
+}
+
+.agent-hud-mark[data-status="received"],
+.agent-hud-mark[data-status="starting"],
+.agent-hud-mark[data-status="running"] {
+  --mark-base: color-mix(in oklch, var(--foreground) 78%, transparent);
+  --mark-shine: var(--foreground);
+}
+
+.agent-hud-mark[data-status="waitingForUser"] {
+  --mark-base: var(--attention);
+  --mark-shine: var(--attention-bright);
+}
+
+.agent-hud-mark[data-status="received"]::before,
+.agent-hud-mark[data-status="starting"]::before,
+.agent-hud-mark[data-status="running"]::before,
+.agent-hud-mark[data-status="waitingForUser"]::before {
+  position: absolute;
+  inset: -1px auto -1px -65%;
+  width: 55%;
+  content: "";
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in oklch, var(--mark-shine) 20%, transparent) 30%,
+    var(--mark-shine) 50%,
+    color-mix(in oklch, var(--mark-shine) 20%, transparent) 70%,
+    transparent 100%
+  );
+  filter: blur(0.2px);
+  transform: translate3d(0, 0, 0) skewX(-16deg);
+  will-change: transform;
+  animation: agent-hud-shimmer 1150ms linear infinite;
+}
+
+.agent-hud-mark[data-status="completed"] {
+  --mark-base: var(--success);
+}
+
+.agent-hud-mark[data-status="failed"],
+.agent-hud-mark[data-status="cancelled"] {
+  --mark-base: var(--destructive);
+}
+
+/* Status indicator ------------------------------------------------------ */
+
+/* Outlined glyphs straight on the surface — no filled chip behind them.
+ * Color does the talking, matching the mark above. */
+.agent-hud-status {
+  display: grid;
+  place-items: center;
+  width: var(--hud-icon-col);
+  height: 14px;
+}
+
+.agent-hud-status[data-status="received"],
+.agent-hud-status[data-status="starting"],
+.agent-hud-status[data-status="running"] {
+  color: var(--foreground);
+}
+
+.agent-hud-status[data-status="waitingForUser"] {
+  color: var(--attention);
+  animation: agent-hud-breathe 1600ms var(--ease-in-out) infinite;
+}
+
+.agent-hud-status[data-status="completed"] {
+  color: var(--success);
+}
+
+.agent-hud-status[data-status="failed"],
+.agent-hud-status[data-status="cancelled"] {
+  color: var(--destructive);
+}
+
+/* Session rows ----------------------------------------------------------- */
+
+/* Expansion is a pure CSS reveal (0fr -> 1fr); the rows stay in the DOM
+ * while collapsed so the open and close both animate. agent-hud.ts delays
+ * the native window shrink so the close isn't clipped mid-flight. */
+.agent-hud-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  justify-self: stretch;
+  overflow: hidden;
+  transition: grid-template-rows var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-reveal {
+  width: auto;
+  grid-template-rows: 1fr;
+  max-width: none;
+}
+
+.agent-hud-stack {
+  display: block;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 var(--sp-1);
+  overflow: hidden;
+  list-style: none;
+  /* Hidden rows must not be clickable or tabbable; the delay keeps them
+   * visible for the collapse animation. */
+  visibility: hidden;
+  transition: visibility 0s var(--t-med);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-stack {
+  visibility: visible;
+  transition: visibility 0s;
+}
+
+.agent-hud-row {
+  position: relative;
+  margin: 0 var(--sp-1);
+  border-radius: var(--r-lg);
+  opacity: 0;
+  transform: translateY(-3px);
+  transition:
+    opacity var(--t-med) var(--ease-out),
+    transform var(--t-med) var(--ease-out);
+}
+
+.agent-hud[data-expanded="true"] .agent-hud-row {
+  opacity: 1;
+  transform: none;
+  /* Stagger the rows in on expand; collapsing fades them together. */
+  transition-delay: calc(var(--row-index, 0) * 30ms);
+}
+
+.agent-hud-row-body {
+  display: grid;
+  grid-template-columns: var(--hud-icon-col) 1fr;
+  column-gap: var(--hud-col-gap);
+  /* Top-align the icon with the title line, but center the content block
+   * in the fixed-height row — otherwise a single-line row leaves a
+   * phantom second line of dead space below itself. */
+  align-items: start;
+  align-content: center;
+  width: 100%;
+  min-height: 46px;
+  padding: var(--sp-2) calc(var(--hud-inset-x) - var(--sp-1));
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-hud-row-body:hover,
+.agent-hud-row-body:focus-visible {
+  background: color-mix(in oklch, var(--foreground) 7%, transparent);
+}
+
+/* Rides the title's first line (13px x 1.25 line height) rather than
+ * centering across both lines. */
+.agent-hud-row-body .agent-hud-status {
+  margin-top: 1px;
+}
+
+.agent-hud-row-text {
+  display: grid;
+  min-width: 0;
+}
+
+.agent-hud-row-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-hud-row-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Reply ------------------------------------------------------------------ */
+
+.agent-hud-reply {
+  position: absolute;
+  top: 11px;
+  right: var(--sp-3);
+  display: grid;
+  place-items: center;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-hud-row:hover .agent-hud-reply,
+.agent-hud-row:focus-within .agent-hud-reply {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.agent-hud-row:has(.agent-hud-reply-form) .agent-hud-reply {
+  display: none;
+}
+
+.agent-hud-reply-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-2);
+  animation: agent-hud-reply-in var(--t-med) var(--ease-out);
+}
+
+/* One-shot entrance: the cached form node re-appends on every stack
+ * rebuild while a draft is open, and must not replay it (agent-hud.ts
+ * sets data-settled after the first run). */
+.agent-hud-reply-form[data-settled] {
+  animation: none;
+}
+
+.agent-hud-reply-input {
+  /* The body disables selection for the overlay; the input needs it back. */
+  user-select: text;
+  min-width: 0;
+  height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--background) 65%, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+  outline: none;
+}
+
+.agent-hud-reply-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.agent-hud-reply-input:focus-visible {
+  border-color: var(--ring-focus);
+}
+
+.agent-hud-reply-send {
+  display: grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--foreground);
+  color: var(--background);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+/* Context menu ------------------------------------------------------------ */
+
+.agent-hud-menu {
+  position: absolute;
+  top: 44px;
+  right: var(--sp-4);
+  min-width: 148px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--popover) 96%, transparent);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+}
+
+.agent-hud-menu[hidden] {
+  display: none;
+}
+
+.agent-hud-menu button {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-hud-menu button:hover,
+.agent-hud-menu button:focus-visible {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  outline: none;
+}
+
+.agent-hud-pill:focus-visible,
+.agent-hud-row-body:focus-visible,
+.agent-hud-reply:focus-visible,
+.agent-hud-reply-send:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+@keyframes agent-hud-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* A transform-only highlight pass across the masked mark. */
+@keyframes agent-hud-shimmer {
+  to {
+    transform: translate3d(360%, 0, 0) skewX(-16deg);
+  }
+}
+
+@keyframes agent-hud-reply-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-hud-surface,
+  .agent-hud-reveal,
+  .agent-hud-row,
+  .agent-hud-stack {
+    transition: none;
+  }
+
+  .agent-hud-mark,
+  .agent-hud-status,
+  .agent-hud-reply-form {
+    animation: none;
+  }
+}

@@ -1,44 +1,6 @@
 @import "./tokens.css";
-
-@font-face {
-  font-family: "ABC Diatype";
-  src: url("/ABCDiatype-Regular.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "ABC Diatype";
-  src: url("/ABCDiatype-Medium.woff2") format("woff2");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Martina Plantijn";
-  src: url("/martina-plantijn-light.woff2") format("woff2");
-  font-weight: 300 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Berkeley Mono";
-  src: url("/BerkeleyMono-Regular.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Berkeley Mono";
-  src: url("/BerkeleyMono-Oblique.woff2") format("woff2");
-  font-weight: 400;
-  font-style: italic;
-  font-display: swap;
-}
+@import "./fonts.css";
+@import "./dot-spinner.css";
 
 :root {
   color: var(--foreground);
@@ -691,13 +653,17 @@ input:focus-visible,
   display: inline-flex;
 }
 
-a.agent-safety-badge {
+button.agent-safety-badge {
+  border: none;
+  /* font-family only: the font shorthand would out-specificity the base
+   * class's font-size and grow the badge text. */
+  font-family: inherit;
   text-decoration: none;
   cursor: pointer;
   transition: background-color var(--t-fast) var(--ease-out);
 }
 
-a.agent-safety-badge:hover {
+button.agent-safety-badge:hover {
   background: color-mix(in oklch, var(--brand) 24%, transparent);
 }
 
@@ -1888,7 +1854,7 @@ a.agent-safety-badge:hover {
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling pangolin (fixed-size
+/* Running rows trade the status word for the rolling dot spinner (fixed-size
  * mark; wrappers only set color). */
 .agent-tool-spinner {
   display: inline-flex;
@@ -2656,7 +2622,7 @@ a.agent-safety-badge:hover {
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
- * composer) with the rolling pangolin tying it to the working state. Same
+ * composer) with the rolling dot spinner tying it to the working state. Same
  * surface recipe as the recording-consent note and the "Generating notes…"
  * pill so the app's status messages read as one family. */
 .agent-composer-notice {
@@ -2677,7 +2643,7 @@ a.agent-safety-badge:hover {
    * the recording-consent note. */
 }
 
-.agent-composer-notice .pangolin-spinner {
+.agent-composer-notice .dot-spinner {
   flex-shrink: 0;
 }
 
@@ -2993,7 +2959,7 @@ a.agent-safety-badge:hover {
 }
 
 /* "Responding" affordance pinned to the bottom of the timeline while the agent
- * is working — the pangolin next to a shimmering label. */
+ * is working — the dot spinner next to a shimmering label. */
 .agent-thinking {
   display: flex;
   align-items: center;
@@ -4220,11 +4186,7 @@ a.agent-safety-badge:hover {
 }
 
 .agent-sidebar-row .note-row-main {
-  grid-template-rows: auto;
-}
-
-.agent-sidebar-row .note-row-icon {
-  grid-row: 1;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Titles ellipsize short of the trailing slot so they never collide with the
@@ -4234,25 +4196,9 @@ a.agent-safety-badge:hover {
   padding-right: 36px;
 }
 
-/* Running agent sessions show the rolling pangolin; idle rows show nothing.
- * The glyph is decorative (aria-hidden inside PangolinSpinner) — the wrapping
- * status span carries "Working" for assistive tech. */
-.agent-sidebar-spinner {
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
-}
-
-/* The status wrapper is inline by default, so its line box inherits the row's
- * line-height and the dot-grid lands off-center in the icon cell. Make it a
- * centering grid so the pangolin sits dead-center like the idle icon. */
-.agent-sidebar-row .note-row-icon > [role="status"] {
-  display: inline-grid;
-  place-items: center;
-  line-height: 0;
-}
-
-/* Trailing meta on agent rows: the relative timestamp, or the terracotta
- * needs-you dot when the session is waiting. It sits where the delete button
- * lands, so the hover swap reads as the trash can covering the date. */
+/* Trailing meta on agent rows: the relative timestamp or a compact status dot.
+ * It sits where the delete button lands, so the hover swap reads as the trash
+ * can covering the date/status. */
 .agent-session-meta {
   position: absolute;
   top: 50%;
@@ -4269,6 +4215,10 @@ a.agent-safety-badge:hover {
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.agent-session-status {
+  line-height: 0;
 }
 
 .agent-sidebar-row:hover .agent-session-meta,
@@ -4303,13 +4253,11 @@ a.agent-safety-badge:hover {
   border-radius: var(--r-pill);
 }
 
-.agent-sidebar-working[data-status="waitingForUser"] {
-  background: var(--warm-strong);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warm-strong) 18%, transparent);
+.agent-sidebar-spinner {
+  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
-/* Unread variant: a finished turn the user hasn't looked at yet. Plain dot —
- * the halo stays reserved for "needs you". */
+.agent-sidebar-working[data-status="waitingForUser"],
 .agent-sidebar-working[data-status="unread"] {
   background: var(--warm-strong);
 }
@@ -4317,7 +4265,7 @@ a.agent-safety-badge:hover {
 /* A session awaiting your input reads a touch heavier so it stands out in the
  * list. */
 .agent-sidebar-row[data-status="waitingForUser"] .note-row-title-text {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .sidebar[data-collapsed="true"] .note-row-menu,
@@ -5157,7 +5105,7 @@ a.agent-safety-badge:hover {
   -webkit-user-select: none;
 }
 
-/* The rolling pangolin (drawn, colored via currentColor) — the same working
+/* The rolling dot spinner (drawn, colored via currentColor) — the same working
  * indicator as the agent chat, sidebar, and composer notice. */
 .note-generating-spinner {
   flex: none;
@@ -6717,7 +6665,7 @@ a.agent-safety-badge:hover {
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
-/* App-wide loading indicator: the rolling pangolin braille glyph. Size comes
+/* App-wide loading indicator: the rolling dot spinner. Size comes
  * from font-size (set inline by <Spinner size>); color inherits. */
 .spinner {
   display: inline-flex;
@@ -6727,70 +6675,14 @@ a.agent-safety-badge:hover {
   line-height: 1;
 }
 
-/* The pangolin spinner: a perfectly square 2×2 grid of tiny real circles with
- * a dim spot rolling clockwise — drawn, not typeset, so the dots are crisp
- * (à la Conductor's timer dots). The mark is one fixed size everywhere by
- * design — wrappers set only color (currentColor), there is no size knob.
- * Dot and gap MUST stay integer px: fractional sizes put the second column on
- * a different subpixel phase and its circles rasterize ovular. */
-.pangolin-spinner {
-  display: inline-grid;
-  grid-template-columns: repeat(2, auto);
-  gap: 2px;
-  line-height: 1;
-}
-
-.pangolin-spinner > span {
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: pangolin-roll 800ms linear infinite;
-}
-
-/* Stagger the dim spot clockwise: TL → TR → BR → BL (grid DOM order is
- * TL TR / BL BR, hence 3 and 4 swapped). Negative delays so the loop is
- * already rolling on first paint. */
-.pangolin-spinner > span:nth-child(1) {
-  animation-delay: -800ms;
-}
-
-.pangolin-spinner > span:nth-child(2) {
-  animation-delay: -600ms;
-}
-
-.pangolin-spinner > span:nth-child(4) {
-  animation-delay: -400ms;
-}
-
-.pangolin-spinner > span:nth-child(3) {
-  animation-delay: -200ms;
-}
-
-/* Each dot dips once per revolution; the 25% phase offsets above turn the
- * dips into one gap travelling around the square. */
-@keyframes pangolin-roll {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-
-  35%,
-  65% {
-    opacity: 1;
-  }
-}
+/* The dot spinner itself lives in dot-spinner.css (shared with the agent
+ * HUD page entry). */
 
 @media (prefers-reduced-motion: reduce) {
   .sign-in-prompt-spinner,
   .spinner {
     animation: none;
     opacity: 0.6;
-  }
-
-  /* The pangolin rests as a steady square of dots. */
-  .pangolin-spinner > span {
-    animation: none;
   }
 
   .sign-in-prompt-spinner {
@@ -7187,6 +7079,38 @@ a.agent-safety-badge:hover {
   margin: calc(-1 * var(--sp-1));
 }
 
+/* Suggested / All segmented control between search and list — same recipe
+ * as .agent-panel-tabs. */
+.model-picker-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: fit-content;
+  min-height: var(--control-md);
+  margin-top: var(--sp-3);
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.model-picker-tabs [role="tab"] {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.model-picker-tabs [role="tab"][aria-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+}
+
 .model-picker-option {
   /* Check spans both rows so it sits vertically centered against the
    * logo + name + meta stack. Transparent border reserves space so the
@@ -7194,8 +7118,9 @@ a.agent-safety-badge:hover {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 22px;
   grid-template-areas:
-    "logo name  check"
-    "logo meta  check";
+    "logo name   check"
+    "logo meta   check"
+    "logo reason check";
   row-gap: 2px;
   column-gap: var(--sp-3);
   width: 100%;
@@ -7213,6 +7138,15 @@ a.agent-safety-badge:hover {
 
 .model-picker-option:hover {
   background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+/* "Why we recommend it" line on Suggested rows. */
+.model-picker-reason {
+  grid-area: reason;
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
 /* Selected gets the system surface-subtle wash. Hover stacks darker so
@@ -8122,6 +8056,20 @@ a.agent-safety-badge:hover {
   color: var(--muted-foreground);
 }
 
+.meetings-bulk-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-height: var(--control-lg);
+}
+
+.meetings-selected-count {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
 /* Sort dropdown trigger ------------------------------------------- */
 
 .folders-sort {
@@ -8753,6 +8701,46 @@ a.agent-safety-badge:hover {
   min-width: 0;
 }
 
+.folder-note-checkbox {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.folder-note-checkbox input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.folder-note-select-box {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--primary);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.folder-note-checkbox:has(input:checked) .folder-note-select-box {
+  border-color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, var(--card));
+}
+
+.folder-note-checkbox:focus-within .folder-note-select-box {
+  outline: 2px solid color-mix(in oklch, var(--ring) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .folder-note-icon {
   display: inline-grid;
   place-items: center;
@@ -8831,7 +8819,7 @@ a.agent-safety-badge:hover {
 }
 
 .all-notes-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
 }
 
 .dictation-history-groups {
@@ -10388,6 +10376,18 @@ a.agent-safety-badge:hover {
 
 .onboarding-footnote a {
   color: var(--foreground);
+}
+
+/* Footnote links that act through Rust (the webview drops target="_blank"
+ * anchors) render as buttons but must read as links. */
+.onboarding-footnote-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--foreground);
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* Sign-in / trial "finish it in the browser" wait state: spinner + label,

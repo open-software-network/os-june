@@ -1,3 +1,4 @@
+pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
 pub mod commands;
@@ -5,7 +6,6 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
-pub mod mascot;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
@@ -65,6 +65,7 @@ pub fn run() {
             commands::get_note,
             commands::update_note,
             commands::delete_note,
+            commands::delete_notes,
             commands::create_folder,
             commands::list_folders,
             commands::delete_folder,
@@ -85,6 +86,7 @@ pub fn run() {
             commands::save_agent_assistant_message,
             commands::save_agent_hermes_session,
             commands::suggest_agent_session_title,
+            commands::submit_issue_report,
             commands::explain_agent_approval,
             commands::cancel_agent_task,
             commands::retry_agent_task,
@@ -111,7 +113,7 @@ pub fn run() {
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
-            commands::scribe_verify_url,
+            commands::scribe_open_verify_page,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -134,10 +136,11 @@ pub fn run() {
             dictation::dictation_hud_shake,
             dictation::dictation_hotkey_status,
             dictation::latest_dictation_event,
-            mascot::mascot_show,
-            mascot::mascot_hide,
-            mascot::mascot_set_layout,
-            mascot::mascot_open_agent,
+            agent_hud::agent_hud_show,
+            agent_hud::agent_hud_hide,
+            agent_hud::agent_hud_set_layout,
+            agent_hud::agent_hud_focus_reply,
+            agent_hud::agent_hud_open_agent,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,
@@ -149,6 +152,7 @@ pub fn run() {
             os_accounts::os_accounts_logout,
             os_accounts::os_accounts_top_up,
             os_accounts::os_accounts_open_portal,
+            os_accounts::os_accounts_prepare_trial_checkout,
             os_accounts::os_accounts_start_trial_checkout,
             focus_main_window
         ])
@@ -159,7 +163,7 @@ pub fn run() {
             menu_bar::setup(app)?;
             providers::setup(app);
             dictation::setup(app);
-            mascot::setup(app);
+            agent_hud::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);

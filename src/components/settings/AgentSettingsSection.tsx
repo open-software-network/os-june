@@ -9,8 +9,7 @@ import {
   hermesBridgeMessagingPlatforms,
   hermesBridgeSkills,
   hermesBridgeToolsets,
-  mascotHide,
-  mascotShow,
+  agentHudHide,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
@@ -20,11 +19,11 @@ import {
   type HermesFilesystemSnapshot,
 } from "../../lib/tauri";
 import {
-  getMascotEnabled,
-  MASCOT_VISIBILITY_CHANGED_EVENT,
-  setMascotEnabled,
-  type MascotVisibilityChangedDetail,
-} from "../../lib/mascot-settings";
+  AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+  getAgentHudEnabled,
+  setAgentHudEnabled,
+  type AgentHudVisibilityChangedDetail,
+} from "../../lib/agent-hud-settings";
 import { Switch } from "../ui/Switch";
 
 type AgentSettingsPanel = "skills" | "messaging" | "files";
@@ -44,8 +43,8 @@ export function AgentSettingsSection() {
     useState<HermesFilesystemSnapshot | null>(null);
   const [selectedPlatformId, setSelectedPlatformId] = useState<string>();
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
-  const [mascotEnabled, setMascotEnabledState] = useState(() =>
-    getMascotEnabled(),
+  const [agentHudEnabled, setAgentHudEnabledState] = useState(() =>
+    getAgentHudEnabled(),
   );
 
   useEffect(() => {
@@ -62,31 +61,29 @@ export function AgentSettingsSection() {
 
   useEffect(() => {
     function handleVisibilityChanged(event: Event) {
-      const detail = (event as CustomEvent<MascotVisibilityChangedDetail>)
+      const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>)
         .detail;
-      if (detail) setMascotEnabledState(detail.enabled);
+      if (detail) setAgentHudEnabledState(detail.enabled);
     }
 
     window.addEventListener(
-      MASCOT_VISIBILITY_CHANGED_EVENT,
+      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
       handleVisibilityChanged,
     );
     return () => {
       window.removeEventListener(
-        MASCOT_VISIBILITY_CHANGED_EVENT,
+        AGENT_HUD_VISIBILITY_CHANGED_EVENT,
         handleVisibilityChanged,
       );
     };
   }, []);
 
-  async function handleMascotEnabledChange(enabled: boolean) {
-    setMascotEnabledState(enabled);
-    setMascotEnabled(enabled);
+  async function handleAgentHudEnabledChange(enabled: boolean) {
+    setAgentHudEnabledState(enabled);
+    setAgentHudEnabled(enabled);
     try {
-      if (enabled) {
-        await mascotShow();
-      } else {
-        await mascotHide();
+      if (!enabled) {
+        await agentHudHide();
       }
       setError(null);
     } catch (err) {
@@ -243,19 +240,19 @@ export function AgentSettingsSection() {
         <div className="settings-rows">
           <div className="settings-row">
             <div className="settings-row-info">
-              <h3 className="settings-row-title">Desktop mascot</h3>
+              <h3 className="settings-row-title">Agent HUD</h3>
               <p className="settings-row-description">
-                Keep June visible at the bottom right with live agent session
-                status.
+                Show a small pill at the top right of your screen with live
+                agent session status.
               </p>
             </div>
             <div className="settings-row-control">
               <Switch
-                checked={mascotEnabled}
+                checked={agentHudEnabled}
                 onCheckedChange={(enabled) =>
-                  void handleMascotEnabledChange(enabled)
+                  void handleAgentHudEnabledChange(enabled)
                 }
-                aria-label="Show desktop mascot"
+                aria-label="Show agent HUD"
               />
             </div>
           </div>

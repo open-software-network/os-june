@@ -40,8 +40,8 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsTopUp: vi.fn(),
-  mascotShow: vi.fn(),
-  mascotHide: vi.fn(),
+  agentHudShow: vi.fn(),
+  agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
 }));
@@ -90,8 +90,8 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsTopUp: mocks.osAccountsTopUp,
-  mascotShow: mocks.mascotShow,
-  mascotHide: mocks.mascotHide,
+  agentHudShow: mocks.agentHudShow,
+  agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
@@ -224,7 +224,9 @@ describe("App shortcuts", () => {
     render(<App />);
 
     // The app launches on the agent view; the notes list is one hop away.
-    await user.click(await screen.findByRole("button", { name: "Meetings" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Meeting notes" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: /^First note/ }),
     );
@@ -257,7 +259,7 @@ describe("App shortcuts", () => {
       await screen.findByRole("heading", { name: "Welcome to June" }),
     ).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "New meeting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
 
     await user.click(
       screen.getByRole("button", { name: "Continue with OpenSoftware" }),

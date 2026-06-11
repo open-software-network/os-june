@@ -47,6 +47,7 @@ import {
   createNote,
   deleteFolder,
   deleteNote,
+  deleteNotes,
   dictationHelperCommand,
   finishRecording,
   getRecordingStatus,
@@ -1233,6 +1234,24 @@ export function App() {
     }, 0);
   }
 
+  // "Report an issue": the fresh-chat handshake in issue-report mode. The
+  // workspace prefills the bug report template instead of auto-submitting,
+  // and files the submitted report (plus June's diagnosis) to the June team.
+  function handleReportIssue() {
+    pendingSessionProjectRef.current = null;
+    setAgentOriginFolderId(undefined);
+    markAgentNewSessionPending(undefined, { kind: "issue-report" });
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+          detail: { kind: "issue-report" },
+        }),
+      );
+    }, 0);
+  }
+
   // "New session" from inside a project: same fresh-chat handshake, but the
   // session gets filed into the project once Hermes hands back its id.
   function handleNewAgentSessionInProject(folderId: string) {
@@ -1296,11 +1315,34 @@ export function App() {
 
   async function handleDeleteNote(noteId: string) {
     if (state.recordingStatus) {
-      setError("Stop the current recording before deleting a meeting.");
+      setError("Stop the current recording before deleting a note.");
       return;
     }
     try {
       await deleteNote(noteId);
+      const response = await listNotes();
+      dispatch({ type: "notesLoaded", notes: response.items });
+      const nextNoteId = response.items[0]?.id;
+      if (nextNoteId) {
+        const note = await getNote(nextNoteId);
+        dispatch({ type: "noteLoaded", note });
+      } else {
+        setActiveView("settings");
+        setOriginFolderId(undefined);
+        setFolderReturnTarget(undefined);
+      }
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleDeleteNotes(noteIds: string[]) {
+    if (state.recordingStatus) {
+      setError("Stop the current recording before deleting meetings.");
+      return;
+    }
+    try {
+      await deleteNotes(noteIds);
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const nextNoteId = response.items[0]?.id;
@@ -1615,6 +1657,7 @@ export function App() {
         }}
         onExitSettings={() => setActiveView(settingsReturnView)}
         onSignOut={() => void handleSignOut()}
+        onReportIssue={handleReportIssue}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
         onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
@@ -1697,6 +1740,7 @@ export function App() {
                 onEnableSystemAudio={handleEnableSystemAudio}
                 activeTab={settingsTab}
                 onTabChange={setSettingsTab}
+                onReportIssue={handleReportIssue}
               />
             ) : activeView === "dictation" ? (
               <DictationHistoryView
@@ -1801,6 +1845,7 @@ export function App() {
                 onCreateNote={() => void handleCreateNote(null)}
                 onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+                onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
               />
             ) : activeView === "folders" ? (
               <FoldersWorkspace
@@ -1892,25 +1937,29 @@ export function App() {
                           setOriginFolderId(undefined);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New meeting" },
+                      {
+                        label: selectedNote.title.trim() || "New note",
+                      },
                     ]}
                   />
                 ) : originAllNotes ? (
                   <BreadcrumbBar
-                    backLabel="Back to meetings"
+                    backLabel="Back to meeting notes"
                     onBack={() => {
                       setActiveView("all-notes");
                       setOriginAllNotes(false);
                     }}
                     items={[
                       {
-                        label: "Meetings",
+                        label: "Meeting notes",
                         onClick: () => {
                           setActiveView("all-notes");
                           setOriginAllNotes(false);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New meeting" },
+                      {
+                        label: selectedNote.title.trim() || "New note",
+                      },
                     ]}
                   />
                 ) : null}
@@ -1988,7 +2037,7 @@ export function App() {
                       dispatch({ type: "folderSelected", folderId });
                       setFolderReturnTarget({
                         noteId: selectedNote.id,
-                        label: selectedNote.title.trim() || "New meeting",
+                        label: selectedNote.title.trim() || "New note",
                       });
                       setOriginFolderId(undefined);
                     }}
