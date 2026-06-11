@@ -2568,12 +2568,17 @@ export function AgentWorkspace({
       return next;
     });
     scrubHermesSessionState(sessionId);
+    // Every deletion funnels through here (the in-workspace delete and the
+    // sidebar/sessions-list AGENT_DELETE_SESSION_EVENT), so this is the one
+    // place that drops the session's Unrestricted record — a stale entry
+    // would hand full write access to any future session that recycled the
+    // id.
+    forgetSessionMode(sessionId);
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
     try {
       await deleteHermesSession(sessionId);
-      forgetSessionMode(sessionId);
       // Clearing the selection falls the workspace back to empty.
       removeHermesSessionLocally(sessionId, false);
     } catch (err) {

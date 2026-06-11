@@ -576,6 +576,13 @@ describe("AgentWorkspace", () => {
   });
 
   it("forgets the persisted session when it is deleted", async () => {
+    // The Unrestricted record must die with the session too — deletions
+    // arriving via the sidebar event included — or a future session that
+    // recycled the id would inherit full write access.
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
@@ -598,6 +605,9 @@ describe("AgentWorkspace", () => {
         window.localStorage.getItem("scribe:agent:last-open-session"),
       ).toBeNull(),
     );
+    expect(
+      window.localStorage.getItem("june.agent.unrestrictedSessions"),
+    ).toBeNull();
   });
 
   it("keeps the blank composer after a New Session event during refresh", async () => {
