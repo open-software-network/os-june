@@ -142,6 +142,12 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { messageFromError } from "../../lib/errors";
+import { hermesConnectionForMode } from "../../lib/hermes-connection";
+import {
+  forgetSessionMode,
+  rememberSessionMode,
+  sessionUnrestricted,
+} from "../../lib/agent-session-modes";
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
@@ -857,12 +863,17 @@ export function AgentWorkspace({
     AgentChatGallerySection[] | null
   >(null);
   const [galleryErrors, setGalleryErrors] = useState(false);
-  const gatewayRef = useRef<HermesGatewayClient | null>(null);
+  // One gateway client per write-access mode: the sandboxed and unrestricted
+  // runtime processes run side by side, each with its own socket. Sessions
+  // route to the gateway matching their recorded mode.
+  const gatewaysRef = useRef<Map<boolean, HermesGatewayClient>>(new Map());
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
   // closure (see recoverFromGatewayClose).
-  const gatewayCloseHandlerRef = useRef(() => {});
-  const gatewayRecoveringRef = useRef(false);
+  const gatewayCloseHandlerRef = useRef((_fullMode: boolean) => {});
+  // Per-mode: both gateways can drop together (network reconnect), and one
+  // mode's in-flight recovery must not swallow the other's only onClose.
+  const gatewayRecoveringRef = useRef<Set<boolean>>(new Set());
   // One live gateway subscription per Hermes session. A follow-up send while
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
@@ -1343,8 +1354,8 @@ export function AgentWorkspace({
       startNewTask,
       removeHermesSessionLocally,
     };
-    gatewayCloseHandlerRef.current = () => {
-      void recoverFromGatewayClose();
+    gatewayCloseHandlerRef.current = (fullMode: boolean) => {
+      void recoverFromGatewayClose(fullMode);
     };
   });
 
@@ -1496,8 +1507,8 @@ export function AgentWorkspace({
     })();
     return () => {
       cancelled = true;
-      // Keep any mid-run session alive for the next mount before the gateway
-      // (and with it the live event stream) goes away.
+      // Keep any mid-run session alive for the next mount before the
+      // gateways (and with them the live event streams) go away.
       sessionContinuity = captureSessionContinuity({
         sessionItems: hermesSessionItemsRef.current,
         pendingMessages: pendingHermesMessagesRef.current,
@@ -1507,7 +1518,9 @@ export function AgentWorkspace({
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
       });
-      gatewayRef.current?.close();
+      for (const gateway of gatewaysRef.current.values()) {
+        gateway.close();
+      }
     };
   }, []);
 
@@ -1870,11 +1883,15 @@ export function AgentWorkspace({
     const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
-    // Only a session being created applies the unrestricted opt-in;
-    // follow-ups on existing sessions never change the runtime's mode under
-    // them.
+    // The Unrestricted opt-in is made per session: a new session applies the
+    // picker draft, and a follow-up routes to the runtime process matching
+    // the mode its session was created with. Without this, one Unrestricted
+    // session would leave the runtime unsandboxed under every other
+    // session's follow-ups.
     const gateway = await ensureHermesGateway(
-      targetSessionId ? undefined : fullModeDraftRef.current,
+      targetSessionId
+        ? sessionUnrestricted(targetSessionId)
+        : fullModeDraftRef.current,
     );
     const sessionTitle = titlePromise ? await titlePromise : undefined;
     const created = targetSessionId
@@ -1886,6 +1903,9 @@ export function AgentWorkspace({
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    if (!targetSessionId) {
+      rememberSessionMode(storedSessionId, fullModeDraftRef.current);
+    }
     const sessionDisplayTitle =
       explicitSession?.title?.trim() ||
       explicitSession?.preview?.trim() ||
@@ -2064,31 +2084,29 @@ export function AgentWorkspace({
     }
   }
 
-  // `fullMode` is an explicit per-new-session choice: when the running
-  // runtime's mode differs, the backend restarts it (the sandbox is applied at
-  // spawn and can't change on a live process). Callers acting on an existing
-  // session pass undefined and reuse whatever runtime is up.
-  async function ensureHermesGateway(fullMode?: boolean) {
-    let current = bridge.running ? bridge : await startBridge(fullMode);
-    if (
-      fullMode !== undefined &&
-      current.connection &&
-      Boolean(current.connection.fullMode) !== fullMode
-    ) {
-      // Close the gateway socket before the restart kills the old process, so
-      // the drop reads as intentional and doesn't trigger close-recovery.
-      gatewayRef.current?.close();
-      current = await startBridge(fullMode);
+  // Returns the gateway for the given write-access mode, starting that
+  // mode's runtime process if it isn't up. The two modes run side by side
+  // (the sandbox is applied at spawn and can't change on a live process, so
+  // per-session modes mean a process per mode) — ensuring one never touches
+  // the other's process or in-flight work.
+  async function ensureHermesGateway(fullMode = false) {
+    let connection = hermesConnectionForMode(
+      bridge.running ? bridge : undefined,
+      fullMode,
+    );
+    if (!connection) {
+      const next = await startBridge(fullMode);
+      connection = hermesConnectionForMode(next, fullMode);
     }
-    const wsUrl = current.connection?.wsUrl;
+    const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
-    let gateway = gatewayRef.current;
+    let gateway = gatewaysRef.current.get(fullMode);
     if (!gateway) {
       gateway = new HermesGatewayClient();
-      gatewayRef.current = gateway;
+      gatewaysRef.current.set(fullMode, gateway);
       // Fires only on unexpected drops — the unmount close() detaches the
       // socket first, and a superseded socket never notifies.
-      gateway.onClose(() => gatewayCloseHandlerRef.current());
+      gateway.onClose(() => gatewayCloseHandlerRef.current(fullMode));
     }
     await gateway.connect(wsUrl);
     return gateway;
@@ -2111,17 +2129,19 @@ export function AgentWorkspace({
   // session would otherwise stay "working" (and broadcast "June is working.")
   // forever. Try to reconnect and resubscribe the active runtime sessions;
   // either way, refresh them immediately so the working-gated poll reconciles
-  // their true state from persisted messages.
-  async function recoverFromGatewayClose() {
-    if (gatewayRecoveringRef.current) return;
-    const activeSessionIds = new Set([
-      ...workingSessionIdsRef.current,
-      ...waitingSessionIdsRef.current,
-    ]);
+  // their true state from persisted messages. Only the dropped mode's
+  // gateway is rebuilt — sessions of that mode are the ones it served.
+  async function recoverFromGatewayClose(fullMode: boolean) {
+    if (gatewayRecoveringRef.current.has(fullMode)) return;
+    const activeSessionIds = new Set(
+      [...workingSessionIdsRef.current, ...waitingSessionIdsRef.current].filter(
+        (sessionId) => sessionUnrestricted(sessionId) === fullMode,
+      ),
+    );
     if (!activeSessionIds.size) return;
-    gatewayRecoveringRef.current = true;
+    gatewayRecoveringRef.current.add(fullMode);
     try {
-      const gateway = await ensureHermesGateway();
+      const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
         Array.from(activeSessionIds).map(async (sessionId) => {
           try {
@@ -2144,7 +2164,7 @@ export function AgentWorkspace({
     } catch {
       // Reconnect failed — fall back to the persisted-message poll.
     } finally {
-      gatewayRecoveringRef.current = false;
+      gatewayRecoveringRef.current.delete(fullMode);
     }
     for (const sessionId of activeSessionIds) {
       void refreshHermesSession(sessionId);
@@ -2183,21 +2203,36 @@ export function AgentWorkspace({
       if (!working.includes(sessionId)) misses.delete(sessionId);
     }
     if (working.length === 0) return;
-    let rows: Array<{ id?: string; session_key?: string; status?: string }>;
-    try {
-      const gateway = await ensureHermesGateway();
-      const response = await gateway.request<{
-        sessions?: Array<{
-          id?: string;
-          session_key?: string;
-          status?: string;
-        }>;
-      }>("session.active_list", {});
-      rows = Array.isArray(response?.sessions) ? response.sessions : [];
-    } catch {
-      // Can't reach the runtime — keep the current state rather than guess.
-      return;
+    // Working sessions may span both runtime processes; ask each mode that
+    // has one and union the answers. A mode we can't reach keeps its
+    // sessions' current state rather than guessing — so a one-gateway
+    // failure must not mark the other mode's sessions dead either.
+    const modes = Array.from(
+      new Set(working.map((sessionId) => sessionUnrestricted(sessionId))),
+    );
+    let rows: Array<{ id?: string; session_key?: string; status?: string }> =
+      [];
+    const reachableModes = new Set<boolean>();
+    for (const mode of modes) {
+      try {
+        const gateway = await ensureHermesGateway(mode);
+        const response = await gateway.request<{
+          sessions?: Array<{
+            id?: string;
+            session_key?: string;
+            status?: string;
+          }>;
+        }>("session.active_list", {});
+        rows = rows.concat(
+          Array.isArray(response?.sessions) ? response.sessions : [],
+        );
+        reachableModes.add(mode);
+      } catch {
+        // Can't reach this runtime — keep ITS sessions' current state rather
+        // than guess, while the reachable mode still reconciles below.
+      }
     }
+    if (reachableModes.size === 0) return;
     const live = new Set<string>();
     for (const row of rows) {
       // "idle" means the runtime session exists but isn't processing a turn.
@@ -2206,6 +2241,9 @@ export function AgentWorkspace({
       if (row.id) live.add(String(row.id));
     }
     for (const sessionId of working) {
+      // Sessions of an unreachable mode were not in any answer we got;
+      // counting them as misses would mark live work dead.
+      if (!reachableModes.has(sessionUnrestricted(sessionId))) continue;
       const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
       if (
         live.has(sessionId) ||
@@ -2312,10 +2350,13 @@ export function AgentWorkspace({
     sessionId: string,
     requestId: string,
     choice: AgentApprovalChoice,
+    unrestricted = false,
   ) {
     setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
     try {
-      const gateway = await ensureHermesGateway();
+      // The approval lives in the runtime process that asked, so the
+      // response must go out on that mode's gateway.
+      const gateway = await ensureHermesGateway(unrestricted);
       await gateway.request("approval.respond", {
         session_id: sessionId,
         choice,
@@ -2364,10 +2405,11 @@ export function AgentWorkspace({
     liveEventKey: string,
     requestId: string,
     answer: string,
+    unrestricted = false,
   ) {
     setClarifySubmitting((current) => ({ ...current, [requestId]: answer }));
     try {
-      const gateway = await ensureHermesGateway();
+      const gateway = await ensureHermesGateway(unrestricted);
       await gateway.request("clarify.respond", {
         request_id: requestId,
         answer,
@@ -2527,7 +2569,9 @@ export function AgentWorkspace({
     try {
       const runtimeSessionId = runtimeSessionIds[sessionId];
       if (runtimeSessionId) {
-        const gateway = await ensureHermesGateway();
+        const gateway = await ensureHermesGateway(
+          sessionUnrestricted(sessionId),
+        );
         await gateway.request("session.interrupt", {
           session_id: runtimeSessionId,
         });
@@ -2658,6 +2702,12 @@ export function AgentWorkspace({
       return next;
     });
     scrubHermesSessionState(sessionId);
+    // Every deletion funnels through here (the in-workspace delete and the
+    // sidebar/sessions-list AGENT_DELETE_SESSION_EVENT), so this is the one
+    // place that drops the session's Unrestricted record — a stale entry
+    // would hand full write access to any future session that recycled the
+    // id.
+    forgetSessionMode(sessionId);
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
@@ -3313,6 +3363,7 @@ export function AgentWorkspace({
               part.sessionId ?? selectedHermesSessionId,
               part.id,
               choice,
+              sessionUnrestricted(selectedHermesSessionId),
             )
           }
           onTopUp={() =>
@@ -3321,7 +3372,12 @@ export function AgentWorkspace({
             )
           }
           onClarify={(part, answer) =>
-            void respondToClarify(selectedHermesSessionId, part.id, answer)
+            void respondToClarify(
+              selectedHermesSessionId,
+              part.id,
+              answer,
+              sessionUnrestricted(selectedHermesSessionId),
+            )
           }
         />
       ))}
@@ -3393,10 +3449,16 @@ export function AgentWorkspace({
                 sessionId,
                 part.id,
                 choice,
+                sessionUnrestricted(selectedTask.hermesSessionId),
               );
             }}
             onClarify={(part, answer) =>
-              void respondToClarify(selectedTask.id, part.id, answer)
+              void respondToClarify(
+                selectedTask.id,
+                part.id,
+                answer,
+                sessionUnrestricted(selectedTask.hermesSessionId),
+              )
             }
           />
         ))}
@@ -3424,7 +3486,14 @@ export function AgentWorkspace({
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
           privacyBadge={generationPrivacyBadge}
-          fullMode={Boolean(bridge.running && bridge.connection?.fullMode)}
+          // The badge describes the selected session, not the live runtime:
+          // every send re-enforces the session's recorded mode, so a
+          // sandboxed session stays sandboxed even while an Unrestricted
+          // runtime from another session is still up. The hero composer's
+          // picker covers the new-session draft.
+          fullMode={
+            !newSessionMode && sessionUnrestricted(selectedHermesSessionId)
+          }
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -3582,12 +3651,13 @@ function SafetyBadge({
   );
 }
 
-// Honest indicator of the live runtime, not of any one session: the jail is
-// per-process, so while the user has it unrestricted every session it serves
-// runs unsandboxed.
+// Indicator of the selected session's opt-in. The jail itself is
+// per-process, but every send restarts the runtime into the target session's
+// recorded mode, so the session — not the runtime's current state — is the
+// honest unit to label.
 function UnrestrictedBadge() {
   const description =
-    "June is running without the file sandbox and can change any file your account can. Start a session with Unrestricted off to restore the sandbox.";
+    "This session runs without the file sandbox — June can change any file your account can. Sandboxed sessions keep their jail and run alongside on a separate, jailed runtime.";
   return (
     <HoverTip
       tip={description}

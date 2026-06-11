@@ -374,8 +374,13 @@ export type HermesBridgeConnection = {
 };
 
 export type HermesBridgeStatus = {
+  /** True when any runtime process is up. */
   running: boolean;
+  /** Primary connection (the requested mode for a start call, otherwise
+   * sandboxed-first). Mode-aware callers should use `connections`. */
   connection?: HermesBridgeConnection;
+  /** Every live runtime process — at most one per write-access mode. */
+  connections?: HermesBridgeConnection[];
   message?: string;
 };
 
