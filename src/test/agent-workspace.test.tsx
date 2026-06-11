@@ -1998,6 +1998,107 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("does not let a stale message fetch erase a newer follow-up", async () => {
+    // The selection effect, working poll, and terminal-event refresh all
+    // fetch session messages without awaiting each other. A slow fetch that
+    // started first can resolve last; applying it as a whole-list overwrite
+    // used to erase the follow-up the newer fetch had just persisted (and
+    // whose optimistic bubble was dropped at that point) — the user's
+    // message visibly vanished until a later refresh restored it.
+    const user = userEvent.setup();
+    const oldHistory = [
+      {
+        id: "m1",
+        role: "user",
+        content: "previous request",
+        timestamp: "2026-06-04T12:00:00.000Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "previous answer",
+        timestamp: "2026-06-04T12:00:01.000Z",
+      },
+    ];
+    let resolveStale: (value: unknown) => void = () => {};
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    mocks.listHermesSessionMessages
+      .mockImplementationOnce(() => stale) // the mount-selection fetch hangs
+      .mockImplementation(async () => [
+        ...oldHistory,
+        {
+          id: "m3",
+          role: "user",
+          content: "follow up while racing",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "m4",
+          role: "assistant",
+          content: "raced reply",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    // Hold the submit just before completion so the working poll's interval
+    // is created on the fake clock (a real-clock interval can't be advanced).
+    let resolveEnsureSession: (value: unknown) => void = () => {};
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveEnsureSession = resolve;
+        }),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "follow up while racing");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalled(),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveEnsureSession({});
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "follow up while racing",
+      });
+
+      // The working poll's refresh applies the newer history (follow-up +
+      // reply persisted; the optimistic bubble is dropped against it).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(screen.getByText("raced reply")).toBeInTheDocument();
+
+      // The stale mount-time fetch finally resolves — without per-session
+      // fetch ordering this overwrote the list and the follow-up vanished.
+      await act(async () => {
+        resolveStale(oldHistory);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("follow up while racing")).toBeInTheDocument();
+      expect(screen.getByText("raced reply")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Last in the suite: mounting the workspace kicks off bridge/session
   // bootstrap promises that can leak into a later test's pending-session
   // flow, so nothing runs after this one.

@@ -710,6 +710,11 @@ export function AgentWorkspace({
   const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
   >({});
+  // Per-session ordering for message fetches: the sequence handed out at
+  // fetch start, and the highest sequence whose response was applied. See
+  // listSessionMessagesOrdered.
+  const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
+  const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
@@ -1293,9 +1298,9 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
     let cancelled = false;
-    listHermesSessionMessages(selectedHermesSessionId)
+    listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
-        if (cancelled) return;
+        if (cancelled || !messages) return;
         const retainedPending = retainUnpersistedPendingMessages(
           pendingHermesMessagesRef.current[selectedHermesSessionId] ?? [],
           messages,
@@ -2130,9 +2135,30 @@ export function AgentWorkspace({
     }
   }
 
+  // Message fetches for one session can overlap: the selection effect, the
+  // 2.5s working poll, and the terminal-event refresh all call
+  // listHermesSessionMessages without awaiting each other, and each applies
+  // its response as a whole-list overwrite. Responses can land out of order
+  // (a slow fetch started before a fast one resolves after it), so without
+  // ordering a stale list clobbers a newer one — the classic symptom is a
+  // just-sent user message vanishing (its pending bubble was dropped when the
+  // newer fetch persisted it) until a later refresh restores it. Fetches are
+  // stamped with a per-session sequence at start; a response only applies if
+  // no later-started fetch has applied first.
+  async function listSessionMessagesOrdered(sessionId: string) {
+    const seq = (sessionMessagesFetchSeqRef.current.get(sessionId) ?? 0) + 1;
+    sessionMessagesFetchSeqRef.current.set(sessionId, seq);
+    const messages = await listHermesSessionMessages(sessionId);
+    const applied = sessionMessagesAppliedSeqRef.current.get(sessionId) ?? 0;
+    if (seq < applied) return undefined;
+    sessionMessagesAppliedSeqRef.current.set(sessionId, seq);
+    return messages;
+  }
+
   async function refreshHermesSession(sessionId: string) {
     try {
-      const messages = await listHermesSessionMessages(sessionId);
+      const messages = await listSessionMessagesOrdered(sessionId);
+      if (!messages) return;
       const retainedPending = retainUnpersistedPendingMessages(
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
