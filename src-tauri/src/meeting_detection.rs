@@ -179,7 +179,7 @@ fn spawn_monitor(app: AppHandle) {
 
             if !crate::os_accounts::cached_signed_in() {
                 if let Some(event) = state.update(false, false, false) {
-                    emit_detection_event(&app, event, 0);
+                    emit_detection_event(&app, event, &[]);
                 }
                 continue;
             }
@@ -201,7 +201,7 @@ fn spawn_monitor(app: AppHandle) {
                 active_allowed_external_processes(&active_processes, &owned_pids(&app));
             let capture_active = crate::audio::capture::is_capture_active();
             if let Some(event) = state.update(true, !allowed_processes.is_empty(), capture_active) {
-                emit_detection_event(&app, event, allowed_processes.len());
+                emit_detection_event(&app, event, &allowed_processes);
             }
         }
     });
@@ -219,6 +219,9 @@ fn owned_pids(app: &AppHandle) -> BTreeSet<u32> {
 #[serde(rename_all = "camelCase")]
 struct MeetingDetectionPayload {
     active_process_count: usize,
+    /// Friendly names of the apps holding the microphone ("Zoom", "Chrome"),
+    /// deduped in detection order. The HUD shows these under the prompt title.
+    app_labels: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,14 +231,26 @@ struct MeetingDetectionEnvelope {
     payload: MeetingDetectionPayload,
 }
 
+pub(crate) fn deduped_app_labels(processes: &[MicrophoneInputProcess]) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for process in processes {
+        if !labels.contains(&process.app_label) {
+            labels.push(process.app_label.clone());
+        }
+    }
+    labels
+}
+
 fn emit_detection_event(
     app: &AppHandle,
     event: MeetingDetectionEvent,
-    active_process_count: usize,
+    allowed_processes: &[MicrophoneInputProcess],
 ) {
     let event_type = match event {
         MeetingDetectionEvent::Detected => {
-            crate::dictation::show_hud_window(app);
+            // Wake the (possibly suspended) HUD webview without revealing
+            // the window — it shows itself once the prompt is sized.
+            crate::dictation::wake_hud_window(app);
             "meeting_detected"
         }
         // Heartbeats must NOT re-show the native window: after the prompt
@@ -248,7 +263,8 @@ fn emit_detection_event(
     let payload = MeetingDetectionEnvelope {
         event_type,
         payload: MeetingDetectionPayload {
-            active_process_count,
+            active_process_count: allowed_processes.len(),
+            app_labels: deduped_app_labels(allowed_processes),
         },
     };
     match serde_json::to_string(&payload) {
@@ -596,6 +612,18 @@ mod tests {
             .into_iter()
             .map(|process| process.pid)
             .collect()
+    }
+
+    #[test]
+    fn deduped_app_labels_collapses_helper_processes_in_detection_order() {
+        let processes = vec![
+            input_process(30, "us.zoom.xos"),
+            input_process(31, "us.zoom.xos.helper"),
+            input_process(32, "com.google.Chrome"),
+        ];
+
+        assert_eq!(deduped_app_labels(&processes), vec!["Zoom", "Chrome"]);
+        assert!(deduped_app_labels(&[]).is_empty());
     }
 
     #[test]
