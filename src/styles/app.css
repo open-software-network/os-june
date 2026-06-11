@@ -9972,12 +9972,91 @@ input:focus-visible,
   text-underline-offset: 2px;
 }
 
-/* Trial gate — same card chrome as the sign-in gate. */
-.trial-gate-refresh {
-  margin-top: var(--sp-2);
+/* Trial gate — same card chrome as the sign-in gate, slightly wider so the
+   timeline details breathe. */
+.trial-card {
+  width: min(100%, 360px);
 }
 
-.trial-gate-signout {
+.trial-timeline {
+  display: flex;
+  flex-direction: column;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.trial-timeline li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: var(--sp-3);
+  align-items: start;
+  padding-bottom: var(--sp-4);
+}
+
+.trial-timeline li:last-child {
+  padding-bottom: 0;
+}
+
+/* Connector between step icons. */
+.trial-timeline li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 13.5px;
+  top: 32px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border);
+}
+
+.trial-timeline-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+
+.trial-timeline-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.trial-timeline-date {
+  color: var(--warm-strong);
+}
+
+/* The charge date is the step that matters — echo the terracotta there. */
+.trial-timeline li:last-child .trial-timeline-icon {
+  border-color: color-mix(in oklch, var(--warm-strong) 30%, transparent);
+  background: color-mix(in oklch, var(--warm-soft) 35%, var(--card));
+  color: var(--warm-strong);
+}
+
+.trial-timeline-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
+.trial-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.trial-gate-link {
   padding: 0;
   border: 0;
   background: none;

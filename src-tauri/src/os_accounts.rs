@@ -105,6 +105,10 @@ struct SubscriptionWire {
     status: Option<String>,
     trial_end: Option<String>,
     current_period_end: Option<String>,
+    /// Trial length from the Stripe price config, available pre-subscription.
+    /// Absent on accounts APIs that don't expose it yet; the UI falls back to
+    /// a pinned default.
+    trial_period_days: Option<u32>,
 }
 
 #[derive(Serialize, Clone)]
@@ -137,6 +141,8 @@ pub struct AccountSubscription {
     pub trial_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_period_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trial_period_days: Option<u32>,
 }
 
 #[derive(Serialize, Default)]
@@ -958,6 +964,7 @@ async fn fetch_snapshot(
             status: w.status,
             trial_end: w.trial_end,
             current_period_end: w.current_period_end,
+            trial_period_days: w.trial_period_days,
         });
     Ok((me.into(), balance.into(), subscription))
 }
