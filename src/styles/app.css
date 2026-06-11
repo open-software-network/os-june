@@ -628,8 +628,18 @@ input:focus-visible,
   cursor: default;
 }
 
+/* The model name leads the pill; the privacy mode trails it as secondary
+ * text (the separator dot shares the label class so they shed together). */
+.agent-safety-badge-name {
+  font-weight: 500;
+}
+
+.agent-safety-badge-label {
+  opacity: 0.75;
+}
+
 /* When the bar runs tight (files panel out, narrow window) the badge keeps
- * the shield and sheds its label rather than wrapping. */
+ * the icon and model name and sheds the privacy label rather than wrapping. */
 .detail-bar {
   container-type: inline-size;
 }
@@ -646,9 +656,9 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
-/* Linked badge (attestation walkthrough known): same chrome, but it reads as
- * clickable and brightens on hover. The wrap keeps HoverTip's anchor span
- * from adding box styling of its own. */
+/* The pill is the model switcher: same chrome, but it reads as clickable and
+ * brightens on hover. The wrap keeps HoverTip's anchor span from adding box
+ * styling of its own. */
 .agent-safety-badge-wrap {
   display: inline-flex;
 }

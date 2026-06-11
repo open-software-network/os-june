@@ -91,8 +91,8 @@ import {
   osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
-  scribeOpenVerifyPage,
   sendAgentMessage,
+  setVeniceModel,
   startHermesBridge,
   submitIssueReport,
   suggestAgentSessionTitle,
@@ -111,6 +111,7 @@ import {
   type HermesSessionMessage,
   type HermesSkillInfo,
   type HermesToolsetInfo,
+  type VeniceModelDto,
 } from "../../lib/tauri";
 import {
   deleteHermesSession,
@@ -140,10 +141,16 @@ import {
 } from "../../lib/hermes-gateway";
 import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+  dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
+import {
+  ModelPickerDialog,
+  modelOptions,
+  selectedModel as selectedModelOption,
+} from "../settings/ModelPickerDialog";
 import { messageFromError } from "../../lib/errors";
 import {
   displayedUserMessageText,
@@ -868,8 +875,19 @@ export function AgentWorkspace({
   const [messagingPlatforms, setMessagingPlatforms] = useState<
     HermesMessagingPlatformInfo[] | null
   >(null);
-  const [generationPrivacyBadge, setGenerationPrivacyBadge] =
-    useState<ModelPrivacyBadge>();
+  // The active text model (global setting, not per-session) shown in the
+  // session bar's model pill; the catalog backs the in-place picker the pill
+  // opens. A selection missing from the catalog still shows as a name-only
+  // stub so the pill never goes blank while a model is configured.
+  const [generationModel, setGenerationModel] = useState<VeniceModelDto>();
+  const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>(
+    [],
+  );
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
+  const generationPrivacyBadge = generationModel
+    ? modelPrivacyBadge(generationModel)
+    : undefined;
   // Attestation walkthrough URL served by the backend (same page as Settings
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
@@ -1281,55 +1299,77 @@ export function AgentWorkspace({
     void loadTasks();
   }, [loadTasks]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let requestSequence = 0;
-    async function loadGenerationPrivacyBadge() {
-      const requestId = ++requestSequence;
-      try {
-        const [settingsResponse, modelsResponse] = await Promise.all([
-          providerModelSettings(),
-          listVeniceModels("generation"),
-        ]);
-        const selectedModelId =
-          settingsResponse.settings.generationModel ||
-          modelsResponse.selectedModel;
-        const selectedModel = modelsResponse.models.find(
-          (model) => model.id === selectedModelId,
+  // Out-of-order responses (a slow mount fetch landing after a settings
+  // change refresh) must not clobber the newer result.
+  const generationModelRequestSequence = useRef(0);
+  const loadGenerationModel = useCallback(async () => {
+    const requestId = ++generationModelRequestSequence.current;
+    try {
+      const [settingsResponse, modelsResponse] = await Promise.all([
+        providerModelSettings(),
+        listVeniceModels("generation"),
+      ]);
+      const selectedModelId =
+        settingsResponse.settings.generationModel ||
+        modelsResponse.selectedModel;
+      if (requestId === generationModelRequestSequence.current) {
+        setGenerationModels(modelsResponse.models);
+        setGenerationModel(
+          selectedModelId
+            ? selectedModelOption(modelsResponse.models, selectedModelId)
+            : undefined,
         );
-        if (!cancelled && requestId === requestSequence) {
-          setGenerationPrivacyBadge(
-            selectedModel ? modelPrivacyBadge(selectedModel) : undefined,
-          );
-        }
-      } catch {
-        if (!cancelled && requestId === requestSequence) {
-          setGenerationPrivacyBadge(undefined);
-        }
+      }
+    } catch {
+      if (requestId === generationModelRequestSequence.current) {
+        setGenerationModel(undefined);
       }
     }
+  }, []);
+
+  useEffect(() => {
     function handleProviderModelSettingsChanged(event: Event) {
       const { mode } = (
         event as CustomEvent<ProviderModelSettingsChangedDetail>
       ).detail;
       if (mode === "generation") {
-        void loadGenerationPrivacyBadge();
+        void loadGenerationModel();
       }
     }
 
-    void loadGenerationPrivacyBadge();
+    void loadGenerationModel();
     window.addEventListener(
       PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
       handleProviderModelSettingsChanged,
     );
     return () => {
-      cancelled = true;
       window.removeEventListener(
         PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
         handleProviderModelSettingsChanged,
       );
     };
-  }, []);
+  }, [loadGenerationModel]);
+
+  // Stale catalog (the mount fetch can fail while the bridge is starting) is
+  // refreshed in the background on every open, like Settings does.
+  function openModelPicker() {
+    setModelSearch("");
+    setModelPickerOpen(true);
+    void loadGenerationModel();
+  }
+
+  // The picker writes the global text-model setting, so the change is
+  // dispatched app-wide: Settings' model rows and this pill both refresh
+  // through the same changed event.
+  async function handleSelectGenerationModel(modelId: string) {
+    setModelPickerOpen(false);
+    try {
+      await setVeniceModel("generation", modelId);
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
 
   useEffect(() => {
     if (!bridge.running) return;
@@ -3586,7 +3626,11 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <SafetyBadge privacyBadge={generationPrivacyBadge} />
+            <ModelBadge
+              model={generationModel}
+              privacyBadge={generationPrivacyBadge}
+              onChangeModel={openModelPicker}
+            />
           </div>
         </div>
         <div className="agent-actions">
@@ -3676,7 +3720,9 @@ export function AgentWorkspace({
           onToggleArtifacts={() =>
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
+          model={generationModel}
           privacyBadge={generationPrivacyBadge}
+          onChangeModel={openModelPicker}
           // The badge describes the selected session, not the live runtime:
           // every send re-enforces the session's recorded mode, so a
           // sandboxed session stays sandboxed even while an Unrestricted
@@ -3798,41 +3844,70 @@ export function AgentWorkspace({
           ) : null}
         </>
       )}
+      <ModelPickerDialog
+        open={modelPickerOpen}
+        mode="generation"
+        value={generationModel?.id ?? ""}
+        options={modelOptions(generationModels, generationModel?.id ?? "")}
+        search={modelSearch}
+        onSearchChange={setModelSearch}
+        onClose={() => setModelPickerOpen(false)}
+        onSelect={(modelId) => void handleSelectGenerationModel(modelId)}
+      />
     </section>
   );
 }
 
-// The badge's claims (zero retention, enclave inference) are verifiable, not
-// just asserted — when the backend's attestation walkthrough URL is known,
-// the badge links straight to it instead of leaving the proof buried in
-// Settings → About.
-function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
-  if (!privacyBadge) return null;
-  const icon =
+// The current text model as a pill: privacy icon + model name + privacy
+// mode, and the model switcher in one — clicking opens the model picker in
+// place. The privacy claims stay verifiable: the attestation walkthrough
+// lives in Settings (Models and About) and onboarding.
+function ModelBadge({
+  model,
+  privacyBadge,
+  onChangeModel,
+}: {
+  model?: VeniceModelDto;
+  privacyBadge?: ModelPrivacyBadge;
+  onChangeModel: () => void;
+}) {
+  if (!model) return null;
+  const icon = privacyBadge ? (
     privacyBadge.mode === "e2ee" ? (
       <IconLock size={13} aria-hidden />
     ) : privacyBadge.mode === "private" ? (
       <IconShieldAi size={13} aria-hidden />
     ) : (
       <IconAnonymous size={13} aria-hidden />
-    );
-  const label = (
-    <span className="agent-safety-badge-label">{privacyBadge.label}</span>
-  );
-  const description = `${privacyBadge.description} Click to see exactly what code June's server runs and how to verify it yourself.`;
-  // A button through Rust, not an anchor: the webview installs no new-window
-  // handler, so target="_blank" navigations are silently dropped.
+    )
+  ) : null;
+  const description = privacyBadge
+    ? `${privacyBadge.description} Click to change the model.`
+    : "Click to change the model.";
+  const ariaLabel = privacyBadge
+    ? `${model.name} (${privacyBadge.label}) - ${description}`
+    : `${model.name} - ${description}`;
   return (
     <HoverTip tip={description} className="agent-safety-badge-wrap">
       <button
         type="button"
         className="agent-safety-badge"
-        data-mode={privacyBadge.mode}
-        onClick={() => void scribeOpenVerifyPage().catch(() => undefined)}
-        aria-label={`${privacyBadge.label} - ${description}`}
+        data-mode={privacyBadge?.mode}
+        onClick={onChangeModel}
+        aria-label={ariaLabel}
       >
         {icon}
-        {label}
+        <span className="agent-safety-badge-name">{model.name}</span>
+        {privacyBadge ? (
+          <>
+            <span className="agent-safety-badge-label" aria-hidden>
+              ·
+            </span>
+            <span className="agent-safety-badge-label">
+              {privacyBadge.label}
+            </span>
+          </>
+        ) : null}
       </button>
     </HoverTip>
   );
@@ -3865,7 +3940,9 @@ function UnrestrictedBadge() {
 // conversation keeps the focus (no separate title heading).
 function AgentSessionBar({
   origin,
+  model,
   privacyBadge,
+  onChangeModel,
   fullMode,
   title,
   artifactCount = 0,
@@ -3875,7 +3952,9 @@ function AgentSessionBar({
   onDelete,
 }: {
   origin?: AgentWorkspaceOrigin;
+  model?: VeniceModelDto;
   privacyBadge?: ModelPrivacyBadge;
+  onChangeModel: () => void;
   fullMode?: boolean;
   title?: string;
   artifactCount?: number;
@@ -3999,7 +4078,11 @@ function AgentSessionBar({
             <span aria-hidden>{artifactCount}</span>
           </button>
         ) : null}
-        <SafetyBadge privacyBadge={privacyBadge} />
+        <ModelBadge
+          model={model}
+          privacyBadge={privacyBadge}
+          onChangeModel={onChangeModel}
+        />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
             <button

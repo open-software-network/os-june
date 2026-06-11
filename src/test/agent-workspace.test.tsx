@@ -48,7 +48,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsTopUp: vi.fn(),
-  scribeOpenVerifyPage: vi.fn(),
+  setVeniceModel: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -105,7 +105,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
-  scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
+  setVeniceModel: mocks.setVeniceModel,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
@@ -211,9 +211,6 @@ describe("AgentWorkspace", () => {
       ],
     });
     mocks.getAgentTask.mockResolvedValue(existingTask);
-    // Empty by default so badge tests assert the plain (unlinked) badge; the
-    // verify-link test overrides this with a real URL.
-    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
@@ -473,11 +470,14 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
-    // The badge always links to the verify page now, so its accessible name
-    // carries the click-through suffix after the mode description.
+    // The pill leads with the model name; its accessible name carries the
+    // mode description and the click-to-change affordance.
+    expect(screen.getByText("Anonymous Only")).toBeInTheDocument();
     expect(
       screen.getByLabelText(
-        new RegExp(`^Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
+        new RegExp(
+          `^Anonymous Only \\(Anonymous mode\\) - ${ANONYMOUS_MODEL_DESCRIPTION}`,
+        ),
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
@@ -526,18 +526,92 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("opens the server verification page from the privacy badge", async () => {
-    // A button through Rust, not an anchor: the webview drops
-    // target="_blank" navigations.
-    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
+  it("opens the model picker from the model pill", async () => {
     const user = userEvent.setup();
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    const badge = await screen.findByRole("button", { name: /Private mode/ });
-    expect(badge).toHaveAccessibleName(/how to verify it yourself/i);
-    await user.click(badge);
-    expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
+    const pill = await screen.findByRole("button", { name: /Private mode/ });
+    expect(pill).toHaveAccessibleName(/click to change the model/i);
+    await user.click(pill);
+
+    // The settings model picker opens in place on the text-model catalog.
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Text model");
+    expect(
+      within(dialog).getByRole("option", { name: /GLM 5.1/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("switches the text model from the pill's picker", async () => {
+    // Tool-capable catalog: the picker refuses tool-less models for the
+    // agent, so the switch target must support function calling.
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-1",
+        name: "GLM 5.1",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2",
+        name: "Kimi K2",
+        modelType: "text",
+        privacy: "anonymous",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-1",
+      models: catalog,
+    });
+    mocks.setVeniceModel.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /Private mode/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+
+    // The reload after the switch reads the updated setting.
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "kimi-k2",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "kimi-k2",
+      models: catalog,
+    });
+    // The picker opens on the Suggested tab (GLM 5.1 is a curated pick);
+    // the switch target only exists in the full catalog behind All.
+    await user.click(within(dialog).getByRole("tab", { name: "All" }));
+    await user.click(within(dialog).getByRole("option", { name: /Kimi K2/ }));
+
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "kimi-k2",
+      ),
+    );
+    // The pill reflects the new model and its privacy mode.
+    expect(
+      await screen.findByRole("button", { name: /Kimi K2/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
 
   it("refreshes the model privacy label when generation model settings change", async () => {
