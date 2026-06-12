@@ -1804,6 +1804,18 @@ if [ ! -f "$install_dir/pyproject.toml" ] || [ ! -f "$install_dir/scripts/instal
   mv "$unpacked_dir" "$install_dir"
 fi
 
+# Upstream's install.sh (v2026.6.5) runs $UV_CMD unquoted in the venv-create,
+# uv-sync, and pip-install-tier calls. The managed uv it installs lives under
+# the app data dir — "Application Support" on macOS — so the space word-splits
+# the path and every one of those calls fails with "/Users/…/Library/
+# Application: No such file or directory". Quote the bare uses after
+# extraction. Idempotent (an already-quoted $UV_CMD is preceded by a quote,
+# which the pattern excludes) and applied outside the download guard so a
+# previously extracted tree gets patched on retry too.
+sed -e 's/\([^"]\)\$UV_CMD/\1"$UV_CMD"/g' "$install_dir/scripts/install.sh" \
+  > "$install_dir/scripts/install.sh.quoted"
+mv "$install_dir/scripts/install.sh.quoted" "$install_dir/scripts/install.sh"
+
 run_stage() {
   local stage="$1"
   HERMES_HOME="$hermes_home" HERMES_INSTALL_DIR="$install_dir" \
