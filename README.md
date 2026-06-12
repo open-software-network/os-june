@@ -16,7 +16,7 @@ Together these bind the running image to a public commit: you can confirm the at
 
 Every deployment also serves its own walkthrough of this chain at [`/verify`](https://scribe-api.opensoftware.co/verify) — served from inside the TEE, it reports the exact commit and image the running server was built from, with step-by-step instructions for checking each link.
 
-Everything leaving the TEE for model inference (audio for transcription, prompts and context for note generation and the agent) goes through Venice. By default it runs on Venice private models: zero data retention, no training. If you select an anonymized model not run by Venice, the request is still routed and anonymized by Venice, but the underlying model provider may retain data under its own privacy policy. This chain verifies the **code** running in the confidential VM, not what upstream providers do. End-to-end private inference is a separate workstream.
+Everything leaving the TEE for model inference (audio for transcription, prompts and context for note generation and the agent) is anonymized before it goes. By default it runs on Venice private models: zero data retention, no training. Anonymized models in the Venice catalog are routed and anonymized by Venice. The opt-in OpenAI transcription models go from the TEE directly to OpenAI, anonymized by our backend: requests are structurally unable to carry identifying metadata, and the server proxy hides your IP. In both cases the underlying model provider may retain data under its own privacy policy. This chain verifies the **code** running in the confidential VM, not what upstream providers do. End-to-end private inference is a separate workstream.
 
 ## Development
 
