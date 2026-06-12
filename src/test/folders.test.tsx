@@ -145,7 +145,7 @@ describe("folders UI", () => {
     expect(screen.getByLabelText("Working")).toBeInTheDocument();
 
     await user.click(
-      screen.getByRole("button", { name: /Researching Google/ }),
+      screen.getByRole("button", { name: "Researching Google" }),
     );
 
     expect(onChangeView).not.toHaveBeenCalled();
@@ -200,7 +200,12 @@ describe("folders UI", () => {
     ) as HTMLElement;
     expect(row).not.toBeNull();
 
-    await user.click(within(row).getByRole("button", { name: "Pin session" }));
+    await user.click(
+      within(row).getByRole("button", {
+        name: "Actions for Fetch os platform issues",
+      }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Pin session" }));
 
     expect(
       screen.getByRole("region", { name: "Pinned agent sessions" }),
@@ -213,7 +218,12 @@ describe("folders UI", () => {
       '["session-1"]',
     );
 
-    await user.click(screen.getByRole("button", { name: "Unpin session" }));
+    await user.click(
+      within(
+        screen.getByRole("region", { name: "Pinned agent sessions" }),
+      ).getByRole("button", { name: "Actions for Fetch os platform issues" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Unpin session" }));
 
     expect(
       screen.queryByRole("region", { name: "Pinned agent sessions" }),
@@ -441,7 +451,10 @@ describe("folders UI", () => {
 
     expect(await screen.findByText("Researching Google")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
+    await user.click(
+      screen.getByRole("button", { name: "Actions for Researching Google" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
     const dialog = await screen.findByRole("dialog", {
       name: 'Delete "Researching Google"?',
     });

@@ -94,11 +94,9 @@ type SidebarProps = {
   collapsed?: boolean;
 };
 
-type MenuState = {
-  noteId: string;
-  right: number;
-  top: number;
-};
+type MenuState =
+  | { kind: "note"; noteId: string; right: number; top: number }
+  | { kind: "agent-session"; sessionId: string; right: number; top: number };
 
 type CommandPaletteItem = {
   id: string;
@@ -709,13 +707,28 @@ export function Sidebar({
   // below — keeps it tucked next to the trigger rather than flying off to
   // the right. Clicking the same button again toggles it closed.
   function openMenuForNote(noteId: string, anchor: HTMLElement) {
-    if (menu?.noteId === noteId) {
+    if (menu?.kind === "note" && menu.noteId === noteId) {
       setMenu(null);
       return;
     }
     const rect = anchor.getBoundingClientRect();
     setMenu({
+      kind: "note",
       noteId,
+      right: window.innerWidth - rect.right,
+      top: rect.bottom + 4,
+    });
+  }
+
+  function openMenuForAgentSession(sessionId: string, anchor: HTMLElement) {
+    if (menu?.kind === "agent-session" && menu.sessionId === sessionId) {
+      setMenu(null);
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    setMenu({
+      kind: "agent-session",
+      sessionId,
       right: window.innerWidth - rect.right,
       top: rect.bottom + 4,
     });
@@ -771,6 +784,11 @@ export function Sidebar({
       });
     }
   }
+
+  const menuAgentSession =
+    menu?.kind === "agent-session"
+      ? agentSessions.find((session) => session.id === menu.sessionId)
+      : undefined;
 
   return (
     <aside
@@ -913,20 +931,21 @@ export function Sidebar({
                       activeView === "agent" &&
                       selectedAgentSessionId === session.id
                     }
-                    pinned
                     working={workingAgentSessionIds.has(session.id)}
                     waiting={waitingAgentSessionIds.has(session.id)}
                     unread={unreadAgentSessionIds.has(session.id)}
                     deleting={deletingAgentSessionIds.has(session.id)}
+                    menuOpen={
+                      menu?.kind === "agent-session" &&
+                      menu.sessionId === session.id
+                    }
                     onSelect={() => {
                       setSelectedAgentSessionId(session.id);
                       onSelectAgentSession(session);
                     }}
-                    onTogglePinned={() => togglePinnedAgentSession(session.id)}
-                    onDelete={() => {
-                      setAgentSessionDeleteError(null);
-                      setAgentSessionToDelete(session);
-                    }}
+                    onOpenMenu={(anchor) =>
+                      openMenuForAgentSession(session.id, anchor)
+                    }
                   />
                 ))}
               </div>
@@ -969,20 +988,21 @@ export function Sidebar({
                         activeView === "agent" &&
                         selectedAgentSessionId === session.id
                       }
-                      pinned={pinnedAgentSessionIds.has(session.id)}
                       working={workingAgentSessionIds.has(session.id)}
                       waiting={waitingAgentSessionIds.has(session.id)}
                       unread={unreadAgentSessionIds.has(session.id)}
                       deleting={deletingAgentSessionIds.has(session.id)}
+                      menuOpen={
+                        menu?.kind === "agent-session" &&
+                        menu.sessionId === session.id
+                      }
                       onSelect={() => {
                         setSelectedAgentSessionId(session.id);
                         onSelectAgentSession(session);
                       }}
-                      onTogglePinned={() => togglePinnedAgentSession(session.id)}
-                      onDelete={() => {
-                        setAgentSessionDeleteError(null);
-                        setAgentSessionToDelete(session);
-                      }}
+                      onOpenMenu={(anchor) =>
+                        openMenuForAgentSession(session.id, anchor)
+                      }
                     />
                   ))
                 ) : (
@@ -1029,7 +1049,7 @@ export function Sidebar({
         />
       </footer>
 
-      {menu ? (
+      {menu?.kind === "note" ? (
         <NoteContextMenu
           noteId={menu.noteId}
           right={menu.right}
@@ -1038,6 +1058,19 @@ export function Sidebar({
           onOpenMoveDialog={onOpenMoveDialog}
           onRemoveNoteFromFolder={onRemoveNoteFromFolder}
           onDeleteNote={onDeleteNote}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {menu?.kind === "agent-session" && menuAgentSession ? (
+        <AgentSessionContextMenu
+          pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
+          right={menu.right}
+          top={menu.top}
+          onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
+          onDelete={() => {
+            setAgentSessionDeleteError(null);
+            setAgentSessionToDelete(menuAgentSession);
+          }}
           onClose={() => setMenu(null)}
         />
       ) : null}
@@ -1565,34 +1598,39 @@ function pinnedSessionOrder(ids: ReadonlySet<string>, sessionId: string) {
 function AgentSessionRow({
   session,
   selected,
-  pinned,
   working,
   waiting,
   unread,
   deleting,
+  menuOpen,
   onSelect,
-  onTogglePinned,
-  onDelete,
+  onOpenMenu,
 }: {
   session: HermesSessionInfo;
   selected: boolean;
-  pinned: boolean;
   working: boolean;
   waiting: boolean;
   unread: boolean;
   deleting: boolean;
+  menuOpen: boolean;
   onSelect: () => void;
-  onTogglePinned: () => void;
-  onDelete: () => void;
+  onOpenMenu: (anchor: HTMLElement) => void;
 }) {
   const title = session.title || session.preview || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
   const time = formatSessionTime(sessionTimestamp(session));
+  const menuRef = useRef<HTMLButtonElement>(null);
   return (
     <article
       className="note-row agent-sidebar-row"
       data-selected={selected}
       data-status={status}
+      data-menu-open={menuOpen || undefined}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (menuRef.current) onOpenMenu(menuRef.current);
+      }}
     >
       <div
         className="note-row-main"
@@ -1647,35 +1685,73 @@ function AgentSessionRow({
       ) : null}
       <span className="agent-session-actions">
         <button
+          ref={menuRef}
           type="button"
-          className="note-row-menu agent-session-pin"
-          aria-label={pinned ? "Unpin session" : "Pin session"}
-          title={pinned ? "Unpin session" : "Pin session"}
-          aria-pressed={pinned}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onTogglePinned();
-          }}
-        >
-          {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
-        </button>
-        <button
-          type="button"
-          className="note-row-menu agent-session-delete"
-          aria-label="Delete session"
-          title="Delete session"
+          className="note-row-menu agent-session-row-menu"
+          aria-label={`Actions for ${title}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
           disabled={deleting}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            onDelete();
+            onOpenMenu(event.currentTarget);
           }}
         >
-          <IconTrashCan size={14} />
+          <IconDotGrid1x3Vertical size={14} />
         </button>
       </span>
     </article>
+  );
+}
+
+function AgentSessionContextMenu({
+  pinned,
+  right,
+  top,
+  onTogglePinned,
+  onDelete,
+  onClose,
+}: {
+  pinned: boolean;
+  right: number;
+  top: number;
+  onTogglePinned: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="context-menu"
+      style={{ right, top }}
+      role="menu"
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onTogglePinned();
+          onClose();
+        }}
+      >
+        {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
+        {pinned ? "Unpin session" : "Pin session"}
+      </button>
+      <div className="context-menu-separator" role="separator" />
+      <button
+        type="button"
+        role="menuitem"
+        className="destructive"
+        onClick={() => {
+          onDelete();
+          onClose();
+        }}
+      >
+        <IconTrashCan size={14} />
+        Delete session
+      </button>
+    </div>
   );
 }
 
