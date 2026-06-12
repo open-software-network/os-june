@@ -375,6 +375,14 @@ export function AppSettings({
     };
   }, [languageOpen]);
 
+  // The capture effect below must call the latest saveShortcut, not the one
+  // from the render in which capturing began (it is a plain function,
+  // redefined every render). Same ref pattern as use-shortcut-capture.
+  const saveShortcutRef = useRef(saveShortcut);
+  useEffect(() => {
+    saveShortcutRef.current = saveShortcut;
+  });
+
   useEffect(() => {
     if (!capturingShortcut) return;
     const kind = capturingShortcut;
@@ -401,7 +409,7 @@ export function AppSettings({
       void dictationHelperCommand({ type: "cancel_shortcut_capture" }).catch(
         () => undefined,
       );
-      void saveShortcut(kind, result.shortcut);
+      void saveShortcutRef.current(kind, result.shortcut);
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

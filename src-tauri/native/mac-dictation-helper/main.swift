@@ -519,12 +519,17 @@ final class ShortcutKeyMonitor {
         activeIdentity = nil
         pendingOverlapIdentity = nil
         cancelPendingModifierOnlyCapture()
+        // A registered hot key consumes its chord system-wide, so the rebind
+        // UI's DOM would never see the user's current shortcut. Suspend them
+        // for the duration of the capture.
+        unregisterCarbonHotKeys()
         emit("shortcut_capture_started")
     }
 
     func cancelShortcutCapture() {
         isCapturingShortcut = false
         cancelPendingModifierOnlyCapture()
+        registerCarbonHotKeys()
         emit("shortcut_capture_cancelled")
     }
 
@@ -551,11 +556,15 @@ final class ShortcutKeyMonitor {
         InstallEventHandler(GetEventDispatcherTarget(), carbonHotKeyCallback, 2, &specs, userInfo, &carbonHandlerRef)
     }
 
-    private func registerCarbonHotKeys() {
+    private func unregisterCarbonHotKeys() {
         for entry in carbonHotKeys.values {
             UnregisterEventHotKey(entry.ref)
         }
         carbonHotKeys.removeAll()
+    }
+
+    private func registerCarbonHotKeys() {
+        unregisterCarbonHotKeys()
 
         for shortcut in shortcuts.values {
             guard !shortcut.isModifierOnly else {
@@ -667,6 +676,9 @@ final class ShortcutKeyMonitor {
 
         isCapturingShortcut = false
         cancelPendingModifierOnlyCapture()
+        // Resume the previous hot keys now; set_shortcut re-registers with
+        // the new chord once the frontend persists it.
+        registerCarbonHotKeys()
         emitJSON("shortcut_captured", [
             "shortcut": nextShortcut.payload,
         ])
@@ -855,9 +867,10 @@ private let carbonHotKeyCallback: EventHandlerUPP = { _, eventRef, userInfo in
     }
     let monitor = Unmanaged<ShortcutKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
     let pressed = GetEventKind(eventRef) == UInt32(kEventHotKeyPressed)
-    DispatchQueue.main.async {
-        monitor.handleCarbonHotKey(id: hotKeyId.id, pressed: pressed)
-    }
+    // GetEventDispatcherTarget delivers on the main thread already; calling
+    // synchronously avoids a run-loop hop during which re-registration
+    // (setShortcut) could clear the hot-key table and drop this press.
+    monitor.handleCarbonHotKey(id: hotKeyId.id, pressed: pressed)
     return noErr
 }
 
