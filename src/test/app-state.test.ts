@@ -204,6 +204,37 @@ describe("notesReducer", () => {
     expect(state.notes[0].processingStatus).toBe("ready");
   });
 
+  it("does not let stale active polling overwrite a ready title", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        title: "Budget review, Hiring plan, and Product launch",
+        processingStatus: "ready",
+        generatedContent: "Finished notes",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "noteUpdated",
+      note: note({
+        id: "note-1",
+        title: "New note",
+        processingStatus: "transcribing",
+        generatedContent: "",
+      }),
+    });
+
+    expect(state.selectedNote?.title).toBe(
+      "Budget review, Hiring plan, and Product launch",
+    );
+    expect(state.selectedNote?.generatedContent).toBe("Finished notes");
+    expect(state.selectedNote?.processingStatus).toBe("ready");
+    expect(state.notes[0].title).toBe(
+      "Budget review, Hiring plan, and Product launch",
+    );
+  });
+
   it("keeps source transcript rows on authoritative processing updates", () => {
     const initial = notesReducer(createInitialState(), {
       type: "noteLoaded",

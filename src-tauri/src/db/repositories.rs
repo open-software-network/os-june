@@ -2194,11 +2194,47 @@ fn is_replaceable_generated_title(title: &str) -> bool {
 }
 
 fn generated_title_from_content(content: &str) -> Option<String> {
+    let heading_title = title_from_generated_headings(content);
+    if heading_title.is_some() {
+        return heading_title;
+    }
+
     content
         .lines()
         .map(clean_generated_title_line)
         .find(|line| !line.is_empty() && !is_replaceable_generated_title(line))
         .map(|line| truncate_title(&line, 72))
+}
+
+fn title_from_generated_headings(content: &str) -> Option<String> {
+    let mut headings = Vec::new();
+    for heading in content.lines().filter_map(markdown_heading_text) {
+        let heading = clean_generated_title_line(heading);
+        if heading.is_empty()
+            || is_replaceable_generated_title(&heading)
+            || headings
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&heading))
+        {
+            continue;
+        }
+        headings.push(heading);
+    }
+
+    title_from_parts(&headings)
+}
+
+fn title_from_parts(parts: &[String]) -> Option<String> {
+    match parts {
+        [] => None,
+        [only] => Some(truncate_title(only, 72)),
+        [first, second] => Some(truncate_title(&format!("{first} and {second}"), 72)),
+        _ => {
+            let last = parts.last()?;
+            let prefix = parts[..parts.len() - 1].join(", ");
+            Some(truncate_title(&format!("{prefix}, and {last}"), 72))
+        }
+    }
 }
 
 fn clean_generated_title_line(line: &str) -> String {
