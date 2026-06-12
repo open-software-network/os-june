@@ -157,7 +157,7 @@ export function Select({
           {options.map((option) => {
             const isSelected = option.value === value;
             return (
-              <li key={option.value}>
+              <li key={option.value} role="presentation">
                 <button
                   type="button"
                   role="option"

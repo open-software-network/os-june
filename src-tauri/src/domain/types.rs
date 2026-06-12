@@ -607,6 +607,18 @@ pub struct SubmitIssueReportResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubmitDiscoverySourceRequest {
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitDiscoverySourceResponse {
+    pub received: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExplainAgentApprovalRequest {
     pub description: String,
     #[serde(default)]

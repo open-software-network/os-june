@@ -1,6 +1,10 @@
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { useEffect, useRef, useState } from "react";
-import { discoverySource, setDiscoverySource } from "../../../lib/onboarding";
+import {
+  discoverySource,
+  reportPendingDiscoverySource,
+  setDiscoverySource,
+} from "../../../lib/onboarding";
 import { JuneMark } from "../../account/AccountGate";
 import { KeycapShortcut } from "../../shortcuts/KeycapShortcut";
 import { useShortcutCapture } from "../../shortcuts/use-shortcut-capture";
@@ -64,6 +68,11 @@ export function DictationPracticeStep({
     const timer = window.setTimeout(() => setGreeted(true), TYPING_MS);
     return () => window.clearTimeout(timer);
   }, []);
+
+  function continueFromPractice() {
+    reportPendingDiscoverySource({ force: true });
+    onContinue();
+  }
 
   return (
     <StepCard title="Talk to June" subtitle="Say what you want done." wide>
@@ -154,9 +163,9 @@ export function DictationPracticeStep({
       ) : null}
       <StepActions
         continueLabel="Start using June"
-        onContinue={onContinue}
+        onContinue={continueFromPractice}
         continueDisabled={!succeeded}
-        onSkip={onContinue}
+        onSkip={continueFromPractice}
       />
     </StepCard>
   );

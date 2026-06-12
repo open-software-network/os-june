@@ -8,6 +8,7 @@ pub mod m4a_probe;
 pub mod openai;
 pub mod os_accounts;
 pub mod routing;
+pub mod surveys;
 pub mod venice;
 pub mod wav_probe;
 
@@ -22,6 +23,7 @@ pub use m4a_probe::{M4aDurationProbe, M4aProbeError};
 pub use openai::OpenAiTranscriber;
 pub use os_accounts::OsAccountsHttpClient;
 pub use routing::RoutingTranscriber;
+pub use surveys::{LogSurveySink, PostHogSurveySink, WebhookSurveySink};
 pub use venice::{
     VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, VeniceTranscriber,
 };

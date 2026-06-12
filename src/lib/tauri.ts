@@ -799,6 +799,22 @@ export async function submitIssueReport(request: SubmitIssueReportRequest) {
   return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
 }
 
+export type SubmitDiscoverySourceRequest = {
+  source: string;
+};
+
+export type SubmitDiscoverySourceResponse = {
+  received: boolean;
+};
+
+export async function submitDiscoverySource(
+  request: SubmitDiscoverySourceRequest,
+) {
+  return invoke<SubmitDiscoverySourceResponse>("submit_discovery_source", {
+    request,
+  });
+}
+
 export type ExplainAgentApprovalResponse = {
   explanation: string;
 };

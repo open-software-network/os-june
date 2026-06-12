@@ -2,9 +2,10 @@ use clap::{Parser, Subcommand};
 use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 use scribe_config::{AppConfig, ModelPriceConfig, ModelProvider};
 use scribe_providers::{
-    JwksTokenVerifier, LogIssueReportSink, MultiFormatDurationProbe, OsAccountsHttpClient,
-    OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceCleaner, VeniceGenerator,
-    VeniceModelCatalog, WebhookIssueReportSink, default_client, jwks_client,
+    JwksTokenVerifier, LogIssueReportSink, LogSurveySink, MultiFormatDurationProbe,
+    OsAccountsHttpClient, OsPlatformIssueReportSink, PostHogSurveySink, RoutingTranscriber,
+    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, WebhookIssueReportSink,
+    WebhookSurveySink, default_client, jwks_client,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -115,6 +116,16 @@ fn build_router(
         tracing::info!("no issue report sink configured; reports will be logged only");
         Arc::new(LogIssueReportSink)
     };
+    let surveys: Arc<dyn scribe_domain::SurveySink> =
+        if let Some(sink) = PostHogSurveySink::from_config(http.clone(), &config.surveys) {
+            tracing::info!("survey answers will be captured in PostHog");
+            Arc::new(sink)
+        } else if let Some(sink) = WebhookSurveySink::from_config(http.clone(), &config.surveys) {
+            Arc::new(sink)
+        } else {
+            tracing::info!("no survey sink configured; survey answers will be logged only");
+            Arc::new(LogSurveySink)
+        };
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
 
@@ -161,6 +172,7 @@ fn build_router(
         agent_chat,
         dictate,
         issue_reports,
+        surveys,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,

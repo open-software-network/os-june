@@ -9,6 +9,7 @@ import {
   isOnboardingComplete,
   markOnboardingComplete,
   onboardingResumeStep,
+  reportPendingDiscoverySource,
   resetOnboardingForReplay,
   setDiscoverySource,
   setOnboardingResumeStep,
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsStartTrialCheckout: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   focusMainWindow: vi.fn(),
+  submitDiscoverySource: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -44,6 +46,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsStartTrialCheckout: mocks.osAccountsStartTrialCheckout,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   focusMainWindow: mocks.focusMainWindow,
+  submitDiscoverySource: mocks.submitDiscoverySource,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -113,6 +116,7 @@ describe("OnboardingFlow", () => {
     });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.focusMainWindow.mockResolvedValue(undefined);
+    mocks.submitDiscoverySource.mockResolvedValue({ received: true });
     mocks.setDictationLanguage.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockResolvedValue(undefined);
     mocks.dictationSettings.mockResolvedValue({
@@ -627,11 +631,89 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("option", { name: "YouTube" }));
 
     expect(discoverySource()).toBe("youtube");
+    expect(mocks.submitDiscoverySource).not.toHaveBeenCalled();
+    expect(
+      localStorage.getItem("june.onboarding.discoveryPendingReport"),
+    ).toBeNull();
     // The trigger keeps showing the choice, and answering never gates the
     // step: Continue still waits on the dictation rep, not the survey.
     expect(
       screen.getByRole("button", { name: "Where did you hear about June?" }),
     ).toHaveTextContent("YouTube");
+
+    await user.type(
+      screen.getByPlaceholderText(/Tell June what to do/i),
+      "hello there",
+    );
+    await user.click(screen.getByRole("button", { name: "Start using June" }));
+
+    await waitFor(() =>
+      expect(mocks.submitDiscoverySource).toHaveBeenCalledWith({
+        source: "youtube",
+      }),
+    );
+    expect(localStorage.getItem("june.onboarding.discoveryReported")).toBe(
+      "youtube",
+    );
+    expect(
+      localStorage.getItem("june.onboarding.discoveryPendingReport"),
+    ).toBeNull();
+  });
+
+  it("keeps discovery reporting pending when the backend is offline", async () => {
+    mocks.submitDiscoverySource.mockRejectedValueOnce(new Error("offline"));
+
+    setDiscoverySource("search");
+    expect(mocks.submitDiscoverySource).not.toHaveBeenCalled();
+
+    reportPendingDiscoverySource();
+    expect(mocks.submitDiscoverySource).not.toHaveBeenCalled();
+
+    reportPendingDiscoverySource({ force: true });
+
+    await waitFor(() =>
+      expect(mocks.submitDiscoverySource).toHaveBeenCalledWith({
+        source: "search",
+      }),
+    );
+    expect(discoverySource()).toBe("search");
+    expect(
+      localStorage.getItem("june.onboarding.discoveryReported"),
+    ).toBeNull();
+    expect(localStorage.getItem("june.onboarding.discoveryPendingReport")).toBe(
+      "search",
+    );
+  });
+
+  it("retries one pending discovery answer on launch and does not duplicate after delivery", async () => {
+    localStorage.setItem("june.onboarding.discoverySource", "friend");
+    localStorage.setItem("june.onboarding.discoveryPendingReport", "friend");
+
+    reportPendingDiscoverySource();
+    await waitFor(() =>
+      expect(mocks.submitDiscoverySource).toHaveBeenCalledWith({
+        source: "friend",
+      }),
+    );
+    expect(localStorage.getItem("june.onboarding.discoveryReported")).toBe(
+      "friend",
+    );
+    expect(
+      localStorage.getItem("june.onboarding.discoveryPendingReport"),
+    ).toBeNull();
+
+    mocks.submitDiscoverySource.mockClear();
+    reportPendingDiscoverySource();
+
+    expect(mocks.submitDiscoverySource).not.toHaveBeenCalled();
+  });
+
+  it("does not report a selected discovery answer on launch until the action button was clicked", () => {
+    localStorage.setItem("june.onboarding.discoverySource", "friend");
+
+    reportPendingDiscoverySource();
+
+    expect(mocks.submitDiscoverySource).not.toHaveBeenCalled();
   });
 
   it("never re-asks an answered discovery question", async () => {
@@ -658,6 +740,9 @@ describe("OnboardingFlow", () => {
     // The dev replay forgets the discovery answer (so the replayed wizard
     // shows the whole flow) but keeps the agent-risk acknowledgment.
     expect(discoverySource()).toBeNull();
+    expect(
+      localStorage.getItem("june.onboarding.discoveryReported"),
+    ).toBeNull();
     expect(isAgentRiskAcknowledged()).toBe(true);
   });
 
