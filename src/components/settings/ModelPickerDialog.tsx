@@ -38,7 +38,7 @@ export function ModelMeta({ model }: { model: VeniceModelDto }) {
         className="model-trait-icon"
         data-mode={privacyBadge.mode}
         tabIndex={0}
-        aria-label={`${privacyBadge.label} — ${privacyBadge.description}`}
+        aria-label={`${privacyBadge.label}: ${privacyBadge.description}`}
       >
         {privacyBadge.mode === "e2ee" ? (
           <IconLock size={14} />
