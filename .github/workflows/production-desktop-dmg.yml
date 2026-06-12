@@ -158,7 +158,15 @@ jobs:
         run: |
           set -euo pipefail
           pnpm version:bump "$VERSION"
-          cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+          # Record ONLY the app's new version in Cargo.lock. The previous
+          # `cargo generate-lockfile` rebuilt the lockfile from scratch,
+          # silently mass-upgrading every dependency to the latest compatible
+          # release at build time - so a same-day upstream release could (and
+          # did: time 0.3.48 vs tauri-utils 2.9.2, 2026-06-12) break the
+          # release build with dependency versions no CI run ever tested.
+          # `--workspace` re-locks workspace members only and leaves every
+          # dependency exactly as committed.
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
 
       - name: Run release checks
         run: |
