@@ -964,15 +964,18 @@ if (typeof document.fonts?.ready?.then === "function") {
   });
 }
 
-// Local mirrors of the Tauri listeners, same as the agent HUD page: the
-// demo driver dispatches window events when the bridge is absent.
-window.addEventListener("dictation-event", (event) => {
-  void handleDictationEventPayload((event as CustomEvent).detail);
-});
+// Local mirrors of the Tauri listeners, same as the agent HUD page:
+// only the dev-only demo drivers dispatch these window events (standalone
+// page, no bridge), so production builds skip the dead listeners.
+if (import.meta.env.DEV) {
+  window.addEventListener("dictation-event", (event) => {
+    void handleDictationEventPayload((event as CustomEvent).detail);
+  });
 
-window.addEventListener("meeting-detection-event", (event) => {
-  void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
-});
+  window.addEventListener("meeting-detection-event", (event) => {
+    void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
+  });
+}
 
 subscribeToOnboardingComplete(showPendingMeetingPromptAfterOnboarding);
 

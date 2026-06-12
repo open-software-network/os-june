@@ -161,18 +161,22 @@ void listen<{ vertical: boolean; animate: boolean }>(
   },
 );
 
-// Local mirrors of the Tauri listeners, same as the dictation HUD page: the
-// demo driver dispatches window events when the bridge is absent.
-window.addEventListener("meeting-hud-status", (event) => {
-  const status = (event as CustomEvent<RecordingStatusDto>).detail;
-  if (status) applyStatus(status);
-});
+// Local mirrors of the Tauri listeners, same as the dictation HUD page:
+// only the dev-only demo driver dispatches these window events (standalone
+// page, no bridge), so production builds skip the dead listeners.
+if (import.meta.env.DEV) {
+  window.addEventListener("meeting-hud-status", (event) => {
+    const status = (event as CustomEvent<RecordingStatusDto>).detail;
+    if (status) applyStatus(status);
+  });
 
-window.addEventListener("meeting-hud-zone", (event) => {
-  const payload = (event as CustomEvent<{ vertical: boolean; animate: boolean }>)
-    .detail;
-  if (payload) applyZone(payload);
-});
+  window.addEventListener("meeting-hud-zone", (event) => {
+    const payload = (
+      event as CustomEvent<{ vertical: boolean; animate: boolean }>
+    ).detail;
+    if (payload) applyZone(payload);
+  });
+}
 
 resetBars();
 startBarLoop();

@@ -256,6 +256,9 @@ fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
     const NS_EVENT_MODIFIER_FLAG_CONTROL: u64 = 1 << 18;
 
     extern "C-unwind" fn send_event(this: &AnyObject, _sel: Sel, event: *mut AnyObject) {
+        // Resolved once: this runs for every event the panel sees (mouse
+        // moves, scrolls, keys), and the class registration is permanent.
+        static SUPERCLASS: std::sync::OnceLock<&'static AnyClass> = std::sync::OnceLock::new();
         unsafe {
             if !event.is_null() {
                 let event_type: i64 = msg_send![event, type];
@@ -273,7 +276,8 @@ fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
                     return;
                 }
             }
-            let superclass = AnyClass::get(c"NSPanel").expect("NSPanel class missing");
+            let superclass = *SUPERCLASS
+                .get_or_init(|| AnyClass::get(c"NSPanel").expect("NSPanel class missing"));
             let _: () = msg_send![super(this, superclass), sendEvent: event];
         }
     }
