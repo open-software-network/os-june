@@ -35,7 +35,7 @@ A third-party AI service Scribe API calls on the user's behalf — currently
 Upstream provider API keys live only in Scribe API's environment, never in
 Scribe. In code, each upstream sits behind a domain trait (`Transcriber`,
 `Generator`) defined in `scribe-domain` and implemented in `scribe-providers`.
-_Avoid_: AI provider, model provider, vendor.
+_Avoid_: AI provider, vendor; "model provider" in technical docs (it is the approved consumer-copy term in the model tier descriptions, per `src/lib/model-privacy.ts` and `docs/copy-guidelines.md`).
 
 **Dictation**:
 A latency-critical Scribe mode where the user pushes-to-talk, speaks a short
