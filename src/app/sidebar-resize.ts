@@ -30,11 +30,20 @@ export function handleSidebarResizeStart(
   const handle = event.currentTarget;
   const shell = handle.closest(".app-shell") as HTMLElement | null;
   const mainPanel = shell?.querySelector(".main-panel") as HTMLElement | null;
+  // Fixed elements whose `left` rides the sidebar width. They must join the
+  // snap tween: with no transition of their own they teleport to the far
+  // offset at the threshold crossing while the grid is still mid-tween, which
+  // reads as a flash of misalignment.
+  const composer = shell?.querySelector(".agent-composer") as HTMLElement | null;
+  const editorFooter = shell?.querySelector(
+    ".editor-footer",
+  ) as HTMLElement | null;
   const startX = event.clientX;
   const startWidth = currentWidth;
   let latestWidth = currentWidth;
   let collapsed = currentWidth === 0;
   let opening = false;
+  let snapTweening = false;
 
   function setPreview(preview: SidebarResizePreview) {
     shell?.setAttribute("data-sidebar-preview", preview);
@@ -57,7 +66,25 @@ export function handleSidebarResizeStart(
     handle.style.transition = animate ? `left ${timing}` : "none";
     if (mainPanel)
       mainPanel.style.transition = animate ? `margin ${timing}` : "none";
+    for (const el of [composer, editorFooter])
+      if (el) el.style.transition = animate ? `left ${timing}` : "none";
   }
+
+  // Snap tweens end on the shell's own grid transition (margin/left tweens on
+  // the other elements bubble through here too — hence the target check).
+  // While one is in flight, pointermoves retarget it instead of switching back
+  // to transition-less tracking: killing it mid-flight teleports the sidebar
+  // from the interpolated width to the cursor in a single frame.
+  function onSnapTweenEnd(endEvent: TransitionEvent) {
+    if (
+      endEvent.target !== shell ||
+      endEvent.propertyName !== "grid-template-columns"
+    )
+      return;
+    snapTweening = false;
+    setSnapTransition(false);
+  }
+  shell?.addEventListener("transitionend", onSnapTweenEnd);
 
   function applyWidth(width: number) {
     shell?.style.setProperty("--sidebar-w-current", `${width}px`);
@@ -87,6 +114,7 @@ export function handleSidebarResizeStart(
         opening = false;
         setPreview("collapsed");
         setSnapTransition(true);
+        snapTweening = true;
         applyWidth(0);
       }
       return;
@@ -99,15 +127,16 @@ export function handleSidebarResizeStart(
       opening = true;
       setPreview("opening");
       setSnapTransition(true);
+      snapTweening = true;
       applyWidth(nextWidth);
       return;
     }
-    // Live resize within range: snap-follow the cursor, but don't re-assert
-    // `none` (which would cancel an in-flight open tween) unless the width
-    // actually moves.
+    // Live resize within range: snap-follow the cursor. While a snap tween is
+    // still in flight, keep it and retarget toward the cursor; transitionend
+    // hands back transition-less tracking.
     if (nextWidth !== latestWidth) {
       setPreview(opening ? "opening" : "expanded");
-      setSnapTransition(false);
+      if (!snapTweening) setSnapTransition(false);
       applyWidth(nextWidth);
     }
   }
@@ -115,6 +144,7 @@ export function handleSidebarResizeStart(
   function onPointerUp() {
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
+    shell?.removeEventListener("transitionend", onSnapTweenEnd);
     // Hand control back to React-driven styling. Commit synchronously so the
     // collapsed/expanded class (and its matching left margin) is in the DOM
     // before we drop the inline margin. Otherwise removing it would briefly
@@ -122,6 +152,8 @@ export function handleSidebarResizeStart(
     shell?.style.removeProperty("transition");
     handle.style.removeProperty("transition");
     mainPanel?.style.removeProperty("transition");
+    composer?.style.removeProperty("transition");
+    editorFooter?.style.removeProperty("transition");
     commit(() => onEnd(latestWidth));
     mainPanel?.style.removeProperty("margin-left");
     shell?.style.removeProperty("--main-gutter");
