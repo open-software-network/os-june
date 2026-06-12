@@ -607,6 +607,36 @@ async function showHud() {
     pushStopBoundsToNative();
     pushDismissBoundsToNative();
   }
+  assertWindowMatchesPill();
+}
+
+// One settle pass after every show. A long-hidden webview can wake with a
+// stale frame: the show lands before its resize, parking the pill clipped
+// with bare frost poking out — and nothing later heals it, because parked
+// states (a demo-driven "listening" stream of audio levels, say) never
+// trigger another resize. The webview viewport tracks the native content
+// size, so a viewport/pill mismatch after layout settles means the frame
+// race was lost; re-issue the resize.
+const FRAME_SETTLE_DELAY_MS = 120;
+let frameSettleTimer: number | undefined;
+
+function assertWindowMatchesPill() {
+  // Standalone browser page: the viewport is the whole tab, never the pill.
+  if (!appWindow) return;
+  if (frameSettleTimer !== undefined) window.clearTimeout(frameSettleTimer);
+  frameSettleTimer = window.setTimeout(() => {
+    frameSettleTimer = undefined;
+    const state = hud?.dataset.state;
+    if (!hud || !state || state === "idle" || state === "exiting") return;
+    const gutter = state === "meeting" ? MEETING_WINDOW_GUTTER * 2 : 0;
+    const rect = hud.getBoundingClientRect();
+    const drift = Math.max(
+      Math.abs(window.innerWidth - (rect.width + gutter)),
+      Math.abs(window.innerHeight - (rect.height + gutter)),
+    );
+    // Rust rounds the frame at physical pixels; allow a point of slack.
+    if (drift > 1.5) void syncWindowToPill();
+  }, FRAME_SETTLE_DELAY_MS);
 }
 
 function hideSoon(delay = 900) {
