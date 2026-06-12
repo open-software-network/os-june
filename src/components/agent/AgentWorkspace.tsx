@@ -16,6 +16,7 @@ import { IconToolbox } from "central-icons/IconToolbox";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
+import { createPortal } from "react-dom";
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
@@ -3933,16 +3934,26 @@ export function AgentWorkspace({
               {composer}
             </section>
           </div>
-          {artifactPanel ? (
-            <AgentArtifactPanel
-              artifacts={surfacedArtifacts}
-              state={artifactPanel}
-              onShowList={() => setArtifactPanel({ view: "list" })}
-              onOpen={openArtifact}
-              onDownload={downloadArtifact}
-              onClose={() => setArtifactPanel(null)}
-            />
-          ) : null}
+          {/* Portaled out of .main-panel: WKWebView clips a composited fixed
+              element to an overflow-hidden ancestor, and the panel sits
+              entirely outside the card's box — so whenever the engine
+              transiently promoted its layer (animation replays, drag-time
+              renderer churn), the panel blinked out. As a direct child of
+              .app-shell nothing excludes its box, and the shell still carries
+              the CSS variables and data-attributes its rules read. */}
+          {artifactPanel
+            ? createPortal(
+                <AgentArtifactPanel
+                  artifacts={surfacedArtifacts}
+                  state={artifactPanel}
+                  onShowList={() => setArtifactPanel({ view: "list" })}
+                  onOpen={openArtifact}
+                  onDownload={downloadArtifact}
+                  onClose={() => setArtifactPanel(null)}
+                />,
+                document.querySelector(".app-shell") ?? document.body,
+              )
+            : null}
         </>
       )}
       <ModelPickerDialog
