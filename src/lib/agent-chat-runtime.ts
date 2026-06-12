@@ -384,6 +384,60 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (event.type.startsWith("subagent.")) {
+      // Delegated subagents (the model's `delegate_task`) stream their own
+      // lifecycle: subagent.start / .tool / .progress / .thinking / .complete,
+      // each carrying the subagent's goal and identity. The gateway forwards
+      // them over the same socket as everything else; without this branch they
+      // were silently dropped and the spawn never appeared in the chat. Render
+      // each subagent as a tool-style row keyed by its id, so N parallel
+      // subagents show as N live rows that resolve as they finish.
+      if (!currentAssistant) {
+        currentAssistant = createAssistantTurn(turns, event.receivedAt);
+        toolCreatedTurns.add(currentAssistant);
+      }
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const subagentId = stringValue(payload?.subagent_id);
+      const taskIndexRaw = payload?.task_index;
+      const taskIndex =
+        typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
+      const key = subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+      const goal = stringValue(payload?.goal);
+      const taskCountRaw = payload?.task_count;
+      const taskCount =
+        typeof taskCountRaw === "number" ? taskCountRaw : undefined;
+      const label = goal
+        ? `Subagent: ${goal}`
+        : taskCount && taskCount > 1 && taskIndex !== undefined
+          ? `Subagent ${taskIndex + 1} of ${taskCount}`
+          : "Subagent";
+      const completed = event.type === "subagent.complete";
+      const reportedStatus = stringValue(payload?.status)?.toLowerCase();
+      const status: AgentChatToolPart["status"] = completed
+        ? reportedStatus && /fail|error|interrupt/.test(reportedStatus)
+          ? "failed"
+          : "complete"
+        : "running";
+      if (status === "running") {
+        currentAssistant.status = "running";
+      } else if (toolCreatedTurns.has(currentAssistant)) {
+        currentAssistant.status = "complete";
+      }
+      // The live line: a completion summary, else whatever the subagent is
+      // doing now (its latest tool preview).
+      const activity =
+        stringValue(payload?.summary) ??
+        stringValue(payload?.tool_preview) ??
+        (event.type === "subagent.complete" ? undefined : stringValue(payload?.text));
+      upsertToolPart(currentAssistant.parts, {
+        id: `subagent:${key}`,
+        name: label,
+        text: activity ?? "",
+        status,
+      });
+      continue;
+    }
+
     if (event.type.startsWith("tool.")) {
       if (isClarifyToolEvent(event)) {
         if (event.type.includes("complete") || event.type.includes("fail")) {
