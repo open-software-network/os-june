@@ -9,7 +9,6 @@ import {
   useState,
 } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { flushSync } from "react-dom";
 import { AccountGate } from "../components/account/AccountGate";
 import { TrialGate } from "../components/account/TrialGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
@@ -124,6 +123,7 @@ import {
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
+import { handleSidebarResizeStart } from "./sidebar-resize";
 import {
   checkForScribeUpdate,
   installScribeUpdate,
@@ -1704,14 +1704,15 @@ export function App() {
         aria-orientation="vertical"
         aria-label="Resize sidebar"
         onPointerDown={(event) =>
-          handleSidebarResizeStart(
-            event,
-            sidebarWidth,
-            () => {
+          handleSidebarResizeStart(event, sidebarWidth, {
+            collapseWidth: SIDEBAR_COLLAPSE_WIDTH,
+            minWidth: SIDEBAR_MIN_WIDTH,
+            maxWidth: sidebarMaxWidth,
+            onStart: () => {
               setSidebarResizing(true);
               setSidebarTransition("none");
             },
-            (finalWidth) => {
+            onEnd: (finalWidth) => {
               if (finalWidth <= SIDEBAR_COLLAPSE_WIDTH) {
                 setSidebarResizing(false);
                 setSidebarTransition("smooth");
@@ -1727,7 +1728,7 @@ export function App() {
               setSidebarCollapsed(false);
               setSidebarWidth(nextWidth);
             },
-          )
+          })
         }
       />
       <section className="main-panel">
@@ -2333,111 +2334,6 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     .catch((error: unknown) =>
       console.warn("Failed to start window drag", error),
     );
-}
-
-function handleSidebarResizeStart(
-  event: ReactPointerEvent<HTMLDivElement>,
-  currentWidth: number,
-  onStart: () => void,
-  onEnd: (width: number) => void,
-) {
-  if (event.button !== 0) return;
-  event.preventDefault();
-  onStart();
-  const handle = event.currentTarget;
-  const shell = handle.closest(".app-shell") as HTMLElement | null;
-  const mainPanel = shell?.querySelector(".main-panel") as HTMLElement | null;
-  const startX = event.clientX;
-  const startWidth = currentWidth;
-  let latestWidth = currentWidth;
-  let collapsed = currentWidth === 0;
-
-  // While dragging in the resizable range the panel tracks the cursor with no
-  // transition (snappy). But the snap between the min width and fully-closed
-  // is a discrete jump — animate *that* crossing so collapsing/reopening via
-  // drag tweens smoothly. The handle's `left` rides along so the drag line
-  // doesn't detach from the panel edge mid-tween, and the main panel's left
-  // margin eases to its collapsed gutter at the same time so the card lands on
-  // its padding instead of sliding to the window edge and snapping back.
-  function setSnapTransition(animate: boolean) {
-    const timing = "var(--t-med) var(--ease-out)";
-    if (shell)
-      shell.style.transition = animate
-        ? `grid-template-columns ${timing}`
-        : "none";
-    handle.style.transition = animate ? `left ${timing}` : "none";
-    if (mainPanel)
-      mainPanel.style.transition = animate ? `margin ${timing}` : "none";
-  }
-
-  function applyWidth(width: number) {
-    shell?.style.setProperty("--sidebar-w-current", `${width}px`);
-    // Expanded the card hugs grid column 2 (the sidebar supplies the gutter);
-    // collapsed it must carry its own left gutter. Drive it here so it tweens
-    // with the collapse rather than jumping when React commits on pointer-up.
-    // `--main-gutter` keeps the resize bar tracking the card's left edge (so it
-    // rides the white, not the gray) since the bar is positioned off it too.
-    if (mainPanel)
-      mainPanel.style.marginLeft = width === 0 ? "var(--sp-3)" : "0px";
-    shell?.style.setProperty(
-      "--main-gutter",
-      width === 0 ? "var(--sp-3)" : "0px",
-    );
-    latestWidth = width;
-  }
-
-  function onPointerMove(moveEvent: PointerEvent) {
-    const rawWidth = startWidth + moveEvent.clientX - startX;
-
-    if (rawWidth <= SIDEBAR_COLLAPSE_WIDTH) {
-      // Below the threshold: collapse to 0. Only kick the smooth transition on
-      // the *crossing* — subsequent moves must leave it alone so the tween
-      // isn't cancelled by the next pointermove a few ms later.
-      if (!collapsed) {
-        collapsed = true;
-        setSnapTransition(true);
-        applyWidth(0);
-      }
-      return;
-    }
-
-    const nextWidth = Math.min(
-      sidebarMaxWidth(),
-      Math.max(SIDEBAR_MIN_WIDTH, rawWidth),
-    );
-    if (collapsed) {
-      // Re-opening from collapsed: animate the 0 → min snap.
-      collapsed = false;
-      setSnapTransition(true);
-      applyWidth(nextWidth);
-      return;
-    }
-    // Live resize within range: snap-follow the cursor, but don't re-assert
-    // `none` (which would cancel an in-flight open tween) unless the width
-    // actually moves.
-    if (nextWidth !== latestWidth) {
-      setSnapTransition(false);
-      applyWidth(nextWidth);
-    }
-  }
-
-  function onPointerUp() {
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
-    // Hand control back to React-driven styling. Commit synchronously so the
-    // collapsed/expanded class (and its matching left margin) is in the DOM
-    // *before* we drop the inline margin — otherwise removing it would briefly
-    // expose the expanded margin and flash a jump.
-    shell?.style.removeProperty("transition");
-    handle.style.removeProperty("transition");
-    mainPanel?.style.removeProperty("transition");
-    flushSync(() => onEnd(latestWidth));
-    mainPanel?.style.removeProperty("margin-left");
-    shell?.style.removeProperty("--main-gutter");
-  }
-
-  window.addEventListener("pointermove", onPointerMove);
-  window.addEventListener("pointerup", onPointerUp, { once: true });
 }
 
 function isDeniedPermission(state?: string) {

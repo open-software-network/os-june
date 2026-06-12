@@ -130,6 +130,24 @@ input:focus-visible,
   grid-template-columns: 0 minmax(0, 1fr);
 }
 
+.app-shell[data-sidebar-preview="expanded"] {
+  grid-template-columns: var(--sidebar-w-current, var(--sidebar-w)) minmax(
+      0,
+      1fr
+    );
+}
+
+.app-shell[data-sidebar-preview="opening"] {
+  grid-template-columns: var(--sidebar-w-current, var(--sidebar-w)) minmax(
+      0,
+      1fr
+    );
+}
+
+.app-shell[data-sidebar-preview="collapsed"] {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
 /* Sidebar ------------------------------------------------------------ */
 
 .sidebar {
@@ -147,6 +165,22 @@ input:focus-visible,
 
 .app-shell[data-sidebar="collapsed"] .sidebar {
   display: none;
+}
+
+.app-shell[data-sidebar-preview="expanded"] .sidebar {
+  display: flex;
+  visibility: visible;
+}
+
+.app-shell[data-sidebar-preview="opening"] .sidebar {
+  display: flex;
+  visibility: visible;
+}
+
+.app-shell[data-sidebar-preview="collapsed"] .sidebar {
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .sidebar-resize-handle {
@@ -2079,6 +2113,19 @@ button.agent-safety-badge:hover {
   animation: agent-artifact-panel-in var(--t-slow) var(--ease-spring);
 }
 
+/* Entrance is strictly once-per-mount: WebKit replays CSS animations when it
+ * recreates a renderer (which the sidebar drag's per-frame relayout can
+ * trigger), and a replay reads as the open panel flashing and sliding back
+ * in. React sets data-entered when the entrance completes. */
+.agent-artifact-panel[data-entered="true"] {
+  animation: none;
+}
+
+/* No will-change/transform promotion on this panel: WKWebView clips a
+ * composited fixed element to its overflow-hidden ancestor (.main-panel),
+ * and the panel sits entirely outside the card's box, so promoting its
+ * layer hides it outright. The entrance animation is the one sanctioned
+ * promotion, and data-entered retires it after the first run. */
 @keyframes agent-artifact-panel-in {
   from {
     opacity: 0;
@@ -2687,6 +2734,18 @@ button.agent-safety-badge:hover {
 
 .app-shell[data-sidebar="collapsed"] .agent-composer {
   left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="expanded"] .agent-composer {
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="collapsed"] .agent-composer {
+  left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="opening"] .agent-composer {
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
 .app-shell[data-sidebar-transition="smooth"] .agent-composer {
@@ -4755,6 +4814,18 @@ button.agent-safety-badge:hover {
   margin-left: var(--sp-3);
 }
 
+.app-shell[data-sidebar-preview="expanded"] .main-panel {
+  margin-left: 0;
+}
+
+.app-shell[data-sidebar-preview="collapsed"] .main-panel {
+  margin-left: var(--sp-3);
+}
+
+.app-shell[data-sidebar-preview="opening"] .main-panel {
+  margin-left: 0;
+}
+
 .main-panel-body {
   display: flex;
   flex-direction: column;
@@ -5760,6 +5831,18 @@ button.agent-safety-badge:hover {
 
 .app-shell[data-sidebar="collapsed"] .editor-footer {
   left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="expanded"] .editor-footer {
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="collapsed"] .editor-footer {
+  left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="opening"] .editor-footer {
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
 /* The fixed recorder's `left` rides the card's left edge. During a smooth

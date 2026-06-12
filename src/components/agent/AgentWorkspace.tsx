@@ -17,6 +17,7 @@ import { IconToolbox } from "central-icons/IconToolbox";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
+import { createPortal } from "react-dom";
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
@@ -3991,16 +3992,26 @@ export function AgentWorkspace({
               {composer}
             </section>
           </div>
-          {artifactPanel ? (
-            <AgentArtifactPanel
-              artifacts={surfacedArtifacts}
-              state={artifactPanel}
-              onShowList={() => setArtifactPanel({ view: "list" })}
-              onOpen={openArtifact}
-              onDownload={downloadArtifact}
-              onClose={() => setArtifactPanel(null)}
-            />
-          ) : null}
+          {/* Portaled out of .main-panel: WKWebView clips a composited fixed
+              element to an overflow-hidden ancestor, and the panel sits
+              entirely outside the card's box — so whenever the engine
+              transiently promoted its layer (animation replays, drag-time
+              renderer churn), the panel blinked out. As a direct child of
+              .app-shell nothing excludes its box, and the shell still carries
+              the CSS variables and data-attributes its rules read. */}
+          {artifactPanel
+            ? createPortal(
+                <AgentArtifactPanel
+                  artifacts={surfacedArtifacts}
+                  state={artifactPanel}
+                  onShowList={() => setArtifactPanel({ view: "list" })}
+                  onOpen={openArtifact}
+                  onDownload={downloadArtifact}
+                  onClose={() => setArtifactPanel(null)}
+                />,
+                document.querySelector(".app-shell") ?? document.body,
+              )
+            : null}
         </>
       )}
       <ModelPickerDialog
@@ -6542,6 +6553,12 @@ function AgentArtifactPanel({
   const [showSource, setShowSource] = useState(false);
   const [query, setQuery] = useState("");
   const [filterOpen, setFilterOpen] = useState(false);
+  // The slide-in entrance must run once per mount and never again. WebKit
+  // replays CSS animations whenever it recreates the renderer (it does this
+  // during the sidebar drag's per-frame relayout), which flashed the panel
+  // mid-gesture. Once the entrance finishes, data-entered switches the
+  // animation off entirely so a renderer rebuild has nothing to replay.
+  const [entered, setEntered] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
 
   // Restore the remembered width once per panel mount. The property lives on
@@ -6693,7 +6710,16 @@ function AgentArtifactPanel({
         aria-label="Resize files panel"
         onPointerDown={startResize}
       />
-      <aside ref={panelRef} className="agent-artifact-panel" aria-label="Files">
+      <aside
+        ref={panelRef}
+        className="agent-artifact-panel"
+        aria-label="Files"
+        data-entered={entered ? "true" : undefined}
+        onAnimationEnd={(event) => {
+          if (event.animationName === "agent-artifact-panel-in")
+            setEntered(true);
+        }}
+      >
         <header className="agent-artifact-panel-bar">
           {artifact ? (
             <button
