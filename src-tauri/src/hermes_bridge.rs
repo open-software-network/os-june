@@ -2412,6 +2412,22 @@ async fn handle_scribe_provider_connection(
             let body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             match crate::scribe_api::proxy_agent_chat_completions(body).await {
+                Ok(response) if response.status >= 400 => {
+                    // Error bodies are small enough to buffer whole, and
+                    // buffering is what makes the overflow translation
+                    // below possible. Success responses keep streaming.
+                    let status = response.status;
+                    let content_type = response.content_type.clone();
+                    let body = response.collect_body().await.unwrap_or_default();
+                    match translate_context_overflow_error(&body) {
+                        Some(rewritten) => {
+                            write_json_response(&mut stream, status, rewritten).await?;
+                        }
+                        None => {
+                            write_raw_response(&mut stream, status, &content_type, &body).await?;
+                        }
+                    }
+                }
                 Ok(response) => {
                     write_streaming_response(&mut stream, response).await?;
                 }
@@ -2522,6 +2538,33 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         headers,
         body,
     })
+}
+
+/// Rewrites the backend's `prompt_too_long` rejection into wording the agent
+/// recognizes as a context overflow. The backend answers an over-long
+/// conversation with its envelope (`{"success": false, "error_code": 2001,
+/// "message": "prompt_too_long"}`). Hermes recovers from overflow on its own
+/// (compress the history, retry) but only when it recognizes the provider's
+/// error TEXT, and the bare `prompt_too_long` token is not in its
+/// `_CONTEXT_OVERFLOW_PATTERNS` list — so the agent treated the rejection as
+/// a generic error and re-sent the same oversized prompt forever, wedging the
+/// session. The rewritten message keeps the stable `prompt_too_long` token
+/// first and adds the "maximum context length" phrasing that list matches
+/// ("context length", "maximum context"); everything else in the envelope
+/// passes through untouched. Returns `None` for every other body, including
+/// non-JSON.
+fn translate_context_overflow_error(body: &[u8]) -> Option<serde_json::Value> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let message = value.get("message")?.as_str()?;
+    if !message.contains("prompt_too_long") {
+        return None;
+    }
+    value["message"] = serde_json::Value::String(
+        "prompt_too_long: the request exceeds the model's maximum context length. \
+         Reduce the length of the messages and retry."
+            .to_string(),
+    );
+    Some(value)
 }
 
 fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
@@ -2711,6 +2754,44 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn prompt_too_long_rejection_translates_to_a_recognized_overflow() {
+        // The session in this state was wedged: the agent never recognized
+        // the backend's bare `prompt_too_long` as a context overflow, so it
+        // retried the same oversized prompt forever instead of compressing.
+        let body =
+            br#"{"data":null,"success":false,"error_code":2001,"message":"prompt_too_long"}"#;
+
+        let rewritten = translate_context_overflow_error(body).expect("translated");
+
+        let message = rewritten["message"].as_str().expect("message");
+        // The phrases hermes-agent's _CONTEXT_OVERFLOW_PATTERNS matches on;
+        // losing them silently re-wedges sessions.
+        assert!(message.contains("maximum context"));
+        assert!(message.contains("context length"));
+        // Clients keying on the stable token and the envelope still work.
+        assert!(message.starts_with("prompt_too_long"));
+        assert_eq!(rewritten["error_code"], 2001);
+        assert_eq!(rewritten["success"], false);
+    }
+
+    #[test]
+    fn unrelated_error_bodies_pass_through_untranslated() {
+        for body in [
+            br#"{"data":null,"success":false,"error_code":2001,"message":"string_too_long"}"#
+                .as_slice(),
+            br#"{"error":{"message":"rate limited"}}"#.as_slice(),
+            b"not json at all".as_slice(),
+            br#"{"message":42}"#.as_slice(),
+        ] {
+            assert!(
+                translate_context_overflow_error(body).is_none(),
+                "must not rewrite: {}",
+                String::from_utf8_lossy(body),
+            );
+        }
     }
 
     #[test]

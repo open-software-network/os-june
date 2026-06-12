@@ -84,7 +84,16 @@ fn validate_json_shape(
             }
             *total_string_chars = total_string_chars.saturating_add(chars);
             if *total_string_chars > MAX_AGENT_TOTAL_STRING_CHARS {
-                return Err(ApiError::bad_request("prompt_too_long"));
+                // Agent clients recover from context overflow automatically
+                // (compress the history, retry), but they classify by the
+                // provider error TEXT: hermes-agent's overflow patterns match
+                // phrases like "maximum context" and "context length", not
+                // the bare token. Keep `prompt_too_long` first for clients
+                // keying on it; the rest of the sentence is what unwedges an
+                // agent whose conversation outgrew the model.
+                return Err(ApiError::bad_request(
+                    "prompt_too_long: the request exceeds the model's maximum context length",
+                ));
             }
         }
         Value::Array(items) => {
