@@ -56,7 +56,7 @@ function applyStatus(status: RecordingStatusDto) {
 }
 
 // Orientation triad: parked in the left or right third of the screen the pill
-// stands vertical (dot above the waveform); the middle third lies flat. Rust
+// stands vertical (mark above the waveform); the middle third lies flat. Rust
 // owns the turn itself — a Core Animation transform on the native contentView
 // that carries frost, tint, and this whole DOM in one move. Our only job is
 // the counter-turn: flip `data-orient` so CSS spins the bars back the other
@@ -158,8 +158,29 @@ void listen<{ vertical: boolean; animate: boolean }>(
   },
 );
 
+// Local mirrors of the Tauri listeners, same as the dictation HUD page: the
+// demo driver dispatches window events when the bridge is absent.
+window.addEventListener("meeting-hud-status", (event) => {
+  const status = (event as CustomEvent<RecordingStatusDto>).detail;
+  if (status) applyStatus(status);
+});
+
+window.addEventListener("meeting-hud-zone", (event) => {
+  const payload = (event as CustomEvent<{ vertical: boolean; animate: boolean }>)
+    .detail;
+  if (payload) applyZone(payload);
+});
+
 resetBars();
 startBarLoop();
+
+// Console driver for this page when served standalone in a browser:
+// __recordingHud("recording") etc. See lib/recording-hud-demo.ts.
+if (import.meta.env.DEV) {
+  void import("./lib/recording-hud-demo").then(({ registerRecordingHudDemo }) =>
+    registerRecordingHudDemo({ local: true }),
+  );
+}
 
 // Paint immediately if a recording is already live when this view appears.
 void invoke<RecordingStatusDto | null>("meeting_hud_latest_status")

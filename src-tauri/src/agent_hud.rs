@@ -7,8 +7,17 @@ use tauri::{
 const AGENT_HUD_WINDOW_LABEL: &str = "agent-hud";
 const MAIN_WINDOW_LABEL: &str = "main";
 const AGENT_OPEN_EVENT: &str = "scribe:agent:open";
+// Fired at the webview when the panel swallows a right- or ctrl-click so the
+// in-DOM menu can open. Mirrored by the listener in src/agent-hud.ts.
+const AGENT_HUD_CONTEXT_MENU_EVENT: &str = "scribe:agent-hud:context-menu";
 const AGENT_HUD_WINDOW_WIDTH: f64 = 304.0;
 const AGENT_HUD_COLLAPSED_WINDOW_HEIGHT: f64 = 58.0;
+
+// The custom NSPanel subclass overrides `sendEvent:`, a static C function with
+// no captured state, so it reaches the app through this handle to emit the
+// context-menu event back to the webview.
+#[cfg(target_os = "macos")]
+static AGENT_HUD_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +29,8 @@ pub struct AgentHudLayoutRequest {
 }
 
 pub fn setup(app: &mut tauri::App) {
+    #[cfg(target_os = "macos")]
+    let _ = AGENT_HUD_APP.set(app.handle().clone());
     if let Err(error) = configure_agent_hud_window(app.handle()) {
         tracing::warn!(%error, "failed to configure agent HUD");
     }
@@ -218,9 +229,12 @@ fn make_agent_hud_nonactivating(window: &WebviewWindow) {
 
 /// NSPanel subclass that can become the key window. A borderless panel
 /// answers NO to `canBecomeKeyWindow` by default, which silently drops
-/// every keystroke aimed at the reply field.
+/// every keystroke aimed at the reply field. It also overrides `sendEvent:`
+/// to intercept context-click events before WKWebView ever sees them; see
+/// `send_event` below.
 #[cfg(target_os = "macos")]
 fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
+    use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
     use objc2::sel;
 
@@ -229,6 +243,38 @@ fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
     }
     extern "C-unwind" fn can_become_main(_this: &AnyObject, _sel: Sel) -> Bool {
         Bool::NO
+    }
+
+    // NSEvent type/modifier constants (AppKit is not a dependency, so they are
+    // spelled out here). A right-mouse-down, or the macOS ctrl-click
+    // context-click convention, is swallowed: WKWebView never gets the chance
+    // to raise its own native context menu, and the webview is told to open the
+    // HUD's own menu instead. Everything else forwards to super untouched.
+    const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: i64 = 1;
+    const NS_EVENT_TYPE_RIGHT_MOUSE_DOWN: i64 = 3;
+    const NS_EVENT_MODIFIER_FLAG_CONTROL: u64 = 1 << 18;
+
+    extern "C-unwind" fn send_event(this: &AnyObject, _sel: Sel, event: *mut AnyObject) {
+        unsafe {
+            if !event.is_null() {
+                let event_type: i64 = msg_send![event, type];
+                let modifiers: u64 = msg_send![event, modifierFlags];
+                let is_context_click = event_type == NS_EVENT_TYPE_RIGHT_MOUSE_DOWN
+                    || (event_type == NS_EVENT_TYPE_LEFT_MOUSE_DOWN
+                        && modifiers & NS_EVENT_MODIFIER_FLAG_CONTROL != 0);
+                if is_context_click {
+                    if let Some(app) = AGENT_HUD_APP.get() {
+                        let _ =
+                            app.emit_to(AGENT_HUD_WINDOW_LABEL, AGENT_HUD_CONTEXT_MENU_EVENT, ());
+                    }
+                    // Do not forward to super: that is what keeps the native
+                    // WKWebView context menu from ever appearing.
+                    return;
+                }
+            }
+            let superclass = AnyClass::get(c"NSPanel").expect("NSPanel class missing");
+            let _: () = msg_send![super(this, superclass), sendEvent: event];
+        }
     }
 
     if let Some(class) = AnyClass::get(c"JuneAgentHudPanel") {
@@ -244,6 +290,10 @@ fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
         builder.add_method(
             sel!(canBecomeMainWindow),
             can_become_main as extern "C-unwind" fn(_, _) -> _,
+        );
+        builder.add_method(
+            sel!(sendEvent:),
+            send_event as extern "C-unwind" fn(_, _, _),
         );
     }
     Some(builder.register())

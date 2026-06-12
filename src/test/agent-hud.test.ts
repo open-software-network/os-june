@@ -190,6 +190,139 @@ describe("agent HUD", () => {
     expect(document.querySelector(".agent-hud-reply svg")).toBeTruthy();
   });
 
+  it("stays collapsed after an explicit collapse while a session still needs input", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    // The new attention event auto-expands the panel.
+    expect(hudElement().dataset.expanded).toBe("true");
+
+    // Clicking the pill to collapse must stick even though the session is
+    // still waiting for the user.
+    pillElement().dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await flushPromises();
+
+    expect(hudElement().dataset.expanded).toBe("false");
+    // The collapsed pill still advertises the pending attention.
+    expect(hudElement().dataset.hasAction).toBe("true");
+    expect(pillLabelElement()).toHaveTextContent("1 needs input");
+
+    // A repeat status burst for the same waiting session does not re-expand
+    // the panel the user just collapsed.
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.expanded).toBe("false");
+  });
+
+  it("auto-expands again when a different session newly needs input", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    pillElement().dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await flushPromises();
+    expect(hudElement().dataset.expanded).toBe("false");
+
+    // A second, different session needing input is a fresh attention event.
+    emitSessionsChanged({
+      sessions: [
+        sessionFixture("session-1", "Need approval"),
+        sessionFixture("session-2", "Confirm the deletion"),
+      ],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1", "session-2"],
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.expanded).toBe("true");
+  });
+
+  it("opens the context menu from a right-click on the expanded surface", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.expanded).toBe("true");
+
+    // Right-clicking a row inside the expanded surface (not the pill) must
+    // still open the HUD's own menu rather than the native one.
+    const rowEvent = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    });
+    document
+      .querySelector<HTMLElement>(".agent-hud-row-body")
+      ?.dispatchEvent(rowEvent);
+    await flushPromises();
+
+    expect(rowEvent.defaultPrevented).toBe(true);
+    expect(menuElement().hidden).toBe(false);
+
+    hideHudButton().click();
+    await flushPromises();
+
+    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+  });
+
+  it("opens the context menu when the native panel reports a context click", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    expect(menuElement().hidden).toBe(true);
+
+    // The native panel swallows the right-/ctrl-click and emits this event;
+    // the webview never sees a contextmenu event in the real app.
+    const openMenuFromNative = mocks.listeners.get(
+      "scribe:agent-hud:context-menu",
+    );
+    expect(openMenuFromNative).toBeDefined();
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    expect(menuElement().hidden).toBe(false);
+    expect(menuElement()).toHaveAttribute("aria-hidden", "false");
+
+    hideHudButton().click();
+    await flushPromises();
+
+    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+  });
+
   it("shows an active-count badge when sessions work behind a needs-input one", async () => {
     await loadAgentHud();
 

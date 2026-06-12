@@ -317,9 +317,11 @@ describe("meeting detection HUD", () => {
     expect(hudShowCalls()).toBe(0);
   });
 
-  it("surfaces silent dictation failures as nothing recorded", async () => {
+  it("silently dismisses the HUD when nothing was recorded", async () => {
     vi.useFakeTimers();
     await loadHud();
+    await emit("dictation-event", { type: "finalizing_transcript" });
+    mocks.invoke.mockClear();
 
     await emit("dictation-event", {
       type: "error",
@@ -330,17 +332,38 @@ describe("meeting detection HUD", () => {
       },
     });
 
-    expect(hudElement().dataset.state).toBe("silent-error");
-    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
-      "Nothing recorded",
-    );
-    expect(hudShowCalls()).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(900);
+    // No "Nothing recorded" toast: a silent end takes the normal exit fade
+    // and says nothing, never surfacing the error treatment.
     expect(hudElement().dataset.state).toBe("exiting");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
+    expect(hudShowCalls()).toBe(0);
+
     // Drain the in-flight exit. Its fallback timeout dies with the fake
     // clock, but the rAF alpha ramp keeps running on real time after this
     // test ends and would land its hide() inside the next test's counts.
+    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
+  it("quietly dismisses the HUD when stop finds nothing listening", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "not_listening",
+        message: "Dictation is not listening.",
+      },
+    });
+
+    // The desired end state (not listening) already holds, so no toast:
+    // the pill takes the same quiet exit as a silent end.
+    expect(hudElement().dataset.state).toBe("exiting");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
+
     await vi.advanceTimersByTimeAsync(220);
     expect(mocks.hide).toHaveBeenCalledOnce();
   });

@@ -161,8 +161,7 @@ function setHud(state: string, status: string) {
   hud.dataset.state = state;
   statusText.textContent = status;
   if (errorText) {
-    errorText.textContent =
-      state === "silent-error" || state === "error" ? status : "";
+    errorText.textContent = state === "error" ? status : "";
   }
   if (state === "transcribing" || state === "pasting") {
     startBraille();
@@ -635,7 +634,6 @@ async function handleDictationEventPayload(payload: unknown) {
       state === "transcribing" ||
       state === "pasting" ||
       state === "error" ||
-      state === "silent-error" ||
       state === "exiting"
     ) {
       return;
@@ -686,11 +684,22 @@ async function handleDictationEventPayload(payload: unknown) {
 
   if (dictationEvent.type === "error") {
     // Rust pre-classifies via payload.silent so the HUD has one source of
-    // truth for what counts as a "Nothing recorded" case.
+    // truth for what counts as a "Nothing recorded" case. When nothing was
+    // recorded there's nothing to tell the user: take the normal graceful
+    // exit (the same fade hideHud runs after a successful paste) and say
+    // nothing. Real failures fall through to the visible error treatment
+    // below: Rust's promotion logic upgrades a silent classification to a
+    // real error when speech was probably detected, so those still show.
     if (dictationEvent.payload?.silent === true) {
-      setHud("silent-error", "Nothing recorded");
-      await showHud();
-      hideSoon(900);
+      void hideHud();
+      return;
+    }
+    // Stop with nothing running (a stop racing a session that already
+    // ended, or the demo pill's stop button hitting the real helper): the
+    // desired end state — not listening — is already true, so there is
+    // nothing to tell the user. Take the quiet exit.
+    if (dictationEvent.payload?.code === "not_listening") {
+      void hideHud();
       return;
     }
     // Re-triggering dictation while the pill is already up listening: the
@@ -933,9 +942,14 @@ window.addEventListener("meeting-detection-event", (event) => {
 
 subscribeToOnboardingComplete(showPendingMeetingPromptAfterOnboarding);
 
-// Console driver for this page when served standalone in a browser:
-// __meetingHud("detected") etc. See lib/meeting-hud-demo.ts.
+// Console drivers for this page when served standalone in a browser:
+// __dictationHud("listening") drives the dictation pill, __meetingHud(
+// "detected") drives the meeting-detection prompt. See lib/dictation-hud-demo.ts
+// and lib/meeting-hud-demo.ts.
 if (import.meta.env.DEV) {
+  void import("./lib/dictation-hud-demo").then(({ registerDictationHudDemo }) =>
+    registerDictationHudDemo({ local: true }),
+  );
   void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
     registerMeetingHudDemo({ local: true }),
   );

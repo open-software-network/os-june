@@ -85,10 +85,11 @@ body {
   align-items: center;
   gap: var(--sp-1);
   height: 32px;
-  /* 3px inset + 1px border = 4px; inner controls at 6px radius sit
-   * concentric inside the 10px outer radius. */
-  padding: 3px;
-  border: 1px solid var(--hud-border);
+  /* Borderless, like the agent HUD: on the vibrancy surface a 1px hairline
+   * reads far harder than it does over the agent HUD's CSS glass, so the
+   * pills looked mismatched. The 4px inset (was 3px + 1px border) keeps the
+   * inner 6px-radius controls concentric inside the 10px outer radius. */
+  padding: 4px;
   /* Must match the vibrancy view's corner radius set in dictation.rs so
    * tint and frost trace the same curve. */
   border-radius: var(--r-lg);
@@ -503,8 +504,7 @@ body {
 }
 
 /* State machine ------------------------------------------------------- */
-.hud[data-state="error"] .hud-handle,
-.hud[data-state="silent-error"] .hud-handle {
+.hud[data-state="error"] .hud-handle {
   display: none;
 }
 
@@ -573,14 +573,9 @@ body {
   --hud-alert: var(--hud-danger);
   gap: var(--sp-2);
   padding-inline: var(--sp-3) var(--sp-4);
-  border-color: color-mix(in oklch, var(--hud-danger) 28%, var(--border));
-  /* The shared 92%-opacity surface, with the danger tint folded in. */
+  /* The shared 92%-opacity surface, with the danger tint folded in (the
+   * pill is borderless now, so the error cue lives entirely in this tint). */
   background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
-}
-
-.hud[data-state="silent-error"] {
-  gap: var(--sp-2);
-  padding-inline: var(--sp-3) var(--sp-4);
 }
 
 .hud[data-state="transcribing"] .hud-viz,
@@ -590,15 +585,13 @@ body {
   width: 88px;
 }
 
-.hud[data-state="error"] .hud-viz,
-.hud[data-state="silent-error"] .hud-viz {
+.hud[data-state="error"] .hud-viz {
   display: none;
 }
 
 .hud[data-state="transcribing"] .hud-bars,
 .hud[data-state="pasting"] .hud-bars,
-.hud[data-state="error"] .hud-bars,
-.hud[data-state="silent-error"] .hud-bars {
+.hud[data-state="error"] .hud-bars {
   display: none;
 }
 
@@ -607,16 +600,14 @@ body {
   display: flex;
 }
 
-.hud[data-state="error"] .hud-error-text,
-.hud[data-state="silent-error"] .hud-error-text {
+.hud[data-state="error"] .hud-error-text {
   display: block;
 }
 
 /* Stop button only matters while we're still capturing audio. */
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
-.hud[data-state="error"] .hud-stop,
-.hud[data-state="silent-error"] .hud-stop {
+.hud[data-state="error"] .hud-stop {
   display: none;
 }
 

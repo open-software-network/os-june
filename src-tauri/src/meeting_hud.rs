@@ -1,7 +1,7 @@
 //! Floating meeting-recording HUD.
 //!
 //! A small always-on-top pill — sibling to the dictation HUD — that surfaces a
-//! "still recording" signal (record dot + live waveform) whenever the main
+//! "still recording" signal (June mark + live waveform) whenever the main
 //! window is closed or minimized mid-recording. It's a presence indicator, not
 //! a control surface: clicking it reopens the app on the meeting being recorded
 //! (see [`meeting_hud_reopen`]); all recording controls stay in-app.
@@ -18,10 +18,10 @@
 //! pixels), and depth comes from the native NSWindow shadow.
 //!
 //! The pill is orientation-aware: parked in the left or right third of the
-//! screen it stands upright (dot above the waveform); in the middle third it
+//! screen it stands upright (mark above the waveform); in the middle third it
 //! lies horizontal. The supervisor watches the drag position and, once the
 //! window settles, turns the *native contentView layer* a quarter turn — frost,
-//! tint, dot, and waveform rotate as one unit under a single Core Animation
+//! tint, mark, and waveform rotate as one unit under a single Core Animation
 //! ease, so nothing can clip or drift out of sync mid-turn. The one exception:
 //! the webview counter-rotates the bars (CSS, same duration/curve) so the
 //! waveform itself still reads left-to-right when the pill stands upright.
@@ -306,7 +306,7 @@ fn left_mouse_button_down() -> bool {
 
 /// Recompute the zone and, if it changed, turn the pill to the new orientation.
 /// The whole turn is one Core Animation transform on the native contentView —
-/// frost, tint, dot, and waveform rotate together, so nothing clips against the
+/// frost, tint, mark, and waveform rotate together, so nothing clips against the
 /// frame or drifts out of sync (the window itself never resizes). The webview
 /// hears `meeting-hud-zone` at the same moment and counter-rotates the bars so
 /// the waveform keeps reading left-to-right (meeting-hud.css).
@@ -571,7 +571,7 @@ unsafe fn frost_view(content: *mut AnyObject) -> *mut AnyObject {
 
 /// Turn the contentView's layer between flat (0°) and upright (90°). Because
 /// the frost view and the webview are both subviews, one transform carries the
-/// blur, tint, dot, and waveform together — they can't desync or clip. The
+/// blur, tint, mark, and waveform together — they can't desync or clip. The
 /// frost's length follows the pill's (CSS shrinks the upright pill; the two
 /// animations share the duration and curve).
 #[cfg(target_os = "macos")]
@@ -599,7 +599,7 @@ unsafe fn rotate_content(hud: &WebviewWindow, vertical: bool, animate: bool) {
     )];
 
     // CA's +z spins counterclockwise (y-up), so -90° swings the pill's left
-    // end — the record dot — to the top, matching the old CSS rotate(90deg).
+    // end (the June mark) to the top, matching the old CSS rotate(90deg).
     let angle = if vertical {
         -std::f64::consts::FRAC_PI_2
     } else {

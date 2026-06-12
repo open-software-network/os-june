@@ -3,9 +3,9 @@
 /*
  * Meeting recording HUD — a small frosted presence indicator (sibling to the
  * dictation HUD, hud.css). When the main window is closed/minimized mid-meeting
- * this floats as a record dot + live waveform: a calm "still recording" signal.
- * Click it to bring Scribe back to the meeting; drag to move. No controls — all
- * recording controls live in-app, one click away.
+ * this floats as the June mark + live waveform: a calm "still recording"
+ * signal. Click it to bring Scribe back to the meeting; drag to move. No
+ * controls — all recording controls live in-app, one click away.
  *
  * The window is a fixed square that fits the pill in both orientations: the
  * frosted surface is a native NSVisualEffectView framed to the pill behind the
@@ -19,8 +19,9 @@
  * upright; the middle third lies flat. The quarter turn happens in Rust
  * (meeting_hud.rs) as ONE Core Animation transform on the native contentView,
  * carrying frost, tint, dot, and waveform together — so this stylesheet lays
- * the pill out horizontally, always. The one counter-move: data-orient spins
- * the bars back the other way so the waveform still reads left-to-right.
+ * the pill out horizontally, always. The counter-move: data-orient spins the
+ * bars (and the mark, so the glyph stays upright) back the other way so the
+ * waveform still reads left-to-right.
  */
 
 :root {
@@ -30,10 +31,12 @@
   --popover: oklch(0.195 0.0015 84.59);
   --muted-foreground: oklch(0.709 0.0015 84.59);
   --border: oklch(1 0 0 / 12%);
-  /* A lighter, clearer "recording" orange than --record (which reads red at
-   * this size). Paused goes a touch softer and stops moving. */
-  --rec: oklch(0.72 0.175 52);
-  --rec-paused: oklch(0.78 0.1 65);
+  /* Terracotta "live recording" coloring for the June mark. Keep in sync with
+   * agent-hud.css :root (--attention / --attention-bright) — each HUD is a
+   * separate window and locally redefines the tokens it needs. The brand
+   * terracotta (--brand in tokens.css), lifted for legibility on dark glass. */
+  --attention: oklch(0.74 0.13 42);
+  --attention-bright: oklch(0.88 0.09 55);
 
   color: var(--foreground);
   background: transparent;
@@ -78,7 +81,10 @@ body:active {
   justify-content: center;
   width: 76px;
   height: 32px;
-  border: 1px solid var(--border);
+  /* Borderless, like the agent HUD: a 1px hairline reads far harder over
+   * this vibrancy surface than over the agent HUD's CSS glass. Removing it
+   * returns 2px to the inner space; the content is a centered flex row, so
+   * the mark + waveform stay centered with no sizing dependency on the border. */
   border-radius: var(--r-lg);
   /* The shared June overlay surface — near-opaque dark glass over the
    * vibrancy layer, matching the dictation HUD (--hud-bg), the meeting
@@ -99,7 +105,7 @@ body:active {
   width: 62px;
 }
 
-/* Wrapper keeps the dot + waveform together as one considered group. */
+/* Wrapper keeps the mark + waveform together as one considered group. */
 .mhud-content {
   display: flex;
   align-items: center;
@@ -113,36 +119,75 @@ body:active {
   outline-offset: -3px;
 }
 
-/* Recording dot ------------------------------------------------------- */
-.mhud-dot {
+/* June mark ----------------------------------------------------------- */
+
+/* The June logo mark stands in for the old record LED, ported from the agent
+ * HUD (.agent-hud-mark in agent-hud.css). The glyph is an inline SVG used as a
+ * CSS mask over a solid base color, so the shimmer gradient can paint through
+ * its shape. Recording is terracotta with a continuous bright shimmer pass —
+ * that travelling highlight is the "live" signal (replacing the dot's breath);
+ * the waveform next door carries the loudness. */
+.mhud-mark {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 14'%3E%3Cpath d='M11.5 6.5C11.7761 6.5 12 6.72386 12 7V8.5C12 8.77614 11.7761 9 11.5 9H10.4141C10.2815 9.00002 10.1543 9.05273 10.0605 9.14648L9.64648 9.56055C9.55273 9.6543 9.50002 9.78148 9.5 9.91406V11C9.5 11.2761 9.27614 11.5 9 11.5H3.41406C3.28148 11.5 3.1543 11.5527 3.06055 11.6465L2.64648 12.0605C2.55273 12.1543 2.50002 12.2815 2.5 12.4141V13.5C2.5 13.7761 2.27614 14 2 14H0.5C0.223858 14 0 13.7761 0 13.5V12C0 11.7239 0.223858 11.5 0.5 11.5H1.58594C1.71852 11.5 1.8457 11.4473 1.93945 11.3535L2.35352 10.9395C2.44727 10.8457 2.49998 10.7185 2.5 10.5859V9.5C2.5 9.22386 2.72386 9 3 9H8.58594C8.71852 8.99998 8.8457 8.94727 8.93945 8.85352L9.35352 8.43945C9.44727 8.3457 9.49998 8.21852 9.5 8.08594V7C9.5 6.72386 9.72386 6.5 10 6.5H11.5Z'/%3E%3Cpath d='M11.5 0C11.7761 0 12 0.223858 12 0.5V2C12 2.27614 11.7761 2.5 11.5 2.5H10.4141C10.2815 2.50002 10.1543 2.55273 10.0605 2.64648L9.64648 3.06055C9.55273 3.1543 9.50002 3.28148 9.5 3.41406V4.5C9.5 4.77614 9.27614 5 9 5H3.41406C3.28148 5.00002 3.1543 5.05273 3.06055 5.14648L2.64648 5.56055C2.55273 5.6543 2.50002 5.78148 2.5 5.91406V7C2.5 7.27614 2.27614 7.5 2 7.5H0.5C0.223858 7.5 0 7.27614 0 7V5.5C0 5.22386 0.223858 5 0.5 5H1.58594C1.71852 4.99998 1.8457 4.94727 1.93945 4.85352L2.35352 4.43945C2.44727 4.3457 2.49998 4.21852 2.5 4.08594V3C2.5 2.72386 2.72386 2.5 3 2.5H8.58594C8.71852 2.49998 8.8457 2.44727 8.93945 2.35352L9.35352 1.93945C9.44727 1.8457 9.49998 1.71852 9.5 1.58594V0.5C9.5 0.223858 9.72386 0 10 0H11.5Z'/%3E%3C/svg%3E");
+  --mark-base: var(--attention);
+  --mark-shine: var(--attention-bright);
+
+  position: relative;
   flex: 0 0 auto;
+  /* The mask's natural box is 10x12; sized down a hair to 9x11 so the glyph
+   * sits balanced beside the 22px-tall waveform in the 32px pill, close to the
+   * old 9px dot's footprint. */
   width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: var(--rec);
-  /* Read like a hardware record LED: a steady tight glow plus a slow,
-   * symmetric breath. The live waveform next door already signals activity,
-   * so the dot stays calm — no expanding ring. */
-  box-shadow: 0 0 5px color-mix(in oklch, var(--rec) 45%, transparent);
-  animation: mhud-breathe 3.2s ease-in-out infinite;
+  height: 11px;
+  overflow: hidden;
+  mask: var(--mark) center / 9px 11px no-repeat;
+  -webkit-mask: var(--mark) center / 9px 11px no-repeat;
+  background-color: var(--mark-base);
+  /* The transform tween matches the bars' counter-turn (TURN_SECS + --ease-out
+   * in meeting_hud.rs) so the mark holds still through the native rotation. */
   transition:
+    transform 320ms var(--ease-out),
     background-color 160ms var(--ease-out),
     opacity 120ms var(--ease-out);
 }
 
-.mhud[data-state="paused"] .mhud-dot {
-  background: var(--rec-paused);
-  box-shadow: none;
-  animation: none;
+/* Continuous shimmer: a translating highlight gradient, peak at 50%, swept
+ * across the masked glyph by a transform-only keyframe. This is the live
+ * recording signal. */
+.mhud-mark::before {
+  position: absolute;
+  inset: -1px auto -1px -65%;
+  width: 55%;
+  content: "";
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in oklch, var(--mark-shine) 20%, transparent) 30%,
+    var(--mark-shine) 50%,
+    color-mix(in oklch, var(--mark-shine) 20%, transparent) 70%,
+    transparent 100%
+  );
+  filter: blur(0.2px);
+  transform: translate3d(0, 0, 0) skewX(-16deg);
+  will-change: transform;
+  animation: mhud-shimmer 1150ms linear infinite;
 }
 
-@keyframes mhud-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
+/* Paused: the mark dims and stops shimmering — static, like the dimmed bars
+ * (opacity 0.32 below). Same logic as the old dot going dark and still. */
+.mhud[data-state="paused"] .mhud-mark {
+  opacity: 0.32;
+}
+
+.mhud[data-state="paused"] .mhud-mark::before {
+  display: none;
+}
+
+/* A transform-only highlight pass across the masked mark (ported from
+ * agent-hud-shimmer in agent-hud.css). */
+@keyframes mhud-shimmer {
+  to {
+    transform: translate3d(360%, 0, 0) skewX(-16deg);
   }
 }
 
@@ -166,6 +211,14 @@ body:active {
   transform: rotate(-90deg);
 }
 
+/* The mark needs the same counter-turn: a glyph laid on its side reads as
+ * broken (unlike a circular dot, which was orientation-agnostic). Rotating the
+ * element carries its mask with it, so the June logo stays upright in both
+ * orientations. The shimmer rides the ::before's own transform, untouched. */
+.mhud[data-orient="vertical"] .mhud-mark {
+  transform: rotate(-90deg);
+}
+
 /* Upright, the full 7-bar run crowds the 32px cross axis — keep a shorter
  * 4-bar run of the same waveform (the meter still drives all seven; the
  * hidden ones just don't paint). */
@@ -176,7 +229,8 @@ body:active {
 /* Orientation applied while the HUD is hidden snaps (the native side snaps
  * too); meeting-hud.ts removes the class once the snapped state painted. */
 .mhud.mhud-snap,
-.mhud.mhud-snap .mhud-bars {
+.mhud.mhud-snap .mhud-bars,
+.mhud.mhud-snap .mhud-mark {
   transition: none;
 }
 
@@ -213,10 +267,10 @@ body:active {
   .mhud-bar,
   .mhud-bar::before,
   .mhud-bars,
-  .mhud-dot {
+  .mhud-mark {
     transition: none;
   }
-  .mhud-dot {
+  .mhud-mark::before {
     animation: none;
   }
 }

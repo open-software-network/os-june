@@ -51,6 +51,10 @@ type HudEntry = {
 };
 
 const EXPANDED_KEY = "scribe:agent-hud:expanded";
+// Emitted by the native panel (agent_hud.rs) when it swallows a right- or
+// ctrl-click so the WKWebView never raises its own context menu. Keep this in
+// sync with AGENT_HUD_CONTEXT_MENU_EVENT in agent_hud.rs.
+const AGENT_HUD_CONTEXT_MENU_EVENT = "scribe:agent-hud:context-menu";
 const MAX_VISIBLE_ROWS = 3;
 const COMPLETED_STATUS_TTL_MS = 2200;
 const FAILED_STATUS_TTL_MS = 8 * 1000;
@@ -84,7 +88,16 @@ const state = {
   statusBySessionId: new Map<string, StatusRecord>(),
   pendingStatuses: [] as StatusRecord[],
   replyingEntryId: undefined as string | undefined,
+  // Transient auto-expand triggered when an entry newly needs input. Unlike
+  // `expanded` it is not persisted to EXPANDED_KEY: it grabs attention once,
+  // then an explicit collapse (setExpanded(false)) must stick.
+  attentionExpanded: false,
 };
+
+// Entry ids seen in `waitingForUser` on the previous render. A render that
+// sees an id enter this set flips attentionExpanded on; the set is cleared
+// when nothing is waiting so the next attention event pops the panel again.
+let lastWaitingEntryIds = new Set<string>();
 
 let lastLayoutKey = "";
 let lastStackKey = "";
@@ -204,6 +217,25 @@ function render() {
   const entries = buildEntries();
   const hasEntries = entries.length > 0;
   const hasAction = entries.some((entry) => entry.status === "waitingForUser");
+
+  // Auto-expand only on the transition INTO waitingForUser: an id appearing
+  // in the waiting set that wasn't there last render. A standing
+  // waitingForUser must not keep forcing the panel open, or an explicit
+  // collapse could never stick.
+  const waitingEntryIds = new Set(
+    entries
+      .filter((entry) => entry.status === "waitingForUser")
+      .map((entry) => entry.id),
+  );
+  const newlyWaiting = [...waitingEntryIds].some(
+    (id) => !lastWaitingEntryIds.has(id),
+  );
+  if (newlyWaiting) state.attentionExpanded = true;
+  // Drop a stale flag once nothing is waiting, so it can't pop the panel
+  // open again later.
+  if (waitingEntryIds.size === 0) state.attentionExpanded = false;
+  lastWaitingEntryIds = waitingEntryIds;
+
   if (
     state.replyingEntryId &&
     !entries.some((entry) => entry.id === state.replyingEntryId)
@@ -214,7 +246,7 @@ function render() {
   const expanded =
     state.enabled &&
     hasEntries &&
-    (hasAction ||
+    (state.attentionExpanded ||
       state.expanded ||
       state.focused ||
       Boolean(state.replyingEntryId) ||
@@ -905,6 +937,9 @@ function setExpanded(expanded: boolean) {
     state.focused = false;
     state.menuOpen = false;
     state.replyingEntryId = undefined;
+    // An explicit collapse clears the attention auto-expand; otherwise the
+    // next render would immediately re-expand while a session still waits.
+    state.attentionExpanded = false;
     // An explicit collapse beats the hover-hold; the pointer is necessarily
     // over the pill when it is clicked.
     lastRenderedExpanded = false;
@@ -1087,7 +1122,13 @@ pill?.addEventListener("keydown", (event) => {
   toggleExpanded();
 });
 
-pill?.addEventListener("contextmenu", (event) => {
+// The HUD is an overlay with no text-selection use case, so suppress the
+// native WKWebView context menu everywhere in this window and surface our
+// own menu instead. In the real app the native panel swallows right- and
+// ctrl-clicks before WKWebView sees them (see the Tauri listener below);
+// this DOM listener is the fallback for the standalone browser/demo page,
+// where there is no native panel to intercept.
+window.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   event.stopPropagation();
   openMenu();
@@ -1147,6 +1188,12 @@ void listen<AgentHudVisibilityChangedDetail>(
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
   (event) => applyVisibility(event.payload.enabled),
 ).catch(() => {});
+
+// The native panel intercepts the right-/ctrl-click and asks us to open the
+// menu. The click never reaches the DOM, so there is no competing
+// pointerdown to close it again (the window pointerdown handler only fires
+// for clicks the webview actually receives).
+void listen(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu()).catch(() => {});
 
 setIcon(pillChevron, IconChevronDownSmall, 14);
 render();
