@@ -35,7 +35,7 @@ export function handleSidebarResizeStart(
   // offset at the threshold crossing while the grid is still mid-tween, which
   // reads as a flash of misalignment.
   const composer = shell?.querySelector(
-    ".agent-composer",
+    '.agent-composer:not([data-hero="true"])',
   ) as HTMLElement | null;
   const editorFooter = shell?.querySelector(
     ".editor-footer",

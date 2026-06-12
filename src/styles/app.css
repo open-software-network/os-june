@@ -2688,23 +2688,27 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
-.app-shell[data-sidebar="collapsed"] .agent-composer {
+.app-shell[data-sidebar="collapsed"] .agent-composer:not([data-hero="true"]) {
   left: calc(var(--sp-3) + var(--sp-8));
 }
 
-.app-shell[data-sidebar-preview="expanded"] .agent-composer {
+.app-shell[data-sidebar-preview="expanded"]
+  .agent-composer:not([data-hero="true"]) {
   left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
-.app-shell[data-sidebar-preview="collapsed"] .agent-composer {
+.app-shell[data-sidebar-preview="collapsed"]
+  .agent-composer:not([data-hero="true"]) {
   left: calc(var(--sp-3) + var(--sp-8));
 }
 
-.app-shell[data-sidebar-preview="opening"] .agent-composer {
+.app-shell[data-sidebar-preview="opening"]
+  .agent-composer:not([data-hero="true"]) {
   left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
-.app-shell[data-sidebar-transition="smooth"] .agent-composer {
+.app-shell[data-sidebar-transition="smooth"]
+  .agent-composer:not([data-hero="true"]) {
   transition: left var(--t-med) var(--ease-out);
 }
 
@@ -3421,6 +3425,10 @@ input:focus-visible,
 .agent-composer[data-hero="true"] {
   position: relative;
   inset: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
   pointer-events: auto;
 }
 

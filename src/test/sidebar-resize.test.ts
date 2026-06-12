@@ -1,13 +1,17 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { handleSidebarResizeStart } from "../app/sidebar-resize";
+import appCss from "../styles/app.css?raw";
 
-function setupResizeDom(sidebarState: "collapsed" | "expanded") {
+function setupResizeDom(
+  sidebarState: "collapsed" | "expanded",
+  composerAttrs = "",
+) {
   document.body.innerHTML = `
     <main class="app-shell" data-sidebar="${sidebarState}">
       <aside class="sidebar"></aside>
       <div class="sidebar-resize-handle"></div>
-      <section class="main-panel"><div class="agent-composer"></div></section>
+      <section class="main-panel"><div class="agent-composer" ${composerAttrs}></div></section>
     </main>
   `;
   return {
@@ -32,6 +36,12 @@ function reactPointerEvent(
     currentTarget: handle,
     preventDefault: vi.fn(),
   } as unknown as ReactPointerEvent<HTMLDivElement>;
+}
+
+function loadAppStyles() {
+  const style = document.createElement("style");
+  style.textContent = appCss.replace(/^@import[^\n]+\n/gm, "");
+  document.head.append(style);
 }
 
 describe("handleSidebarResizeStart", () => {
@@ -141,5 +151,44 @@ describe("handleSidebarResizeStart", () => {
     window.dispatchEvent(pointerEvent("pointerup", 260));
     expect(shell.style.transition).toBe("");
     expect(composer.style.transition).toBe("");
+  });
+
+  it("does not apply docked composer transitions to the new-session hero composer", () => {
+    const { shell, handle, composer } = setupResizeDom(
+      "expanded",
+      'data-hero="true"',
+    );
+
+    handleSidebarResizeStart(reactPointerEvent(handle, 240), 240, {
+      collapseWidth: 160,
+      minWidth: 188,
+      maxWidth: () => 320,
+      onStart: vi.fn(),
+      onEnd: vi.fn(),
+      commit: (fn) => fn(),
+    });
+
+    window.dispatchEvent(pointerEvent("pointermove", 100));
+
+    expect(shell.dataset.sidebarPreview).toBe("collapsed");
+    expect(composer.style.transition).toBe("");
+
+    window.dispatchEvent(pointerEvent("pointerup", 100));
+  });
+
+  it("keeps hero composer offsets auto under sidebar preview CSS", () => {
+    setupResizeDom("expanded", 'data-hero="true"');
+    const shell = document.querySelector(".app-shell") as HTMLElement;
+    const composer = document.querySelector(".agent-composer") as HTMLElement;
+
+    shell.dataset.sidebarPreview = "expanded";
+    loadAppStyles();
+
+    const styles = getComputedStyle(composer);
+    expect(styles.position).toBe("relative");
+    expect(styles.left).toBe("auto");
+    expect(styles.right).toBe("auto");
+    expect(styles.bottom).toBe("auto");
+    expect(styles.top).toBe("auto");
   });
 });
