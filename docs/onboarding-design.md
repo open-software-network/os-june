@@ -9,14 +9,14 @@
 
 From the screen capture, Wispr's flow is: **SIGN UP → PERMISSIONS → SET UP → LEARN → PERSONALIZE**, with a persistent stage progress bar. The principles worth stealing:
 
-1. **One ask per screen.** Every screen has exactly one question, one button, or one action. Surveys are tap-chips, never text fields.
+1. **One ask per screen.** Every screen has exactly one question, one button, or one action.
 2. **Show the scary part before asking for it.** Each permission screen pairs the request (left) with a live screencast of the exact macOS dialog/System Settings toggle (right). Users never wonder "what will this look like / where do I click."
 3. **Justify every permission in one sentence of plain language.** "Flow will only access the mic when you are actively using it." "This lets Flow put your spoken words in the right textbox."
 4. **Close the trust loop.** After permissions: "Thanks for trusting us, we value your privacy" with green checkmarks recapping what was granted.
 5. **Verify hardware before teaching.** Mic test ("Do you see purple bars?") and hotkey test ("Does the button turn purple?") are yes/no questions with live visual feedback — failure is caught before the first practice rep, so the magic moment can't whiff.
 6. **Learn by doing in simulated apps.** Three practice reps inside fake Slack/Gmail/Notion, escalating in skill: free dictation → scripted self-correction ("Friday at 3, no actually 4" — teaches that fillers and corrections get cleaned up) → whisper mode. Each rep ends with "Good work!"
 7. **Immediate, personal reward.** "You just spoke 2.1x faster than the average typist" with the user's real number, then a time-saved projection with an interactive slider.
-8. **Personalization doubles as segmentation.** Role, attribution, and use-case surveys feed both analytics and which examples the user sees later.
+8. **Personalization should serve the user directly.** Ask only for inputs that immediately improve the onboarding path or product experience.
 9. **Viral loop at the exit.** "2 people from your company are using Flow" → create team.
 10. **Onboarding doesn't end at the last screen.** First app launch opens a "How would you like to use Flow first?" modal that routes to a first real task.
 
@@ -53,7 +53,7 @@ Layout language is Wispr's: split-screen (task left, illustration/demo right) fo
 
 **1. Welcome.** Logo + "Let's get you started." Sub: "The private AI assistant for your desktop." `Sign in via browser`. Right panel: auto-rotating carousel — dictation typing into a real app ("Works in any app"), meeting notes assembling themselves, the agent finishing a task ("Your work stays on your Mac").
 
-**2. Welcome, {name}!** "Where did you hear about us?" — attribution chips.
+**2. Welcome, {name}!** "What should June help with first?" chips.
 
 **3. Tell us about yourself.** "What do you do for work?" — role chips (feeds later examples: a lawyer sees a contract-summary agent task, a founder sees an investor-update draft).
 

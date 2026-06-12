@@ -219,57 +219,6 @@ pub struct IssueReport {
     pub platform: Option<String>,
 }
 
-/// A first-run onboarding attribution answer from the desktop app.
-#[derive(Clone, Debug)]
-pub struct OnboardingSurvey {
-    pub user_id: UserId,
-    pub source: OnboardingSurveySource,
-    pub app_version: Option<String>,
-    pub platform: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OnboardingSurveySource {
-    Friend,
-    XTwitter,
-    YouTube,
-    InstagramTikTok,
-    PodcastNewsletter,
-    AiChat,
-    Search,
-    Other,
-}
-
-impl OnboardingSurveySource {
-    pub fn from_slug(slug: &str) -> Option<Self> {
-        match slug {
-            "friend" => Some(Self::Friend),
-            "x-twitter" => Some(Self::XTwitter),
-            "youtube" => Some(Self::YouTube),
-            "instagram-tiktok" => Some(Self::InstagramTikTok),
-            "podcast-newsletter" => Some(Self::PodcastNewsletter),
-            "ai-chat" => Some(Self::AiChat),
-            "search" => Some(Self::Search),
-            "other" => Some(Self::Other),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Friend => "friend",
-            Self::XTwitter => "x-twitter",
-            Self::YouTube => "youtube",
-            Self::InstagramTikTok => "instagram-tiktok",
-            Self::PodcastNewsletter => "podcast-newsletter",
-            Self::AiChat => "ai-chat",
-            Self::Search => "search",
-            Self::Other => "other",
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct IssueReportAttachment {
     pub name: String,
@@ -346,11 +295,6 @@ pub trait TokenVerifier: Send + Sync {
 #[async_trait]
 pub trait IssueReportSink: Send + Sync {
     async fn deliver(&self, report: IssueReport) -> Result<(), DomainError>;
-}
-
-#[async_trait]
-pub trait SurveySink: Send + Sync {
-    async fn deliver(&self, survey: OnboardingSurvey) -> Result<(), DomainError>;
 }
 
 pub trait AudioDurationProbe: Send + Sync {

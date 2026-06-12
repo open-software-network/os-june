@@ -160,7 +160,6 @@ pub fn run() {
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_prepare_trial_checkout,
             os_accounts::os_accounts_start_trial_checkout,
-            commands::submit_discovery_source,
             focus_main_window
         ])
         .manage(hermes_bridge::HermesBridge::default())

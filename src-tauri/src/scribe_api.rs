@@ -603,25 +603,6 @@ pub async fn submit_issue_report(
     post_multipart("/v1/issue-reports", form).await
 }
 
-pub async fn submit_discovery_source(
-    request: &crate::domain::types::SubmitDiscoverySourceRequest,
-    app_version: &str,
-) -> Result<crate::domain::types::SubmitDiscoverySourceResponse, AppError> {
-    let source = request.source.trim();
-    if source.is_empty() {
-        return Err(AppError::new(
-            "discovery_source_empty",
-            "Discovery source is required.",
-        ));
-    }
-    let body = serde_json::json!({
-        "source": source,
-        "appVersion": app_version,
-        "platform": std::env::consts::OS,
-    });
-    post_json("/v1/onboarding-surveys", &body).await
-}
-
 fn issue_attachment_mime(path: &str) -> &'static str {
     let extension = Path::new(path)
         .extension()

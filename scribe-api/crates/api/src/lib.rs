@@ -30,7 +30,6 @@ pub use handlers::health::HealthDto;
 pub use handlers::issues::IssueReportResponse;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
-pub use handlers::surveys::{OnboardingSurveyRequest, OnboardingSurveyResponse};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
 pub fn router(state: ApiState) -> Router {
@@ -72,10 +71,6 @@ pub fn router(state: ApiState) -> Router {
             // Reports carry screenshot uploads, so they get the audio-sized
             // body budget rather than the JSON one.
             post(handlers::issues::submit).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
-        )
-        .route(
-            "/v1/onboarding-surveys",
-            post(handlers::surveys::submit).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .layer(timeout)
         .layer(TraceLayer::new_for_http())

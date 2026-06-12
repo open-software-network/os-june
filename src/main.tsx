@@ -2,10 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { Agentation } from "agentation";
 import { App } from "./app/App";
-import {
-  replayOnboarding,
-  reportPendingDiscoverySource,
-} from "./lib/onboarding";
+import { replayOnboarding } from "./lib/onboarding";
 import { initTheme } from "./lib/theme";
 import "./styles/app.css";
 
@@ -23,7 +20,6 @@ if (import.meta.env.DEV) {
 }
 
 initTheme();
-reportPendingDiscoverySource();
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.
 // from this window's devtools. Emits on the Tauri bus only, so fake demo

@@ -33,8 +33,7 @@ use crate::{
             RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
             RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest,
-            SubmitDiscoverySourceRequest, SubmitDiscoverySourceResponse, SubmitIssueReportRequest,
+            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
             SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
@@ -430,15 +429,6 @@ pub async fn submit_issue_report(
 ) -> Result<SubmitIssueReportResponse, AppError> {
     let app_version = app.package_info().version.to_string();
     crate::scribe_api::submit_issue_report(&request, &app_version).await
-}
-
-#[tauri::command]
-pub async fn submit_discovery_source(
-    app: AppHandle,
-    request: SubmitDiscoverySourceRequest,
-) -> Result<SubmitDiscoverySourceResponse, AppError> {
-    let app_version = app.package_info().version.to_string();
-    crate::scribe_api::submit_discovery_source(&request, &app_version).await
 }
 
 #[tauri::command]

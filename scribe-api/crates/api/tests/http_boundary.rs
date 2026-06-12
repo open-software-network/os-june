@@ -10,9 +10,8 @@ use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use scribe_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OnboardingSurvey,
-    OsAccountsClient, Receipt, SurveySink, TokenUsage, Transcriber, Transcript,
-    TranscriptionRequest, UserId,
+    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
+    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -190,87 +189,6 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
 }
 
 #[tokio::test]
-async fn integration_onboarding_survey_requires_auth() -> Result<(), Box<dyn Error>> {
-    let response = send(json_request(
-        "/v1/onboarding-surveys",
-        &serde_json::json!({
-            "source": "friend",
-            "appVersion": "0.0.8",
-            "platform": "macos"
-        }),
-        None,
-    )?)
-    .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = response_json(response).await?;
-    assert_eq!(body["success"], false);
-    assert_eq!(body["error_code"], 3001);
-    Ok(())
-}
-
-#[tokio::test]
-async fn integration_onboarding_survey_rejects_unknown_source() -> Result<(), Box<dyn Error>> {
-    let response = send(json_request(
-        "/v1/onboarding-surveys",
-        &serde_json::json!({
-            "source": "billboard",
-            "appVersion": "0.0.8",
-            "platform": "macos"
-        }),
-        Some(AUTHORIZATION),
-    )?)
-    .await;
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = response_json(response).await?;
-    assert_eq!(body["success"], false);
-    assert_eq!(body["message"], "source_invalid");
-    Ok(())
-}
-
-#[tokio::test]
-async fn integration_onboarding_survey_delivers_to_the_sink() -> Result<(), Box<dyn Error>> {
-    let sink = Arc::new(RecordingSurveySink::default());
-    let router = router(test_state_with_survey_sink(
-        sink.clone(),
-        test_attestation(),
-    ));
-
-    let response = match router
-        .oneshot(json_request(
-            "/v1/onboarding-surveys",
-            &serde_json::json!({
-                "source": "ai-chat",
-                "appVersion": "0.0.8",
-                "platform": "macos"
-            }),
-            Some(AUTHORIZATION),
-        )?)
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => match error {},
-    };
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await?;
-    assert_eq!(body["success"], true);
-    assert_eq!(body["data"]["received"], true);
-
-    let surveys = sink
-        .surveys
-        .lock()
-        .map_err(|_| "survey sink mutex poisoned")?;
-    assert_eq!(surveys.len(), 1);
-    assert_eq!(surveys[0].user_id.0, "usr_test");
-    assert_eq!(surveys[0].source.as_str(), "ai-chat");
-    assert_eq!(surveys[0].app_version.as_deref(), Some("0.0.8"));
-    assert_eq!(surveys[0].platform.as_deref(), Some("macos"));
-    Ok(())
-}
-
-#[tokio::test]
 async fn integration_note_transcribe_accepts_valid_audio_multipart() -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request(
         "/v1/notes/transcribe",
@@ -404,38 +322,18 @@ fn test_state() -> ApiState {
 }
 
 fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
-    test_state_with_sinks(
-        Arc::new(RecordingIssueReportSink::default()),
-        Arc::new(RecordingSurveySink::default()),
-        attestation,
-    )
+    test_state_with_sinks(Arc::new(RecordingIssueReportSink::default()), attestation)
 }
 
 fn test_state_with_issue_sink(
     issue_reports: Arc<dyn IssueReportSink>,
     attestation: AttestationInfo,
 ) -> ApiState {
-    test_state_with_sinks(
-        issue_reports,
-        Arc::new(RecordingSurveySink::default()),
-        attestation,
-    )
-}
-
-fn test_state_with_survey_sink(
-    surveys: Arc<dyn SurveySink>,
-    attestation: AttestationInfo,
-) -> ApiState {
-    test_state_with_sinks(
-        Arc::new(RecordingIssueReportSink::default()),
-        surveys,
-        attestation,
-    )
+    test_state_with_sinks(issue_reports, attestation)
 }
 
 fn test_state_with_sinks(
     issue_reports: Arc<dyn IssueReportSink>,
-    surveys: Arc<dyn SurveySink>,
     attestation: AttestationInfo,
 ) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
@@ -482,7 +380,6 @@ fn test_state_with_sinks(
             flat_estimate_credits: 1_000,
         })),
         issue_reports,
-        surveys,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
@@ -675,22 +572,6 @@ fn valid_wav() -> Vec<u8> {
 #[derive(Default)]
 struct RecordingIssueReportSink {
     reports: Mutex<Vec<IssueReport>>,
-}
-
-#[derive(Default)]
-struct RecordingSurveySink {
-    surveys: Mutex<Vec<OnboardingSurvey>>,
-}
-
-#[async_trait]
-impl SurveySink for RecordingSurveySink {
-    async fn deliver(&self, survey: OnboardingSurvey) -> Result<(), DomainError> {
-        self.surveys
-            .lock()
-            .map_err(|_| DomainError::UpstreamProvider)?
-            .push(survey);
-        Ok(())
-    }
 }
 
 #[async_trait]
