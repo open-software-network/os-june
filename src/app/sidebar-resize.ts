@@ -1,7 +1,7 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 
-type SidebarResizePreview = "collapsed" | "expanded";
+type SidebarResizePreview = "collapsed" | "expanded" | "opening";
 
 type SidebarResizeConfig = {
   collapseWidth: number;
@@ -34,6 +34,7 @@ export function handleSidebarResizeStart(
   const startWidth = currentWidth;
   let latestWidth = currentWidth;
   let collapsed = currentWidth === 0;
+  let opening = false;
 
   function setPreview(preview: SidebarResizePreview) {
     shell?.setAttribute("data-sidebar-preview", preview);
@@ -83,6 +84,7 @@ export function handleSidebarResizeStart(
       // in-flight tween.
       if (!collapsed) {
         collapsed = true;
+        opening = false;
         setPreview("collapsed");
         setSnapTransition(true);
         applyWidth(0);
@@ -94,7 +96,8 @@ export function handleSidebarResizeStart(
     if (collapsed) {
       // Re-opening from collapsed: animate the 0 to min snap.
       collapsed = false;
-      setPreview("expanded");
+      opening = true;
+      setPreview("opening");
       setSnapTransition(true);
       applyWidth(nextWidth);
       return;
@@ -103,7 +106,7 @@ export function handleSidebarResizeStart(
     // `none` (which would cancel an in-flight open tween) unless the width
     // actually moves.
     if (nextWidth !== latestWidth) {
-      setPreview("expanded");
+      setPreview(opening ? "opening" : "expanded");
       setSnapTransition(false);
       applyWidth(nextWidth);
     }

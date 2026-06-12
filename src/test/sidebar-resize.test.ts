@@ -1,7 +1,6 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { handleSidebarResizeStart } from "../app/sidebar-resize";
-import appCss from "../styles/app.css?raw";
 
 function setupResizeDom(sidebarState: "collapsed" | "expanded") {
   document.body.innerHTML = `
@@ -35,12 +34,6 @@ function reactPointerEvent(
 }
 
 describe("handleSidebarResizeStart", () => {
-  it("does not hide the sidebar element during collapsed drag preview", () => {
-    expect(appCss).not.toMatch(
-      /\.app-shell\[data-sidebar-preview="collapsed"\]\s+\.sidebar\s*\{[^}]*display:\s*none/,
-    );
-  });
-
   it("sets collapsed preview state as soon as a drag crosses the collapse threshold", () => {
     const { shell, handle, mainPanel } = setupResizeDom("expanded");
     const onStart = vi.fn();
@@ -64,7 +57,6 @@ describe("handleSidebarResizeStart", () => {
     expect(shell.style.getPropertyValue("--sidebar-w-current")).toBe("0px");
     expect(shell.style.getPropertyValue("--main-gutter")).toBe("var(--sp-3)");
     expect(mainPanel.style.marginLeft).toBe("var(--sp-3)");
-    expect(document.querySelector(".sidebar")).toBeInTheDocument();
 
     window.dispatchEvent(pointerEvent("pointerup", 100));
 
@@ -74,7 +66,7 @@ describe("handleSidebarResizeStart", () => {
     expect(mainPanel.style.marginLeft).toBe("");
   });
 
-  it("sets expanded preview state when dragging back out of collapsed width", () => {
+  it("keeps an opening preview when dragging back out of collapsed width", () => {
     const { shell, handle, mainPanel } = setupResizeDom("collapsed");
     const onEnd = vi.fn();
 
@@ -91,14 +83,19 @@ describe("handleSidebarResizeStart", () => {
 
     window.dispatchEvent(pointerEvent("pointermove", 220));
 
-    expect(shell.dataset.sidebarPreview).toBe("expanded");
+    expect(shell.dataset.sidebarPreview).toBe("opening");
     expect(shell.style.getPropertyValue("--sidebar-w-current")).toBe("220px");
     expect(shell.style.getPropertyValue("--main-gutter")).toBe("0px");
     expect(mainPanel.style.marginLeft).toBe("0px");
 
+    window.dispatchEvent(pointerEvent("pointermove", 240));
+
+    expect(shell.dataset.sidebarPreview).toBe("opening");
+    expect(shell.style.getPropertyValue("--sidebar-w-current")).toBe("240px");
+
     window.dispatchEvent(pointerEvent("pointerup", 220));
 
-    expect(onEnd).toHaveBeenCalledWith(220);
+    expect(onEnd).toHaveBeenCalledWith(240);
     expect(shell.dataset.sidebarPreview).toBeUndefined();
   });
 });

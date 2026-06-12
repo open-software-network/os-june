@@ -14,9 +14,10 @@ The files panel remains mounted, while fixed agent UI now follows the same
 collapsed or expanded selectors during the drag threshold crossing instead of
 waiting for React's committed `data-sidebar` state on pointer-up.
 
-Follow-up fix: the collapsed drag preview no longer applies `display: none` to
-the sidebar itself. The zero-width grid track clips the mounted sidebar during
-the drag, avoiding a display toggle flash when the pointer reverses back out.
+Follow-up correction: the collapsed drag preview hides the main sidebar again
+so the files panel stays visible. Reverse-drag now uses a separate `opening`
+preview state that keeps the main sidebar hidden until the gesture commits,
+avoiding the mid-drag flash without regressing files.
 
 Verification:
 
