@@ -16,11 +16,13 @@ import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
+import { IconPin } from "central-icons/IconPin";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
+import { IconUnpin } from "central-icons/IconUnpin";
 import {
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -112,7 +114,10 @@ type CommandPaletteGroup = {
   items: CommandPaletteItem[];
 };
 
+const AGENT_SIDEBAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
+const PINNED_AGENT_SESSION_IDS_STORAGE_KEY =
+  "scribe:pinned-agent-session-ids";
 const AGENT_SIDEBAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000, 16000, 32000,
 ];
@@ -154,6 +159,7 @@ type SidebarDevStateSnapshot = {
   waitingSessionIds: Set<string>;
   unreadSessionIds: Set<string>;
   deletingSessionIds: Set<string>;
+  pinnedSessionIds: Set<string>;
   query: string;
 };
 
@@ -235,6 +241,9 @@ export function Sidebar({
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const inSettings = activeView === "settings";
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<
+    Set<string>
+  >(() => readPinnedAgentSessionIds());
   const [selectedAgentSessionId, setSelectedAgentSessionId] =
     useState<string>();
   const [agentSessionToDelete, setAgentSessionToDelete] =
@@ -278,6 +287,10 @@ export function Sidebar({
   }, []);
 
   useEffect(() => {
+    writePinnedAgentSessionIds(pinnedAgentSessionIds);
+  }, [pinnedAgentSessionIds]);
+
+  useEffect(() => {
     const openId = activeView === "agent" ? selectedAgentSessionId : undefined;
     openAgentSessionIdRef.current = openId;
     if (!openId) return;
@@ -306,6 +319,24 @@ export function Sidebar({
         .includes(normalized),
     );
   }, [agentSessions, query]);
+  const pinnedAgentSessions = useMemo(
+    () =>
+      filteredAgentSessions
+        .filter((session) => pinnedAgentSessionIds.has(session.id))
+        .sort(
+          (a, b) =>
+            pinnedSessionOrder(pinnedAgentSessionIds, a.id) -
+            pinnedSessionOrder(pinnedAgentSessionIds, b.id),
+        ),
+    [filteredAgentSessions, pinnedAgentSessionIds],
+  );
+  const visibleAgentSessions = useMemo(
+    () =>
+      filteredAgentSessions
+        .filter((session) => !pinnedAgentSessionIds.has(session.id))
+        .slice(0, AGENT_SIDEBAR_SESSION_LIMIT),
+    [filteredAgentSessions, pinnedAgentSessionIds],
+  );
 
   const commandPaletteGroups = useMemo<CommandPaletteGroup[]>(() => {
     const normalized = normalizeCommandQuery(commandQuery);
@@ -433,6 +464,7 @@ export function Sidebar({
         setWaitingAgentSessionIds(new Set(snapshot.waitingSessionIds));
         setUnreadAgentSessionIds(new Set(snapshot.unreadSessionIds));
         setDeletingAgentSessionIds(new Set(snapshot.deletingSessionIds));
+        setPinnedAgentSessionIds(new Set(snapshot.pinnedSessionIds));
         workingAgentSessionIdsRef.current = new Set(snapshot.workingSessionIds);
         setQuery(snapshot.query);
         sidebarDevStateSnapshotRef.current = null;
@@ -454,6 +486,7 @@ export function Sidebar({
           waitingSessionIds: new Set(waitingAgentSessionIds),
           unreadSessionIds: new Set(unreadAgentSessionIds),
           deletingSessionIds: new Set(deletingAgentSessionIds),
+          pinnedSessionIds: new Set(pinnedAgentSessionIds),
           query,
         };
       }
@@ -468,6 +501,7 @@ export function Sidebar({
       setWaitingAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.waiting]));
       setUnreadAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.unread]));
       setDeletingAgentSessionIds(new Set());
+      setPinnedAgentSessionIds(new Set([SIDEBAR_DEV_SESSION_IDS.selected]));
       workingAgentSessionIdsRef.current = new Set([
         SIDEBAR_DEV_SESSION_IDS.working,
       ]);
@@ -488,6 +522,7 @@ export function Sidebar({
     deletingAgentSessionIds,
     onChangeView,
     query,
+    pinnedAgentSessionIds,
     selectedAgentSessionId,
     unreadAgentSessionIds,
     waitingAgentSessionIds,
@@ -504,6 +539,16 @@ export function Sidebar({
     markAgentNewSessionPending();
     onNewAgentSession();
     dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
+  }
+
+  function togglePinnedAgentSession(sessionId: string) {
+    setPinnedAgentSessionIds((current) => {
+      const ordered = Array.from(current).filter((id) => id !== sessionId);
+      if (!current.has(sessionId)) {
+        ordered.unshift(sessionId);
+      }
+      return new Set(ordered);
+    });
   }
 
   function openCommandPalette() {
@@ -567,7 +612,7 @@ export function Sidebar({
     let retryTimeout: number | undefined;
 
     function loadAgentSessions(attempt: number) {
-      listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_LIMIT })
+      listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT })
         .then((sessions) => {
           if (!cancelled) {
             setAgentSessions((current) =>
@@ -610,7 +655,9 @@ export function Sidebar({
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_LIMIT));
+      setAgentSessions(
+        detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT),
+      );
       setSelectedAgentSessionId(detail.selectedSessionId);
       const nextWorking = new Set(detail.workingSessionIds);
       const nextWaiting = new Set(detail.waitingSessionIds ?? []);
@@ -699,6 +746,12 @@ export function Sidebar({
         return next;
       });
       setUnreadAgentSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(session.id);
+        return next;
+      });
+      setPinnedAgentSessionIds((current) => {
+        if (!current.has(session.id)) return current;
         const next = new Set(current);
         next.delete(session.id);
         return next;
@@ -843,6 +896,43 @@ export function Sidebar({
             </button>
           </nav>
 
+          {pinnedAgentSessions.length > 0 ? (
+            <section
+              className="sidebar-section sidebar-pinned-section"
+              aria-label="Pinned agent sessions"
+            >
+              <div className="section-title">
+                <span className="section-title-label">Pinned</span>
+              </div>
+              <div className="notes-nav sidebar-pinned-list">
+                {pinnedAgentSessions.map((session) => (
+                  <AgentSessionRow
+                    key={session.id}
+                    session={session}
+                    selected={
+                      activeView === "agent" &&
+                      selectedAgentSessionId === session.id
+                    }
+                    pinned
+                    working={workingAgentSessionIds.has(session.id)}
+                    waiting={waitingAgentSessionIds.has(session.id)}
+                    unread={unreadAgentSessionIds.has(session.id)}
+                    deleting={deletingAgentSessionIds.has(session.id)}
+                    onSelect={() => {
+                      setSelectedAgentSessionId(session.id);
+                      onSelectAgentSession(session);
+                    }}
+                    onTogglePinned={() => togglePinnedAgentSession(session.id)}
+                    onDelete={() => {
+                      setAgentSessionDeleteError(null);
+                      setAgentSessionToDelete(session);
+                    }}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <section
             className="sidebar-section sidebar-agent-section"
             aria-label="Agent sessions"
@@ -870,8 +960,8 @@ export function Sidebar({
             </div>
             <div className="notes-nav-wrap">
               <div className="notes-nav">
-                {filteredAgentSessions.length > 0 ? (
-                  filteredAgentSessions.map((session) => (
+                {visibleAgentSessions.length > 0 ? (
+                  visibleAgentSessions.map((session) => (
                     <AgentSessionRow
                       key={session.id}
                       session={session}
@@ -879,6 +969,7 @@ export function Sidebar({
                         activeView === "agent" &&
                         selectedAgentSessionId === session.id
                       }
+                      pinned={pinnedAgentSessionIds.has(session.id)}
                       working={workingAgentSessionIds.has(session.id)}
                       waiting={waitingAgentSessionIds.has(session.id)}
                       unread={unreadAgentSessionIds.has(session.id)}
@@ -887,6 +978,7 @@ export function Sidebar({
                         setSelectedAgentSessionId(session.id);
                         onSelectAgentSession(session);
                       }}
+                      onTogglePinned={() => togglePinnedAgentSession(session.id)}
                       onDelete={() => {
                         setAgentSessionDeleteError(null);
                         setAgentSessionToDelete(session);
@@ -897,7 +989,9 @@ export function Sidebar({
                   <div className="sidebar-empty">
                     {agentSessions.length === 0
                       ? "No sessions yet"
-                      : "No matches"}
+                      : filteredAgentSessions.length === 0
+                        ? "No matches"
+                        : "No other sessions"}
                   </div>
                 )}
               </div>
@@ -1437,23 +1531,58 @@ function accountDisplayName(account: AccountStatus) {
   );
 }
 
+function readPinnedAgentSessionIds() {
+  if (typeof window === "undefined") return new Set<string>();
+  try {
+    const raw = window.localStorage.getItem(
+      PINNED_AGENT_SESSION_IDS_STORAGE_KEY,
+    );
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set<string>();
+    return new Set(parsed.filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writePinnedAgentSessionIds(ids: ReadonlySet<string>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      PINNED_AGENT_SESSION_IDS_STORAGE_KEY,
+      JSON.stringify(Array.from(ids)),
+    );
+  } catch {
+    // Private browsing / locked-down WebViews may reject storage writes.
+  }
+}
+
+function pinnedSessionOrder(ids: ReadonlySet<string>, sessionId: string) {
+  const index = Array.from(ids).indexOf(sessionId);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
 function AgentSessionRow({
   session,
   selected,
+  pinned,
   working,
   waiting,
   unread,
   deleting,
   onSelect,
+  onTogglePinned,
   onDelete,
 }: {
   session: HermesSessionInfo;
   selected: boolean;
+  pinned: boolean;
   working: boolean;
   waiting: boolean;
   unread: boolean;
   deleting: boolean;
   onSelect: () => void;
+  onTogglePinned: () => void;
   onDelete: () => void;
 }) {
   const title = session.title || session.preview || "Untitled session";
@@ -1516,20 +1645,36 @@ function AgentSessionRow({
       ) : time ? (
         <span className="agent-session-meta agent-session-time">{time}</span>
       ) : null}
-      <button
-        type="button"
-        className="note-row-menu agent-session-delete"
-        aria-label="Delete session"
-        title="Delete session"
-        disabled={deleting}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onDelete();
-        }}
-      >
-        <IconTrashCan size={14} />
-      </button>
+      <span className="agent-session-actions">
+        <button
+          type="button"
+          className="note-row-menu agent-session-pin"
+          aria-label={pinned ? "Unpin session" : "Pin session"}
+          title={pinned ? "Unpin session" : "Pin session"}
+          aria-pressed={pinned}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onTogglePinned();
+          }}
+        >
+          {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
+        </button>
+        <button
+          type="button"
+          className="note-row-menu agent-session-delete"
+          aria-label="Delete session"
+          title="Delete session"
+          disabled={deleting}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          <IconTrashCan size={14} />
+        </button>
+      </span>
     </article>
   );
 }

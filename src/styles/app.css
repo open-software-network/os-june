@@ -4241,6 +4241,22 @@ button.agent-safety-badge:hover {
   gap: var(--sp-2);
 }
 
+.sidebar-pinned-section {
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+}
+
+.sidebar-pinned-section .section-title {
+  min-height: 22px;
+}
+
+.sidebar-pinned-list {
+  height: auto;
+  max-height: 154px;
+  overflow-y: auto;
+  padding-bottom: 0;
+}
+
 .section-title {
   display: flex;
   align-items: center;
@@ -4547,6 +4563,10 @@ button.agent-safety-badge:hover {
   color: var(--destructive);
 }
 
+.agent-session-pin:hover:not(:disabled) {
+  color: var(--foreground);
+}
+
 /* Agent rows drop the reserved menu column: the title spans (nearly) the full
  * row and fades out under the trailing overlay — a relative timestamp (or the
  * needs-you dot), swapped for the delete button on hover. */
@@ -4559,10 +4579,9 @@ button.agent-safety-badge:hover {
 }
 
 /* Titles ellipsize short of the trailing slot so they never collide with the
- * timestamp / dot ("May 28" right-aligned 8px into the row ≈ 48px; the title
- * box already ends 12px in, leaving 36px to reserve). */
+ * timestamp / dot or the two hover actions. */
 .agent-sidebar-row .note-row-title {
-  padding-right: 36px;
+  padding-right: 62px;
 }
 
 /* Trailing meta on agent rows: the relative timestamp or a compact status dot.
@@ -4596,19 +4615,23 @@ button.agent-safety-badge:hover {
   opacity: 0;
 }
 
-/* The delete button overlays the meta slot rather than holding a grid column
- * of its own, and reveals on hover only — a selected row keeps showing its
- * timestamp until pointed at. */
-.agent-sidebar-row .note-row-menu.agent-session-delete {
+/* Row actions overlay the meta slot rather than holding a grid column of their
+ * own, and reveal on hover only — a selected row keeps showing its timestamp
+ * until pointed at. */
+.agent-session-actions {
   position: absolute;
   top: 50%;
   right: var(--sp-1);
   translate: 0 -50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
   opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.agent-sidebar-row:hover .agent-session-delete,
-.agent-sidebar-row .agent-session-delete:focus-visible {
+.agent-sidebar-row:hover .agent-session-actions,
+.agent-session-actions:focus-within {
   opacity: 1;
 }
 
