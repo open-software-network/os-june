@@ -2741,6 +2741,337 @@ button.agent-safety-badge:hover {
   margin-left: auto;
 }
 
+.agent-composer-model {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.agent-composer-model-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: min(190px, 34vw);
+  height: var(--control-lg);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-model-trigger:hover,
+.agent-composer-model[data-open="true"] .agent-composer-model-trigger {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.agent-composer-model-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-model-popover {
+  position: absolute;
+  right: max(0px, calc(50% - 320px));
+  bottom: calc(100% + var(--sp-1));
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  padding: var(--sp-1);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+  isolation: isolate;
+}
+
+.agent-composer-model-title {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-composer-model-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-composer-model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+}
+
+.agent-composer-model-row:hover,
+.agent-composer-model-row[data-active="true"] {
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
+}
+
+.agent-composer-model-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-model-row-check,
+.agent-composer-model-row-chevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted-foreground);
+}
+
+/* Sits below the menu's divider with the same breathing room as the rows
+ * above it, so its hover pill matches theirs instead of bleeding into the
+ * separator. */
+.agent-composer-model-all {
+  margin-top: var(--sp-1);
+}
+
+/* Second layer: a side panel hanging off the root menu — the hover detail
+ * card for a suggested model, or the searchable full catalog. The bottom
+ * anchor here is the panel's; the detail card gets repositioned to its
+ * hovered row from JS (see the flyout measure effect). */
+.agent-composer-model-flyout {
+  position: absolute;
+  bottom: -1px;
+  right: calc(100% + var(--sp-1));
+  z-index: 2;
+  display: block;
+  color: var(--popover-foreground);
+  /* Slides out from behind the root menu toward its own side. */
+  animation: agent-composer-model-flyout-left var(--t-med) var(--ease-out);
+}
+
+.agent-composer-model-surface {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+  overflow: hidden;
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  background-clip: padding-box;
+  color: var(--popover-foreground);
+  /* The surface owns the only elevation for this layer. Scroll fades and
+   * search/list content are descendants clipped inside this rounded box, so
+   * they cannot paint into the shadow halo around the panel. */
+  box-shadow: var(--shadow-lg);
+  isolation: isolate;
+}
+
+.agent-composer-model-flyout[data-side="right"] {
+  right: auto;
+  left: calc(100% + var(--sp-1));
+  animation-name: agent-composer-model-flyout-right;
+}
+
+@keyframes agent-composer-model-flyout-right {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+}
+
+@keyframes agent-composer-model-flyout-left {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+.agent-composer-model-detail .agent-composer-model-surface {
+  gap: var(--sp-1);
+  width: 220px;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.agent-composer-model-detail-name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.agent-composer-model-detail-name > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-model-detail-name .model-trait-icon {
+  flex: 0 0 auto;
+  font-weight: 400;
+}
+
+.agent-composer-model-detail-values {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-composer-model-detail-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+/* The catalog rows' hover card — same body as the suggested-model detail
+ * card, but fixed-positioned beside the hovered row (set from JS) so it can
+ * escape the panel's clipping and tracks the pointer like Codex's item
+ * tooltips. Non-interactive on purpose. */
+.agent-composer-model-hovercard {
+  position: fixed;
+  z-index: 3;
+  display: block;
+  pointer-events: none;
+  color: var(--popover-foreground);
+  /* Keep the hover card above the panel so the panel shadow/fade cannot wash
+   * over the card. Clip only the side facing the panel; the other three sides
+   * keep the same elevation, and the clipped side cannot bleed back into the
+   * panel. */
+  clip-path: inset(-48px 0 -48px -48px);
+  animation: agent-composer-model-flyout-left var(--t-med) var(--ease-out);
+}
+
+.agent-composer-model-hovercard[data-side="right"] {
+  clip-path: inset(-48px -48px -48px 0);
+  animation-name: agent-composer-model-flyout-right;
+}
+
+.agent-composer-model-all-panel {
+  width: min(260px, calc(100vw - 48px));
+}
+
+.agent-composer-model-all-panel .agent-composer-model-surface {
+  /* Tight: rows fade out right under the search field, no blank band. */
+  gap: 2px;
+  width: min(260px, calc(100vw - 48px));
+  max-height: inherit;
+  padding: var(--sp-1);
+}
+
+.agent-composer-model-search {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  height: var(--control-md);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.agent-composer-model-search input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.agent-composer-model-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* The list's scroll viewport plus its edge fades. The wrap exists so the
+ * overlays can sit at top: 0 / bottom: 0 of the exact scroll area — no
+ * hand-computed offsets to drift out of place. */
+.agent-composer-model-list-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  contain: paint;
+}
+
+.agent-composer-model-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Scroll fades, contained: overlays pinned to the scroll viewport's edges
+ * (a mask on the scroller rides the scrolled content in WebKit and bleeds
+ * past the bounds). Rows melt into the popover surface at the boundary and
+ * nothing can paint outside the panel. */
+.agent-composer-model-list-wrap::before,
+.agent-composer-model-list-wrap::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  height: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-model-list-wrap::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--popover), transparent);
+}
+
+.agent-composer-model-list-wrap::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--popover), transparent);
+}
+
+.agent-composer-model-list-wrap[data-fade-top="true"]::before,
+.agent-composer-model-list-wrap[data-fade-bottom="true"]::after {
+  opacity: 1;
+}
+
+.agent-composer-model-empty {
+  margin: 0;
+  padding: var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
 /* Attach (+) and dictation (mic) are both quiet ghost buttons that round to a
  * squircle on hover, matching the send button. */
 .agent-composer-attach {
@@ -4483,12 +4814,15 @@ button.agent-safety-badge:hover {
   opacity: 0;
 }
 
-/* Agent conversations have a sticky breadcrumb bar over the scroller. The top
- * fade is driven by .agent-scroll, but it should start below that chrome rather
- * than washing through the transparent frosted breadcrumb surface. */
+/* Agent conversations own their internal scroll fades. The card-level top
+ * dissolve sits where the breadcrumb bar normally lives, and in the hero it
+ * shows up behind floating popovers as a horizontal wash. Keep it off for the
+ * entire agent view. */
 .main-panel:has(.main-panel-body[data-active-view="agent"])::before {
   top: var(--detail-bar-h);
   right: var(--scrollbar-w);
+  animation: none;
+  opacity: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

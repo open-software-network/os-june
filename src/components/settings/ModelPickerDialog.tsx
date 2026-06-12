@@ -259,7 +259,7 @@ export function selectedModel(options: VeniceModelDto[], value: string) {
   );
 }
 
-function pricingLabel(model: VeniceModelDto) {
+export function pricingLabel(model: VeniceModelDto) {
   const pricing = model.pricing;
   if (pricing && typeof pricing === "object") {
     const display = (pricing as Record<string, unknown>).display;
@@ -336,7 +336,7 @@ function formatCreditsAsUsdPerUnit(credits: number, units: number) {
   return `$0.${String(microUsd).padStart(6, "0").replace(/0+$/, "")}`;
 }
 
-function contextLabel(model: VeniceModelDto) {
+export function contextLabel(model: VeniceModelDto) {
   if (!model.contextTokens) return undefined;
   if (model.contextTokens >= 1_000_000) {
     return `${trimNumber(model.contextTokens / 1_000_000)}M context`;

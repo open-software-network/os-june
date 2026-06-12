@@ -2264,6 +2264,69 @@ describe("AgentWorkspace", () => {
     }
   });
 
+  it("opens the hero model catalog in a contained second-layer surface", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-1",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-1",
+          name: "GLM 5.1",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "kimi-k2",
+          name: "Kimi K2",
+          modelType: "text",
+          privacy: "anonymous",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+        {
+          provider: "venice",
+          id: "tool-less",
+          name: "Tool-less model",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
+
+    const panel = await screen.findByRole("group", { name: "All text models" });
+    expect(panel.firstElementChild).toHaveClass("agent-composer-model-surface");
+    expect(
+      within(panel).getByRole("textbox", { name: "Search models" }),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("option", { name: /Kimi K2/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).queryByRole("option", { name: /Tool-less model/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("starts a new session unrestricted only after the explicit opt-in", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,

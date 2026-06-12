@@ -21,6 +21,7 @@ import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
+import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
@@ -34,6 +35,7 @@ import { IconFilePdf } from "central-icons/IconFilePdf";
 import { IconFilePng } from "central-icons/IconFilePng";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFileZip } from "central-icons/IconFileZip";
+import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconHistory } from "central-icons/IconHistory";
 import { IconListBullets } from "central-icons/IconListBullets";
@@ -54,6 +56,7 @@ import {
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useId,
@@ -143,12 +146,16 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
+  modelSupportsTools,
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
+import { suggestedModelsForMode } from "../../lib/suggested-models";
 import {
   ModelPickerDialog,
+  contextLabel,
   modelOptions,
+  pricingLabel,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
 import { messageFromError } from "../../lib/errors";
@@ -884,7 +891,13 @@ export function AgentWorkspace({
     [],
   );
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [composerModelOpen, setComposerModelOpen] = useState(false);
+  const [composerModelFlyout, setComposerModelFlyout] =
+    useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
+  const composerModelTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const composerModelPopoverRef = useRef<HTMLDivElement | null>(null);
+  const composerModelSearchRef = useRef<HTMLInputElement | null>(null);
   const generationPrivacyBadge = generationModel
     ? modelPrivacyBadge(generationModel)
     : undefined;
@@ -1187,6 +1200,57 @@ export function AgentWorkspace({
     };
   }, [sandboxMenuOpen]);
 
+  useEffect(() => {
+    if (!composerModelOpen) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (composerModelPopoverRef.current?.contains(target)) return;
+      if (composerModelTriggerRef.current?.contains(target)) return;
+      setComposerModelOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        // Escape peels one layer at a time: the all-models panel first,
+        // then the popover itself.
+        if (composerModelFlyout?.kind === "all") {
+          setComposerModelFlyout(null);
+          setModelSearch("");
+        } else {
+          setComposerModelOpen(false);
+        }
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [composerModelOpen, composerModelFlyout]);
+
+  useLayoutEffect(() => {
+    if (composerModelOpen && composerModelFlyout?.kind === "all") {
+      composerModelSearchRef.current?.focus();
+    }
+  }, [composerModelFlyout, composerModelOpen]);
+
+  // The popover lives outside the composer box (whose overflow:hidden would
+  // clip it), so CSS alone can only anchor it to the box, leaving the whole
+  // composer height between menu and trigger. Measure the trigger pill on
+  // open and pin the menu right above it instead.
+  useLayoutEffect(() => {
+    if (!composerModelOpen) return;
+    const trigger = composerModelTriggerRef.current;
+    const popover = composerModelPopoverRef.current;
+    const form = popover?.parentElement;
+    if (!trigger || !popover || !form) return;
+    const triggerRect = trigger.getBoundingClientRect();
+    const formRect = form.getBoundingClientRect();
+    popover.style.right = `${formRect.right - triggerRect.right}px`;
+    popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
+  }, [composerModelOpen]);
+
   useLayoutEffect(() => {
     if (sandboxMenuOpen) {
       sandboxMenuWasOpenRef.current = true;
@@ -1358,11 +1422,20 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
+  function openComposerModelPicker() {
+    setModelSearch("");
+    setComposerModelFlyout(null);
+    setComposerModelOpen(true);
+    setSandboxMenuOpen(false);
+    void loadGenerationModel();
+  }
+
   // The picker writes the global text-model setting, so the change is
   // dispatched app-wide: Settings' model rows and this pill both refresh
   // through the same changed event.
   async function handleSelectGenerationModel(modelId: string) {
     setModelPickerOpen(false);
+    setComposerModelOpen(false);
     try {
       await setVeniceModel("generation", modelId);
       dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
@@ -3435,6 +3508,20 @@ export function AgentWorkspace({
               </button>
             ) : null}
             <div className="agent-composer-actions">
+              {heroMode ? (
+                <ComposerModelPicker
+                  open={composerModelOpen}
+                  model={generationModel}
+                  triggerRef={composerModelTriggerRef}
+                  onToggleOpen={() => {
+                    if (composerModelOpen) {
+                      setComposerModelOpen(false);
+                      return;
+                    }
+                    openComposerModelPicker();
+                  }}
+                />
+              ) : null}
               <button
                 type="button"
                 className="agent-composer-mic"
@@ -3481,6 +3568,19 @@ export function AgentWorkspace({
             </div>
           </div>
         </div>
+        {heroMode && composerModelOpen ? (
+          <ComposerModelPopover
+            flyout={composerModelFlyout}
+            model={generationModel}
+            options={modelOptions(generationModels, generationModel?.id ?? "")}
+            search={modelSearch}
+            popoverRef={composerModelPopoverRef}
+            searchRef={composerModelSearchRef}
+            onFlyoutChange={setComposerModelFlyout}
+            onSearchChange={setModelSearch}
+            onSelect={(modelId) => void handleSelectGenerationModel(modelId)}
+          />
+        ) : null}
         {heroMode && sandboxMenuOpen ? (
           <div
             ref={sandboxMenuRef}
@@ -3712,7 +3812,8 @@ export function AgentWorkspace({
       data-artifact-panel={artifactPanel ? "open" : undefined}
       data-hero={heroMode ? "true" : undefined}
     >
-      {!newSessionMode && !selectedHermesSessionId && selectedTask ? null : (
+      {!heroMode &&
+      !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
           origin={origin}
           artifactCount={!newSessionMode ? surfacedArtifacts.length : 0}
@@ -3747,7 +3848,7 @@ export function AgentWorkspace({
               : undefined
           }
         />
-      )}
+      ) : null}
       {heroMode ? (
         <section
           className="agent-main"
@@ -3856,6 +3957,506 @@ export function AgentWorkspace({
       />
     </section>
   );
+}
+
+function ComposerModelPicker({
+  open,
+  model,
+  triggerRef,
+  onToggleOpen,
+}: {
+  open: boolean;
+  model?: VeniceModelDto;
+  triggerRef: RefObject<HTMLButtonElement>;
+  onToggleOpen: () => void;
+}) {
+  if (!model) return null;
+  return (
+    <div className="agent-composer-model" data-open={open || undefined}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="agent-composer-model-trigger"
+        aria-label={`Model: ${model.name}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={onToggleOpen}
+      >
+        <span>{model.name}</span>
+        <IconChevronDownSmall size={12} aria-hidden />
+      </button>
+    </div>
+  );
+}
+
+// The composer model popover is two-layered, menu-style: the root layer
+// lists the curated suggested models as plain rows, and a flyout panel
+// opens beside it — hover details for a suggested row, or the searchable
+// full catalog behind the "All models" row.
+type ComposerModelFlyout =
+  | { kind: "model"; id: string }
+  | { kind: "all" }
+  | null;
+
+// Hover-intent delay before a hover opens a flyout or card — a pointer
+// sweeping across rows (or rows scrolling under a resting pointer) should
+// not flash panels open. Click and keyboard focus stay immediate.
+const MODEL_HOVER_INTENT_MS = 150;
+const MODEL_HOVERCARD_W = 220;
+const MODEL_HOVERCARD_GAP = 4;
+const MODEL_HOVERCARD_VIEWPORT_MARGIN = 12;
+
+function ComposerModelPopover({
+  flyout,
+  model,
+  options,
+  search,
+  popoverRef,
+  searchRef,
+  onFlyoutChange,
+  onSearchChange,
+  onSelect,
+}: {
+  flyout: ComposerModelFlyout;
+  model?: VeniceModelDto;
+  options: VeniceModelDto[];
+  search: string;
+  popoverRef: RefObject<HTMLDivElement>;
+  searchRef: RefObject<HTMLInputElement>;
+  onFlyoutChange: (flyout: ComposerModelFlyout) => void;
+  onSearchChange: (value: string) => void;
+  onSelect: (modelId: string) => void;
+}) {
+  const flyoutRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Styled hover card for catalog rows (replaces the native title tooltip):
+  // fixed-positioned next to the hovered row, on the panel's outer side.
+  const [catalogHover, setCatalogHover] = useState<{
+    model: VeniceModelDto;
+    top: number;
+    x: number;
+    side: "left" | "right";
+  } | null>(null);
+  // One shared timer debounces every hover trigger in the popover.
+  const hoverTimerRef = useRef<number | null>(null);
+  const cancelHoverIntent = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+  const hoverIntent = useCallback(
+    (action: () => void) => {
+      cancelHoverIntent();
+      hoverTimerRef.current = window.setTimeout(action, MODEL_HOVER_INTENT_MS);
+    },
+    [cancelHoverIntent],
+  );
+  useEffect(() => cancelHoverIntent, [cancelHoverIntent]);
+  // Position-aware scroll fades on the catalog list, same treatment as the
+  // artifact panel body: only when it overflows, only on edges with hidden
+  // content.
+  const [fade, setFade] = useState({ top: false, bottom: false });
+  const updateFade = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const canScroll = el.scrollHeight - el.clientHeight > 1;
+    const atTop = el.scrollTop <= 1;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    setFade((prev) => {
+      const top = canScroll && !atTop;
+      const bottom = canScroll && !atBottom;
+      return prev.top === top && prev.bottom === bottom
+        ? prev
+        : { top, bottom };
+    });
+  }, []);
+
+  // The flyout always opens on the composer side (left of the menu), where
+  // there is reliably room — flipping with the window edge made the card
+  // jump sides between otherwise-identical hovers. The right side is only a
+  // fallback for the degenerate case of the menu hugging the left edge.
+  //
+  // The hover detail card pins to the hovered row, submenu-style, so it
+  // shows up next to the pointer. The all-models panel stays anchored to
+  // the menu's bottom edge and grows upward, so its height is capped to the
+  // room above — clearing the titlebar strip, which would otherwise cover
+  // the search field — and to a fixed ceiling so it doesn't tower on tall
+  // windows.
+  useLayoutEffect(() => {
+    const el = flyoutRef.current;
+    if (!el) return;
+    el.dataset.side = "left";
+    if (flyout?.kind === "model") {
+      const row = el.parentElement?.querySelector<HTMLElement>(
+        '.agent-composer-model-row[data-active="true"]',
+      );
+      el.style.top = row ? `${row.offsetTop}px` : "";
+      el.style.bottom = row ? "auto" : "";
+      el.style.maxHeight = "";
+    } else {
+      el.style.top = "";
+      el.style.bottom = "";
+      const titlebar =
+        parseFloat(getComputedStyle(el).getPropertyValue("--titlebar-h")) || 0;
+      const room = el.getBoundingClientRect().bottom - titlebar - 16;
+      el.style.maxHeight = `${Math.max(160, Math.min(room, 400))}px`;
+    }
+    if (el.getBoundingClientRect().left < 12) {
+      el.dataset.side = "right";
+    }
+  }, [flyout]);
+
+  // Re-measure the fades whenever the list's content or cap changes: panel
+  // open (after the max-height effect above), and every search keystroke.
+  useLayoutEffect(() => {
+    updateFade();
+  }, [flyout, search, options, updateFade]);
+
+  // Row positions shift under the pointer on filter/reflow, so a lingering
+  // card would point at the wrong row.
+  useEffect(() => {
+    setCatalogHover(null);
+  }, [flyout, search]);
+
+  if (!model) return null;
+  const suggested = suggestedModelsForMode("generation", options);
+  const query = search.trim().toLowerCase();
+  // June's agent needs tool calls, so models without tool support can never
+  // be picked — leave them out of the quick-switch list entirely instead of
+  // showing dead rows. (Settings still lists them, greyed, for context.)
+  const selectable = options.filter(
+    (option) => !option.provider || modelSupportsTools(option),
+  );
+  const filteredOptions = query
+    ? selectable.filter((option) => modelMatchesQuery(option, query))
+    : selectable;
+  const detail =
+    flyout?.kind === "model"
+      ? suggested.find((item) => item.model.id === flyout.id)
+      : undefined;
+
+  function showCatalogHover(option: VeniceModelDto, row: HTMLElement) {
+    const panel = flyoutRef.current;
+    if (!panel) return;
+    const rowRect = row.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const preferred = panel.dataset.side === "right" ? "right" : "left";
+    const canOpenLeft =
+      panelRect.left -
+        MODEL_HOVERCARD_GAP -
+        MODEL_HOVERCARD_W -
+        MODEL_HOVERCARD_VIEWPORT_MARGIN >=
+      0;
+    const canOpenRight =
+      panelRect.right +
+        MODEL_HOVERCARD_GAP +
+        MODEL_HOVERCARD_W +
+        MODEL_HOVERCARD_VIEWPORT_MARGIN <=
+      window.innerWidth;
+    const side =
+      preferred === "left"
+        ? canOpenLeft
+          ? "left"
+          : canOpenRight
+            ? "right"
+            : null
+        : canOpenRight
+          ? "right"
+          : canOpenLeft
+            ? "left"
+            : null;
+    if (!side) {
+      setCatalogHover(null);
+      return;
+    }
+    setCatalogHover({
+      model: option,
+      top: rowRect.top,
+      x:
+        side === "right"
+          ? panelRect.right + MODEL_HOVERCARD_GAP
+          : panelRect.left - MODEL_HOVERCARD_GAP,
+      side,
+    });
+  }
+
+  return (
+    <div
+      ref={popoverRef}
+      className="agent-composer-model-popover"
+      role="dialog"
+      aria-label="Choose text model"
+      onMouseLeave={() => {
+        // Hover details follow the pointer out; the all-models panel stays
+        // pinned so a search in progress doesn't vanish mid-keystroke.
+        cancelHoverIntent();
+        if (flyout?.kind === "model") onFlyoutChange(null);
+      }}
+    >
+      <p className="agent-composer-model-title">Model</p>
+      <div
+        className="agent-composer-model-menu"
+        role="listbox"
+        aria-label="Suggested text models"
+      >
+        {suggested.length ? (
+          suggested.map(({ model: option }) => (
+            <button
+              key={option.id}
+              type="button"
+              className="agent-composer-model-row"
+              role="option"
+              aria-selected={option.id === model.id}
+              data-active={
+                (flyout?.kind === "model" && flyout.id === option.id) ||
+                undefined
+              }
+              onMouseEnter={() =>
+                hoverIntent(() =>
+                  onFlyoutChange({ kind: "model", id: option.id }),
+                )
+              }
+              onFocus={() => {
+                cancelHoverIntent();
+                onFlyoutChange({ kind: "model", id: option.id });
+              }}
+              onClick={() => onSelect(option.id)}
+            >
+              <span className="agent-composer-model-row-name">
+                {option.name}
+              </span>
+              {option.id === model.id ? (
+                <IconCheckmark1Small
+                  size={14}
+                  aria-hidden
+                  className="agent-composer-model-row-check"
+                />
+              ) : null}
+            </button>
+          ))
+        ) : (
+          <p className="agent-composer-model-empty">
+            Loading suggested models.
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        className="agent-composer-model-row agent-composer-model-all"
+        aria-haspopup="true"
+        aria-expanded={flyout?.kind === "all"}
+        data-active={flyout?.kind === "all" || undefined}
+        onMouseEnter={() => hoverIntent(() => onFlyoutChange({ kind: "all" }))}
+        onFocus={() => {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: "all" });
+        }}
+        onClick={() => {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: "all" });
+          searchRef.current?.focus();
+        }}
+      >
+        <span className="agent-composer-model-row-name">All models</span>
+        <IconChevronRightSmall
+          size={12}
+          aria-hidden
+          className="agent-composer-model-row-chevron"
+        />
+      </button>
+      {detail ? (
+        <div
+          ref={flyoutRef}
+          className="agent-composer-model-flyout agent-composer-model-detail"
+        >
+          <div className="agent-composer-model-surface">
+            <ComposerModelCardContent model={detail.model} />
+          </div>
+        </div>
+      ) : flyout?.kind === "all" ? (
+        <div
+          ref={flyoutRef}
+          className="agent-composer-model-flyout agent-composer-model-all-panel"
+          role="group"
+          aria-label="All text models"
+          onMouseLeave={() => {
+            cancelHoverIntent();
+            setCatalogHover(null);
+          }}
+        >
+          <div className="agent-composer-model-surface">
+            <label className="agent-composer-model-search">
+              <IconMagnifyingGlass size={14} aria-hidden />
+              <input
+                ref={searchRef}
+                value={search}
+                onChange={(event) => onSearchChange(event.currentTarget.value)}
+                placeholder="Search models"
+                aria-label="Search models"
+              />
+            </label>
+            <div
+              className="agent-composer-model-list-wrap"
+              data-fade-top={fade.top || undefined}
+              data-fade-bottom={fade.bottom || undefined}
+            >
+              <div
+                ref={listRef}
+                className="agent-composer-model-list"
+                role="listbox"
+                aria-label="All text models"
+                onScroll={() => {
+                  updateFade();
+                  cancelHoverIntent();
+                  setCatalogHover(null);
+                }}
+              >
+                {filteredOptions.length ? (
+                  filteredOptions.map((option) => (
+                    <ComposerModelOption
+                      key={option.id}
+                      model={option}
+                      selected={option.id === model.id}
+                      onSelect={onSelect}
+                      onHover={(hoverModel, row, immediate) => {
+                        if (immediate) {
+                          cancelHoverIntent();
+                          showCatalogHover(hoverModel, row);
+                        } else {
+                          hoverIntent(() => showCatalogHover(hoverModel, row));
+                        }
+                      }}
+                    />
+                  ))
+                ) : (
+                  <p className="agent-composer-model-empty">
+                    No models match your search.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {flyout?.kind === "all" && catalogHover ? (
+        <div
+          className="agent-composer-model-hovercard agent-composer-model-detail"
+          data-side={catalogHover.side}
+          style={
+            catalogHover.side === "right"
+              ? { top: catalogHover.top, left: catalogHover.x }
+              : {
+                  top: catalogHover.top,
+                  right: window.innerWidth - catalogHover.x,
+                }
+          }
+        >
+          <div className="agent-composer-model-surface">
+            <ComposerModelCardContent
+              model={catalogHover.model}
+              withDescription
+            />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Shared content of the model hover cards: name with the privacy chip
+// alongside, then the value line (pricing, context window). The catalog
+// card also carries the model's description, standing in for the native
+// title tooltip it replaces.
+function ComposerModelCardContent({
+  model,
+  withDescription,
+}: {
+  model: VeniceModelDto;
+  withDescription?: boolean;
+}) {
+  const badge = modelPrivacyBadge(model);
+  const values = [pricingLabel(model), contextLabel(model)]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <>
+      <p className="agent-composer-model-detail-name">
+        <span>{model.name}</span>
+        {badge ? (
+          <span
+            className="model-trait-icon"
+            data-mode={badge.mode}
+            title={badge.description}
+          >
+            {badge.mode === "e2ee" ? (
+              <IconLock size={14} aria-hidden />
+            ) : badge.mode === "private" ? (
+              <IconGhost2 size={14} aria-hidden />
+            ) : (
+              <IconAnonymous size={14} aria-hidden />
+            )}
+            <span>{badge.label.replace(" mode", "")}</span>
+          </span>
+        ) : null}
+      </p>
+      {values ? (
+        <p className="agent-composer-model-detail-values">{values}</p>
+      ) : null}
+      {withDescription && model.description ? (
+        <p className="agent-composer-model-detail-desc">{model.description}</p>
+      ) : null}
+    </>
+  );
+}
+
+// Name-only rows: the composer popover is for quick switching, so pricing,
+// context, and privacy detail live in the hover card beside the row.
+function ComposerModelOption({
+  model,
+  selected,
+  onSelect,
+  onHover,
+}: {
+  model: VeniceModelDto;
+  selected: boolean;
+  onSelect: (modelId: string) => void;
+  onHover: (model: VeniceModelDto, row: HTMLElement, immediate: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="agent-composer-model-row"
+      role="option"
+      aria-selected={selected}
+      onMouseEnter={(event) => onHover(model, event.currentTarget, false)}
+      onFocus={(event) => onHover(model, event.currentTarget, true)}
+      onClick={() => onSelect(model.id)}
+    >
+      <span className="agent-composer-model-row-name">{model.name}</span>
+      {selected ? (
+        <IconCheckmark1Small
+          size={14}
+          aria-hidden
+          className="agent-composer-model-row-check"
+        />
+      ) : null}
+    </button>
+  );
+}
+
+function modelMatchesQuery(model: VeniceModelDto, query: string) {
+  return [
+    model.name,
+    model.id,
+    model.description,
+    model.privacy,
+    ...model.traits,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .includes(query);
 }
 
 // The current text model as a pill: privacy icon + model name + privacy
