@@ -877,8 +877,9 @@ export function App() {
   }, [appBlocked]);
 
   // Probe with "microphonePlusSystem" on mount so sourceReadiness always
-  // has the system source. The helper's preflight surfaces the native
-  // TCC prompt on first install as a side-effect of this call.
+  // has the system source. Onboarding's permissions screen normally fires
+  // the native TCC prompt in context; for users who skipped that step the
+  // helper preflight behind this call surfaces it here instead.
   useEffect(() => {
     if (appBlocked) return;
     let cancelled = false;

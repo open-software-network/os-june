@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconTextIndicator } from "central-icons/IconTextIndicator";
+import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import {
   dictationHelperCommand,
   openPrivacySettings,
@@ -13,6 +14,7 @@ import {
   isMicrophoneDenied,
   isMicrophoneGranted,
   type PermissionStatuses,
+  type SystemAudioStatus,
 } from "../use-permission-status";
 
 function PermissionRow({
@@ -55,15 +57,26 @@ function PermissionRow({
 
 export function PermissionsStep({
   statuses,
+  systemAudioStatus,
+  onAllowSystemAudio,
   onContinue,
 }: {
   statuses: PermissionStatuses;
+  systemAudioStatus: SystemAudioStatus;
+  /** Re-runs the capture-helper probe; fires the TCC prompt while the
+   * permission is still undetermined. */
+  onAllowSystemAudio: () => void;
   onContinue: () => void;
 }) {
   const [showUnknownStatuses, setShowUnknownStatuses] = useState(false);
   const micGranted = isMicrophoneGranted(statuses);
   const micDenied = isMicrophoneDenied(statuses);
   const accessibilityGranted = isAccessibilityGranted(statuses);
+  const systemAudioGranted = systemAudioStatus === "granted";
+  const systemAudioDenied = systemAudioStatus === "denied";
+  // macOS < 14.2 (or a missing capture helper) can never grant; the row
+  // explains itself and stays out of the Continue gate.
+  const systemAudioUnsupported = systemAudioStatus === "unsupported";
   const showPermissionRows = statuses.checked || showUnknownStatuses;
 
   // Fire the native TCC prompt as soon as the screen shows — the user just
@@ -106,7 +119,7 @@ export function PermissionsStep({
   return (
     <StepCard
       title="Let June listen and type"
-      subtitle="Dictation needs two macOS permissions."
+      subtitle="Dictation and meeting notes need three macOS permissions."
       wide
     >
       <ul
@@ -141,11 +154,35 @@ export function PermissionsStep({
           detail="Types your words at your cursor, in any app."
           onAllow={showPermissionRows ? openAccessibilitySettings : undefined}
         />
+        <PermissionRow
+          icon={<IconVolumeFull size={15} />}
+          granted={showPermissionRows && systemAudioGranted}
+          title="System audio"
+          detail={
+            systemAudioDenied
+              ? "Turned off in System Settings. Flip the toggle and June will notice."
+              : systemAudioUnsupported
+                ? "Needs macOS 14.2 or later."
+                : "Hears your calls and meetings, only while you record."
+          }
+          onAllow={
+            showPermissionRows
+              ? systemAudioDenied
+                ? () => void openPrivacySettings("systemAudio")
+                : systemAudioStatus === "unknown"
+                  ? onAllowSystemAudio
+                  : undefined
+              : undefined
+          }
+        />
       </ul>
       <StepActions
         onContinue={onContinue}
         continueDisabled={
-          !showPermissionRows || !micGranted || !accessibilityGranted
+          !showPermissionRows ||
+          !micGranted ||
+          !accessibilityGranted ||
+          !(systemAudioGranted || systemAudioUnsupported)
         }
         onSkip={onContinue}
       />
