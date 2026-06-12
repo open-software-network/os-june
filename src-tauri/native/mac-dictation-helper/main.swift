@@ -690,16 +690,6 @@ final class ShortcutKeyMonitor {
         pendingModifierOnlyModifiers = nil
     }
 
-    private func matchingIdentity(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> ShortcutIdentity? {
-        for shortcut in shortcuts.values where !shortcut.isModifierOnly {
-            guard keyCode == shortcut.keyCode, modifiersMatch(flags, shortcut.modifiers) else {
-                continue
-            }
-            return ShortcutIdentity(shortcut)
-        }
-        return nil
-    }
-
     private func matchingModifierOnlyIdentity(_ current: ShortcutModifiers) -> ShortcutIdentity? {
         for shortcut in shortcuts.values where shortcut.isModifierOnly {
             guard shortcut.modifiers == current else {
@@ -828,14 +818,6 @@ final class ShortcutKeyMonitor {
             "shortcut": shortcut.label,
         ])
     }
-}
-
-private func modifiersMatch(_ flags: NSEvent.ModifierFlags, _ modifiers: ShortcutModifiers) -> Bool {
-    flags.contains(.command) == modifiers.command
-        && flags.contains(.control) == modifiers.control
-        && flags.contains(.option) == modifiers.option
-        && flags.contains(.shift) == modifiers.shift
-        && flags.contains(.function) == modifiers.function
 }
 
 private func shortcutModifiers(from flags: NSEvent.ModifierFlags) -> ShortcutModifiers {
