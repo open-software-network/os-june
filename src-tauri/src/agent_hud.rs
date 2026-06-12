@@ -105,8 +105,9 @@ pub fn agent_hud_open_agent(
         .map_err(|error| error.to_string())
 }
 
-/// Mirrors the CSS in agent-hud.css. Keep the native width constant so layout
-/// changes grow downward like a notification instead of resizing and
+/// Mirrors the CSS in agent-hud.css: 248px surface width plus transparent
+/// gutter for the top-right offset and shadow. Keep the native width constant
+/// so layout changes grow downward like a notification instead of resizing and
 /// re-anchoring horizontally.
 fn agent_hud_window_size(
     expanded: bool,

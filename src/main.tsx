@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { Agentation } from "agentation";
 import { App } from "./app/App";
+import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { replayOnboarding } from "./lib/onboarding";
 import { initTheme } from "./lib/theme";
 import "./styles/app.css";
@@ -20,6 +21,7 @@ if (import.meta.env.DEV) {
 }
 
 initTheme();
+installNativeContextMenuGuard();
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.
 // from this window's devtools. Emits on the Tauri bus only, so fake demo
@@ -43,6 +45,12 @@ if (import.meta.env.DEV) {
   // live recording with the main window hidden — see lib/recording-hud-demo.ts.
   void import("./lib/recording-hud-demo").then(({ registerRecordingHudDemo }) =>
     registerRecordingHudDemo({ local: false }),
+  );
+  // __emptyStates() forces every list view (Agents, Routines, Projects,
+  // Notes, Dictation, sidebar) into its empty rendering for design work;
+  // call again or __emptyStates(false) to reset. Real data is untouched.
+  void import("./lib/empty-states-demo").then(({ registerEmptyStatesDemo }) =>
+    registerEmptyStatesDemo(),
   );
 }
 

@@ -50,6 +50,7 @@ import {
 } from "../../lib/hermes-adapter";
 import { messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type {
   AccountStatus,
   HermesSessionInfo,
@@ -58,6 +59,8 @@ import type {
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { DotSpinner } from "../DotSpinner";
+
+const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
 
 export type SidebarView =
   | "notes"
@@ -114,8 +117,7 @@ type CommandPaletteGroup = {
 
 const AGENT_SIDEBAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
-const PINNED_AGENT_SESSION_IDS_STORAGE_KEY =
-  "scribe:pinned-agent-session-ids";
+const PINNED_AGENT_SESSION_IDS_STORAGE_KEY = "scribe:pinned-agent-session-ids";
 const AGENT_SIDEBAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000, 16000, 32000,
 ];
@@ -238,7 +240,14 @@ export function Sidebar({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const inSettings = activeView === "settings";
-  const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>(
+    [],
+  );
+  // __emptyStates() preview (dev console): the agent section renders its
+  // "No sessions yet" line as a fresh install would, real data untouched.
+  const agentSessions = useForcedEmptyStates()
+    ? NO_AGENT_SESSIONS
+    : allAgentSessions;
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<
     Set<string>
   >(() => readPinnedAgentSessionIds());
@@ -538,6 +547,7 @@ export function Sidebar({
   }
 
   function handleNewAgentSession() {
+    setSelectedAgentSessionId(undefined);
     markAgentNewSessionPending();
     onNewAgentSession();
     dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);
@@ -793,6 +803,8 @@ export function Sidebar({
     menu?.kind === "agent-session"
       ? agentSessions.find((session) => session.id === menu.sessionId)
       : undefined;
+  const newAgentSessionActive =
+    activeView === "agent" && !selectedAgentSessionId;
 
   return (
     <aside
@@ -855,6 +867,8 @@ export function Sidebar({
             <button
               type="button"
               className="sidebar-nav-item"
+              data-active={newAgentSessionActive || undefined}
+              aria-current={newAgentSessionActive ? "page" : undefined}
               onClick={handleNewAgentSession}
             >
               <span className="sidebar-nav-icon">

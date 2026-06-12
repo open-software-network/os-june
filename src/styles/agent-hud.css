@@ -78,12 +78,14 @@ body {
   --hud-inset-x: 12px;
   --hud-icon-col: 14px;
   --hud-col-gap: var(--sp-2);
+  --hud-expanded-w: 248px;
 
   position: absolute;
   top: var(--sp-3);
   right: var(--sp-4);
   display: grid;
   width: fit-content;
+  max-width: min(var(--hud-expanded-w), calc(100vw - 2 * var(--sp-4)));
   overflow: hidden;
   /* Half the collapsed pill height, NOT --r-pill: a 999px radius
    * interpolating down to 14px mid-expansion produced blob shapes. */
@@ -116,7 +118,7 @@ body {
 }
 
 .agent-hud[data-expanded="true"] .agent-hud-surface {
-  width: min(280px, calc(100vw - 2 * var(--sp-4)));
+  width: min(var(--hud-expanded-w), calc(100vw - 2 * var(--sp-4)));
   border-radius: var(--r-xl);
 }
 

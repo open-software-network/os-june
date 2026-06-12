@@ -24,8 +24,9 @@
 
   URL params (for scripted screenshots): ?theme=dark, ?step=<step id>
   (a step jump implies a signed-in account), ?perms=missing|denied
-  (permissions start ungranted; the row actions then grant after a beat,
-  so ?step=permissions&perms=missing walks the real grant dance)
+  (permissions, including system audio, start ungranted; the row actions
+  then grant after a beat, so ?step=permissions&perms=missing walks the
+  real grant dance)
 -->
 <html lang="en">
   <head>
@@ -73,9 +74,9 @@
         const params = new URLSearchParams(location.search);
         const step = params.get("step");
 
-        // ?perms=missing starts both permissions ungranted; ?perms=denied
-        // starts the mic at the System Settings dead end. The row actions
-        // then grant after a beat, like the real TCC dance.
+        // ?perms=missing starts all permissions ungranted; ?perms=denied
+        // starts the mic and system audio at the System Settings dead end.
+        // The row actions then grant after a beat, like the real TCC dance.
         const permsMode = params.get("perms");
         const perms = {
           microphone:
@@ -85,6 +86,12 @@
                 ? "undetermined"
                 : "granted",
           accessibility: permsMode ? "missing" : "granted",
+          systemAudio:
+            permsMode === "denied"
+              ? "denied"
+              : permsMode
+                ? "undetermined"
+                : "granted",
         };
 
         // The wizard always replays in the preview.
@@ -195,13 +202,51 @@
                 return dictationSettings();
               case "open_privacy_settings": {
                 // Pretend the user flips the toggle in System Settings and
-                // comes back; the wizard's poll picks it up.
+                // comes back; the wizard's poll picks it up. System audio
+                // has no poll — the row re-probes on window focus, so fake
+                // the return-to-June focus too.
                 const pane = args.request && args.request.pane;
                 setTimeout(() => {
                   if (pane === "microphone") perms.microphone = "granted";
                   if (pane === "accessibility") perms.accessibility = "granted";
+                  if (pane === "systemAudio") {
+                    perms.systemAudio = "granted";
+                    window.dispatchEvent(new Event("focus"));
+                  }
                 }, 2500);
                 return null;
+              }
+              case "check_recording_source_readiness": {
+                // The real capture-helper probe blocks while macOS shows the
+                // TCC dialog; pretend the user clicks Allow after a beat.
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+                if (perms.systemAudio === "undetermined") {
+                  perms.systemAudio = "granted";
+                }
+                const ready = perms.systemAudio === "granted";
+                return {
+                  sourceMode: "microphonePlusSystem",
+                  ready,
+                  sources: [
+                    {
+                      source: "microphone",
+                      required: true,
+                      ready: true,
+                      permissionState: "granted",
+                      deviceAvailable: true,
+                      captureAvailable: true,
+                    },
+                    {
+                      source: "system",
+                      required: true,
+                      ready,
+                      permissionState: ready ? "unknown" : "denied",
+                      deviceAvailable: ready,
+                      captureAvailable: ready,
+                      recoveryAction: "openSystemAudioSettings",
+                    },
+                  ],
+                };
               }
               case "dictation_helper_command": {
                 const type = args.command && args.command.type;

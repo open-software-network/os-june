@@ -69,6 +69,8 @@ import {
   retryProcessing,
   startRecording,
   updateNote,
+  agentHudHide,
+  agentHudShow,
 } from "../lib/tauri";
 import {
   playRecordingSound,
@@ -92,9 +94,16 @@ import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
+  AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
   buildAgentMenuBarState,
   emitAgentMenuBarState,
 } from "../lib/menu-bar";
+import {
+  AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+  getAgentHudEnabled,
+  setAgentHudEnabled,
+  type AgentHudVisibilityChangedDetail,
+} from "../lib/agent-hud-settings";
 import type {
   BootstrapResponse,
   NoteDto,
@@ -216,6 +225,7 @@ export function App() {
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
+  const agentHudEnabledRef = useRef(getAgentHudEnabled());
   const mainPanelBodyRef = useRef<HTMLDivElement | null>(null);
   const noteDetailScrollRef = useRef<HTMLDivElement | null>(null);
   const notesListRef = useRef<NotesListHandle | null>(null);
@@ -304,10 +314,28 @@ export function App() {
         workingSessionIds: agentMenuBarWorkingSessionIdsRef.current,
         waitingSessionIds: agentMenuBarWaitingSessionIdsRef.current,
         lastStatus: agentMenuBarLastStatusRef.current,
+        agentHudEnabled: agentHudEnabledRef.current,
         limit: AGENT_MENU_BAR_SESSION_LIMIT,
       }),
     );
   }, []);
+  const applyAgentHudVisibility = useCallback(
+    (enabled: boolean) => {
+      if (agentHudEnabledRef.current === enabled) return;
+      agentHudEnabledRef.current = enabled;
+      publishAgentMenuBarState();
+    },
+    [publishAgentMenuBarState],
+  );
+  const handleAgentHudVisibilityRequest = useCallback(
+    (enabled: boolean) => {
+      setAgentHudEnabled(enabled);
+      void (enabled ? agentHudShow() : agentHudHide()).catch((err) => {
+        setError(messageFromError(err));
+      });
+    },
+    [],
+  );
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
   const originFolder = originFolderId
@@ -682,6 +710,42 @@ export function App() {
 
   useEffect(() => {
     let aborted = false;
+    let unlisten: (() => void) | undefined;
+
+    function handleVisibilityChanged(event: Event) {
+      const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>)
+        .detail;
+      if (detail) applyAgentHudVisibility(detail.enabled);
+    }
+
+    window.addEventListener(
+      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+      handleVisibilityChanged,
+    );
+    void listen<AgentHudVisibilityChangedDetail>(
+      AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+      (event) => applyAgentHudVisibility(event.payload.enabled),
+    )
+      .then((cleanup) => {
+        if (aborted) cleanup();
+        else unlisten = cleanup;
+      })
+      .catch(() => {
+        // Native HUD visibility events only exist inside the Tauri shell.
+      });
+
+    return () => {
+      aborted = true;
+      unlisten?.();
+      window.removeEventListener(
+        AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+        handleVisibilityChanged,
+      );
+    };
+  }, [applyAgentHudVisibility]);
+
+  useEffect(() => {
+    let aborted = false;
     const unlisteners: Array<() => void> = [];
 
     async function installMenuBarListener<T>(
@@ -742,11 +806,16 @@ export function App() {
       },
     );
 
+    void installMenuBarListener<boolean>(
+      AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
+      handleAgentHudVisibilityRequest,
+    );
+
     return () => {
       aborted = true;
       for (const unlisten of unlisteners) unlisten();
     };
-  }, [publishAgentMenuBarState]);
+  }, [handleAgentHudVisibilityRequest, publishAgentMenuBarState]);
 
   // Dev-tools response gallery (window.__agentGallery): showing it jumps to the
   // Agent view so the command works no matter which view is active.
@@ -877,8 +946,9 @@ export function App() {
   }, [appBlocked]);
 
   // Probe with "microphonePlusSystem" on mount so sourceReadiness always
-  // has the system source. The helper's preflight surfaces the native
-  // TCC prompt on first install as a side-effect of this call.
+  // has the system source. Onboarding's permissions screen normally fires
+  // the native TCC prompt in context; for users who skipped that step the
+  // helper preflight behind this call surfaces it here instead.
   useEffect(() => {
     if (appBlocked) return;
     let cancelled = false;

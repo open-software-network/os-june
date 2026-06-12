@@ -13,11 +13,15 @@ import {
   setOnboardingResumeStep,
   subscribeToOnboardingComplete,
 } from "../lib/onboarding";
-import type { AccountStatus } from "../lib/tauri";
+import type {
+  AccountStatus,
+  RecordingSourceReadinessDto,
+} from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
   dictationHelperCommand: vi.fn(),
+  checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
   setDictationLanguage: vi.fn(),
   setDictationShortcut: vi.fn(),
@@ -34,6 +38,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri", () => ({
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
+  checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationLanguage: mocks.setDictationLanguage,
   setDictationShortcut: mocks.setDictationShortcut,
@@ -72,6 +77,35 @@ const signedOutAccount: AccountStatus = {
 
 type ListenHandler = (event: { payload: string }) => void;
 
+// What check_recording_source_readiness returns after the capture-helper
+// probe: a passing probe leaves the system permissionState at "unknown" and
+// signals the grant via ready; a denial flips both.
+function systemAudioReadiness(granted: boolean): RecordingSourceReadinessDto {
+  return {
+    sourceMode: "microphonePlusSystem",
+    ready: granted,
+    sources: [
+      {
+        source: "microphone",
+        required: true,
+        ready: true,
+        permissionState: "granted",
+        deviceAvailable: true,
+        captureAvailable: true,
+      },
+      {
+        source: "system",
+        required: true,
+        ready: granted,
+        permissionState: granted ? "unknown" : "denied",
+        deviceAvailable: granted,
+        captureAvailable: granted,
+        recoveryAction: "openSystemAudioSettings",
+      },
+    ],
+  };
+}
+
 function shortcut(label: string) {
   return {
     code: "Fn",
@@ -106,6 +140,9 @@ describe("OnboardingFlow", () => {
       },
     );
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(
+      systemAudioReadiness(true),
+    );
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsPrepareTrialCheckout.mockResolvedValue({
@@ -670,6 +707,63 @@ describe("OnboardingFlow", () => {
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "request_microphone_permission",
       }),
+    );
+  });
+
+  it("probes system audio when the permissions screen shows", async () => {
+    // The probe is what surfaces the system-audio TCC prompt on a fresh
+    // install; it must fire here, in context, not after onboarding.
+    await renderFlow();
+    await waitFor(() =>
+      expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
+        "microphonePlusSystem",
+      ),
+    );
+  });
+
+  it("keeps continue locked and falls back to settings when system audio is denied", async () => {
+    const user = userEvent.setup();
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(
+      systemAudioReadiness(false),
+    );
+    await renderFlow();
+    grantPermissions();
+
+    await screen.findByText(
+      "Turned off in System Settings. Flip the toggle and June will notice.",
+    );
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Allow system audio access" }),
+    );
+    expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+
+    // The user flips the toggle and comes back; the focus re-probe picks
+    // up the grant.
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(
+      systemAudioReadiness(true),
+    );
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+    );
+  });
+
+  it("does not block continue when system audio is unsupported", async () => {
+    const readiness = systemAudioReadiness(false);
+    const sysIdx = readiness.sources.findIndex((s) => s.source === "system");
+    readiness.sources[sysIdx] = {
+      ...readiness.sources[sysIdx],
+      permissionState: "unsupported",
+    };
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(readiness);
+    await renderFlow();
+    grantPermissions();
+
+    await screen.findByText("Needs macOS 14.2 or later.");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
     );
   });
 });

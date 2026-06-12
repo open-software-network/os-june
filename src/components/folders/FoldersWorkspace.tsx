@@ -30,12 +30,16 @@ import {
   useState,
 } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EmptyState } from "../ui/EmptyState";
 import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { AddSessionsToProjectDialog } from "./AddSessionsToProjectDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
+
+const NO_FOLDERS: FolderDto[] = [];
 
 type FoldersWorkspaceProps = {
   folders: FolderDto[];
@@ -105,7 +109,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
 ];
 
 function FolderList({
-  folders,
+  folders: allFolders,
   notes,
   sessions,
   sessionFolderIds,
@@ -115,6 +119,9 @@ function FolderList({
   onDeleteFolder,
   onAssignNoteToFolder,
 }: FoldersWorkspaceProps) {
+  // __emptyStates() preview (dev console): render the page as a fresh
+  // install would see it, real data untouched underneath.
+  const folders = useForcedEmptyStates() ? NO_FOLDERS : allFolders;
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("updated");
@@ -207,17 +214,22 @@ function FolderList({
         ))}
       </div>
     ) : folders.length === 0 ? (
-      <div className="folders-empty">
-        <p>No projects yet.</p>
-        <button
-          type="button"
-          className="primary-action primary-solid"
-          onClick={() => setCreateOpen(true)}
-        >
-          <IconFolderAddRight size={14} />
-          Create your first project
-        </button>
-      </div>
+      <EmptyState
+        label="Create your first project"
+        icon={<IconFolderOpen size={28} />}
+        title="Give your work a home"
+        description="A project collects the meeting notes and agent sessions for one effort, so everything about it lives in one place."
+        action={
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            onClick={() => setCreateOpen(true)}
+          >
+            <IconFolderAddRight size={14} />
+            Create your first project
+          </button>
+        }
+      />
     ) : (
       <div className="folders-empty">
         <p>No projects match “{query.trim()}”.</p>
@@ -644,22 +656,32 @@ function FolderDetail({
     };
   }, [menu]);
 
+  // __emptyStates() preview (dev console): an open project renders as if it
+  // held nothing, so the folder empty state is reachable too.
+  const forcedEmpty = useForcedEmptyStates();
+
   const folderNotes = useMemo(
     () =>
-      notes
-        .filter((note) => note.folderIds.includes(folder.id))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-    [notes, folder.id],
+      forcedEmpty
+        ? []
+        : notes
+            .filter((note) => note.folderIds.includes(folder.id))
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [notes, folder.id, forcedEmpty],
   );
 
   const folderSessions = useMemo(
     () =>
-      sessions
-        .filter((session) =>
-          (sessionFolderIds[session.id] ?? []).includes(folder.id),
-        )
-        .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a))),
-    [sessions, sessionFolderIds, folder.id],
+      forcedEmpty
+        ? []
+        : sessions
+            .filter((session) =>
+              (sessionFolderIds[session.id] ?? []).includes(folder.id),
+            )
+            .sort((a, b) =>
+              sessionTimestamp(b).localeCompare(sessionTimestamp(a)),
+            ),
+    [sessions, sessionFolderIds, folder.id, forcedEmpty],
   );
 
   const hasSessionsElsewhere = sessions.some(

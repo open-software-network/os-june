@@ -32,6 +32,9 @@ import {
   type DictationHistoryItemDto,
 } from "../../lib/tauri";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
+
+const NO_DICTATIONS: DictationHistoryItemDto[] = [];
 
 /** Which Settings section a "Set up" link drives to. */
 export type DictationSettingsTarget = "style" | "dictionary";
@@ -71,11 +74,16 @@ function readHintDismissed() {
 export function DictationHistoryView({
   onNavigateToSettings,
 }: DictationHistoryViewProps = {}) {
-  const [items, setItems] = useState<DictationHistoryItemDto[]>([]);
+  const [allItems, setItems] = useState<DictationHistoryItemDto[]>([]);
   const [retentionDays, setRetentionDays] = useState(7);
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loadingState, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // __emptyStates() preview (dev console): render the page as a fresh
+  // install would see it, real data untouched underneath.
+  const forcedEmpty = useForcedEmptyStates();
+  const items = forcedEmpty ? NO_DICTATIONS : allItems;
+  const loading = !forcedEmpty && loadingState;
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settings, setSettings] = useState<DictationSettingsDto>();
   const [dictionaryCount, setDictionaryCount] = useState<number | null>(null);

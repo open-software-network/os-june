@@ -154,6 +154,59 @@ describe("folders UI", () => {
     );
   });
 
+  it("marks new session active until an existing agent session is selected", async () => {
+    const user = userEvent.setup();
+    const onNewAgentSession = vi.fn();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="agent"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={onNewAgentSession}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    const newSessionButton = screen.getByRole("button", {
+      name: "New session",
+    });
+    expect(newSessionButton).toHaveAttribute("data-active", "true");
+    expect(newSessionButton).toHaveAttribute("aria-current", "page");
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [
+              {
+                id: "session-1",
+                title: "Researching Google",
+                preview: "Generate a PDF",
+                last_active: "2026-06-04T19:00:00Z",
+              },
+            ],
+            selectedSessionId: "session-1",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    await screen.findByText("Researching Google");
+    expect(newSessionButton).not.toHaveAttribute("data-active");
+    expect(newSessionButton).not.toHaveAttribute("aria-current");
+
+    await user.click(newSessionButton);
+
+    expect(onNewAgentSession).toHaveBeenCalledTimes(1);
+    expect(newSessionButton).toHaveAttribute("data-active", "true");
+    expect(newSessionButton).toHaveAttribute("aria-current", "page");
+  });
+
   it("pins agent sessions in a dedicated sidebar section", async () => {
     const user = userEvent.setup();
     render(
@@ -211,8 +264,9 @@ describe("folders UI", () => {
       screen.getByRole("region", { name: "Pinned agent sessions" }),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("region", { name: "Pinned agent sessions" }))
-        .getByText("Fetch os platform issues"),
+      within(
+        screen.getByRole("region", { name: "Pinned agent sessions" }),
+      ).getByText("Fetch os platform issues"),
     ).toBeInTheDocument();
     expect(window.localStorage.getItem("scribe:pinned-agent-session-ids")).toBe(
       '["session-1"]',
@@ -638,7 +692,7 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByText("No notes yet.")).toBeInTheDocument();
+    expect(screen.getByText("Capture your first meeting")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Create your first note" }),
     ).toBeInTheDocument();

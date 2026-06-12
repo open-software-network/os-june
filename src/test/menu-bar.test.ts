@@ -30,13 +30,13 @@ describe("buildAgentMenuBarState", () => {
 
     expect(state.activeCount).toBe(2);
     expect(state.needsUserCount).toBe(1);
+    expect(state.agentHudEnabled).toBe(true);
     expect(state.sessions.map((session) => session.id)).toEqual([
       "session-new",
       "session-old",
     ]);
     expect(state.sessions[0]).toMatchObject({
       title: "Newer work",
-      subtitle: "Reviewing changes",
       status: "waitingForUser",
     });
     expect(state.sessions[1]).toMatchObject({
@@ -97,5 +97,17 @@ describe("buildAgentMenuBarState", () => {
       status: "starting",
       summary: "Starting June.",
     });
+  });
+
+  it("includes the agent HUD visibility preference", () => {
+    const state = buildAgentMenuBarState({
+      sessions: [],
+      workingSessionIds: new Set(),
+      waitingSessionIds: new Set(),
+      agentHudEnabled: false,
+      now: new Date("2026-06-04T14:00:00Z"),
+    });
+
+    expect(state.agentHudEnabled).toBe(false);
   });
 });

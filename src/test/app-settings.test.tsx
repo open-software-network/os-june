@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
@@ -1398,7 +1404,7 @@ describe("AppSettings", () => {
 
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
-    expect(mocks.agentHudShow).not.toHaveBeenCalled();
+    expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
   });
 
   it("opts into agent CLI access from Agent settings", async () => {

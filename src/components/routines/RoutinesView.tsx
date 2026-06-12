@@ -25,11 +25,15 @@ import {
   type RoutineJob,
 } from "../../lib/hermes-routines";
 import { humanizeSchedule } from "../../lib/routine-schedule";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type { HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
+
+const NO_ROUTINES: RoutineJob[] = [];
+const NO_RUNS: HermesSessionInfo[] = [];
 
 type RoutinesViewProps = {
   /** Hands off a composed agent prompt; the app opens a new June session with
@@ -46,8 +50,8 @@ export function RoutinesView({
   onEditRoutine,
   onOpenRun,
 }: RoutinesViewProps) {
-  const [routines, setRoutines] = useState<RoutineJob[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [allRoutines, setRoutines] = useState<RoutineJob[]>([]);
+  const [loadingState, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -61,8 +65,16 @@ export function RoutinesView({
   const [draftUnrestricted, setDraftUnrestricted] = useState(false);
   const [editTarget, setEditTarget] = useState<RoutineJob | null>(null);
   const [editDraft, setEditDraft] = useState("");
-  const [runs, setRuns] = useState<HermesSessionInfo[]>([]);
-  const [runsUnavailable, setRunsUnavailable] = useState(false);
+  const [allRuns, setRuns] = useState<HermesSessionInfo[]>([]);
+  const [runsUnavailableState, setRunsUnavailable] = useState(false);
+
+  // __emptyStates() preview (dev console): render the page as a fresh
+  // install would see it, real data untouched underneath.
+  const forcedEmpty = useForcedEmptyStates();
+  const routines = forcedEmpty ? NO_ROUTINES : allRoutines;
+  const runs = forcedEmpty ? NO_RUNS : allRuns;
+  const loading = !forcedEmpty && loadingState;
+  const runsUnavailable = !forcedEmpty && runsUnavailableState;
 
   // `loading` gates the whole list and only covers the first fetch;
   // `refreshing` covers every fetch so reloads keep the list visible while
@@ -269,7 +281,7 @@ export function RoutinesView({
           icon={<IconArrowsRepeat size={28} />}
           title="Put June on a schedule"
           description="Describe something June should do every morning, every hour, or at a specific time. A routine runs it for you automatically."
-          footer={
+          action={
             <button
               type="button"
               className="primary-action primary-solid"
