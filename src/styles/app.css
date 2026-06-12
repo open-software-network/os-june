@@ -11326,6 +11326,29 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
+/* A permission check is in flight (the macOS dialog is up, or the capture
+   helper is still starting). Pulse the icon so the disabled Continue reads
+   as "waiting", not broken. */
+.onboarding-perm[data-probing="true"] .onboarding-perm-icon {
+  animation: onboarding-perm-probe 1.4s var(--ease-in-out) infinite;
+}
+
+@keyframes onboarding-perm-probe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-perm[data-probing="true"] .onboarding-perm-icon {
+    animation: none;
+  }
+}
+
 .onboarding-perm-copy h2 {
   margin: 0;
   font-size: var(--fs-lg);

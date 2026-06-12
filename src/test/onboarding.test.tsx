@@ -752,8 +752,9 @@ describe("OnboardingFlow", () => {
 
   it("does not block continue when system audio is unsupported", async () => {
     const readiness = systemAudioReadiness(false);
-    readiness.sources[1] = {
-      ...readiness.sources[1],
+    const sysIdx = readiness.sources.findIndex((s) => s.source === "system");
+    readiness.sources[sysIdx] = {
+      ...readiness.sources[sysIdx],
       permissionState: "unsupported",
     };
     mocks.checkRecordingSourceReadiness.mockResolvedValue(readiness);

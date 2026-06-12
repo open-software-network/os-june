@@ -20,12 +20,16 @@ import {
 function PermissionRow({
   icon,
   granted,
+  probing = false,
   title,
   detail,
   onAllow,
 }: {
   icon: ReactNode;
   granted: boolean;
+  /** A permission check is in flight (the macOS dialog is up or about to
+   * be); the row pulses so the wait reads as activity, not a stall. */
+  probing?: boolean;
   title: string;
   detail: string;
   /** Grant affordance — fires the TCC prompt or opens System Settings;
@@ -33,7 +37,7 @@ function PermissionRow({
   onAllow?: () => void;
 }) {
   return (
-    <li className="onboarding-perm" data-granted={granted}>
+    <li className="onboarding-perm" data-granted={granted} data-probing={probing}>
       <span className="onboarding-perm-icon" aria-hidden>
         {granted ? <IconCheckmark1Small size={15} /> : icon}
       </span>
@@ -157,13 +161,16 @@ export function PermissionsStep({
         <PermissionRow
           icon={<IconVolumeFull size={15} />}
           granted={showPermissionRows && systemAudioGranted}
+          probing={showPermissionRows && systemAudioStatus === "probing"}
           title="System audio"
           detail={
             systemAudioDenied
               ? "Turned off in System Settings. Flip the toggle and June will notice."
               : systemAudioUnsupported
                 ? "Needs macOS 14.2 or later."
-                : "Hears your calls and meetings, only while you record."
+                : systemAudioStatus === "probing"
+                  ? "Waiting for macOS. Approve the prompt when it appears."
+                  : "Hears your calls and meetings, only while you record."
           }
           onAllow={
             showPermissionRows
