@@ -377,6 +377,14 @@ final class ShortcutKeyMonitor {
     private var pendingPushShortcut: MonitoredShortcut?
     private var lastTapIdentity: ShortcutIdentity?
     private var lastTapAt: Date?
+    /// A modifier-only shortcut whose own key went down while a foreign
+    /// modifier was still held (fn pressed before Cmd from a cmd-tab fully
+    /// cleared). The press edge couldn't fire then — the flags weren't an
+    /// exact match — so it fires the moment the foreign modifiers clear.
+    /// Set only on the shortcut's own key-down with extras present, which is
+    /// what keeps the cmd-tab phantom dead: there fn's down already matched
+    /// (and was consumed) before the interruption, so nothing is pending.
+    private var pendingOverlapIdentity: ShortcutIdentity?
     private var isCapturingShortcut = false
     private var capturePressCount = 1
     private var pendingModifierOnlyCapture: DispatchWorkItem?
@@ -418,6 +426,13 @@ final class ShortcutKeyMonitor {
     /// modifier keys may create a press; foreign keys can still *end* one
     /// (adding Cmd mid-push releases it), but such an interruption is not a
     /// physical release and must not arm the double-press detector.
+    ///
+    /// One foreign-key exception, tracked by `pendingOverlapIdentity`: a
+    /// press whose own key went down while a foreign modifier was still held
+    /// (fn hit right after a cmd-tab, or while Shift from a capital was
+    /// settling) never matched exactly, so the foreign key's *release* is the
+    /// first moment the chord physically holds — fire it then, or the press
+    /// is swallowed for as long as fn stays down.
     fileprivate func handleFlagsChanged(_ current: ShortcutModifiers, changedKeyCode: UInt16) {
         if let identity = activeIdentity, identity.modifiers != current {
             handlePhysicalUp(
@@ -426,13 +441,66 @@ final class ShortcutKeyMonitor {
             )
         }
 
+        updatePendingOverlap(current, changedKeyCode: changedKeyCode)
+
         guard let identity = matchingModifierOnlyIdentity(current),
               modifierKeyCodes(for: identity.modifiers).contains(changedKeyCode)
+                  || pendingOverlapIdentity == identity
         else {
             return
         }
 
+        pendingOverlapIdentity = nil
         handlePhysicalDown(identity: identity)
+    }
+
+    /// Arms the overlap recovery when a modifier-only shortcut's own key goes
+    /// down under extra foreign modifiers, and disarms it when that key comes
+    /// back up before the chord ever held. Foreign keys never arm it — their
+    /// releases only consume it via the match in handleFlagsChanged.
+    private func updatePendingOverlap(_ current: ShortcutModifiers, changedKeyCode: UInt16) {
+        guard let keyIsDown = modifierBitIsDown(for: changedKeyCode, in: current) else {
+            return
+        }
+        if keyIsDown {
+            for shortcut in shortcuts.values where shortcut.isModifierOnly {
+                guard modifierKeyCodes(for: shortcut.modifiers).contains(changedKeyCode),
+                      shortcut.modifiers != current,
+                      modifiersContain(current, shortcut.modifiers)
+                else {
+                    continue
+                }
+                pendingOverlapIdentity = ShortcutIdentity(shortcut)
+                return
+            }
+        } else if let pending = pendingOverlapIdentity,
+                  modifierKeyCodes(for: pending.modifiers).contains(changedKeyCode),
+                  !modifiersContain(current, pending.modifiers) {
+            pendingOverlapIdentity = nil
+        }
+    }
+
+    /// Whether the modifier a flagsChanged keyCode belongs to is set after
+    /// the event — i.e. whether that key just went down (or, with paired
+    /// left/right keys, its sibling is still holding the bit). Nil for
+    /// non-modifier keyCodes.
+    private func modifierBitIsDown(for keyCode: UInt16, in current: ShortcutModifiers) -> Bool? {
+        switch keyCode {
+        case 0x36, 0x37: return current.command
+        case 0x38, 0x3C: return current.shift
+        case 0x3A, 0x3D: return current.option
+        case 0x3B, 0x3E: return current.control
+        case 0x3F: return current.function
+        default: return nil
+        }
+    }
+
+    private func modifiersContain(_ current: ShortcutModifiers, _ subset: ShortcutModifiers) -> Bool {
+        (!subset.command || current.command)
+            && (!subset.control || current.control)
+            && (!subset.option || current.option)
+            && (!subset.shift || current.shift)
+            && (!subset.function || current.function)
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) {
@@ -466,6 +534,7 @@ final class ShortcutKeyMonitor {
         activePushIdentity = nil
         lastTapIdentity = nil
         lastTapAt = nil
+        pendingOverlapIdentity = nil
     }
 
     func startShortcutCapture(pressCount: Int = 1) {
@@ -473,6 +542,7 @@ final class ShortcutKeyMonitor {
         capturePressCount = 1
         cancelPendingPush()
         activeIdentity = nil
+        pendingOverlapIdentity = nil
         cancelPendingModifierOnlyCapture()
         emit("shortcut_capture_started")
     }
