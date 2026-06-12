@@ -136,6 +136,27 @@ async fn generated_note_derives_title_when_provider_returns_placeholder() {
 }
 
 #[tokio::test]
+async fn generated_note_derives_title_from_all_section_headings() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+
+    let generated = repos
+        .set_generated_note(
+            &note.id,
+            Some("Untitled note".to_string()),
+            "# Budget review\n\n- Costs are rising\n\n# Hiring plan\n\n- Open roles are approved\n\n# Product launch\n\n- The team is keeping the launch date"
+                .to_string(),
+        )
+        .await
+        .expect("generated note");
+
+    assert_eq!(
+        generated.title,
+        "Budget review, Hiring plan, and Product launch"
+    );
+}
+
+#[tokio::test]
 async fn generated_note_appends_to_existing_generated_content() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");

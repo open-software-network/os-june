@@ -188,6 +188,12 @@ function mergeNoteUpdate(state: NotesState, note: NoteDto): NoteDto {
     note.processingStatus,
   );
   if (processingStatus === note.processingStatus) return note;
+  if (
+    isTerminalProcessingStatus(current.processingStatus) &&
+    !isTerminalProcessingStatus(note.processingStatus)
+  ) {
+    return current;
+  }
 
   return {
     ...note,
