@@ -4094,6 +4094,26 @@ function ComposerModelPopover({
     [cancelHoverIntent],
   );
   useEffect(() => cancelHoverIntent, [cancelHoverIntent]);
+  // The catalog hover card is interactive (its description carries its own
+  // hover tip for the full, untruncated text), so it cannot vanish the instant
+  // the pointer leaves a row — it has to survive the trip across the gap onto
+  // the card. A short close debounce bridges that gap; entering the card or a
+  // fresh row cancels it.
+  const closeTimerRef = useRef<number | null>(null);
+  const cancelCatalogClose = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+  const scheduleCatalogClose = useCallback(() => {
+    cancelCatalogClose();
+    closeTimerRef.current = window.setTimeout(
+      () => setCatalogHover(null),
+      MODEL_HOVER_INTENT_MS,
+    );
+  }, [cancelCatalogClose]);
+  useEffect(() => cancelCatalogClose, [cancelCatalogClose]);
   // Position-aware scroll fades on the catalog list, same treatment as the
   // artifact panel body: only when it overflows, only on edges with hidden
   // content.
@@ -4178,6 +4198,7 @@ function ComposerModelPopover({
       : undefined;
 
   function showCatalogHover(option: VeniceModelDto, row: HTMLElement) {
+    cancelCatalogClose();
     const panel = flyoutRef.current;
     if (!panel) return;
     const rowRect = row.getBoundingClientRect();
@@ -4323,7 +4344,7 @@ function ComposerModelPopover({
           aria-label="All text models"
           onMouseLeave={() => {
             cancelHoverIntent();
-            setCatalogHover(null);
+            scheduleCatalogClose();
           }}
         >
           <div className="agent-composer-model-surface">
@@ -4361,6 +4382,7 @@ function ComposerModelPopover({
                       selected={option.id === model.id}
                       onSelect={onSelect}
                       onHover={(hoverModel, row, immediate) => {
+                        cancelCatalogClose();
                         if (immediate) {
                           cancelHoverIntent();
                           showCatalogHover(hoverModel, row);
@@ -4384,6 +4406,8 @@ function ComposerModelPopover({
         <div
           className="agent-composer-model-hovercard agent-composer-model-detail"
           data-side={catalogHover.side}
+          onMouseEnter={cancelCatalogClose}
+          onMouseLeave={scheduleCatalogClose}
           style={
             catalogHover.side === "right"
               ? { top: catalogHover.top, left: catalogHover.x }
@@ -4445,9 +4469,35 @@ function ComposerModelCardContent({
         <p className="agent-composer-model-detail-values">{values}</p>
       ) : null}
       {withDescription && model.description ? (
-        <p className="agent-composer-model-detail-desc">{model.description}</p>
+        <ComposerModelDescription text={model.description} />
       ) : null}
     </>
+  );
+}
+
+// The catalog card clamps the description to two lines so it stays compact.
+// When that clamp actually hides text, the row becomes its own hover tip
+// carrying the full copy — hover the truncated blurb to read the rest. The tip
+// only attaches when the text is clipped, so short descriptions don't get a
+// redundant repeat of what's already fully visible.
+function ComposerModelDescription({ text }: { text: string }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const [clamped, setClamped] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) setClamped(el.scrollHeight - el.clientHeight > 1);
+  }, [text]);
+  const body = (
+    <span ref={ref} className="agent-composer-model-detail-desc">
+      {text}
+    </span>
+  );
+  return clamped ? (
+    <HoverTip tip={text} className="agent-composer-model-detail-desc-tip">
+      {body}
+    </HoverTip>
+  ) : (
+    body
   );
 }
 

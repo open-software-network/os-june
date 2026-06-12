@@ -2968,15 +2968,23 @@ input:focus-visible,
   line-height: 1.4;
 }
 
+/* When the description is clamped it's wrapped in a HoverTip; the wrapper span
+ * must stretch so the clamped text keeps the card's full width (an inline span
+ * would shrink-wrap and throw off the two-line measurement). */
+.agent-composer-model-detail-desc-tip {
+  display: block;
+}
+
 /* The catalog rows' hover card — same body as the suggested-model detail
  * card, but fixed-positioned beside the hovered row (set from JS) so it can
  * escape the panel's clipping and tracks the pointer like Codex's item
- * tooltips. Non-interactive on purpose. */
+ * tooltips. Interactive so the pointer can reach its (clamped) description and
+ * its hover tip; a close debounce keeps it alive across the gap from the row. */
 .agent-composer-model-hovercard {
   position: fixed;
   z-index: 3;
   display: block;
-  pointer-events: none;
+  pointer-events: auto;
   color: var(--popover-foreground);
   /* Keep the hover card above the panel so the panel shadow/fade cannot wash
    * over the card. Clip only the side facing the panel; the other three sides
