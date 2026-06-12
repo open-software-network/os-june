@@ -33,6 +33,12 @@ if (import.meta.env.DEV) {
   void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
     registerMeetingHudDemo({ local: false }),
   );
+  // __emptyStates() forces every list view (Agents, Routines, Projects,
+  // Notes, Dictation, sidebar) into its empty rendering for design work;
+  // call again or __emptyStates(false) to reset. Real data is untouched.
+  void import("./lib/empty-states-demo").then(({ registerEmptyStatesDemo }) =>
+    registerEmptyStatesDemo(),
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

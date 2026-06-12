@@ -25,8 +25,10 @@ import {
 } from "../../lib/hermes-adapter";
 import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EmptyState } from "../ui/EmptyState";
 
 type AgentSessionsListProps = {
   sessions: HermesSessionInfo[];
@@ -47,13 +49,14 @@ export type AgentSessionsListHandle = {
 };
 
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
+const NO_SESSIONS: HermesSessionInfo[] = [];
 
 export const AgentSessionsList = forwardRef<
   AgentSessionsListHandle,
   AgentSessionsListProps
 >(function AgentSessionsList(
   {
-    sessions,
+    sessions: allSessions,
     folders,
     sessionFolderIds,
     workingSessionIds = EMPTY_SESSION_IDS,
@@ -66,6 +69,9 @@ export const AgentSessionsList = forwardRef<
   },
   ref,
 ) {
+  // __emptyStates() preview (dev console): render the page as a fresh
+  // install would see it, real data untouched underneath.
+  const sessions = useForcedEmptyStates() ? NO_SESSIONS : allSessions;
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
@@ -248,17 +254,22 @@ export const AgentSessionsList = forwardRef<
       ) : null}
 
       {sessions.length === 0 ? (
-        <div className="folders-empty">
-          <p>No sessions yet.</p>
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            onClick={onNewSession}
-          >
-            <IconPlusMedium size={13} />
-            Start your first session
-          </button>
-        </div>
+        <EmptyState
+          label="Start your first session"
+          icon={<IconBubble3 size={28} />}
+          title="Put June to work"
+          description="Ask June to check on your Mac, dig through your files, or research a topic. Each session keeps one task's conversation and everything it produces in one place."
+          action={
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={onNewSession}
+            >
+              <IconPlusMedium size={13} />
+              Start your first session
+            </button>
+          }
+        />
       ) : filteredSessions.length === 0 ? (
         <div className="folders-empty">
           <p>No sessions match “{query.trim()}”.</p>

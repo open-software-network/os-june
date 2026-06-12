@@ -16,7 +16,11 @@ import {
   useState,
 } from "react";
 import type { NoteListItemDto } from "../../lib/tauri";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { EmptyState } from "../ui/EmptyState";
+
+const NO_NOTES: NoteListItemDto[] = [];
 
 type NotesListProps = {
   notes: NoteListItemDto[];
@@ -49,7 +53,7 @@ const VIEWPORT_MARGIN = 8;
 export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
   function NotesList(
     {
-      notes,
+      notes: allNotes,
       onSelectNote,
       onCreateNote,
       onOpenMoveDialog,
@@ -59,6 +63,9 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
     },
     ref,
   ) {
+    // __emptyStates() preview (dev console): render the page as a fresh
+    // install would see it, real data untouched underneath.
+    const notes = useForcedEmptyStates() ? NO_NOTES : allNotes;
     const [query, setQuery] = useState("");
     const [openMenu, setOpenMenu] = useState<OpenMenu | null>(null);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -235,17 +242,22 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
         ) : null}
 
         {notes.length === 0 ? (
-          <div className="folders-empty">
-            <p>No notes yet.</p>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              onClick={onCreateNote}
-            >
-              <IconPlusMedium size={13} />
-              Create your first note
-            </button>
-          </div>
+          <EmptyState
+            label="Create your first note"
+            icon={<IconNoteText size={28} />}
+            title="Capture your first meeting"
+            description="Record a meeting, a phone call, or a half-formed thought. June transcribes it and writes the note for you."
+            action={
+              <button
+                type="button"
+                className="primary-action primary-solid"
+                onClick={onCreateNote}
+              >
+                <IconPlusMedium size={13} />
+                Create your first note
+              </button>
+            }
+          />
         ) : filteredNotes.length === 0 ? (
           <div className="folders-empty">
             <p>No notes match “{query.trim()}”.</p>

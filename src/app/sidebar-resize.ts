@@ -34,7 +34,9 @@ export function handleSidebarResizeStart(
   // snap tween: with no transition of their own they teleport to the far
   // offset at the threshold crossing while the grid is still mid-tween, which
   // reads as a flash of misalignment.
-  const composer = shell?.querySelector(".agent-composer") as HTMLElement | null;
+  const composer = shell?.querySelector(
+    ".agent-composer",
+  ) as HTMLElement | null;
   const editorFooter = shell?.querySelector(
     ".editor-footer",
   ) as HTMLElement | null;

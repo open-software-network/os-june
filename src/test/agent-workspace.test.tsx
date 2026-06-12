@@ -475,14 +475,15 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
-    // The pill leads with the model name; its accessible name carries the
-    // mode description and the click-to-change affordance.
-    expect(screen.getByText("Anonymous Only")).toBeInTheDocument();
+    // The session bar badge carries the privacy mode alone; the model name
+    // lives on the composer's model trigger. The badge's accessible name
+    // carries the mode description.
+    expect(
+      screen.getByRole("button", { name: "Model: Anonymous Only" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByLabelText(
-        new RegExp(
-          `^Anonymous Only \\(Anonymous mode\\) - ${ANONYMOUS_MODEL_DESCRIPTION}`,
-        ),
+        new RegExp(`^Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
@@ -531,24 +532,25 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("opens the model picker from the model pill", async () => {
+  it("opens the model picker from the composer's model trigger", async () => {
     const user = userEvent.setup();
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    const pill = await screen.findByRole("button", { name: /Private mode/ });
-    expect(pill).toHaveAccessibleName(/click to change the model/i);
-    await user.click(pill);
+    // The session composer carries the same model trigger as the hero.
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+    );
 
-    // The settings model picker opens in place on the text-model catalog.
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Text model");
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
     expect(
       within(dialog).getByRole("option", { name: /GLM 5.1/ }),
     ).toBeInTheDocument();
   });
 
-  it("switches the text model from the pill's picker", async () => {
+  it("switches the text model from the composer's picker", async () => {
     // Tool-capable catalog: the picker refuses tool-less models for the
     // agent, so the switch target must support function calling.
     const catalog = [
@@ -583,9 +585,11 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     await user.click(
-      await screen.findByRole("button", { name: /Private mode/ }),
+      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
     );
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
 
     // The reload after the switch reads the updated setting.
     mocks.providerModelSettings.mockResolvedValue({
@@ -601,10 +605,15 @@ describe("AgentWorkspace", () => {
       selectedModel: "kimi-k2",
       models: catalog,
     });
-    // The picker opens on the Suggested tab (GLM 5.1 is a curated pick);
-    // the switch target only exists in the full catalog behind All.
-    await user.click(within(dialog).getByRole("tab", { name: "All" }));
-    await user.click(within(dialog).getByRole("option", { name: /Kimi K2/ }));
+    // The popover opens on the suggested picks (GLM 5.1 is curated); the
+    // switch target only exists in the full catalog behind All models.
+    await user.click(
+      within(dialog).getByRole("button", { name: "All models" }),
+    );
+    const panel = await screen.findByRole("group", {
+      name: "All text models",
+    });
+    await user.click(within(panel).getByRole("option", { name: /Kimi K2/ }));
 
     await waitFor(() =>
       expect(mocks.setVeniceModel).toHaveBeenCalledWith(
@@ -612,10 +621,12 @@ describe("AgentWorkspace", () => {
         "kimi-k2",
       ),
     );
-    // The pill reflects the new model and its privacy mode.
+    // The composer trigger reflects the new model and the session bar badge
+    // its privacy mode.
     expect(
-      await screen.findByRole("button", { name: /Kimi K2/ }),
+      await screen.findByRole("button", { name: "Model: Kimi K2" }),
     ).toBeInTheDocument();
+    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
 
@@ -897,9 +908,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    await user.click(
-      await screen.findByRole("button", { name: "Not now" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
 
     expect(mocks.setHermesAgentCliAccess).not.toHaveBeenCalled();
     // The card resolves quietly; nothing is sent into the session.
@@ -2419,7 +2428,9 @@ describe("AgentWorkspace", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    await user.click(within(dialog).getByRole("button", { name: "All models" }));
+    await user.click(
+      within(dialog).getByRole("button", { name: "All models" }),
+    );
 
     const panel = await screen.findByRole("group", { name: "All text models" });
     expect(panel.firstElementChild).toHaveClass("agent-composer-model-surface");

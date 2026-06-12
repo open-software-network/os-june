@@ -642,8 +642,8 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* Compact private-mode badge sitting under the title; full policy text lives in
- * the native tooltip. */
+/* Compact privacy-mode badge (Private / Anonymous / E2EE); the full policy
+ * text lives in the HoverTip. The model itself is picked from the composer. */
 /* Detail-bar pills share the control height of the back chevron and the
  * overflow trigger so the actions row reads as one family. */
 .agent-safety-badge {
@@ -653,7 +653,6 @@ input:focus-visible,
   width: fit-content;
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  border: 0;
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--brand) 14%, transparent);
   color: var(--warm-strong);
@@ -662,53 +661,10 @@ input:focus-visible,
   cursor: default;
 }
 
-/* The model name leads the pill; the privacy mode trails it as secondary
- * text (the separator dot shares the label class so they shed together). */
-.agent-safety-badge-name {
-  font-weight: 500;
-}
-
-.agent-safety-badge-label {
-  opacity: 0.75;
-}
-
-/* When the bar runs tight (files panel out, narrow window) the badge keeps
- * the icon and model name and sheds the privacy label rather than wrapping. */
-.detail-bar {
-  container-type: inline-size;
-}
-
-@container (max-width: 600px) {
-  .agent-safety-badge-label {
-    display: none;
-  }
-}
-
 .agent-safety-badge svg {
   flex: 0 0 auto;
   margin-top: 0;
   color: var(--warm-strong);
-}
-
-/* The pill is the model switcher: same chrome, but it reads as clickable and
- * brightens on hover. The wrap keeps HoverTip's anchor span from adding box
- * styling of its own. */
-.agent-safety-badge-wrap {
-  display: inline-flex;
-}
-
-button.agent-safety-badge {
-  border: none;
-  /* font-family only: the font shorthand would out-specificity the base
-   * class's font-size and grow the badge text. */
-  font-family: inherit;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-button.agent-safety-badge:hover {
-  background: color-mix(in oklch, var(--brand) 24%, transparent);
 }
 
 .agent-actions {
@@ -2812,13 +2768,13 @@ button.agent-safety-badge:hover {
   gap: var(--sp-1);
   max-width: min(190px, 34vw);
   height: var(--control-lg);
-  padding: 0 var(--sp-2);
+  padding: 0 var(--sp-3);
   border: 0;
   border-radius: var(--r-lg);
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -2838,6 +2794,10 @@ button.agent-safety-badge:hover {
 }
 
 .agent-composer-model-popover {
+  /* The docked composer form is pointer-events: none (only the box opts back
+   * in), and the popover is the box's sibling — opt in here too or the menu
+   * is hover/click-dead outside the hero. */
+  pointer-events: auto;
   position: absolute;
   right: max(0px, calc(50% - 320px));
   bottom: calc(100% + var(--sp-1));
@@ -3573,13 +3533,13 @@ button.agent-safety-badge:hover {
   flex: 0 0 auto;
   gap: var(--sp-1);
   height: var(--control-lg);
-  padding: 0 var(--sp-2);
+  padding: 0 var(--sp-3);
   border: 0;
   border-radius: var(--r-lg);
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -4765,11 +4725,12 @@ button.agent-safety-badge:hover {
   background: var(--border-subtle);
 }
 
+/* Quiet "nothing here yet" line under a sidebar section header — left-aligned
+ * with the section label (the title's --sp-2 inset), not a centered box
+ * floating in the section. Same faint mix as the Agents page's empty line. */
 .sidebar-empty {
-  display: grid;
-  place-items: center;
-  min-height: 80px;
-  color: var(--muted-foreground);
+  padding: var(--sp-2) var(--sp-2) var(--sp-3);
+  color: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
   font-size: var(--fs-md);
 }
 
@@ -9960,12 +9921,18 @@ button.agent-safety-badge:hover {
   padding-bottom: var(--sp-10);
 }
 
-/* Borderless, muted glyph — no tile. It should whisper. */
+/* Borderless, muted glyph — no tile. It should whisper. The icon set ships
+ * a 2px stroke on a 24px grid; rendered large here that reads heavy, so thin
+ * it to a hairline (CSS wins over the SVG's stroke-width attribute). */
 .empty-state-icon {
   display: inline-grid;
   place-items: center;
   margin-bottom: var(--sp-1);
   color: var(--muted-foreground);
+}
+
+.empty-state-icon svg [stroke] {
+  stroke-width: 1;
 }
 
 .empty-state-title {
@@ -9982,6 +9949,13 @@ button.agent-safety-badge:hover {
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   line-height: 1.5;
+}
+
+/* The call to action sits in the content column with a touch more air than
+ * the text rhythm — the inset footer below is for reference material, not
+ * buttons. */
+.empty-state-action {
+  margin-top: var(--sp-2);
 }
 
 /* Full-width inset footer (e.g. shortcuts) — spans the surface minus the 3px

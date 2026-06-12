@@ -48,6 +48,7 @@ import {
 } from "../../lib/hermes-adapter";
 import { messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
+import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type {
   AccountStatus,
   HermesSessionInfo,
@@ -56,6 +57,8 @@ import type {
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { DotSpinner } from "../DotSpinner";
+
+const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
 
 export type SidebarView =
   | "notes"
@@ -234,7 +237,14 @@ export function Sidebar({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const inSettings = activeView === "settings";
-  const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>(
+    [],
+  );
+  // __emptyStates() preview (dev console): the agent section renders its
+  // "No sessions yet" line as a fresh install would, real data untouched.
+  const agentSessions = useForcedEmptyStates()
+    ? NO_AGENT_SESSIONS
+    : allAgentSessions;
   const [selectedAgentSessionId, setSelectedAgentSessionId] =
     useState<string>();
   const [agentSessionToDelete, setAgentSessionToDelete] =

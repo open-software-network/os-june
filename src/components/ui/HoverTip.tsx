@@ -13,6 +13,10 @@ const VIEWPORT_MARGIN = 8;
 // Flip above the anchor when less than this remains below — enough for the
 // longest privacy explainer at TIP_WIDTH without clipping.
 const MIN_SPACE_BELOW = 200;
+// Hover-intent delay before the card opens — a pointer sweeping across the
+// anchor should not flash it. Matches the model popover's flyout debounce;
+// keyboard focus stays immediate.
+const HOVER_INTENT_MS = 150;
 
 type TipPosition = {
   side: "top" | "bottom";
@@ -28,14 +32,22 @@ type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
 
 /**
  * Hover/focus callout card — the rich replacement for a native `title`
- * tooltip (instant, styled, multi-line). The card renders into a body portal
- * at a fixed position, so it never clips inside scroll containers or dialog
- * cards; scrolling anywhere dismisses it rather than letting it drift off its
- * anchor.
+ * tooltip (styled, multi-line, hover-intent debounced). The card renders into
+ * a body portal at a fixed position, so it never clips inside scroll
+ * containers or dialog cards; scrolling anywhere dismisses it rather than
+ * letting it drift off its anchor.
  */
 export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
   const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const hoverTimerRef = useRef<number | null>(null);
   const [position, setPosition] = useState<TipPosition>();
+
+  function cancelHoverIntent() {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }
 
   function show() {
     const rect = anchorRef.current?.getBoundingClientRect();
@@ -53,9 +65,17 @@ export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
     });
   }
 
+  function showAfterHoverIntent() {
+    cancelHoverIntent();
+    hoverTimerRef.current = window.setTimeout(show, HOVER_INTENT_MS);
+  }
+
   function hide() {
+    cancelHoverIntent();
     setPosition(undefined);
   }
+
+  useEffect(() => cancelHoverIntent, []);
 
   useEffect(() => {
     if (!position) return;
@@ -74,7 +94,7 @@ export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
     <span
       ref={anchorRef}
       {...spanProps}
-      onMouseEnter={show}
+      onMouseEnter={showAfterHoverIntent}
       onMouseLeave={hide}
       onFocus={show}
       onBlur={hide}

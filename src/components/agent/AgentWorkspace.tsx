@@ -48,7 +48,6 @@ import { IconPencil } from "central-icons/IconPencil";
 import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
-import { IconShieldAi } from "central-icons/IconShieldAi";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import { DotSpinner } from "../DotSpinner";
@@ -156,7 +155,6 @@ import {
 } from "../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import {
-  ModelPickerDialog,
   contextLabel,
   modelOptions,
   pricingLabel,
@@ -892,14 +890,13 @@ export function AgentWorkspace({
     HermesMessagingPlatformInfo[] | null
   >(null);
   // The active text model (global setting, not per-session) shown in the
-  // session bar's model pill; the catalog backs the in-place picker the pill
-  // opens. A selection missing from the catalog still shows as a name-only
-  // stub so the pill never goes blank while a model is configured.
+  // composer's model pill; the catalog backs the picker the pill opens. A
+  // selection missing from the catalog still shows as a name-only stub so
+  // the pill never goes blank while a model is configured.
   const [generationModel, setGenerationModel] = useState<VeniceModelDto>();
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>(
     [],
   );
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] =
     useState<ComposerModelFlyout>(null);
@@ -1445,12 +1442,6 @@ export function AgentWorkspace({
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
-  function openModelPicker() {
-    setModelSearch("");
-    setModelPickerOpen(true);
-    void loadGenerationModel();
-  }
-
   function openComposerModelPicker() {
     setModelSearch("");
     setComposerModelFlyout(null);
@@ -1463,7 +1454,6 @@ export function AgentWorkspace({
   // dispatched app-wide: Settings' model rows and this pill both refresh
   // through the same changed event.
   async function handleSelectGenerationModel(modelId: string) {
-    setModelPickerOpen(false);
     setComposerModelOpen(false);
     try {
       await setVeniceModel("generation", modelId);
@@ -3557,20 +3547,18 @@ export function AgentWorkspace({
               </button>
             ) : null}
             <div className="agent-composer-actions">
-              {heroMode ? (
-                <ComposerModelPicker
-                  open={composerModelOpen}
-                  model={generationModel}
-                  triggerRef={composerModelTriggerRef}
-                  onToggleOpen={() => {
-                    if (composerModelOpen) {
-                      setComposerModelOpen(false);
-                      return;
-                    }
-                    openComposerModelPicker();
-                  }}
-                />
-              ) : null}
+              <ComposerModelPicker
+                open={composerModelOpen}
+                model={generationModel}
+                triggerRef={composerModelTriggerRef}
+                onToggleOpen={() => {
+                  if (composerModelOpen) {
+                    setComposerModelOpen(false);
+                    return;
+                  }
+                  openComposerModelPicker();
+                }}
+              />
               <button
                 type="button"
                 className="agent-composer-mic"
@@ -3617,7 +3605,7 @@ export function AgentWorkspace({
             </div>
           </div>
         </div>
-        {heroMode && composerModelOpen ? (
+        {composerModelOpen ? (
           <ComposerModelPopover
             flyout={composerModelFlyout}
             model={generationModel}
@@ -3780,11 +3768,7 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <ModelBadge
-              model={generationModel}
-              privacyBadge={generationPrivacyBadge}
-              onChangeModel={openModelPicker}
-            />
+            <PrivacyModeBadge badge={generationPrivacyBadge} />
           </div>
         </div>
         <div className="agent-actions">
@@ -3880,9 +3864,7 @@ export function AgentWorkspace({
           onToggleArtifacts={() =>
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
-          model={generationModel}
           privacyBadge={generationPrivacyBadge}
-          onChangeModel={openModelPicker}
           // The badge describes the selected session, not the live runtime:
           // every send re-enforces the session's recorded mode, so a
           // sandboxed session stays sandboxed even while an Unrestricted
@@ -4014,16 +3996,6 @@ export function AgentWorkspace({
             : null}
         </>
       )}
-      <ModelPickerDialog
-        open={modelPickerOpen}
-        mode="generation"
-        value={generationModel?.id ?? ""}
-        options={modelOptions(generationModels, generationModel?.id ?? "")}
-        search={modelSearch}
-        onSearchChange={setModelSearch}
-        onClose={() => setModelPickerOpen(false)}
-        onSelect={(modelId) => void handleSelectGenerationModel(modelId)}
-      />
     </section>
   );
 }
@@ -4490,7 +4462,11 @@ function ComposerModelOption({
   model: VeniceModelDto;
   selected: boolean;
   onSelect: (modelId: string) => void;
-  onHover: (model: VeniceModelDto, row: HTMLElement, immediate: boolean) => void;
+  onHover: (
+    model: VeniceModelDto,
+    row: HTMLElement,
+    immediate: boolean,
+  ) => void;
 }) {
   return (
     <button
@@ -4528,57 +4504,30 @@ function modelMatchesQuery(model: VeniceModelDto, query: string) {
     .includes(query);
 }
 
-// The current text model as a pill: privacy icon + model name + privacy
-// mode, and the model switcher in one — clicking opens the model picker in
-// place. The privacy claims stay verifiable: the attestation walkthrough
-// lives in Settings (Models and About) and onboarding.
-function ModelBadge({
-  model,
-  privacyBadge,
-  onChangeModel,
-}: {
-  model?: VeniceModelDto;
-  privacyBadge?: ModelPrivacyBadge;
-  onChangeModel: () => void;
-}) {
-  if (!model) return null;
-  const icon = privacyBadge ? (
-    privacyBadge.mode === "e2ee" ? (
-      <IconLock size={13} aria-hidden />
-    ) : privacyBadge.mode === "private" ? (
-      <IconShieldAi size={13} aria-hidden />
-    ) : (
-      <IconAnonymous size={13} aria-hidden />
-    )
-  ) : null;
-  const description = privacyBadge
-    ? `${privacyBadge.description} Click to change the model.`
-    : "Click to change the model.";
-  const ariaLabel = privacyBadge
-    ? `${model.name} (${privacyBadge.label}) - ${description}`
-    : `${model.name} - ${description}`;
+// The current model's privacy mode as a pill — Private, Anonymous, or E2EE,
+// with the same icons the composer model popover uses. The model itself is
+// switched from the composer's picker; this badge just keeps the privacy
+// claim visible while the conversation scrolls. The claims stay verifiable:
+// the attestation walkthrough lives in Settings (Models and About) and
+// onboarding.
+function PrivacyModeBadge({ badge }: { badge?: ModelPrivacyBadge }) {
+  if (!badge) return null;
   return (
-    <HoverTip tip={description} className="agent-safety-badge-wrap">
-      <button
-        type="button"
-        className="agent-safety-badge"
-        data-mode={privacyBadge?.mode}
-        onClick={onChangeModel}
-        aria-label={ariaLabel}
-      >
-        {icon}
-        <span className="agent-safety-badge-name">{model.name}</span>
-        {privacyBadge ? (
-          <>
-            <span className="agent-safety-badge-label" aria-hidden>
-              ·
-            </span>
-            <span className="agent-safety-badge-label">
-              {privacyBadge.label}
-            </span>
-          </>
-        ) : null}
-      </button>
+    <HoverTip
+      tip={badge.description}
+      className="agent-safety-badge"
+      data-mode={badge.mode}
+      tabIndex={0}
+      aria-label={`${badge.label} - ${badge.description}`}
+    >
+      {badge.mode === "e2ee" ? (
+        <IconLock size={13} aria-hidden />
+      ) : badge.mode === "private" ? (
+        <IconGhost2 size={13} aria-hidden />
+      ) : (
+        <IconAnonymous size={13} aria-hidden />
+      )}
+      {badge.label}
     </HoverTip>
   );
 }
@@ -4610,9 +4559,7 @@ function UnrestrictedBadge() {
 // conversation keeps the focus (no separate title heading).
 function AgentSessionBar({
   origin,
-  model,
   privacyBadge,
-  onChangeModel,
   fullMode,
   title,
   artifactCount = 0,
@@ -4622,9 +4569,7 @@ function AgentSessionBar({
   onDelete,
 }: {
   origin?: AgentWorkspaceOrigin;
-  model?: VeniceModelDto;
   privacyBadge?: ModelPrivacyBadge;
-  onChangeModel: () => void;
   fullMode?: boolean;
   title?: string;
   artifactCount?: number;
@@ -4748,11 +4693,7 @@ function AgentSessionBar({
             <span aria-hidden>{artifactCount}</span>
           </button>
         ) : null}
-        <ModelBadge
-          model={model}
-          privacyBadge={privacyBadge}
-          onChangeModel={onChangeModel}
-        />
+        <PrivacyModeBadge badge={privacyBadge} />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
             <button
@@ -6061,8 +6002,8 @@ function AgentCliAccessCard({
         </div>
         <p>
           June wants write access to the state folders of your coding CLIs
-          (Claude Code, Codex, Gemini, opencode) so they stay logged in and
-          can save their work in sandboxed sessions. Those folders configure
+          (Claude Code, Codex, Gemini, opencode) so they stay logged in and can
+          save their work in sandboxed sessions. Those folders configure
           software that also runs outside June's sandbox. Enabling turns on
           "Agent CLI access" in Settings and restarts the sandboxed runtime.
         </p>

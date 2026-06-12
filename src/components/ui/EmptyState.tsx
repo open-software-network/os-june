@@ -2,20 +2,28 @@ import type { ReactNode } from "react";
 
 /**
  * Shared empty-state surface: a quiet contained panel with a muted glyph, serif
- * title, supporting copy, and an optional full-width inset footer (e.g. the
- * dictation shortcut hints). Used anywhere a view has nothing to show yet, so
- * Dictation, Folders, etc. stay visually consistent.
+ * title, supporting copy, and an optional action button under the copy. Used
+ * anywhere a view has nothing to show yet, so Dictation, Routines, Agents,
+ * etc. stay visually consistent.
+ *
+ * `action` and `footer` are different slots on purpose: calls to action live
+ * in the content column, while the full-width inset footer is reserved for
+ * supplementary reference material (the dictation shortcut hints) — a button
+ * down there reads as a second surface rather than the next step.
  */
 export function EmptyState({
   icon,
   title,
   description,
+  action,
   footer,
   label,
 }: {
   icon?: ReactNode;
   title: ReactNode;
   description?: ReactNode;
+  /** Call to action rendered in the content column, under the copy. */
+  action?: ReactNode;
   /** Full-width inset panel below the content (e.g. shortcut hints). */
   footer?: ReactNode;
   /** Accessible label for the region. */
@@ -33,6 +41,7 @@ export function EmptyState({
         {description ? (
           <p className="empty-state-description">{description}</p>
         ) : null}
+        {action ? <div className="empty-state-action">{action}</div> : null}
       </div>
       {footer ? <div className="empty-state-footer">{footer}</div> : null}
     </section>

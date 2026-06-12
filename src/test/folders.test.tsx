@@ -555,7 +555,7 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByText("No notes yet.")).toBeInTheDocument();
+    expect(screen.getByText("Capture your first meeting")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Create your first note" }),
     ).toBeInTheDocument();
