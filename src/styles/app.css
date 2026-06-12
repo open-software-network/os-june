@@ -5569,44 +5569,73 @@ button.agent-safety-badge:hover {
   transform: translate(-50%, 0);
 }
 
-/* Skeleton — placeholder note lines shown while generation is in flight, so a
- * fresh note isn't blank space until the text pops in. The shimmer reuses the
- * label sweep keyframe; lines are staggered so the motion reads as alive. */
+/* Skeleton — placeholder note lines shown while transcription or generation is
+ * in flight, so a fresh note isn't blank space until the text pops in. The
+ * shimmer reuses the label sweep keyframe; lines are staggered so the motion
+ * reads as alive. */
 .note-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  margin-top: var(--sp-5);
+  display: grid;
+  gap: var(--sp-4);
+  width: min(100%, 680px);
+  margin-top: var(--sp-6);
+  opacity: 0.78;
 }
 
+.note-skeleton-heading,
 .note-skeleton-line {
-  height: 12px;
+  display: block;
   border-radius: var(--r-xs);
   background: linear-gradient(
     90deg,
-    color-mix(in oklch, var(--muted-foreground) 11%, transparent) 0%,
-    color-mix(in oklch, var(--muted-foreground) 22%, transparent) 50%,
-    color-mix(in oklch, var(--muted-foreground) 11%, transparent) 100%
+    color-mix(in oklch, var(--muted-foreground) 9%, transparent) 0%,
+    color-mix(in oklch, var(--muted-foreground) 20%, transparent) 45%,
+    color-mix(in oklch, var(--muted-foreground) 9%, transparent) 90%
   );
-  background-size: 200% 100%;
-  animation: note-text-shimmer 1.8s linear infinite;
+  background-size: 220% 100%;
+  animation: note-text-shimmer 1.9s linear infinite;
+}
+
+.note-skeleton-heading {
+  width: min(42%, 240px);
+  height: 18px;
+}
+
+.note-skeleton-body {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.note-skeleton-line {
+  height: 10px;
 }
 
 .note-skeleton-line:nth-child(1) {
-  width: 92%;
+  width: 96%;
 }
 
 .note-skeleton-line:nth-child(2) {
-  width: 80%;
+  width: 72%;
   animation-delay: 0.15s;
 }
 
 .note-skeleton-line:nth-child(3) {
-  width: 86%;
+  width: 84%;
+  margin-bottom: var(--sp-3);
   animation-delay: 0.3s;
 }
 
+.note-skeleton-line:nth-child(4) {
+  width: 68%;
+  animation-delay: 0.45s;
+}
+
+.note-skeleton-line:nth-child(5) {
+  width: 90%;
+  animation-delay: 0.6s;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .note-skeleton-heading,
   .note-skeleton-line {
     animation: none;
   }
