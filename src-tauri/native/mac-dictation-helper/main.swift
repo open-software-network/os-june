@@ -807,7 +807,23 @@ final class ShortcutKeyMonitor {
         }
 
         if let push = matches.first(where: { $0.0 == .pushToTalk && $0.1.pressCount == 1 }) {
-            schedulePushStart(identity: identity, shortcut: push.1)
+            if matches.contains(where: { $0.0 == .toggle }) {
+                // A toggle shares this trigger, so a fresh press is ambiguous:
+                // a tap is (or arms) the toggle, only a hold is the push. The
+                // hold threshold is what tells them apart.
+                schedulePushStart(identity: identity, shortcut: push.1)
+            } else {
+                // Unambiguous push-to-talk (the default config: bare fn with
+                // the toggle on a different trigger). The threshold used to
+                // tax every dictation with 160ms before the microphone even
+                // opened; start on the down edge instead. Grazes are handled
+                // on the app side now: it times the press and discards
+                // releases shorter than the old threshold, so a brushed key
+                // never pastes transcribed noise.
+                cancelPendingPush()
+                activePushIdentity = identity
+                emitShortcut(.pushToTalk, shortcut: push.1, isDown: true)
+            }
         }
     }
 
@@ -1553,7 +1569,14 @@ final class DictationController {
     }
 
     func discard() {
+        // The HUD shows on listening_started, so a discard that interrupts a
+        // live recording (a grazed push-to-talk key, a signed-out session)
+        // must announce itself or the HUD stays stuck on "Listening".
+        let wasListening = isListening
         resetRecordingState()
+        if wasListening {
+            emit("recording_discarded")
+        }
     }
 
     func shutdown() {

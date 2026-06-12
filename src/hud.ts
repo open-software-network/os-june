@@ -667,6 +667,13 @@ async function handleDictationEventPayload(payload: unknown) {
     return;
   }
 
+  if (dictationEvent.type === "recording_discarded") {
+    // A grazed push-to-talk key or a signed-out session: the recording was
+    // dropped without transcription, so the listening HUD just goes away.
+    void hideHud();
+    return;
+  }
+
   if (dictationEvent.type === "agent_session_prompt") {
     void hideHud();
     return;
