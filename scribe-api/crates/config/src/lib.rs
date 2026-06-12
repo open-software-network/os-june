@@ -124,15 +124,15 @@ impl Debug for IssueReportsConfig {
     }
 }
 
-/// Where onboarding attribution answers get forwarded. With no PostHog or
+/// Where onboarding attribution answers get forwarded. With no `PostHog` or
 /// webhook configured, answers become structured log lines.
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct SurveysConfig {
-    /// PostHog capture API host, e.g. `https://us.i.posthog.com`.
+    /// `PostHog` capture API host, e.g. `https://us.i.posthog.com`.
     /// `SCRIBE__SURVEYS__POSTHOG_API_HOST`.
     #[serde(default)]
     pub posthog_api_host: String,
-    /// PostHog project API key (`phc_...`). Redacted Debug.
+    /// `PostHog` project API key (`phc_...`). Redacted Debug.
     /// `SCRIBE__SURVEYS__POSTHOG_PROJECT_KEY`.
     #[serde(default)]
     pub posthog_project_key: String,
