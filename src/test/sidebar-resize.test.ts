@@ -1,6 +1,7 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { handleSidebarResizeStart } from "../app/sidebar-resize";
+import appCss from "../styles/app.css?raw";
 
 function setupResizeDom(sidebarState: "collapsed" | "expanded") {
   document.body.innerHTML = `
@@ -34,6 +35,12 @@ function reactPointerEvent(
 }
 
 describe("handleSidebarResizeStart", () => {
+  it("does not hide the sidebar element during collapsed drag preview", () => {
+    expect(appCss).not.toMatch(
+      /\.app-shell\[data-sidebar-preview="collapsed"\]\s+\.sidebar\s*\{[^}]*display:\s*none/,
+    );
+  });
+
   it("sets collapsed preview state as soon as a drag crosses the collapse threshold", () => {
     const { shell, handle, mainPanel } = setupResizeDom("expanded");
     const onStart = vi.fn();
@@ -57,6 +64,7 @@ describe("handleSidebarResizeStart", () => {
     expect(shell.style.getPropertyValue("--sidebar-w-current")).toBe("0px");
     expect(shell.style.getPropertyValue("--main-gutter")).toBe("var(--sp-3)");
     expect(mainPanel.style.marginLeft).toBe("var(--sp-3)");
+    expect(document.querySelector(".sidebar")).toBeInTheDocument();
 
     window.dispatchEvent(pointerEvent("pointerup", 100));
 

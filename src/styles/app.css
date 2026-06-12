@@ -164,10 +164,6 @@ input:focus-visible,
   display: flex;
 }
 
-.app-shell[data-sidebar-preview="collapsed"] .sidebar {
-  display: none;
-}
-
 .sidebar-resize-handle {
   position: fixed;
   top: calc(var(--titlebar-h) + var(--sp-2));

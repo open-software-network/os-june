@@ -5,6 +5,7 @@
 - [x] Patch the state/layout path with the smallest scoped change.
 - [x] Add or update focused tests if the behavior is covered by component tests.
 - [x] Run relevant tests and document the rendered validation blocker.
+- [x] Fix the reverse drag flash after collapsing while the pointer stays down.
 
 ## Review
 
@@ -12,6 +13,10 @@ Fixed by giving drag-collapse its own transient `data-sidebar-preview` state.
 The files panel remains mounted, while fixed agent UI now follows the same
 collapsed or expanded selectors during the drag threshold crossing instead of
 waiting for React's committed `data-sidebar` state on pointer-up.
+
+Follow-up fix: the collapsed drag preview no longer applies `display: none` to
+the sidebar itself. The zero-width grid track clips the mounted sidebar during
+the drag, avoiding a display toggle flash when the pointer reverses back out.
 
 Verification:
 
