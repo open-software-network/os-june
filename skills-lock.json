@@ -7,6 +7,12 @@
       "skillPath": "skills/os-accounts-integration/SKILL.md",
       "computedHash": "dfbbcc11480278577e1bcf0e03f79eeaf5fedf66611ca3d89d5c290481121308"
     },
+    "os-platform": {
+      "source": "open-software-network/skills",
+      "sourceType": "github",
+      "skillPath": "skills/os-platform/SKILL.md",
+      "computedHash": "6601903ecc962ba67b6af9426e9d268f5bc9fd919d5ddb3b0e4e17ff967fe565"
+    },
     "os-rust-backend": {
       "source": "git@github.com:open-software-network/os-accounts.git",
       "sourceType": "git",

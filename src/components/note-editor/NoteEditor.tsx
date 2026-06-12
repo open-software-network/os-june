@@ -221,6 +221,9 @@ export function NoteEditor({
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating" ||
     note.processingStatus === "validating";
+  const showProcessingSkeleton =
+    note.processingStatus === "transcribing" ||
+    note.processingStatus === "generating";
   // Shell snaps straight back to idle after stop — the body shimmer
   // covers the "still processing" affordance, and the record button
   // stays disabled via processingLock so nothing can re-trigger.
@@ -362,11 +365,16 @@ export function NoteEditor({
                 ) : null}
               </div>
             ) : null}
-            {note.processingStatus === "generating" ? (
+            {showProcessingSkeleton ? (
               <div className="note-skeleton" aria-hidden="true">
-                <span className="note-skeleton-line" />
-                <span className="note-skeleton-line" />
-                <span className="note-skeleton-line" />
+                <span className="note-skeleton-heading" />
+                <span className="note-skeleton-body">
+                  <span className="note-skeleton-line" />
+                  <span className="note-skeleton-line" />
+                  <span className="note-skeleton-line" />
+                  <span className="note-skeleton-line" />
+                  <span className="note-skeleton-line" />
+                </span>
               </div>
             ) : null}
           </div>

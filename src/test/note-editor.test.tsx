@@ -532,27 +532,40 @@ describe("NoteEditor", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Generating notes");
   });
 
-  it("shows skeleton lines while generating and drops them once ready", () => {
-    const { container, rerender } = render(
-      <NoteEditor
-        {...props}
-        note={note({ processingStatus: "generating", activeTab: "notes" })}
-      />,
-    );
+  it.each(["transcribing", "generating"] as const)(
+    "shows a note-shaped skeleton while %s",
+    (processingStatus) => {
+      const { container } = render(
+        <NoteEditor
+          {...props}
+          note={note({ processingStatus, activeTab: "notes" })}
+        />,
+      );
 
-    expect(container.querySelectorAll(".note-skeleton-line")).toHaveLength(3);
+      const skeleton = container.querySelector(".note-skeleton");
+      expect(skeleton).toBeInTheDocument();
+      expect(skeleton).toHaveAttribute("aria-hidden", "true");
+      expect(
+        skeleton?.querySelector(".note-skeleton-heading"),
+      ).toBeInTheDocument();
+      expect(
+        skeleton?.querySelector(".note-skeleton-body"),
+      ).toBeInTheDocument();
+      expect(skeleton?.querySelectorAll(".note-skeleton-line")).toHaveLength(5);
+    },
+  );
 
-    rerender(
-      <NoteEditor
-        {...props}
-        note={note({
-          processingStatus: "ready",
-          generatedContent: "The notes",
-          activeTab: "notes",
-        })}
-      />,
-    );
+  it.each(["ready", "validating"] as const)(
+    "hides the note-shaped skeleton while %s",
+    (processingStatus) => {
+      const { container } = render(
+        <NoteEditor
+          {...props}
+          note={note({ processingStatus, activeTab: "notes" })}
+        />,
+      );
 
-    expect(container.querySelectorAll(".note-skeleton-line")).toHaveLength(0);
-  });
+      expect(container.querySelector(".note-skeleton")).not.toBeInTheDocument();
+    },
+  );
 });
