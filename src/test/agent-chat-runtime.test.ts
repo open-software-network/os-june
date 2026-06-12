@@ -977,6 +977,57 @@ describe("Agent chat runtime", () => {
     expect((tools?.[0] as { text?: string }).text).toContain("Done: 1 file written");
   });
 
+  it("keeps the goal label when a later subagent event omits it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
+        },
+        // A tool event carrying only the id + preview, no goal.
+        {
+          type: "subagent.tool",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { subagent_id: "sa-1", tool_preview: "edit privacy.tsx" },
+        },
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    // The richer label must survive the goal-less follow-up (no flicker).
+    expect(tool).toMatchObject({
+      name: "Subagent: Write the privacy page",
+      status: "running",
+    });
+  });
+
+  it("resolves a failure-flavored terminal subtype instead of staying running", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
+        },
+        // A subtype not in the documented union; must still terminate the row.
+        {
+          type: "subagent.timeout",
+          receivedAt: "2026-06-04T10:00:05.000Z",
+          payload: { subagent_id: "sa-1" },
+        },
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Subagent: Write the privacy page",
+      status: "failed",
+    });
+  });
+
   it("labels a goal-less subagent by its task position and marks failures", () => {
     const turns = buildAgentChatTurns(
       [],

@@ -401,20 +401,39 @@ function appendLiveHermesEvents(
       const taskIndexRaw = payload?.task_index;
       const taskIndex =
         typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
-      const key = subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+      const key =
+        subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+      const partId = `subagent:${key}`;
       const goal = stringValue(payload?.goal);
       const taskCountRaw = payload?.task_count;
       const taskCount =
         typeof taskCountRaw === "number" ? taskCountRaw : undefined;
+      // Keep the richest label we have seen for this subagent: progress and
+      // tool events often omit the goal, and downgrading to the generic
+      // "Subagent" would make the row flicker. Prefer the goal, else the name
+      // already shown, else a task-position label.
+      const existingName = currentAssistant.parts.find(
+        (part): part is AgentChatToolPart =>
+          part.type === "tool" && part.id === partId,
+      )?.name;
       const label = goal
         ? `Subagent: ${goal}`
-        : taskCount && taskCount > 1 && taskIndex !== undefined
-          ? `Subagent ${taskIndex + 1} of ${taskCount}`
-          : "Subagent";
-      const completed = event.type === "subagent.complete";
-      const reportedStatus = stringValue(payload?.status)?.toLowerCase();
+        : (existingName ??
+          (taskCount && taskCount > 1 && taskIndex !== undefined
+            ? `Subagent ${taskIndex + 1} of ${taskCount}`
+            : "Subagent"));
+      // Terminal on `subagent.complete` or any failure-flavored subtype the
+      // gateway might add (fail/cancel/timeout/abort/interrupt). Keyed off the
+      // subtype, not a fixed allow-list, so a new terminal event can't strand
+      // a row as "running" forever.
+      const subtype = event.type.slice("subagent.".length).toLowerCase();
+      const reportedStatus = stringValue(payload?.status)?.toLowerCase() ?? "";
+      const failurePattern = /fail|error|cancel|timeout|abort|interrupt/;
+      const failed =
+        failurePattern.test(subtype) || failurePattern.test(reportedStatus);
+      const completed = subtype === "complete" || subtype === "done" || failed;
       const status: AgentChatToolPart["status"] = completed
-        ? reportedStatus && /fail|error|interrupt/.test(reportedStatus)
+        ? failed
           ? "failed"
           : "complete"
         : "running";
@@ -428,9 +447,9 @@ function appendLiveHermesEvents(
       const activity =
         stringValue(payload?.summary) ??
         stringValue(payload?.tool_preview) ??
-        (event.type === "subagent.complete" ? undefined : stringValue(payload?.text));
+        (completed ? undefined : stringValue(payload?.text));
       upsertToolPart(currentAssistant.parts, {
-        id: `subagent:${key}`,
+        id: partId,
         name: label,
         text: activity ?? "",
         status,
