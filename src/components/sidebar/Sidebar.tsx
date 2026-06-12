@@ -317,16 +317,20 @@ export function Sidebar({
         .includes(normalized),
     );
   }, [agentSessions, query]);
+  const pinnedAgentSessionOrder = useMemo(
+    () => buildPinnedSessionOrderIndex(pinnedAgentSessionIds),
+    [pinnedAgentSessionIds],
+  );
   const pinnedAgentSessions = useMemo(
     () =>
       filteredAgentSessions
         .filter((session) => pinnedAgentSessionIds.has(session.id))
         .sort(
           (a, b) =>
-            pinnedSessionOrder(pinnedAgentSessionIds, a.id) -
-            pinnedSessionOrder(pinnedAgentSessionIds, b.id),
+            pinnedSessionOrder(pinnedAgentSessionOrder, a.id) -
+            pinnedSessionOrder(pinnedAgentSessionOrder, b.id),
         ),
-    [filteredAgentSessions, pinnedAgentSessionIds],
+    [filteredAgentSessions, pinnedAgentSessionIds, pinnedAgentSessionOrder],
   );
   const visibleAgentSessions = useMemo(
     () =>
@@ -1591,9 +1595,21 @@ function writePinnedAgentSessionIds(ids: ReadonlySet<string>) {
   }
 }
 
-function pinnedSessionOrder(ids: ReadonlySet<string>, sessionId: string) {
-  const index = Array.from(ids).indexOf(sessionId);
-  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+function buildPinnedSessionOrderIndex(ids: ReadonlySet<string>) {
+  const indexById = new Map<string, number>();
+  let index = 0;
+  for (const id of ids) {
+    indexById.set(id, index);
+    index += 1;
+  }
+  return indexById;
+}
+
+function pinnedSessionOrder(
+  indexById: ReadonlyMap<string, number>,
+  sessionId: string,
+) {
+  return indexById.get(sessionId) ?? Number.MAX_SAFE_INTEGER;
 }
 
 function AgentSessionRow({

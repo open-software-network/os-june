@@ -4250,7 +4250,7 @@ button.agent-safety-badge:hover {
  * list hugs its rows instead. */
 .notes-nav.sidebar-pinned-list {
   height: auto;
-  max-height: 134px;
+  max-height: var(--sidebar-pinned-list-max-h);
   overflow-y: auto;
   padding-bottom: 0;
 }
@@ -4263,7 +4263,7 @@ button.agent-safety-badge:hover {
   justify-content: space-between;
   gap: var(--sp-2);
   padding: 0 var(--sp-2);
-  min-height: 22px;
+  min-height: var(--sidebar-section-title-h);
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   font-weight: 500;
