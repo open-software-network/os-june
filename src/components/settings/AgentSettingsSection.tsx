@@ -11,6 +11,7 @@ import {
   hermesBridgeSkills,
   hermesBridgeToolsets,
   agentHudHide,
+  agentHudShow,
   setHermesAgentCliAccess,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
@@ -117,7 +118,9 @@ export function AgentSettingsSection() {
     setAgentHudEnabledState(enabled);
     setAgentHudEnabled(enabled);
     try {
-      if (!enabled) {
+      if (enabled) {
+        await agentHudShow();
+      } else {
         await agentHudHide();
       }
       setError(null);

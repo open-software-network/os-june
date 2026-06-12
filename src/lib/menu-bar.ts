@@ -6,13 +6,14 @@ export const AGENT_MENU_BAR_NEW_SESSION_EVENT =
   "scribe:menu-bar:new-agent-session";
 export const AGENT_MENU_BAR_OPEN_SESSION_EVENT =
   "scribe:menu-bar:open-agent-session";
+export const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT =
+  "scribe:menu-bar:set-agent-hud";
 
 export type AgentMenuBarSessionStatus = "idle" | "running" | "waitingForUser";
 
 export type AgentMenuBarSession = {
   id: string;
   title: string;
-  subtitle?: string;
   status: AgentMenuBarSessionStatus;
   lastActive?: string;
 };
@@ -21,6 +22,7 @@ export type AgentMenuBarState = {
   activeCount: number;
   needsUserCount: number;
   sessions: AgentMenuBarSession[];
+  agentHudEnabled: boolean;
   lastStatus?: {
     sessionId?: string;
     title?: string;
@@ -35,6 +37,7 @@ type BuildAgentMenuBarStateOptions = {
   workingSessionIds: ReadonlySet<string>;
   waitingSessionIds: ReadonlySet<string>;
   lastStatus?: AgentSessionStatusDetail;
+  agentHudEnabled?: boolean;
   limit?: number;
   now?: Date;
 };
@@ -48,6 +51,7 @@ export function buildAgentMenuBarState({
   workingSessionIds,
   waitingSessionIds,
   lastStatus,
+  agentHudEnabled = true,
   limit = DEFAULT_SESSION_LIMIT,
   now = new Date(),
 }: BuildAgentMenuBarStateOptions): AgentMenuBarState {
@@ -68,7 +72,6 @@ export function buildAgentMenuBarState({
     .map((session) => ({
       id: session.id,
       title: titleForSession(session),
-      subtitle: subtitleForSession(session),
       status: statusForSession(
         session.id,
         workingSessionIds,
@@ -81,6 +84,7 @@ export function buildAgentMenuBarState({
     activeCount: activeSessionIds.size,
     needsUserCount: waitingSessionIds.size,
     sessions: orderedSessions,
+    agentHudEnabled,
     lastStatus: lastStatus
       ? {
           sessionId: lastStatus.sessionId,
@@ -131,17 +135,6 @@ function titleForSession(session: HermesSessionInfo) {
     normalizeText(session.preview, TITLE_LIMIT) ??
     "Untitled session"
   );
-}
-
-function subtitleForSession(session: HermesSessionInfo) {
-  const preview = normalizeText(session.preview, SUBTITLE_LIMIT);
-  if (preview && preview !== titleForSession(session)) return preview;
-  if (typeof session.message_count === "number" && session.message_count > 0) {
-    return `${session.message_count} message${
-      session.message_count === 1 ? "" : "s"
-    }`;
-  }
-  return undefined;
 }
 
 function sessionTimestamp(session: HermesSessionInfo) {

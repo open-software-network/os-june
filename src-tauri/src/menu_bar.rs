@@ -7,18 +7,21 @@ use tauri::{
 
 const TRAY_ID: &str = "agent-menu-bar";
 
-/// The June logo mark as a macOS template image (black glyph on transparent,
-/// rendered from icons/tray-icon-template.svg). The menu bar must show the
-/// same mark as the app icon — but the app icon itself can't be used
+/// The June logo mark as a macOS template image (black glyph on transparent).
+/// The menu bar must show the same mark as the app icon, but the app icon itself
+/// can't be used
 /// directly: template rendering keeps only the alpha channel, so the icon's
 /// opaque squircle background becomes a solid blob instead of the glyph.
 const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-template.png");
 const AGENT_MENU_BAR_STATE_EVENT: &str = "scribe:menu-bar:agent-state";
 const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "scribe:menu-bar:new-agent-session";
 const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "scribe:menu-bar:open-agent-session";
+const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT: &str = "scribe:menu-bar:set-agent-hud";
 
 const MENU_SHOW_ID: &str = "agent_menu_bar_show";
 const MENU_NEW_SESSION_ID: &str = "agent_menu_bar_new_session";
+const MENU_SHOW_AGENT_HUD_ID: &str = "agent_menu_bar_show_agent_hud";
+const MENU_HIDE_AGENT_HUD_ID: &str = "agent_menu_bar_hide_agent_hud";
 const MENU_QUIT_ID: &str = "agent_menu_bar_quit";
 const MENU_STATUS_ID: &str = "agent_menu_bar_status";
 const MENU_LAST_STATUS_ID: &str = "agent_menu_bar_last_status";
@@ -26,7 +29,7 @@ const MENU_RECENT_SESSIONS_ID: &str = "agent_menu_bar_recent_sessions";
 const MENU_EMPTY_SESSIONS_ID: &str = "agent_menu_bar_empty_sessions";
 const MENU_SESSION_ID_PREFIX: &str = "agent_menu_bar_session:";
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentMenuBarState {
     #[serde(default)]
@@ -35,8 +38,26 @@ struct AgentMenuBarState {
     needs_user_count: usize,
     #[serde(default)]
     sessions: Vec<AgentMenuBarSession>,
+    #[serde(default = "default_agent_hud_enabled")]
+    agent_hud_enabled: bool,
     #[serde(default)]
     last_status: Option<AgentMenuBarLastStatus>,
+}
+
+impl Default for AgentMenuBarState {
+    fn default() -> Self {
+        Self {
+            active_count: 0,
+            needs_user_count: 0,
+            sessions: Vec::new(),
+            agent_hud_enabled: default_agent_hud_enabled(),
+            last_status: None,
+        }
+    }
+}
+
+fn default_agent_hud_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -44,8 +65,6 @@ struct AgentMenuBarState {
 struct AgentMenuBarSession {
     id: String,
     title: String,
-    #[serde(default)]
-    subtitle: Option<String>,
     status: AgentMenuBarSessionStatus,
 }
 
@@ -75,10 +94,6 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .tooltip(tray_tooltip(&initial_state))
         .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event);
-
-    if let Some(title) = tray_title(&initial_state) {
-        tray_builder = tray_builder.title(title);
-    }
 
     match tauri::image::Image::from_bytes(TRAY_ICON_TEMPLATE_PNG) {
         Ok(icon) => {
@@ -124,6 +139,14 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         let _ = app.emit(AGENT_MENU_BAR_NEW_SESSION_EVENT, ());
         return;
     }
+    if id == MENU_SHOW_AGENT_HUD_ID {
+        let _ = app.emit(AGENT_MENU_BAR_SET_AGENT_HUD_EVENT, true);
+        return;
+    }
+    if id == MENU_HIDE_AGENT_HUD_ID {
+        let _ = app.emit(AGENT_MENU_BAR_SET_AGENT_HUD_EVENT, false);
+        return;
+    }
     if id == MENU_QUIT_ID {
         app.exit(0);
         return;
@@ -159,6 +182,22 @@ where
 
     menu.append(&show_item)?;
     menu.append(&new_session_item)?;
+    let agent_hud_item = MenuItem::with_id(
+        manager,
+        if state.agent_hud_enabled {
+            MENU_HIDE_AGENT_HUD_ID
+        } else {
+            MENU_SHOW_AGENT_HUD_ID
+        },
+        if state.agent_hud_enabled {
+            "Hide agent HUD"
+        } else {
+            "Show agent HUD"
+        },
+        true,
+        None::<&str>,
+    )?;
+    menu.append(&agent_hud_item)?;
     menu.append(&PredefinedMenuItem::separator(manager)?)?;
     menu.append(&status_item)?;
 
@@ -215,7 +254,10 @@ where
 }
 
 fn update_tray<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, state: &AgentMenuBarState) {
-    let _ = tray.set_title(tray_title(state));
+    // Keep the macOS menu extra compact and logo-only. Status details live in
+    // the tooltip and dropdown menu; setting a title renders a wide text item
+    // beside the icon in the menu bar.
+    let _ = tray.set_title::<&str>(None);
     let _ = tray.set_tooltip(Some(tray_tooltip(state)));
 }
 
@@ -225,22 +267,6 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
-}
-
-fn tray_title(state: &AgentMenuBarState) -> Option<String> {
-    if state.needs_user_count > 0 {
-        return Some(counted_status_title(
-            "Needs Approval",
-            state.needs_user_count,
-        ));
-    }
-    if state.active_count > 0 {
-        return Some(counted_status_title("Working...", state.active_count));
-    }
-    if let Some(last_status) = state.last_status.as_ref() {
-        return status_title(&last_status.status).map(str::to_string);
-    }
-    None
 }
 
 fn tray_tooltip(state: &AgentMenuBarState) -> String {
@@ -307,16 +333,7 @@ fn session_label(session: &AgentMenuBarSession) -> String {
         AgentMenuBarSessionStatus::Running => "Working - ",
         AgentMenuBarSessionStatus::Idle => "",
     };
-    let subtitle = session
-        .subtitle
-        .as_deref()
-        .map(normalize_menu_text)
-        .filter(|value| !value.is_empty());
-
-    match subtitle {
-        Some(subtitle) => format!("{prefix}{title} - {subtitle}"),
-        None => format!("{prefix}{title}"),
-    }
+    format!("{prefix}{title}")
 }
 
 fn readable_status(status: &str) -> &'static str {
@@ -329,25 +346,6 @@ fn readable_status(status: &str) -> &'static str {
         "failed" => "Failed",
         "cancelled" => "Cancelled",
         _ => "Updated",
-    }
-}
-
-fn status_title(status: &str) -> Option<&'static str> {
-    match status {
-        "received" | "starting" => Some("Starting..."),
-        "running" => Some("Working..."),
-        "waitingForUser" => Some("Needs Approval"),
-        "failed" => Some("Failed"),
-        "cancelled" => Some("Cancelled"),
-        _ => None,
-    }
-}
-
-fn counted_status_title(label: &str, count: usize) -> String {
-    if count <= 1 {
-        label.to_string()
-    } else {
-        format!("{label} ({count})")
     }
 }
 
@@ -393,71 +391,6 @@ mod tests {
         let side = icon.width() as usize;
         for corner in [0, side - 1, side * (side - 1), side * side - 1] {
             assert_eq!(alphas[corner], 0, "corner pixels must be transparent");
-        }
-    }
-
-    #[test]
-    fn tray_title_uses_active_agent_status() {
-        assert_eq!(tray_title(&AgentMenuBarState::default()), None);
-        assert_eq!(tray_title(&state(1, 0, None)), Some("Working...".into()));
-        assert_eq!(
-            tray_title(&state(3, 0, None)),
-            Some("Working... (3)".into())
-        );
-        assert_eq!(
-            tray_title(&state(1, 1, None)),
-            Some("Needs Approval".into())
-        );
-        assert_eq!(
-            tray_title(&state(4, 2, None)),
-            Some("Needs Approval (2)".into())
-        );
-    }
-
-    #[test]
-    fn tray_title_uses_last_actionable_status() {
-        assert_eq!(
-            tray_title(&state(0, 0, Some("starting"))),
-            Some("Starting...".into())
-        );
-        assert_eq!(
-            tray_title(&state(0, 0, Some("running"))),
-            Some("Working...".into())
-        );
-        assert_eq!(
-            tray_title(&state(0, 0, Some("waitingForUser"))),
-            Some("Needs Approval".into())
-        );
-        assert_eq!(
-            tray_title(&state(0, 0, Some("failed"))),
-            Some("Failed".into())
-        );
-        assert_eq!(
-            tray_title(&state(0, 0, Some("cancelled"))),
-            Some("Cancelled".into())
-        );
-    }
-
-    #[test]
-    fn tray_title_omits_passive_statuses() {
-        assert_eq!(tray_title(&state(0, 0, Some("completed"))), None);
-        assert_eq!(tray_title(&state(0, 0, Some("unknown"))), None);
-    }
-
-    fn state(
-        active_count: usize,
-        needs_user_count: usize,
-        last_status: Option<&str>,
-    ) -> AgentMenuBarState {
-        AgentMenuBarState {
-            active_count,
-            needs_user_count,
-            last_status: last_status.map(|status| AgentMenuBarLastStatus {
-                title: None,
-                status: status.to_string(),
-                summary: None,
-            }),
-            ..AgentMenuBarState::default()
         }
     }
 }
