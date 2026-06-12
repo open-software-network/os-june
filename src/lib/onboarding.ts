@@ -62,10 +62,23 @@ export function resetOnboardingForReplay() {
   }
 }
 
+/**
+ * Run `callback` once when onboarding completes, then stop. Onboarding
+ * completes a single time per install, and in a Tauri sibling window (the HUD)
+ * the storage event and the BroadcastChannel message both fire for the same
+ * completion. The `delivered` guard collapses those into one invocation so the
+ * subscription is at-most-once regardless of how many signals arrive.
+ */
 export function subscribeToOnboardingComplete(callback: () => void) {
-  const onLocalComplete = () => callback();
+  let delivered = false;
+  const fireOnce = () => {
+    if (delivered) return;
+    delivered = true;
+    callback();
+  };
+  const onLocalComplete = () => fireOnce();
   const onStorage = (event: StorageEvent) => {
-    if (event.key === COMPLETED_KEY && isOnboardingComplete()) callback();
+    if (event.key === COMPLETED_KEY && isOnboardingComplete()) fireOnce();
   };
 
   window.addEventListener(ONBOARDING_COMPLETED_EVENT, onLocalComplete);

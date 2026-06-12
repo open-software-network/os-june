@@ -7,9 +7,11 @@ import {
   isAgentRiskAcknowledged,
   isOnboardingComplete,
   markOnboardingComplete,
+  ONBOARDING_COMPLETED_EVENT,
   onboardingResumeStep,
   resetOnboardingForReplay,
   setOnboardingResumeStep,
+  subscribeToOnboardingComplete,
 } from "../lib/onboarding";
 import type { AccountStatus } from "../lib/tauri";
 
@@ -669,5 +671,42 @@ describe("OnboardingFlow", () => {
         type: "request_microphone_permission",
       }),
     );
+  });
+});
+
+describe("subscribeToOnboardingComplete", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("fires the callback at most once even when both signals arrive", () => {
+    const callback = vi.fn();
+    const unsubscribe = subscribeToOnboardingComplete(callback);
+
+    // A sibling window (the HUD) receives both the storage event and the
+    // BroadcastChannel message for the same completion; the guard collapses
+    // them into a single invocation.
+    localStorage.setItem("june.onboarding.completedVersion", "999");
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "june.onboarding.completedVersion" }),
+    );
+    window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
+
+    expect(callback).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  it("never fires after unsubscribe", () => {
+    const callback = vi.fn();
+    const unsubscribe = subscribeToOnboardingComplete(callback);
+    unsubscribe();
+
+    localStorage.setItem("june.onboarding.completedVersion", "999");
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "june.onboarding.completedVersion" }),
+    );
+    window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
+
+    expect(callback).not.toHaveBeenCalled();
   });
 });
