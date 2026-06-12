@@ -299,6 +299,43 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
+  it("shakes the listening pill instead of toasting when dictation is already listening", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "already_listening",
+        message: "Dictation is already listening.",
+      },
+    });
+
+    // The pill stays in its listening state — no toast, no show/hide cycle.
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_shake", undefined);
+    expect(hudShowCalls()).toBe(0);
+  });
+
+  it("falls back to the error toast for already_listening outside the listening state", async () => {
+    await loadHud();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "already_listening",
+        message: "Dictation is already listening.",
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("error");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Dictation is already listening.",
+    );
+  });
+
   it("hides when a Hey June prompt starts an agent session", async () => {
     vi.useFakeTimers();
     await loadHud();

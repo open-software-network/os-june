@@ -681,6 +681,19 @@ async function handleDictationEventPayload(payload: unknown) {
       hideSoon(900);
       return;
     }
+    // Re-triggering dictation while the pill is already up listening: the
+    // wobble on the live pill says "already going" without a text toast —
+    // which would also replace the listening state and auto-hide while the
+    // recording is still running. Listening continues untouched (the helper
+    // keeps streaming audio levels, which also keeps Rust's post-error
+    // window-hide timer from firing).
+    if (
+      dictationEvent.payload?.code === "already_listening" &&
+      hud?.dataset.state === "listening"
+    ) {
+      triggerShake();
+      return;
+    }
     const message = String(
       dictationEvent.payload?.message ?? "Dictation failed.",
     ).trim();

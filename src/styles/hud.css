@@ -253,6 +253,12 @@ body {
   /* Fixed cap, not vw-relative: the window is resized to fit the measured
    * pill, so a vw clamp would be circular (pill fits whatever it last was). */
   max-width: 460px;
+  /* Not shrinkable — same trap as .hud-meeting-text: overflow: hidden gives a
+   * flex child an automatic min-width of 0, so it shrinks to the stale window
+   * width and the pill measures the old size, never growing. flex-shrink: 0
+   * keeps the intrinsic width so syncWindowToPill measures the true size.
+   * max-width + ellipsis still cap pathological messages. */
+  flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
