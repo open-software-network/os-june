@@ -1,3 +1,4 @@
+use crate::remote::RemoteHub;
 use scribe_domain::{IssueReportSink, TokenVerifier};
 use scribe_services::{
     AgentChatService, DictateService, NoteGenerateService, NoteTranscribeService, PricingTable,
@@ -17,6 +18,7 @@ struct ApiStateInner {
     agent_chat: Arc<AgentChatService>,
     dictate: Arc<DictateService>,
     issue_reports: Arc<dyn IssueReportSink>,
+    remote: RemoteHub,
     limits: ApiLimits,
     attestation: AttestationInfo,
 }
@@ -62,6 +64,7 @@ impl ApiState {
                 agent_chat: params.agent_chat,
                 dictate: params.dictate,
                 issue_reports: params.issue_reports,
+                remote: RemoteHub::default(),
                 limits: params.limits,
                 attestation: params.attestation,
             }),
@@ -70,6 +73,10 @@ impl ApiState {
 
     pub(crate) fn pricing(&self) -> &PricingTable {
         &self.inner.pricing
+    }
+
+    pub(crate) fn remote(&self) -> &RemoteHub {
+        &self.inner.remote
     }
 
     pub(crate) fn token_verifier(&self) -> &dyn TokenVerifier {

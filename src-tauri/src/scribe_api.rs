@@ -890,7 +890,7 @@ where
     ))
 }
 
-fn http_client() -> &'static reqwest::Client {
+pub(crate) fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .no_proxy()
@@ -932,7 +932,7 @@ fn title_or_placeholder(title: &str) -> String {
     }
 }
 
-fn scribe_api_url() -> String {
+pub(crate) fn scribe_api_url() -> String {
     crate::os_accounts::load_local_env();
     std::env::var("SCRIBE_API_URL")
         .ok()

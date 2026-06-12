@@ -6,6 +6,7 @@ mod envelope;
 mod error;
 mod handlers;
 mod multipart;
+mod remote;
 mod state;
 mod validation;
 
@@ -13,7 +14,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::StatusCode,
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use std::time::Duration;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -43,6 +44,16 @@ pub fn router(state: ApiState) -> Router {
         .route("/readyz", get(handlers::health::readyz))
         .route("/healthz", get(handlers::health::healthz))
         .route("/verify", get(handlers::verify::verify))
+        .route("/m", get(handlers::remote::mobile_page))
+        .route(
+            "/v1/remote/pairings",
+            post(handlers::remote::create_pairing),
+        )
+        .route(
+            "/v1/remote/pairings/{code}/claim",
+            post(handlers::remote::claim_pairing),
+        )
+        .route("/v1/remote/link", any(handlers::remote::link))
         .route("/v1/models", get(handlers::models::list_models))
         .route(
             "/v1/notes/transcribe",

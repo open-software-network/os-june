@@ -564,6 +564,41 @@ pub fn scribe_open_verify_page() -> Result<(), AppError> {
     crate::os_accounts::open_in_browser(&crate::scribe_api::verify_url())
 }
 
+/// Starts "control from your phone": mints a pairing and opens the relay host
+/// socket. Returns the code to show the user (and the mobile URL for a QR).
+#[tauri::command]
+pub async fn remote_start_pairing(
+    app: tauri::AppHandle,
+    host: tauri::State<'_, crate::remote::RemoteHost>,
+) -> Result<crate::remote::RemotePairing, AppError> {
+    crate::remote::start(&app, &host).await
+}
+
+/// Stops remote control and tears down the host socket.
+#[tauri::command]
+pub fn remote_stop(host: tauri::State<'_, crate::remote::RemoteHost>) -> Result<(), AppError> {
+    crate::remote::stop(&host);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remote_status(
+    host: tauri::State<'_, crate::remote::RemoteHost>,
+) -> crate::remote::RemoteStatus {
+    crate::remote::status(&host)
+}
+
+/// Relays one frame from the webview's agent stream out to the phone. The
+/// webview calls this with `{"type":"delta","text":...}`, `{"type":"done"}`,
+/// etc. as it streams an agent turn.
+#[tauri::command]
+pub fn remote_send(
+    host: tauri::State<'_, crate::remote::RemoteHost>,
+    frame: String,
+) -> Result<(), AppError> {
+    crate::remote::send_to_controller(&host, frame)
+}
+
 #[tauri::command]
 pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]

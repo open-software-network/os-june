@@ -74,6 +74,7 @@ import {
   playRecordingSound,
   preloadRecordingSounds,
 } from "../lib/recording-sounds";
+import { startRemoteBridge } from "../lib/remote-bridge";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
@@ -373,6 +374,14 @@ export function App() {
 
   useEffect(() => {
     preloadRecordingSounds();
+  }, []);
+
+  // The host-side bridge for "control from your phone": idle until a paired
+  // phone sends a prompt, then runs it through the local agent and streams
+  // the reply back. Cheap to keep mounted (it only listens).
+  useEffect(() => {
+    const bridge = startRemoteBridge();
+    return () => bridge.stop();
   }, []);
 
   // The card scroller's thumb fades in with scroll/pointer activity and back

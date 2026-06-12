@@ -828,6 +828,38 @@ export async function listAgentToolEvents(taskId: string) {
   });
 }
 
+export type RemotePairing = {
+  code: string;
+  mobileUrl: string;
+  expiresInSeconds: number;
+};
+
+export type RemoteStatus = {
+  active: boolean;
+  code?: string;
+  mobileUrl?: string;
+  controllerOnline: boolean;
+};
+
+/** Starts "control from your phone": mints a pairing and opens the relay host
+ * socket. Returns the code to show the user (and the mobile URL for a QR). */
+export async function remoteStartPairing() {
+  return invoke<RemotePairing>("remote_start_pairing");
+}
+
+export async function remoteStop() {
+  return invoke<void>("remote_stop");
+}
+
+export async function remoteStatus() {
+  return invoke<RemoteStatus>("remote_status");
+}
+
+/** Relays one frame from the agent stream out to the phone. */
+export async function remoteSend(frame: string) {
+  return invoke<void>("remote_send", { frame });
+}
+
 export async function hermesBridgeStatus() {
   return invoke<HermesBridgeStatus>("hermes_bridge_status");
 }

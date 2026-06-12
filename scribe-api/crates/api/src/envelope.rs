@@ -1,6 +1,7 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 
+pub(crate) const ERR_NOT_FOUND: i32 = 1001;
 pub const ERR_BAD_REQUEST: i32 = 2001;
 pub const ERR_UNAUTHORIZED: i32 = 3001;
 pub const ERR_UNPROCESSABLE: i32 = 4201;

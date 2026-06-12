@@ -48,6 +48,7 @@ import {
   chordFromKeyEvent,
   shortcutFromCapturePayload,
 } from "../shortcuts/use-shortcut-capture";
+import { RemoteControlSection } from "./RemoteControlSection";
 import {
   selectPopoverPlacement,
   selectPopoverStyle,
@@ -1207,6 +1208,8 @@ export function AppSettings({
                     </button>
                   </div>
                 </div>
+
+                <RemoteControlSection />
 
                 {onReportIssue ? (
                   <div className="settings-row">

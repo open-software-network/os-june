@@ -44,6 +44,9 @@ const mocks = vi.hoisted(() => ({
   updateDictionaryEntry: vi.fn(),
   deleteDictionaryEntry: vi.fn(),
   scribeOpenVerifyPage: vi.fn(),
+  remoteStartPairing: vi.fn(),
+  remoteStop: vi.fn(),
+  remoteStatus: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -80,6 +83,9 @@ vi.mock("../lib/tauri", () => ({
   updateDictionaryEntry: mocks.updateDictionaryEntry,
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
   scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
+  remoteStartPairing: mocks.remoteStartPairing,
+  remoteStop: mocks.remoteStop,
+  remoteStatus: mocks.remoteStatus,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -143,6 +149,16 @@ describe("AppSettings", () => {
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
+    mocks.remoteStatus.mockResolvedValue({
+      active: false,
+      controllerOnline: false,
+    });
+    mocks.remoteStartPairing.mockResolvedValue({
+      code: "AB12CD34",
+      mobileUrl: "https://scribe-api.example.test/m",
+      expiresInSeconds: 180,
+    });
+    mocks.remoteStop.mockResolvedValue(undefined);
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
         transcriptionProvider: "venice",
@@ -1307,6 +1323,35 @@ describe("AppSettings", () => {
       await screen.findByRole("button", { name: "Verify server" }),
     );
     expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
+  });
+
+  it("pairs a phone from About and shows the code", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "About" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Pair a phone" }),
+    );
+
+    expect(mocks.remoteStartPairing).toHaveBeenCalledOnce();
+    expect(await screen.findByLabelText("Pairing code")).toHaveTextContent(
+      "AB12CD34",
+    );
+    expect(screen.getByText(/Waiting for your phone/)).toBeInTheDocument();
+    // The mobile host the user opens is surfaced.
+    expect(screen.getByText("scribe-api.example.test/m")).toBeInTheDocument();
   });
 
   it("replays onboarding from About in dev builds", async () => {

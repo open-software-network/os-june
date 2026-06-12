@@ -11,6 +11,7 @@ pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
+pub mod remote;
 pub mod scribe_api;
 
 use tauri::Emitter;
@@ -116,6 +117,10 @@ pub fn run() {
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::scribe_open_verify_page,
+            commands::remote_start_pairing,
+            commands::remote_stop,
+            commands::remote_status,
+            commands::remote_send,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -164,6 +169,7 @@ pub fn run() {
         ])
         .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
+        .manage(remote::RemoteHost::default())
         .setup(|app| {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;

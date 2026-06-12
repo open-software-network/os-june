@@ -11637,3 +11637,30 @@ input:focus-visible,
   color: var(--success);
   animation: onboarding-rise var(--t-med) var(--ease-out);
 }
+
+/* Control from your phone: the pairing code and link state in Settings. */
+.remote-pairing {
+  margin-top: var(--sp-3);
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.remote-pairing-step {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.remote-code {
+  margin: var(--sp-1) 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.6rem;
+  letter-spacing: 0.22em;
+  color: var(--foreground);
+}
+
+.remote-pairing-status {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}

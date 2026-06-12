@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Control June</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1c1b18; --bg:#fdfdfc; --muted:#6f6c64; --line:#e7e5e0; --accent:#b4540a; --me:#ece7df; }
+  @media (prefers-color-scheme: dark){ :root{ --fg:#ece9e2; --bg:#161513; --muted:#97938a; --line:#2c2a26; --accent:#e8853d; --me:#2a2825; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+  header { padding: 1rem 1.1rem; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: .6rem; }
+  header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: #3aa35a; }
+  main { flex: 1; overflow-y: auto; padding: 1rem 1.1rem; -webkit-overflow-scrolling: touch; }
+  .pair { max-width: 22rem; margin: 2rem auto; }
+  .pair h2 { font-size: 1.25rem; }
+  .pair p { color: var(--muted); }
+  input[type=text] { width: 100%; padding: .8rem; font-size: 1.3rem; letter-spacing: .18em; text-transform: uppercase; text-align: center; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
+  button { font: inherit; font-weight: 600; padding: .75rem 1rem; border: none; border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer; width: 100%; margin-top: .8rem; }
+  button:disabled { opacity: .5; }
+  .err { color: #c4554d; font-size: .9rem; margin-top: .6rem; }
+  .msg { max-width: 85%; padding: .6rem .8rem; border-radius: 14px; margin: .5rem 0; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.me { margin-left: auto; background: var(--me); }
+  .msg.june { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  footer { border-top: 1px solid var(--line); padding: .7rem 1.1rem calc(.7rem + env(safe-area-inset-bottom)); display: flex; gap: .5rem; }
+  footer textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 12px; padding: .6rem .8rem; font: inherit; background: var(--bg); color: var(--fg); max-height: 8rem; }
+  footer button { width: auto; padding: .6rem 1rem; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="status-dot"></span>
+  <h1 id="status-text">Control June</h1>
+</header>
+
+<main id="main">
+  <section class="pair" id="pair-view">
+    <h2>Pair with your Mac</h2>
+    <p>Open June on your Mac, go to Settings and turn on "Control from your phone", then enter the code it shows.</p>
+    <input type="text" id="code" inputmode="latin" autocomplete="one-time-code" maxlength="8" placeholder="CODE" aria-label="Pairing code">
+    <button id="pair-btn">Connect</button>
+    <p class="err hidden" id="pair-err"></p>
+  </section>
+
+  <div id="chat-view" class="hidden"></div>
+</main>
+
+<footer id="composer" class="hidden">
+  <textarea id="input" rows="1" placeholder="Ask June to do something..." aria-label="Message"></textarea>
+  <button id="send-btn">Send</button>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var dot = document.getElementById("status-dot");
+  var statusText = document.getElementById("status-text");
+  var pairView = document.getElementById("pair-view");
+  var chatView = document.getElementById("chat-view");
+  var composer = document.getElementById("composer");
+  var main = document.getElementById("main");
+  var input = document.getElementById("input");
+
+  var socket = null;
+  var hostOnline = false;
+  var current = null; // the in-flight June message element
+
+  function setStatus(connected, online) {
+    dot.classList.toggle("on", connected && online);
+    statusText.textContent = !connected ? "Control June"
+      : online ? "Connected to your Mac" : "Waiting for your Mac...";
+  }
+
+  function bubble(role, text) {
+    var el = document.createElement("div");
+    el.className = "msg " + role;
+    el.textContent = text;
+    chatView.appendChild(el);
+    main.scrollTop = main.scrollHeight;
+    return el;
+  }
+
+  function showChat() {
+    pairView.classList.add("hidden");
+    chatView.classList.remove("hidden");
+    composer.classList.remove("hidden");
+  }
+
+  function handleFrame(frame) {
+    var data;
+    try { data = JSON.parse(frame); } catch (e) { return; }
+    switch (data.type) {
+      case "peer_here": if (data.peer === "host") { hostOnline = true; setStatus(true, true); } break;
+      case "peer_left": if (data.peer === "host") { hostOnline = false; setStatus(true, false); } break;
+      case "delta":
+        if (!current) current = bubble("june", "");
+        current.textContent += (data.text || "");
+        main.scrollTop = main.scrollHeight;
+        break;
+      case "message":
+        bubble("june", data.text || "");
+        current = null;
+        break;
+      case "done":
+        current = null;
+        break;
+      case "error":
+        bubble("june", "Error: " + (data.message || "something went wrong"));
+        current = null;
+        break;
+    }
+  }
+
+  function connect(token) {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    // The controller token rides as the WS subprotocol (kept out of the URL).
+    socket = new WebSocket(proto + "//" + location.host + "/v1/remote/link?role=controller", [token]);
+    socket.onopen = function () { setStatus(true, hostOnline); showChat(); };
+    socket.onmessage = function (ev) { handleFrame(ev.data); };
+    socket.onclose = function () { setStatus(false, false); };
+    socket.onerror = function () { setStatus(false, false); };
+  }
+
+  document.getElementById("pair-btn").addEventListener("click", function () {
+    var code = document.getElementById("code").value.trim().toUpperCase();
+    var err = document.getElementById("pair-err");
+    err.classList.add("hidden");
+    if (!code) { return; }
+    fetch("/v1/remote/pairings/" + encodeURIComponent(code) + "/claim", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (body) {
+        if (!body || !body.success || !body.data) { throw new Error((body && body.message) || "That code didn't work. Check it and try again."); }
+        connect(body.data.controllerToken);
+      })
+      .catch(function (e) { err.textContent = e.message || "Could not connect."; err.classList.remove("hidden"); });
+  });
+
+  function send() {
+    var text = input.value.trim();
+    if (!text || !socket || socket.readyState !== WebSocket.OPEN) { return; }
+    socket.send(JSON.stringify({ type: "prompt", text: text }));
+    bubble("me", text);
+    input.value = "";
+    input.style.height = "auto";
+    current = null;
+  }
+
+  document.getElementById("send-btn").addEventListener("click", send);
+  input.addEventListener("input", function () {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 128) + "px";
+  });
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+})();
+</script>
+</body>
+</html>

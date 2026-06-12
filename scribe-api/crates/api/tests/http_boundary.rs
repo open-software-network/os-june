@@ -692,3 +692,149 @@ impl AgentChatCompleter for FakeChatCompleter {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// Remote control relay (pairing + WebSocket).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn integration_create_pairing_requires_auth() -> Result<(), Box<dyn Error>> {
+    let response = match test_router()
+        .oneshot(json_request(
+            "/v1/remote/pairings",
+            &serde_json::json!({}),
+            None,
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_claim_unknown_code_is_404() -> Result<(), Box<dyn Error>> {
+    // Claim is unauthenticated by design (the code is the capability), so the
+    // only failure here is "no such code".
+    let response = match test_router()
+        .oneshot(json_request(
+            "/v1/remote/pairings/NOPENOPE/claim",
+            &serde_json::json!({}),
+            None,
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_remote_relay_pairs_and_relays_both_directions() -> Result<(), Box<dyn Error>> {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+    // One served instance so pairing state is shared across every call.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let app = test_router();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app.into_make_service()).await;
+    });
+    let base = format!("http://{addr}");
+    let http = reqwest::Client::new();
+
+    // Host (authenticated) mints a pairing.
+    let body: serde_json::Value = http
+        .post(format!("{base}/v1/remote/pairings"))
+        .header("authorization", AUTHORIZATION)
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(body["success"], true);
+    let pairing_id = body["data"]["pairingId"]
+        .as_str()
+        .ok_or("no pairingId")?
+        .to_string();
+    let code = body["data"]["code"].as_str().ok_or("no code")?.to_string();
+
+    // Phone claims it (no auth) and gets a controller token.
+    let claim: serde_json::Value = http
+        .post(format!("{base}/v1/remote/pairings/{code}/claim"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(claim["success"], true);
+    let controller_token = claim["data"]["controllerToken"]
+        .as_str()
+        .ok_or("no controllerToken")?
+        .to_string();
+
+    // Open the host WS (bearer as subprotocol, role=host).
+    let mut host_req = format!("ws://{addr}/v1/remote/link?role=host&pairing={pairing_id}")
+        .into_client_request()?;
+    host_req
+        .headers_mut()
+        .insert("sec-websocket-protocol", "valid-token".parse()?);
+    let (mut host_ws, _) = tokio_tungstenite::connect_async(host_req).await?;
+
+    // Open the controller WS (controller token as subprotocol).
+    let mut ctrl_req =
+        format!("ws://{addr}/v1/remote/link?role=controller").into_client_request()?;
+    ctrl_req
+        .headers_mut()
+        .insert("sec-websocket-protocol", controller_token.parse()?);
+    let (mut ctrl_ws, _) = tokio_tungstenite::connect_async(ctrl_req).await?;
+
+    // The controller, attaching second, is told the host is already present.
+    let hello = next_text(&mut ctrl_ws).await;
+    assert!(
+        hello.contains("peer_here"),
+        "expected presence, got {hello}"
+    );
+
+    // Phone -> desktop.
+    ctrl_ws
+        .send(Message::Text(
+            r#"{"type":"prompt","text":"summarize my day"}"#.into(),
+        ))
+        .await?;
+    let got = next_text(&mut host_ws).await;
+    assert!(got.contains("summarize my day"));
+
+    // Desktop -> phone.
+    host_ws
+        .send(Message::Text(r#"{"type":"delta","text":"On it."}"#.into()))
+        .await?;
+    let got = next_text(&mut ctrl_ws).await;
+    assert!(got.contains("On it."));
+
+    // Desktop drops: the phone is told its peer left.
+    host_ws.close(None).await?;
+    let left = next_text(&mut ctrl_ws).await;
+    assert!(left.contains("peer_left"), "expected peer_left, got {left}");
+    Ok(())
+}
+
+async fn next_text(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> String {
+    use futures_util::StreamExt;
+    loop {
+        match ws.next().await {
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                return String::from(text.as_str());
+            }
+            Some(Ok(_)) => {}
+            other => unreachable!("expected a text frame, got {other:?}"),
+        }
+    }
+}
