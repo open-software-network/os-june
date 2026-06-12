@@ -19,8 +19,6 @@ pub struct AppConfig {
     pub attestation: AttestationConfig,
     #[serde(default)]
     pub issue_reports: IssueReportsConfig,
-    #[serde(default)]
-    pub surveys: SurveysConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
 }
 
@@ -33,7 +31,6 @@ impl Debug for AppConfig {
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
-            .field("surveys", &self.surveys)
             .field("pricing", &self.pricing)
             .finish()
     }
@@ -120,50 +117,6 @@ impl Debug for IssueReportsConfig {
             .field("os_platform_project", &self.os_platform_project)
             .field("os_platform_label", &self.os_platform_label)
             .field("os_platform_reward_asset", &self.os_platform_reward_asset)
-            .finish()
-    }
-}
-
-/// Where onboarding attribution answers get forwarded. With no `PostHog` or
-/// webhook configured, answers become structured log lines.
-#[derive(Clone, Default, Deserialize, Serialize)]
-pub struct SurveysConfig {
-    /// `PostHog` capture API host, e.g. `https://us.i.posthog.com`.
-    /// `SCRIBE__SURVEYS__POSTHOG_API_HOST`.
-    #[serde(default)]
-    pub posthog_api_host: String,
-    /// `PostHog` project API key (`phc_...`). Redacted Debug.
-    /// `SCRIBE__SURVEYS__POSTHOG_PROJECT_KEY`.
-    #[serde(default)]
-    pub posthog_project_key: String,
-    /// Receives each survey answer as a JSON POST. Often embeds a secret
-    /// token, hence the redacted Debug. Set via
-    /// `SCRIBE__SURVEYS__WEBHOOK_URL`.
-    #[serde(default)]
-    pub webhook_url: String,
-}
-
-impl Debug for SurveysConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SurveysConfig")
-            .field("posthog_api_host", &self.posthog_api_host)
-            .field(
-                "posthog_project_key",
-                if self.posthog_project_key.is_empty() {
-                    &"<unset>"
-                } else {
-                    &REDACTED
-                },
-            )
-            .field(
-                "webhook_url",
-                if self.webhook_url.is_empty() {
-                    &"<unset>"
-                } else {
-                    &REDACTED
-                },
-            )
             .finish()
     }
 }
@@ -478,7 +431,6 @@ impl Default for AppConfig {
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
-            surveys: SurveysConfig::default(),
             pricing: default_pricing(),
         }
     }

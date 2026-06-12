@@ -31,16 +31,6 @@ os_platform_label = "bug"
 os_platform_reward_asset = ""
 webhook_url = ""
 
-[surveys]
-# Where onboarding discovery answers go, first match wins:
-# 1. PostHog capture API — product analytics events, configured per
-#    environment via SCRIBE__SURVEYS__POSTHOG_*.
-# 2. Webhook — each answer as a JSON POST.
-# 3. Neither configured: answers land in the structured logs only.
-posthog_api_host = ""
-posthog_project_key = ""
-webhook_url = ""
-
 [os_accounts]
 # api_url has no default — must come from SCRIBE__OS_ACCOUNTS__API_URL
 # per environment so a missing override fails loud against the dev
