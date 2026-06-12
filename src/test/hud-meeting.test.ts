@@ -334,6 +334,7 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-error-text")).toHaveTextContent(
       "Dictation is already listening.",
     );
+    expect(hudShowCalls()).toBe(1);
   });
 
   it("hides when a Hey June prompt starts an agent session", async () => {
