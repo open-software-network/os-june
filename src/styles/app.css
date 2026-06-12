@@ -2121,13 +2121,11 @@ button.agent-safety-badge:hover {
   animation: none;
 }
 
-/* Keep the panel on its own stable compositing layer for the duration of a
- * sidebar drag so the shell's per-frame grid relayout never re-rasterizes
- * (and so flashes) this fixed element. */
-.app-shell[data-sidebar-resizing="true"] .agent-artifact-panel {
-  will-change: transform;
-}
-
+/* No will-change/transform promotion on this panel: WKWebView clips a
+ * composited fixed element to its overflow-hidden ancestor (.main-panel),
+ * and the panel sits entirely outside the card's box, so promoting its
+ * layer hides it outright. The entrance animation is the one sanctioned
+ * promotion, and data-entered retires it after the first run. */
 @keyframes agent-artifact-panel-in {
   from {
     opacity: 0;
