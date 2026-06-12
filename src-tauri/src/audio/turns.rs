@@ -110,7 +110,6 @@ pub fn write_turn_wav(turn: &AudioTurn, output_path: &Path) -> Result<(), AppErr
     let sample_rate = spec.sample_rate.max(1) as i64;
     let start_frame = ((turn.start_ms.max(0) * sample_rate) / 1000) as usize;
     let end_frame = ((turn.end_ms.max(turn.start_ms) * sample_rate) / 1000) as usize;
-    let start_sample = start_frame.saturating_mul(channels);
     let sample_count = end_frame
         .saturating_sub(start_frame)
         .saturating_mul(channels);
@@ -120,11 +119,16 @@ pub fn write_turn_wav(turn: &AudioTurn, output_path: &Path) -> Result<(), AppErr
     }
     let mut writer = WavWriter::create(output_path, spec)
         .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
-    for sample in reader
-        .samples::<i16>()
-        .skip(start_sample)
-        .take(sample_count)
-    {
+    // seek() repositions by byte offset. The previous .skip() pulled every
+    // sample before the turn through the decoder, so extracting turn N
+    // re-decoded the recording from its start each time — across a meeting's
+    // worth of turns that is quadratic in the recording length.
+    let start_frame = u32::try_from(start_frame)
+        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+    reader
+        .seek(start_frame)
+        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+    for sample in reader.samples::<i16>().take(sample_count) {
         writer
             .write_sample(sample.unwrap_or(0))
             .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
@@ -532,6 +536,35 @@ mod tests {
         let spec = reader.spec();
         assert_eq!(spec.channels, 1);
         assert_eq!(spec.sample_rate, 16_000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn turn_extraction_cuts_the_exact_segment() {
+        // Pins the seek-based extraction: the segment must start at the
+        // turn's first frame and contain exactly the turn's samples, byte
+        // offsets and decoder state agreeing with the old skip-based path.
+        let dir =
+            std::env::temp_dir().join(format!("os-scribe-turn-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("source.wav");
+        let output = dir.join("turn.wav");
+        // 16 kHz mono: 1 ms = 16 frames. A ramp makes every frame unique.
+        let samples = (0..480).map(|value| value as i16).collect::<Vec<_>>();
+        write_samples(&input, &samples);
+
+        let turn = AudioTurn {
+            artifact_id: "artifact".to_string(),
+            source: "microphone".to_string(),
+            source_path: input.clone(),
+            start_ms: 10,
+            end_ms: 20,
+            turn_index: 0,
+        };
+        write_turn_wav(&turn, &output).unwrap();
+
+        let extracted = read_samples(&output);
+        assert_eq!(extracted, (160..320).map(|v| v as i16).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(dir);
     }
 

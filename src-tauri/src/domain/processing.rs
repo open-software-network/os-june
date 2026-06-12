@@ -16,7 +16,7 @@ use crate::{
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
@@ -452,6 +452,7 @@ pub async fn process_saved_source_audio(
         .collect::<HashMap<_, _>>();
     let mut transcription_jobs = Vec::new();
     let mut cached_candidates = Vec::new();
+    let mut normalized_sources: HashMap<PathBuf, PathBuf> = HashMap::new();
     for turn in turns {
         if let Some(existing) = existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
         {
@@ -479,12 +480,11 @@ pub async fn process_saved_source_audio(
             "{:04}-{}-{}-{}.wav",
             turn.turn_index, turn.source, turn.start_ms, turn.end_ms
         ));
-        let source_audio_path = normalize_wav_for_transcription(
+        let source_audio_path = normalized_full_source(
+            &mut normalized_sources,
+            &segment_dir,
+            &turn.source,
             &turn.source_path,
-            &segment_dir.join(format!(
-                "{:04}-{}-source-normalized.wav",
-                turn.turn_index, turn.source
-            )),
         )?;
         let covers_full_source = turn.end_ms <= turn.start_ms;
         let raw_audio_path = if covers_full_source {
@@ -853,6 +853,32 @@ struct TranscribePreparedAudioRequest {
     start_ms: Option<i64>,
     end_ms: Option<i64>,
     turn_index: Option<i64>,
+}
+
+/// Full-source normalized audio, prepared once per source. The per-turn job
+/// loop used to normalize the WHOLE source recording again for every turn —
+/// the output name carried the turn index, so nothing was ever reused — and
+/// an hour of meeting audio was decoded, resampled, and rewritten dozens of
+/// times before the first transcription request even left the machine. The
+/// normalized copy only exists to serve as the full-source fallback when
+/// every turn of a source fails, so one per source is all there is to make.
+fn normalized_full_source(
+    cache: &mut HashMap<PathBuf, PathBuf>,
+    segment_dir: &Path,
+    source: &str,
+    source_path: &Path,
+) -> Result<PathBuf, AppError> {
+    if let Some(prepared) = cache.get(source_path) {
+        return Ok(prepared.clone());
+    }
+    let output = segment_dir.join(format!(
+        "{}-{:02}-source-normalized.wav",
+        source,
+        cache.len()
+    ));
+    let prepared = normalize_wav_for_transcription(source_path, &output)?;
+    cache.insert(source_path.to_path_buf(), prepared.clone());
+    Ok(prepared)
 }
 
 async fn transcribe_prepared_audio(
@@ -1534,6 +1560,49 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[test]
+    fn full_source_normalization_runs_once_per_source() {
+        // Every turn of a source shares one normalized full-source copy; the
+        // job loop used to produce a fresh one per turn (a full decode,
+        // resample, and rewrite of the entire recording each time).
+        let dir = std::env::temp_dir().join(format!(
+            "os-scribe-normalize-cache-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("microphone.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&source, spec).unwrap();
+        // Quiet samples force a real normalization pass with an output file.
+        for sample in [100i16, -120, 90, -80] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let mut cache = HashMap::new();
+        let first = normalized_full_source(&mut cache, &dir, "microphone", &source).unwrap();
+        let second = normalized_full_source(&mut cache, &dir, "microphone", &source).unwrap();
+
+        assert_eq!(first, second);
+        let normalized_outputs = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("source-normalized")
+            })
+            .count();
+        assert_eq!(normalized_outputs, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn session_temp_dir_sanitizes_untrusted_session_ids() {
