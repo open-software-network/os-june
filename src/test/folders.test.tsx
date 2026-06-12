@@ -63,11 +63,12 @@ describe("folders UI", () => {
     (
       window as unknown as { __sidebarStates?: (show?: boolean) => string }
     ).__sidebarStates?.(false);
+    window.localStorage.removeItem("scribe:pinned-agent-session-ids");
     hermesMocks.listHermesSessions.mockResolvedValue([]);
     hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
   });
 
-  it("renders the notes entry and starts agent sessions from the sidebar", async () => {
+  it("renders the primary entries and starts agent sessions from the sidebar", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
     const onNewSession = vi.fn();
@@ -144,12 +145,91 @@ describe("folders UI", () => {
     expect(screen.getByLabelText("Working")).toBeInTheDocument();
 
     await user.click(
-      screen.getByRole("button", { name: /Researching Google/ }),
+      screen.getByRole("button", { name: "Researching Google" }),
     );
 
     expect(onChangeView).not.toHaveBeenCalled();
     expect(onSelectAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({ id: "session-1" }),
+    );
+  });
+
+  it("pins agent sessions in a dedicated sidebar section", async () => {
+    const user = userEvent.setup();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [
+              {
+                id: "session-1",
+                title: "Fetch os platform issues",
+                preview: "Check open issues",
+                last_active: "2026-06-04T19:00:00Z",
+              },
+              {
+                id: "session-2",
+                title: "Review onboarding",
+                preview: "Audit first run",
+                last_active: "2026-06-04T18:00:00Z",
+              },
+            ],
+            selectedSessionId: "session-1",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    const row = (await screen.findByText("Fetch os platform issues")).closest(
+      ".agent-sidebar-row",
+    ) as HTMLElement;
+    expect(row).not.toBeNull();
+
+    await user.click(
+      within(row).getByRole("button", {
+        name: "Actions for Fetch os platform issues",
+      }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Pin session" }));
+
+    expect(
+      screen.getByRole("region", { name: "Pinned agent sessions" }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Pinned agent sessions" }))
+        .getByText("Fetch os platform issues"),
+    ).toBeInTheDocument();
+    expect(window.localStorage.getItem("scribe:pinned-agent-session-ids")).toBe(
+      '["session-1"]',
+    );
+
+    await user.click(
+      within(
+        screen.getByRole("region", { name: "Pinned agent sessions" }),
+      ).getByRole("button", { name: "Actions for Fetch os platform issues" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Unpin session" }));
+
+    expect(
+      screen.queryByRole("region", { name: "Pinned agent sessions" }),
+    ).toBeNull();
+    expect(window.localStorage.getItem("scribe:pinned-agent-session-ids")).toBe(
+      "[]",
     );
   });
 
@@ -371,7 +451,10 @@ describe("folders UI", () => {
 
     expect(await screen.findByText("Researching Google")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Delete session" }));
+    await user.click(
+      screen.getByRole("button", { name: "Actions for Researching Google" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
     const dialog = await screen.findByRole("dialog", {
       name: 'Delete "Researching Google"?',
     });
