@@ -1064,6 +1064,7 @@ export function Sidebar({
       {menu?.kind === "agent-session" && menuAgentSession ? (
         <AgentSessionContextMenu
           pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
+          deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
           right={menu.right}
           top={menu.top}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
@@ -1629,6 +1630,7 @@ function AgentSessionRow({
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
+        if (deleting) return;
         if (menuRef.current) onOpenMenu(menuRef.current);
       }}
     >
@@ -1707,6 +1709,7 @@ function AgentSessionRow({
 
 function AgentSessionContextMenu({
   pinned,
+  deleting,
   right,
   top,
   onTogglePinned,
@@ -1714,6 +1717,7 @@ function AgentSessionContextMenu({
   onClose,
 }: {
   pinned: boolean;
+  deleting: boolean;
   right: number;
   top: number;
   onTogglePinned: () => void;
@@ -1743,6 +1747,7 @@ function AgentSessionContextMenu({
         type="button"
         role="menuitem"
         className="destructive"
+        disabled={deleting}
         onClick={() => {
           onDelete();
           onClose();
