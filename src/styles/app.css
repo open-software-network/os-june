@@ -4238,32 +4238,32 @@ button.agent-safety-badge:hover {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--sp-1);
 }
 
 .sidebar-pinned-section {
   flex: 0 0 auto;
-  gap: var(--sp-1);
 }
 
-.sidebar-pinned-section .section-title {
-  min-height: 22px;
-}
-
-.sidebar-pinned-list {
+/* Doubled class so these beat the later .notes-nav rule, whose height: 100%
+ * and 16px fade padding are meant for the open-ended agent list — the pinned
+ * list hugs its rows instead. */
+.notes-nav.sidebar-pinned-list {
   height: auto;
-  max-height: 154px;
+  max-height: 134px;
   overflow-y: auto;
   padding-bottom: 0;
 }
 
+/* Section headers share one height so the Pinned and Agent groups sit on the
+ * same vertical rhythm as the primary nav. */
 .section-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
   padding: 0 var(--sp-2);
-  min-height: var(--control-md);
+  min-height: 22px;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   font-weight: 500;
@@ -4559,29 +4559,24 @@ button.agent-safety-badge:hover {
   opacity: 0.45;
 }
 
-.agent-session-delete:hover:not(:disabled) {
-  color: var(--destructive);
-}
-
-.agent-session-pin:hover:not(:disabled) {
-  color: var(--foreground);
-}
-
 /* Agent rows drop the reserved menu column: the title spans (nearly) the full
  * row and fades out under the trailing overlay — a relative timestamp (or the
- * needs-you dot), swapped for the delete button on hover. */
+ * needs-you dot), swapped for the overflow menu button on hover. Session lists
+ * grow long, so these rows run denser than the primary nav. */
 .agent-sidebar-row {
   grid-template-columns: minmax(0, 1fr);
 }
 
 .agent-sidebar-row .note-row-main {
   grid-template-columns: minmax(0, 1fr);
+  min-height: 26px;
+  padding: var(--sp-1) var(--sp-3);
 }
 
 /* Titles ellipsize short of the trailing slot so they never collide with the
- * timestamp / dot or the two hover actions. */
+ * timestamp / dot or the hover menu button. */
 .agent-sidebar-row .note-row-title {
-  padding-right: 62px;
+  padding-right: 48px;
 }
 
 /* Trailing meta on agent rows: the relative timestamp or a compact status dot.
@@ -4610,14 +4605,15 @@ button.agent-safety-badge:hover {
 }
 
 .agent-sidebar-row:hover .agent-session-meta,
-.agent-sidebar-row:has(.agent-session-delete:focus-visible)
+.agent-sidebar-row[data-menu-open="true"] .agent-session-meta,
+.agent-sidebar-row:has(.agent-session-row-menu:focus-visible)
   .agent-session-meta {
   opacity: 0;
 }
 
-/* Row actions overlay the meta slot rather than holding a grid column of their
- * own, and reveal on hover only — a selected row keeps showing its timestamp
- * until pointed at. */
+/* The menu button overlays the meta slot rather than holding a grid column of
+ * its own, and reveals on hover only — a selected row keeps showing its
+ * timestamp until pointed at. It stays put while its menu is open. */
 .agent-session-actions {
   position: absolute;
   top: 50%;
@@ -4625,14 +4621,20 @@ button.agent-safety-badge:hover {
   translate: 0 -50%;
   display: inline-flex;
   align-items: center;
-  gap: 1px;
   opacity: 0;
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
 .agent-sidebar-row:hover .agent-session-actions,
+.agent-sidebar-row[data-menu-open="true"] .agent-session-actions,
 .agent-session-actions:focus-within {
   opacity: 1;
+}
+
+.agent-sidebar-row[data-menu-open="true"] .agent-session-row-menu {
+  opacity: 1;
+  background: oklch(0% 0 none / 6%);
+  color: var(--foreground);
 }
 
 /* Needs-you dot: terracotta, matching the live-status accent used across the
