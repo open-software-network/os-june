@@ -538,6 +538,7 @@ export function Sidebar({
   }
 
   function handleNewAgentSession() {
+    setSelectedAgentSessionId(undefined);
     markAgentNewSessionPending();
     onNewAgentSession();
     dispatchAgentEvent(AGENT_NEW_SESSION_EVENT);

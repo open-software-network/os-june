@@ -155,6 +155,8 @@ describe("folders UI", () => {
   });
 
   it("marks new session active until an existing agent session is selected", async () => {
+    const user = userEvent.setup();
+    const onNewAgentSession = vi.fn();
     render(
       <Sidebar
         notes={notes}
@@ -164,7 +166,7 @@ describe("folders UI", () => {
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
-        onNewAgentSession={vi.fn()}
+        onNewAgentSession={onNewAgentSession}
         onSelectAgentSession={vi.fn()}
       />,
     );
@@ -197,6 +199,12 @@ describe("folders UI", () => {
     await screen.findByText("Researching Google");
     expect(newSessionButton).not.toHaveAttribute("data-active");
     expect(newSessionButton).not.toHaveAttribute("aria-current");
+
+    await user.click(newSessionButton);
+
+    expect(onNewAgentSession).toHaveBeenCalledTimes(1);
+    expect(newSessionButton).toHaveAttribute("data-active", "true");
+    expect(newSessionButton).toHaveAttribute("aria-current", "page");
   });
 
   it("pins agent sessions in a dedicated sidebar section", async () => {
