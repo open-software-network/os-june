@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import sys
 import textwrap
 import urllib.error
@@ -22,6 +23,7 @@ DEFAULT_BASE_URL = "https://app.opensoftware.co/api"
 CONFIG_FILE_NAME = "os-platform.json"
 API_KEY_ENV = "OS_PLATFORM_API_KEY"
 BASE_URL_ENV = "OS_PLATFORM_API_BASE_URL"
+WORD_RE = re.compile(r"[a-z0-9]+")
 
 COMPACT_KEYS = {
     "id",
@@ -204,6 +206,12 @@ def require_arg(args: argparse.Namespace, name: str, description: str) -> str:
     return str(value)
 
 
+def require_text(value: Any, description: str) -> str:
+    if value is None or str(value).strip() == "":
+        die(f"{description} is required")
+    return str(value)
+
+
 def build_url(base_url: str, path: str, query: Mapping[str, Any] | None = None) -> str:
     if not path.startswith("/"):
         path = "/" + path
@@ -220,6 +228,24 @@ def build_url(base_url: str, path: str, query: Mapping[str, Any] | None = None) 
     return f"{base_url}{path}{suffix}"
 
 
+def build_json_request(
+    method: str,
+    url: str,
+    api_key: str,
+    body: Mapping[str, Any] | None = None,
+) -> urllib.request.Request:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "os-platform-agent-skill/1.0",
+        "Authorization": f"Bearer {api_key}",
+    }
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    return urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
+
+
 def request_json(
     method: str,
     path: str,
@@ -227,16 +253,11 @@ def request_json(
     base_url: str,
     api_key: str,
     query: Mapping[str, Any] | None = None,
+    body: Mapping[str, Any] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Any:
     url = build_url(base_url, path, query)
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "os-platform-agent-skill/1.0",
-    }
-    headers["Authorization"] = f"Bearer {api_key}"
-
-    req = urllib.request.Request(url, method=method.upper(), headers=headers)
+    req = build_json_request(method, url, api_key, body)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
@@ -339,7 +360,168 @@ def compact_dict(value: Mapping[str, Any], *, limit: int, depth: int) -> dict[st
     return result
 
 
+def tokenize_search_text(value: Any) -> list[str]:
+    return WORD_RE.findall(str(value).lower())
+
+
+def issue_search_values(issue: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    values: list[tuple[str, Any]] = []
+    fields = (
+        "external_id",
+        "number_in_org",
+        "number",
+        "title",
+        "body_markdown",
+        "body",
+        "type",
+        "priority",
+        "status",
+    )
+    for field in fields:
+        if issue.get(field) is not None:
+            values.append((field, issue[field]))
+
+    labels = issue.get("labels")
+    if isinstance(labels, list):
+        for label in labels:
+            if isinstance(label, Mapping):
+                values.extend(
+                    ("label", label[key])
+                    for key in ("slug", "name", "title")
+                    if label.get(key)
+                )
+            elif label:
+                values.append(("label", label))
+    return values
+
+
+def score_issue_for_query(issue: Mapping[str, Any], query: str) -> int:
+    query_text = query.strip().lower()
+    query_tokens = set(tokenize_search_text(query_text))
+    if not query_tokens:
+        return 0
+
+    score = 0
+    for field, raw_value in issue_search_values(issue):
+        value_text = str(raw_value).lower()
+        if field in {"external_id", "number_in_org", "number"}:
+            if query_text == value_text.strip():
+                score += 160
+            continue
+
+        value_tokens = set(tokenize_search_text(value_text))
+        matched_tokens = query_tokens & value_tokens
+        if not matched_tokens:
+            continue
+        weight = {
+            "external_id": 40,
+            "number_in_org": 40,
+            "number": 40,
+            "title": 12,
+            "body_markdown": 5,
+            "body": 5,
+            "label": 4,
+        }.get(field, 2)
+        score += len(matched_tokens) * weight
+        if query_text == value_text.strip():
+            score += weight * 3
+        elif query_text in value_text:
+            score += weight
+    return score
+
+
+def rank_issue_search_results(issues: Sequence[Any], query: str) -> list[Any]:
+    scored: list[tuple[int, int, Any]] = []
+    for index, issue in enumerate(issues):
+        if not isinstance(issue, Mapping):
+            continue
+        score = score_issue_for_query(issue, query)
+        if score > 0:
+            scored.append((score, index, issue))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [issue for _, _, issue in scored]
+
+
+def output_data_for_args(data: Any, args: argparse.Namespace) -> Any:
+    if getattr(args, "resource", None) != "issues" or getattr(args, "action", None) != "search":
+        return data
+
+    query = getattr(args, "search_query", "")
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        result = dict(data)
+        result["items"] = rank_issue_search_results(data["items"], query)
+        return result
+    if isinstance(data, list):
+        return rank_issue_search_results(data, query)
+    return data
+
+
+def confirm_take_issue(issue: Mapping[str, Any]) -> bool:
+    label = issue.get("external_id") or issue.get("number_in_org") or "Issue"
+    title = issue.get("title") or ""
+    answer = input(f"Move {label} {title!r} from todo to in_progress? [y/N] ")
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def take_issue(
+    org: str,
+    number: str,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    assume_yes: bool = False,
+    request: Any = request_json,
+    confirm: Any = confirm_take_issue,
+) -> Any:
+    get_method, get_path, get_query = issue_get_request(org, number)
+    payload = request(
+        get_method,
+        get_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=get_query,
+        timeout=timeout,
+    )
+    issue = unwrap_envelope(payload)
+    if not isinstance(issue, Mapping):
+        raise OsPlatformError("issue response did not contain an object")
+    if issue.get("status") != "todo":
+        result = dict(issue)
+        result["take_result"] = "not_todo"
+        return result
+    if not assume_yes and not confirm(issue):
+        return {
+            "take_result": "cancelled",
+            "external_id": issue.get("external_id"),
+            "status": issue.get("status"),
+        }
+
+    if not issue_has_assignee(issue):
+        assign_issue_to_current_user(
+            org,
+            number,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            request=request,
+        )
+
+    post_method, post_path, post_query, body = issue_status_request(org, number, "in_progress")
+    updated_payload = request(
+        post_method,
+        post_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=post_query,
+        timeout=timeout,
+        body=body,
+    )
+    return unwrap_envelope(updated_payload)
+
+
 def print_payload(data: Any, args: argparse.Namespace) -> None:
+    data = output_data_for_args(data, args)
     if args.full or args.json:
         output = data
     else:
@@ -412,6 +594,92 @@ def parse_query_pairs(pairs: Sequence[str]) -> dict[str, str]:
     return query
 
 
+def issue_get_request(org: str, number: str) -> tuple[str, str, dict[str, Any]]:
+    org_ref = urllib.parse.quote(require_text(org, "org"))
+    number_ref = urllib.parse.quote(require_text(number, "issue number"))
+    return "GET", f"/v1/orgs/{org_ref}/bounties/{number_ref}", {}
+
+
+def issue_status_request(org: str, number: str, status: str) -> tuple[str, str, dict[str, Any], dict[str, str]]:
+    org_ref = urllib.parse.quote(require_text(org, "org"))
+    number_ref = urllib.parse.quote(require_text(number, "issue number"))
+    return "POST", f"/v1/orgs/{org_ref}/bounties/{number_ref}/status", {}, {"status": status}
+
+
+def issue_update_request(
+    org: str,
+    number: str,
+    body: Mapping[str, Any],
+) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+    org_ref = urllib.parse.quote(require_text(org, "org"))
+    number_ref = urllib.parse.quote(require_text(number, "issue number"))
+    return "PATCH", f"/v1/orgs/{org_ref}/bounties/{number_ref}", {}, dict(body)
+
+
+def current_user_request() -> tuple[str, str, dict[str, Any]]:
+    return "GET", "/v1/users/me", {}
+
+
+def issue_has_assignee(issue: Mapping[str, Any]) -> bool:
+    if issue.get("assignee_user_id"):
+        return True
+    assignee = issue.get("assignee")
+    return assignee is not None
+
+
+def current_user_public_id(
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    request: Any = request_json,
+) -> str:
+    method, path, query = current_user_request()
+    payload = request(
+        method,
+        path,
+        base_url=base_url,
+        api_key=api_key,
+        query=query,
+        timeout=timeout,
+    )
+    user = unwrap_envelope(payload)
+    if not isinstance(user, Mapping):
+        raise OsPlatformError("current user response did not contain an object")
+    public_id = user.get("public_id")
+    if not isinstance(public_id, str) or not public_id.strip():
+        raise OsPlatformError("current user response did not contain public_id")
+    return public_id
+
+
+def assign_issue_to_current_user(
+    org: str,
+    number: str,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    request: Any = request_json,
+) -> Any:
+    user_id = current_user_public_id(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
+    method, path, query, body = issue_update_request(org, number, {"assignee_user_id": user_id})
+    payload = request(
+        method,
+        path,
+        base_url=base_url,
+        api_key=api_key,
+        query=query,
+        timeout=timeout,
+        body=body,
+    )
+    return unwrap_envelope(payload)
+
+
 def command_to_request(args: argparse.Namespace) -> tuple[str, str, dict[str, Any]]:
     if args.resource == "status":
         return "GET", "/v1/_status", {}
@@ -432,7 +700,9 @@ def command_to_request(args: argparse.Namespace) -> tuple[str, str, dict[str, An
 
     if args.resource == "issues":
         org = urllib.parse.quote(require_arg(args, "org", "org"))
-        if args.action == "list":
+        if args.action in {"list", "search"}:
+            if args.action == "search" and not getattr(args, "search_query", "").strip():
+                die("search query is required")
             query = query_from_args(
                 args,
                 [
@@ -450,8 +720,8 @@ def command_to_request(args: argparse.Namespace) -> tuple[str, str, dict[str, An
                 ],
             )
             return "GET", f"/v1/orgs/{org}/bounties", query
-        number = urllib.parse.quote(require_arg(args, "number", "issue number"))
-        return "GET", f"/v1/orgs/{org}/bounties/{number}", {}
+        number = require_arg(args, "number", "issue number")
+        return issue_get_request(org, number)
 
     if args.resource == "submissions":
         org = urllib.parse.quote(require_arg(args, "org", "org"))
@@ -527,6 +797,13 @@ def build_parser() -> argparse.ArgumentParser:
     issues_list = leaf_parser(issues_sub, "list", help="List Issues for an Org.")
     issues_list.add_argument("org", nargs="?")
     add_issue_filters(issues_list)
+    issues_search = leaf_parser(issues_sub, "search", help="Search Issues by local query relevance.")
+    issues_search.add_argument("org", nargs="?")
+    issues_search.add_argument("search_query")
+    add_issue_filters(issues_search)
+    issues_take = leaf_parser(issues_sub, "take", help="Move a todo Issue to in_progress after confirmation.")
+    issues_take.add_argument("refs", nargs="*", metavar="ref")
+    issues_take.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
     issues_show = leaf_parser(issues_sub, "show", help="Show one Issue by per-Org number.")
     issues_show.add_argument("refs", nargs="*", metavar="ref")
 
@@ -578,6 +855,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     api_key = require_api_key(getattr(args, "api_key", None))
     base_url = normalize_base_url(args.base_url)
     try:
+        if args.resource == "issues" and args.action == "take":
+            data = take_issue(
+                args.org,
+                args.number,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+                assume_yes=args.yes,
+            )
+            print_payload(data, args)
+            return 0
+
         method, path, query = command_to_request(args)
         payload = request_json(
             method,
