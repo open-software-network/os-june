@@ -169,11 +169,18 @@ input:focus-visible,
 
 .app-shell[data-sidebar-preview="expanded"] .sidebar {
   display: flex;
+  visibility: visible;
 }
 
-.app-shell[data-sidebar-preview="opening"] .sidebar,
+.app-shell[data-sidebar-preview="opening"] .sidebar {
+  display: flex;
+  visibility: visible;
+}
+
 .app-shell[data-sidebar-preview="collapsed"] .sidebar {
-  display: none;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .sidebar-resize-handle {
@@ -2720,9 +2727,12 @@ button.agent-safety-badge:hover {
   left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
-.app-shell[data-sidebar-preview="opening"] .agent-composer,
 .app-shell[data-sidebar-preview="collapsed"] .agent-composer {
   left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="opening"] .agent-composer {
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
 .app-shell[data-sidebar-transition="smooth"] .agent-composer {
@@ -4795,9 +4805,12 @@ button.agent-safety-badge:hover {
   margin-left: 0;
 }
 
-.app-shell[data-sidebar-preview="opening"] .main-panel,
 .app-shell[data-sidebar-preview="collapsed"] .main-panel {
   margin-left: var(--sp-3);
+}
+
+.app-shell[data-sidebar-preview="opening"] .main-panel {
+  margin-left: 0;
 }
 
 .main-panel-body {
@@ -5811,9 +5824,12 @@ button.agent-safety-badge:hover {
   left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
-.app-shell[data-sidebar-preview="opening"] .editor-footer,
 .app-shell[data-sidebar-preview="collapsed"] .editor-footer {
   left: calc(var(--sp-3) + var(--sp-8));
+}
+
+.app-shell[data-sidebar-preview="opening"] .editor-footer {
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
 }
 
 /* The fixed recorder's `left` rides the card's left edge. During a smooth
