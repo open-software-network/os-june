@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
+import {
+  markOnboardingComplete,
+  resetOnboardingForReplay,
+} from "../lib/onboarding";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -76,6 +80,48 @@ describe("meeting detection HUD", () => {
       height: 32,
       animate: true,
     });
+  });
+
+  it("delays the meeting prompt while onboarding is active", async () => {
+    resetOnboardingForReplay();
+    await loadHud();
+
+    await emit("meeting-detection-event", {
+      type: "meeting_detected",
+      payload: { activeProcessCount: 1, appLabels: ["Zoom"] },
+    });
+
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(hudShowCalls()).toBe(0);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+
+    markOnboardingComplete();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(hudElement().dataset.state).toBe("meeting");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
+      "Zoom",
+    );
+    await vi.waitFor(() => expect(hudShowCalls()).toBe(1));
+  });
+
+  it("drops a delayed meeting prompt if the meeting clears during onboarding", async () => {
+    resetOnboardingForReplay();
+    await loadHud();
+
+    await emit("meeting-detection-event", {
+      type: "meeting_detected",
+      payload: { activeProcessCount: 1, appLabels: ["Zoom"] },
+    });
+    await emit("meeting-detection-event", { type: "meeting_cleared" });
+
+    markOnboardingComplete();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(hudShowCalls()).toBe(0);
   });
 
   it("joins multiple app labels and falls back when none arrive", async () => {

@@ -21,6 +21,10 @@ import {
   type AgentSessionStatusDetail,
 } from "./lib/agent-events";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
+import {
+  isOnboardingComplete,
+  subscribeToOnboardingComplete,
+} from "./lib/onboarding";
 import "./styles/hud.css";
 
 type DictationHudEvent = {
@@ -85,6 +89,7 @@ let meetingPromptTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
+let pendingMeetingPrompt: DictationHudEvent | undefined;
 let hideRequestId = 0;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
@@ -697,30 +702,18 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   if (!meetingEvent) return;
 
   if (meetingEvent.type === "meeting_detected") {
-    if (meetingPromptSuppressed || !canShowMeetingPrompt(hud?.dataset.state)) {
-      // Rust may have shown the native window before emitting this event.
-      // When the prompt won't render and the pill has no other content, put
-      // the window back down — otherwise only the frosted surface shows: a
-      // gray bar that can't be dragged or dismissed.
-      if (pillIsBlank(hud?.dataset.state)) {
-        void appWindow?.hide().catch(() => {});
-      }
+    if (!isOnboardingComplete()) {
+      pendingMeetingPrompt = meetingEvent;
+      hideBlankWindowIfNeeded();
       return;
     }
-    // Set the app line before the pill is measured so the window is sized
-    // for it. Heartbeats refresh it (the mic can move between apps).
-    if (meetingAppLabel) {
-      meetingAppLabel.textContent = meetingAppLine(
-        meetingEvent.payload?.appLabels,
-      );
-    }
-    setHud("meeting", "Meeting detected");
-    await showHud();
-    startMeetingPromptTimer();
+    pendingMeetingPrompt = undefined;
+    await showMeetingPrompt(meetingEvent);
     return;
   }
 
   if (meetingEvent.type === "meeting_cleared") {
+    pendingMeetingPrompt = undefined;
     meetingPromptSuppressed = false;
     clearMeetingPromptTimer();
     if (hud?.dataset.state === "meeting") {
@@ -730,6 +723,40 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
       void appWindow?.hide().catch(() => {});
     }
   }
+}
+
+async function showMeetingPrompt(meetingEvent: DictationHudEvent) {
+  if (meetingPromptSuppressed || !canShowMeetingPrompt(hud?.dataset.state)) {
+    // Rust may have shown the native window before emitting this event.
+    // When the prompt won't render and the pill has no other content, put
+    // the window back down — otherwise only the frosted surface shows: a
+    // gray bar that can't be dragged or dismissed.
+    hideBlankWindowIfNeeded();
+    return;
+  }
+  // Set the app line before the pill is measured so the window is sized
+  // for it. Heartbeats refresh it (the mic can move between apps).
+  if (meetingAppLabel) {
+    meetingAppLabel.textContent = meetingAppLine(
+      meetingEvent.payload?.appLabels,
+    );
+  }
+  setHud("meeting", "Meeting detected");
+  await showHud();
+  startMeetingPromptTimer();
+}
+
+function hideBlankWindowIfNeeded() {
+  if (pillIsBlank(hud?.dataset.state)) {
+    void appWindow?.hide().catch(() => {});
+  }
+}
+
+function showPendingMeetingPromptAfterOnboarding() {
+  if (!pendingMeetingPrompt || !isOnboardingComplete()) return;
+  const meetingEvent = pendingMeetingPrompt;
+  pendingMeetingPrompt = undefined;
+  void showMeetingPrompt(meetingEvent);
 }
 
 // "Zoom" / "Zoom, Chrome" — the friendly labels Rust derives from the
@@ -883,6 +910,8 @@ window.addEventListener("dictation-event", (event) => {
 window.addEventListener("meeting-detection-event", (event) => {
   void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
 });
+
+subscribeToOnboardingComplete(showPendingMeetingPromptAfterOnboarding);
 
 // Console driver for this page when served standalone in a browser:
 // __meetingHud("detected") etc. See lib/meeting-hud-demo.ts.
