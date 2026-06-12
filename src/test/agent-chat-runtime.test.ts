@@ -920,4 +920,136 @@ describe("Agent chat runtime", () => {
       { type: "text", text: prose, status: "complete" },
     ]);
   });
+
+  it("renders delegated subagents as live tool rows (regression: silently dropped)", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            subagent_id: "sa-1",
+            task_index: 0,
+            task_count: 2,
+            goal: "Write the privacy page",
+          },
+        },
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.050Z",
+          payload: {
+            subagent_id: "sa-2",
+            task_index: 1,
+            task_count: 2,
+            goal: "Write the terms page",
+          },
+        },
+        {
+          type: "subagent.tool",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { subagent_id: "sa-1", goal: "Write the privacy page", tool_preview: "edit privacy.tsx" },
+        },
+        {
+          type: "subagent.complete",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: { subagent_id: "sa-1", goal: "Write the privacy page", summary: "Done: 1 file written" },
+        },
+      ],
+    );
+
+    const tools = turns[0]?.parts.filter((part) => part.type === "tool");
+    expect(tools).toHaveLength(2);
+    // Two parallel subagents, keyed by id, each labeled by its goal.
+    expect(tools?.[0]).toMatchObject({
+      id: "subagent:sa-1",
+      name: "Subagent: Write the privacy page",
+      status: "complete",
+    });
+    expect(tools?.[1]).toMatchObject({
+      id: "subagent:sa-2",
+      name: "Subagent: Write the terms page",
+      status: "running",
+    });
+    // The first subagent's row accumulated its activity then its summary.
+    expect((tools?.[0] as { text?: string }).text).toContain("edit privacy.tsx");
+    expect((tools?.[0] as { text?: string }).text).toContain("Done: 1 file written");
+  });
+
+  it("keeps the goal label when a later subagent event omits it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
+        },
+        // A tool event carrying only the id + preview, no goal.
+        {
+          type: "subagent.tool",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { subagent_id: "sa-1", tool_preview: "edit privacy.tsx" },
+        },
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    // The richer label must survive the goal-less follow-up (no flicker).
+    expect(tool).toMatchObject({
+      name: "Subagent: Write the privacy page",
+      status: "running",
+    });
+  });
+
+  it("resolves a failure-flavored terminal subtype instead of staying running", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { subagent_id: "sa-1", goal: "Write the privacy page" },
+        },
+        // A subtype not in the documented union; must still terminate the row.
+        {
+          type: "subagent.timeout",
+          receivedAt: "2026-06-04T10:00:05.000Z",
+          payload: { subagent_id: "sa-1" },
+        },
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Subagent: Write the privacy page",
+      status: "failed",
+    });
+  });
+
+  it("labels a goal-less subagent by its task position and marks failures", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { task_index: 2, task_count: 5 },
+        },
+        {
+          type: "subagent.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { task_index: 2, task_count: 5, status: "failed" },
+        },
+      ],
+    );
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      id: "subagent:task-2",
+      name: "Subagent 3 of 5",
+      status: "failed",
+    });
+  });
 });

@@ -384,6 +384,79 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (event.type.startsWith("subagent.")) {
+      // Delegated subagents (the model's `delegate_task`) stream their own
+      // lifecycle: subagent.start / .tool / .progress / .thinking / .complete,
+      // each carrying the subagent's goal and identity. The gateway forwards
+      // them over the same socket as everything else; without this branch they
+      // were silently dropped and the spawn never appeared in the chat. Render
+      // each subagent as a tool-style row keyed by its id, so N parallel
+      // subagents show as N live rows that resolve as they finish.
+      if (!currentAssistant) {
+        currentAssistant = createAssistantTurn(turns, event.receivedAt);
+        toolCreatedTurns.add(currentAssistant);
+      }
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const subagentId = stringValue(payload?.subagent_id);
+      const taskIndexRaw = payload?.task_index;
+      const taskIndex =
+        typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
+      const key =
+        subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+      const partId = `subagent:${key}`;
+      const goal = stringValue(payload?.goal);
+      const taskCountRaw = payload?.task_count;
+      const taskCount =
+        typeof taskCountRaw === "number" ? taskCountRaw : undefined;
+      // Keep the richest label we have seen for this subagent: progress and
+      // tool events often omit the goal, and downgrading to the generic
+      // "Subagent" would make the row flicker. Prefer the goal, else the name
+      // already shown, else a task-position label.
+      const existingName = currentAssistant.parts.find(
+        (part): part is AgentChatToolPart =>
+          part.type === "tool" && part.id === partId,
+      )?.name;
+      const label = goal
+        ? `Subagent: ${goal}`
+        : (existingName ??
+          (taskCount && taskCount > 1 && taskIndex !== undefined
+            ? `Subagent ${taskIndex + 1} of ${taskCount}`
+            : "Subagent"));
+      // Terminal on `subagent.complete` or any failure-flavored subtype the
+      // gateway might add (fail/cancel/timeout/abort/interrupt). Keyed off the
+      // subtype, not a fixed allow-list, so a new terminal event can't strand
+      // a row as "running" forever.
+      const subtype = event.type.slice("subagent.".length).toLowerCase();
+      const reportedStatus = stringValue(payload?.status)?.toLowerCase() ?? "";
+      const failurePattern = /fail|error|cancel|timeout|abort|interrupt/;
+      const failed =
+        failurePattern.test(subtype) || failurePattern.test(reportedStatus);
+      const completed = subtype === "complete" || subtype === "done" || failed;
+      const status: AgentChatToolPart["status"] = completed
+        ? failed
+          ? "failed"
+          : "complete"
+        : "running";
+      if (status === "running") {
+        currentAssistant.status = "running";
+      } else if (toolCreatedTurns.has(currentAssistant)) {
+        currentAssistant.status = "complete";
+      }
+      // The live line: a completion summary, else whatever the subagent is
+      // doing now (its latest tool preview).
+      const activity =
+        stringValue(payload?.summary) ??
+        stringValue(payload?.tool_preview) ??
+        (completed ? undefined : stringValue(payload?.text));
+      upsertToolPart(currentAssistant.parts, {
+        id: partId,
+        name: label,
+        text: activity ?? "",
+        status,
+      });
+      continue;
+    }
+
     if (event.type.startsWith("tool.")) {
       if (isClarifyToolEvent(event)) {
         if (event.type.includes("complete") || event.type.includes("fail")) {

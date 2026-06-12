@@ -14,6 +14,11 @@ export type HermesGatewayEventName =
   | "clarify.response"
   | "approval.request"
   | "approval.response"
+  | "subagent.start"
+  | "subagent.tool"
+  | "subagent.progress"
+  | "subagent.thinking"
+  | "subagent.complete"
   | "error"
   | (string & {});
 
