@@ -23,6 +23,7 @@ import {
   setVeniceModel,
 } from "../../lib/tauri";
 import { LANGUAGE_OPTIONS, languageLabel } from "../../lib/dictation-languages";
+import { replayOnboarding } from "../../lib/onboarding";
 import type {
   AccountStatus,
   DictationHelperEvent,
@@ -1192,6 +1193,30 @@ export function AppSettings({
                         onClick={onReportIssue}
                       >
                         Report an issue
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {import.meta.env.DEV ? (
+                  // Dev builds only: same helper the devtools console exposes
+                  // as june.replayOnboarding() — clears completion and
+                  // reloads into the wizard.
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Replay onboarding</h3>
+                      <p className="settings-row-description">
+                        Dev only. Forget that onboarding finished and reload
+                        into the first-run wizard.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => replayOnboarding()}
+                      >
+                        Replay onboarding
                       </button>
                     </div>
                   </div>

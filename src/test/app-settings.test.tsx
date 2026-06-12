@@ -1246,6 +1246,48 @@ describe("AppSettings", () => {
     expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
+  it("replays onboarding from About in dev builds", async () => {
+    // vitest runs with import.meta.env.DEV = true, so the dev-only row shows.
+    window.localStorage.setItem("june.onboarding.completedVersion", "99");
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload },
+    });
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("tab", { name: "About" }));
+      await user.click(
+        await screen.findByRole("button", { name: "Replay onboarding" }),
+      );
+
+      // The completion flag is gone and the app reloads into the wizard.
+      expect(
+        window.localStorage.getItem("june.onboarding.completedVersion"),
+      ).toBeNull();
+      expect(reload).toHaveBeenCalledOnce();
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
+
   it("shows agent workspace and memory files inside Agent settings", async () => {
     const user = userEvent.setup();
     render(
