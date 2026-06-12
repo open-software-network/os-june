@@ -150,6 +150,43 @@ pub fn generation_model() -> String {
     current_settings().generation_model
 }
 
+/// Context window (tokens) of the configured generation model, looked up in
+/// the backend's model catalog and cached per model id. The agent provider
+/// proxy advertises it on `/v1/models` so Hermes sizes its history to the
+/// real window and compresses proactively, instead of discovering the limit
+/// by bouncing off the backend's prompt_too_long rejection. Returns `None`
+/// when the catalog is unreachable (offline, signed out) or doesn't report a
+/// window for the model — callers degrade by omitting the field, which puts
+/// Hermes back on its own probing, exactly the pre-advertisement behavior.
+pub async fn generation_model_context_tokens() -> Option<i64> {
+    let model_id = generation_model();
+    if let Ok(cache) = context_tokens_cache().lock() {
+        if let Some((cached_id, tokens)) = cache.as_ref() {
+            if *cached_id == model_id {
+                return Some(*tokens);
+            }
+        }
+    }
+    let models = crate::scribe_api::list_models(ModelMode::Generation.api_type())
+        .await
+        .ok()?;
+    let tokens = models
+        .into_iter()
+        .find(|model| model.id == model_id)?
+        .context_tokens?;
+    if let Ok(mut cache) = context_tokens_cache().lock() {
+        *cache = Some((model_id, tokens));
+    }
+    Some(tokens)
+}
+
+/// One entry only: the generation model changes rarely, and a stale entry
+/// for the previous model would otherwise outlive a settings switch.
+fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
+    static CACHE: OnceLock<Mutex<Option<(String, i64)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
 // Legacy name kept for callers we haven't migrated yet.
 pub fn venice_generation_model() -> String {
     generation_model()

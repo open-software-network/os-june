@@ -108,10 +108,7 @@ const JUNE_HINT_UNRESTRICTED: &str = "Sandbox status for this session: Unrestric
 /// engages on this machine (non-macOS, sandbox-exec missing, or disabled by
 /// env): SOUL.md then carries no sandbox section, and a status line about a
 /// nonexistent jail would only confuse the agent.
-fn environment_hint_for_spawn(
-    full_mode: bool,
-    sandbox_available: bool,
-) -> Option<&'static str> {
+fn environment_hint_for_spawn(full_mode: bool, sandbox_available: bool) -> Option<&'static str> {
     if !sandbox_available {
         return None;
     }
@@ -2403,16 +2400,10 @@ async fn handle_scribe_provider_connection(
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
-            let model = crate::providers::generation_model();
-            let body = serde_json::json!({
-                "object": "list",
-                "data": [{
-                    "id": model,
-                    "object": "model",
-                    "created": 0,
-                    "owned_by": "scribe"
-                }]
-            });
+            let body = provider_models_body(
+                crate::providers::generation_model(),
+                crate::providers::generation_model_context_tokens().await,
+            );
             write_json_response(&mut stream, 200, body).await?;
         }
         ("POST", "/v1/chat/completions") => {
@@ -2572,6 +2563,27 @@ fn translate_context_overflow_error(body: &[u8]) -> Option<serde_json::Value> {
             .to_string(),
     );
     Some(value)
+}
+
+/// The proxy's `/v1/models` listing. Hermes resolves a custom provider's
+/// context window by fetching `{base_url}/models` and reading any of its
+/// `_CONTEXT_LENGTH_KEYS` from the model entry (`context_length` included),
+/// then sizes its history compression to that window. Advertising the real
+/// window makes the agent trim proactively instead of discovering the limit
+/// by bouncing off the backend's prompt_too_long rejection. When the window
+/// is unknown the field is omitted and Hermes falls back to its own probing,
+/// exactly the previous behavior.
+fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "id": model,
+        "object": "model",
+        "created": 0,
+        "owned_by": "scribe"
+    });
+    if let Some(context_tokens) = context_tokens {
+        entry["context_length"] = serde_json::json!(context_tokens);
+    }
+    serde_json::json!({ "object": "list", "data": [entry] })
 }
 
 fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
@@ -2802,6 +2814,29 @@ mod tests {
     }
 
     #[test]
+    fn models_listing_advertises_the_context_window_when_known() {
+        let body = provider_models_body("zai-org-glm-5".to_string(), Some(202_752));
+
+        let entry = &body["data"][0];
+        assert_eq!(entry["id"], "zai-org-glm-5");
+        // The key hermes-agent's _CONTEXT_LENGTH_KEYS reads; renaming it
+        // silently puts the agent back on reactive overflow recovery.
+        assert_eq!(entry["context_length"], 202_752);
+    }
+
+    #[test]
+    fn models_listing_omits_the_context_window_when_unknown() {
+        // Offline or signed out: the listing must still serve (hermes needs
+        // it to enumerate the model at all) and just skip the window, which
+        // returns hermes to its own probing.
+        let body = provider_models_body("zai-org-glm-5".to_string(), None);
+
+        let entry = &body["data"][0];
+        assert_eq!(entry["id"], "zai-org-glm-5");
+        assert!(entry.get("context_length").is_none());
+    }
+
+    #[test]
     fn start_request_full_mode_is_opt_in_and_defaults_to_no_preference() {
         // Background callers (auto-start, routines, older frontends) send no
         // fullMode — that must deserialize as "no preference", never as an
@@ -2910,7 +2945,9 @@ mod tests {
             Some(JUNE_HINT_UNRESTRICTED),
         );
         assert_eq!(
-            envs_of(&hinted).get("HERMES_ENVIRONMENT_HINT").map(String::as_str),
+            envs_of(&hinted)
+                .get("HERMES_ENVIRONMENT_HINT")
+                .map(String::as_str),
             Some(JUNE_HINT_UNRESTRICTED)
         );
 
