@@ -2825,14 +2825,11 @@ describe("AgentWorkspace", () => {
   // bootstrap promises that can leak into a later test's pending-session
   // flow, so nothing runs after this one.
   it("renders origin crumbs and back arrow in the sticky session bar", async () => {
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now() }),
-    );
     const onBack = vi.fn();
     const onOpenProjects = vi.fn();
     render(
       <AgentWorkspace
+        initialSession={existingSession}
         origin={{
           backLabel: "Back to Scribe",
           onBack,
@@ -2844,10 +2841,9 @@ describe("AgentWorkspace", () => {
       />,
     );
 
-    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
     expect(screen.getByText("Projects")).toBeInTheDocument();
     expect(screen.getByText("Scribe")).toBeInTheDocument();
-    expect(screen.getByText("New session")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back to Scribe" }));
     expect(onBack).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
