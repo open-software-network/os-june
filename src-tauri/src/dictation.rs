@@ -1478,8 +1478,7 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
         tauri::async_runtime::spawn(async move {
             if crate::os_accounts::access_token().await.is_err() {
                 forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
-                emit_dictation_not_signed_in(&app);
-                focus_main_window(&app);
+                notify_dictation_not_signed_in(&app);
                 reset_shortcut_activation(&app);
             }
         });
@@ -1503,8 +1502,39 @@ fn forward_dictation_command(app: &AppHandle, command: DictationCommand, shortcu
     }
 }
 
-fn emit_dictation_not_signed_in(app: &AppHandle) {
+/// Instant (millis since the Unix epoch) of the last signed-out prompt.
+/// One press-release can hit two signed-out checks — the parallel
+/// fast-discard task on the down edge and the transcribe_recording_ready
+/// backstop on the up edge — and which of them fires (or both) depends on
+/// how far the recording got before the discard landed. Deduping here, at
+/// the notifier, collapses every ordering to a single prompt + focus pull
+/// without losing the prompt in the paths where only one check runs.
+static LAST_NOT_SIGNED_IN_AT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+const NOT_SIGNED_IN_DEDUPE_MS: u64 = 2_000;
+
+/// Emits the signed-out prompt and pulls the app forward, unless the same
+/// prompt fired within the dedupe window. Owns the focus pull too, so
+/// callers can't split the prompt from it.
+fn notify_dictation_not_signed_in(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let last = LAST_NOT_SIGNED_IN_AT_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < NOT_SIGNED_IN_DEDUPE_MS {
+        return;
+    }
+    if LAST_NOT_SIGNED_IN_AT_MS
+        .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        // Another path won the race within the same window.
+        return;
+    }
     emit_dictation_event_value(app, dictation_not_signed_in_event());
+    focus_main_window(app);
 }
 
 fn dictation_not_signed_in_event() -> serde_json::Value {
@@ -1761,8 +1791,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     if crate::os_accounts::access_token().await.is_err() {
         let state = app.state::<HelperState>();
         let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-        emit_dictation_not_signed_in(&app);
-        focus_main_window(&app);
+        notify_dictation_not_signed_in(&app);
         return;
     }
     let provider = match dictation_transcription_provider(configured_transcription_provider()) {

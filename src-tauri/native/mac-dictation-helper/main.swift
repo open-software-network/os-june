@@ -1505,19 +1505,37 @@ final class DictationController {
         emitMicrophones()
     }
 
+    /// Invalidates pending dictation starts. `AVCaptureDevice.requestAccess`
+    /// can fire its callback long after the request — the user reading the
+    /// macOS permission prompt — and a graze's discard arrives in between:
+    /// without this, accepting the prompt later would open the microphone
+    /// with no key held. discard() bumps the generation; a stale callback
+    /// sees the mismatch and does nothing.
+    private var dictationStartGeneration = 0
+
     func start() {
         guard !listening else {
             emit("error", ["code": "already_listening", "message": "Dictation is already listening."])
             return
         }
 
+        dictationStartGeneration += 1
+        let generation = dictationStartGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
-            guard microphoneAllowed else {
-                emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
-                emit("permission_status", permissionPayload())
-                return
+            // Hop to main: commands (including the discard that may have
+            // cancelled this start) are handled there, so the generation
+            // comparison is ordered against them.
+            DispatchQueue.main.async {
+                guard let self, self.dictationStartGeneration == generation else {
+                    return
+                }
+                guard microphoneAllowed else {
+                    emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
+                    emit("permission_status", permissionPayload())
+                    return
+                }
+                self.startRecording(purpose: .dictation, durationSeconds: nil)
             }
-            self?.startRecording(purpose: .dictation, durationSeconds: nil)
         }
     }
 
@@ -1569,6 +1587,9 @@ final class DictationController {
     }
 
     func discard() {
+        // Cancel any start still waiting on the permission prompt — the
+        // graze is over, so a later grant must not open the microphone.
+        dictationStartGeneration += 1
         // The HUD shows on listening_started, so a discard that interrupts a
         // live recording (a grazed push-to-talk key, a signed-out session)
         // must announce itself or the HUD stays stuck on "Listening".
