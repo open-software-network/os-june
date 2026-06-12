@@ -60,11 +60,12 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
 "#;
 
-/// Appended to `SOUL.md` only when the spawn actually engaged the Seatbelt
-/// write-jail, so the soul never claims protections that aren't active (the
+/// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
+/// machine (for unrestricted spawns: would engage for sandboxed sessions),
+/// so the soul never describes protections the machine can't provide (the
 /// escape hatch and non-macOS spawns run unsandboxed).
 const JUNE_SOUL_SANDBOX_MD: &str = r#"
-Your environment: sessions run by default inside a macOS kernel sandbox (Seatbelt) that the June app applies to you and to every subprocess you start. It is a write-jail, part of the same privacy-by-architecture story. The user chooses the mode per session: sessions are Sandboxed unless they explicitly started this one in Unrestricted mode. In a sandboxed session:
+Your environment: sessions run by default inside a macOS kernel sandbox (Seatbelt) that the June app applies to you and to every subprocess you start. It is a write-jail, part of the same privacy-by-architecture story. The user chooses the mode per session: sessions are Sandboxed unless they explicitly started this one in Unrestricted mode. When a "Sandbox status for this session" line appears in your environment notes, it is the authoritative answer for the current session — trust it over any assumption. In a sandboxed session:
 
 - You can write only inside your own area — your Hermes home (including your workspace), your runtime directory, and your temp directory. Writes anywhere else (the user's dotfiles, Desktop, Documents, system settings) are denied by the kernel.
 - Reads stay broad so you can work with the user's files, except credential stores (~/.ssh, ~/.aws, ~/.gnupg, keychains, .netrc), which are blocked.
@@ -84,6 +85,35 @@ Agent CLIs (Claude Code, Codex, Gemini, opencode): in sandboxed sessions their s
 const JUNE_SOUL_CLI_ALLOWED_MD: &str = r#"
 Agent CLIs (Claude Code, Codex, Gemini, opencode): the user enabled Agent CLI access, so sandboxed sessions can also write those tools' own state folders (~/.claude and ~/.claude.json, ~/.codex, ~/.gemini, opencode's config and state). Driving the user's installed CLIs is a first-class job: run them directly; they can keep sessions and refreshed credentials. Everything else stays jailed. Do not edit their settings or hook files unless the user explicitly asks, because configuration in those folders runs outside this sandbox later. Interactive logins (for example `claude /login`) are browser flows you can never complete; ask the user to run them once in their own terminal.
 "#;
+
+/// Per-process sandbox-status line, delivered via `HERMES_ENVIRONMENT_HINT`
+/// (Hermes reads it at prompt-build time and injects it into the system
+/// prompt's environment notes). SOUL.md is one file shared by both runtime
+/// processes, so it can only describe the per-session mode *split*; this env
+/// var is per-process, and each process serves exactly one mode, so it
+/// carries the definitive answer for every session it runs. Without it the
+/// agent has to guess and tends to assume the sandboxed default even in
+/// Unrestricted sessions.
+const JUNE_HINT_SANDBOXED: &str = "Sandbox status for this session: Sandboxed. The June app's macOS Seatbelt write-jail is active for this process and every subprocess you start; writes outside your own area are denied by the kernel.";
+const JUNE_HINT_UNRESTRICTED: &str = "Sandbox status for this session: Unrestricted. The user explicitly started this session with June's sandbox off, so no Seatbelt write-jail applies to this process: you can write anywhere the user's account can. Be deliberate with destructive operations, and do not describe this session as sandboxed.";
+
+/// Picks the sandbox-status hint for a spawn. `None` when the jail never
+/// engages on this machine (non-macOS, sandbox-exec missing, or disabled by
+/// env): SOUL.md then carries no sandbox section, and a status line about a
+/// nonexistent jail would only confuse the agent.
+fn environment_hint_for_spawn(
+    full_mode: bool,
+    sandbox_available: bool,
+) -> Option<&'static str> {
+    if !sandbox_available {
+        return None;
+    }
+    Some(if full_mode {
+        JUNE_HINT_UNRESTRICTED
+    } else {
+        JUNE_HINT_SANDBOXED
+    })
+}
 
 /// Flag file in the app data dir that records the "Agent CLI access"
 /// opt-in. A file rather than a DB row so the synchronous spawn path can
@@ -116,6 +146,7 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_CONFIG",
     "HERMES_CONFIG_PATH",
     "HERMES_DASHBOARD_SESSION_TOKEN",
+    "HERMES_ENVIRONMENT_HINT",
     "HERMES_MODEL",
     "HERMES_PROVIDER",
     "OPENAI_API_KEY",
@@ -564,7 +595,12 @@ async fn start_hermes_bridge_inner(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    apply_isolated_hermes_env(&mut cmd, &hermes_home, &token);
+    apply_isolated_hermes_env(
+        &mut cmd,
+        &hermes_home,
+        &token,
+        environment_hint_for_spawn(full_mode, sandbox_available),
+    );
     cmd.current_dir(&cwd);
 
     let mut child = cmd.spawn().map_err(|error| {
@@ -1406,7 +1442,9 @@ fn build_hermes_gateway_start_command(
 ) -> Command {
     let mut cmd = Command::new(&connection.command);
     cmd.args(["gateway", "start"]);
-    apply_isolated_hermes_env(&mut cmd, hermes_home, &connection.token);
+    // No sandbox-status hint: `gateway start` is a helper invocation, not the
+    // agent runtime, so it never builds a system prompt.
+    apply_isolated_hermes_env(&mut cmd, hermes_home, &connection.token, None);
     cmd.env("HERMES_NONINTERACTIVE", "1");
     cmd.current_dir(hermes_home);
     cmd.stdin(Stdio::null());
@@ -1781,7 +1819,12 @@ cat > "$runtime_dir/runtime.json" <<EOF
 EOF
 "#;
 
-fn apply_isolated_hermes_env(cmd: &mut Command, hermes_home: &std::path::Path, token: &str) {
+fn apply_isolated_hermes_env(
+    cmd: &mut Command,
+    hermes_home: &std::path::Path,
+    token: &str,
+    environment_hint: Option<&str>,
+) {
     for name in ISOLATED_HERMES_ENV_VARS {
         cmd.env_remove(name);
     }
@@ -1789,6 +1832,9 @@ fn apply_isolated_hermes_env(cmd: &mut Command, hermes_home: &std::path::Path, t
         .env("HERMES_DASHBOARD_SESSION_TOKEN", token)
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
         .env("no_proxy", "127.0.0.1,localhost,::1");
+    if let Some(hint) = environment_hint {
+        cmd.env("HERMES_ENVIRONMENT_HINT", hint);
+    }
 }
 
 /// Builds the Seatbelt profile, writes it to disk, and returns the path to hand
@@ -2731,6 +2777,62 @@ mod tests {
             Some("1")
         );
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
+    }
+
+    #[test]
+    fn environment_hint_states_the_mode_each_runtime_serves() {
+        // Each runtime process serves exactly one per-session mode, so the
+        // per-process hint is the agent's only definitive answer to "is THIS
+        // session sandboxed?" — SOUL.md is shared and can only describe the
+        // split.
+        assert_eq!(
+            environment_hint_for_spawn(false, true),
+            Some(JUNE_HINT_SANDBOXED)
+        );
+        assert_eq!(
+            environment_hint_for_spawn(true, true),
+            Some(JUNE_HINT_UNRESTRICTED)
+        );
+        // No jail on this machine → SOUL.md has no sandbox section, and a
+        // status line about a nonexistent jail would contradict it.
+        assert_eq!(environment_hint_for_spawn(false, false), None);
+        assert_eq!(environment_hint_for_spawn(true, false), None);
+    }
+
+    #[test]
+    fn isolated_env_carries_the_sandbox_status_hint_only_when_given() {
+        fn envs_of(cmd: &Command) -> std::collections::HashMap<String, String> {
+            cmd.get_envs()
+                .filter_map(|(key, value)| {
+                    value.map(|value| {
+                        (
+                            key.to_string_lossy().into_owned(),
+                            value.to_string_lossy().into_owned(),
+                        )
+                    })
+                })
+                .collect()
+        }
+
+        let mut hinted = Command::new("hermes");
+        apply_isolated_hermes_env(
+            &mut hinted,
+            Path::new("/tmp/hermes-home"),
+            "token",
+            Some(JUNE_HINT_UNRESTRICTED),
+        );
+        assert_eq!(
+            envs_of(&hinted).get("HERMES_ENVIRONMENT_HINT").map(String::as_str),
+            Some(JUNE_HINT_UNRESTRICTED)
+        );
+
+        // Without a hint the var is scrubbed, not inherited: a stale value
+        // from the app's own environment must never reach the runtime.
+        let mut bare = Command::new("hermes");
+        std::env::set_var("HERMES_ENVIRONMENT_HINT", "stale-from-shell");
+        apply_isolated_hermes_env(&mut bare, Path::new("/tmp/hermes-home"), "token", None);
+        std::env::remove_var("HERMES_ENVIRONMENT_HINT");
+        assert!(envs_of(&bare).get("HERMES_ENVIRONMENT_HINT").is_none());
     }
 
     #[test]
