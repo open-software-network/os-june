@@ -10,6 +10,9 @@ const ONBOARDING_VERSION = 7;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
+const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
+
+export const ONBOARDING_COMPLETED_EVENT = "june:onboarding-completed";
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
@@ -47,6 +50,7 @@ export function markOnboardingComplete() {
   } catch {
     // Ignore; worst case the wizard shows again next launch.
   }
+  notifyOnboardingComplete();
 }
 
 export function resetOnboardingForReplay() {
@@ -55,6 +59,42 @@ export function resetOnboardingForReplay() {
     window.localStorage.removeItem(RESUME_KEY);
   } catch {
     // Ignore; storage unavailable already behaves like a completed wizard.
+  }
+}
+
+export function subscribeToOnboardingComplete(callback: () => void) {
+  const onLocalComplete = () => callback();
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === COMPLETED_KEY && isOnboardingComplete()) callback();
+  };
+
+  window.addEventListener(ONBOARDING_COMPLETED_EVENT, onLocalComplete);
+  window.addEventListener("storage", onStorage);
+
+  let channel: BroadcastChannel | undefined;
+  try {
+    channel = new BroadcastChannel(ONBOARDING_BROADCAST_CHANNEL);
+    channel.addEventListener("message", onLocalComplete);
+  } catch {
+    // BroadcastChannel is best-effort; storage still reaches sibling windows.
+  }
+
+  return () => {
+    window.removeEventListener(ONBOARDING_COMPLETED_EVENT, onLocalComplete);
+    window.removeEventListener("storage", onStorage);
+    channel?.removeEventListener("message", onLocalComplete);
+    channel?.close();
+  };
+}
+
+function notifyOnboardingComplete() {
+  window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
+  try {
+    const channel = new BroadcastChannel(ONBOARDING_BROADCAST_CHANNEL);
+    channel.postMessage({ type: "completed" });
+    channel.close();
+  } catch {
+    // Ignore; the localStorage write above is enough for persisted state.
   }
 }
 
