@@ -793,6 +793,8 @@ export function Sidebar({
     menu?.kind === "agent-session"
       ? agentSessions.find((session) => session.id === menu.sessionId)
       : undefined;
+  const newAgentSessionActive =
+    activeView === "agent" && !selectedAgentSessionId;
 
   return (
     <aside
@@ -855,6 +857,8 @@ export function Sidebar({
             <button
               type="button"
               className="sidebar-nav-item"
+              data-active={newAgentSessionActive || undefined}
+              aria-current={newAgentSessionActive ? "page" : undefined}
               onClick={handleNewAgentSession}
             >
               <span className="sidebar-nav-icon">
