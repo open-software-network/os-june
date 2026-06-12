@@ -1,0 +1,88 @@
+name: coverage
+
+# Manual-only: coverage reruns every test suite a second time with
+# instrumentation, on a macOS runner for the desktop half (10x Linux
+# pricing), and nothing consumes the artifacts automatically — no coverage
+# gate, no upload to a coverage service. As per-push jobs these were the
+# largest Actions line item in the repo while never blocking a merge
+# (continue-on-error). Dispatch from the Actions tab (or
+# `gh workflow run coverage.yml`) when you actually want the reports.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop coverage artifacts
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend coverage
+        run: pnpm test:coverage
+
+      - name: Tauri Rust coverage
+        run: pnpm test:rust:coverage
+
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-frontend-coverage
+          path: coverage/frontend
+          if-no-files-found: error
+
+      - name: Upload Tauri Rust coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-rust-coverage
+          path: src-tauri/target/llvm-cov/html
+          if-no-files-found: error
+
+  scribe-api:
+    name: Scribe API coverage artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: cargo llvm-cov
+        working-directory: scribe-api
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo llvm-cov --workspace --all-features --html --output-dir target/llvm-cov/html
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-api-rust-coverage
+          path: scribe-api/target/llvm-cov/html
+          if-no-files-found: error

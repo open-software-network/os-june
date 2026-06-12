@@ -66,8 +66,41 @@ jobs:
       - name: Vitest
         run: pnpm test
 
+  # Decides whether the macOS Rust job has anything to test. macOS minutes
+  # bill at 10x Linux, and most changes here are frontend-only — `cargo test`
+  # reads nothing outside src-tauri/, so a pure frontend diff doesn't need a
+  # macOS runner. Unknown diff bases (force pushes, branch creation) fail
+  # open to "changed" so the suite can never be skipped by accident.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Diff rust-relevant paths
+        id: diff
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]] \
+            || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE" HEAD -- src-tauri/ .github/workflows/desktop.yml | grep -q .; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
   rust:
     name: Tauri Rust tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,50 +130,7 @@ jobs:
       - name: Cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-  coverage:
-    name: Coverage artifacts
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.4
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Frontend coverage
-        run: pnpm test:coverage
-
-      - name: Tauri Rust coverage
-        run: pnpm test:rust:coverage
-
-      - name: Upload frontend coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-frontend-coverage
-          path: coverage/frontend
-          if-no-files-found: error
-
-      - name: Upload Tauri Rust coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-rust-coverage
-          path: src-tauri/target/llvm-cov/html
-          if-no-files-found: error
+# Coverage reruns of these suites live in coverage.yml (manual-only). They
+# duplicated this workflow's jobs on a macOS runner for every push and PR
+# sync, gated nothing (continue-on-error), and produced artifacts nothing
+# downloads — the single largest Actions line item in the repo.
