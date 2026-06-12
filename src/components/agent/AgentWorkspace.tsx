@@ -6380,6 +6380,12 @@ function AgentArtifactPanel({
   const [showSource, setShowSource] = useState(false);
   const [query, setQuery] = useState("");
   const [filterOpen, setFilterOpen] = useState(false);
+  // The slide-in entrance must run once per mount and never again. WebKit
+  // replays CSS animations whenever it recreates the renderer (it does this
+  // during the sidebar drag's per-frame relayout), which flashed the panel
+  // mid-gesture. Once the entrance finishes, data-entered switches the
+  // animation off entirely so a renderer rebuild has nothing to replay.
+  const [entered, setEntered] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
 
   // Restore the remembered width once per panel mount. The property lives on
@@ -6531,7 +6537,16 @@ function AgentArtifactPanel({
         aria-label="Resize files panel"
         onPointerDown={startResize}
       />
-      <aside ref={panelRef} className="agent-artifact-panel" aria-label="Files">
+      <aside
+        ref={panelRef}
+        className="agent-artifact-panel"
+        aria-label="Files"
+        data-entered={entered ? "true" : undefined}
+        onAnimationEnd={(event) => {
+          if (event.animationName === "agent-artifact-panel-in")
+            setEntered(true);
+        }}
+      >
         <header className="agent-artifact-panel-bar">
           {artifact ? (
             <button

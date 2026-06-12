@@ -2113,6 +2113,21 @@ button.agent-safety-badge:hover {
   animation: agent-artifact-panel-in var(--t-slow) var(--ease-spring);
 }
 
+/* Entrance is strictly once-per-mount: WebKit replays CSS animations when it
+ * recreates a renderer (which the sidebar drag's per-frame relayout can
+ * trigger), and a replay reads as the open panel flashing and sliding back
+ * in. React sets data-entered when the entrance completes. */
+.agent-artifact-panel[data-entered="true"] {
+  animation: none;
+}
+
+/* Keep the panel on its own stable compositing layer for the duration of a
+ * sidebar drag so the shell's per-frame grid relayout never re-rasterizes
+ * (and so flashes) this fixed element. */
+.app-shell[data-sidebar-resizing="true"] .agent-artifact-panel {
+  will-change: transform;
+}
+
 @keyframes agent-artifact-panel-in {
   from {
     opacity: 0;
