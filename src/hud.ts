@@ -25,6 +25,7 @@ import {
   isOnboardingComplete,
   subscribeToOnboardingComplete,
 } from "./lib/onboarding";
+import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import "./styles/hud.css";
 
 type DictationHudEvent = {
@@ -47,6 +48,9 @@ const appWindow = (() => {
     return undefined;
   }
 })();
+
+installNativeContextMenuGuard();
+
 const hud = document.querySelector<HTMLDivElement>("#hud");
 const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));

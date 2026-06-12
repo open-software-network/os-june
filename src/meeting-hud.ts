@@ -12,11 +12,14 @@ import {
 } from "./lib/audio-meter";
 import { meterLevelForSources, visualPeakScale } from "./lib/recorder-levels";
 import type { RecordingStatusDto } from "./lib/tauri";
+import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import "./styles/meeting-hud.css";
 
 const appWindow = getCurrentWindow();
 const pill = document.querySelector<HTMLDivElement>("#mhud");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".mhud-bar"));
+
+installNativeContextMenuGuard();
 
 // Shares the dictation HUD's + recorder bar's synthesis, ballistics, and
 // travelling-wave motion so all waveforms move identically.
