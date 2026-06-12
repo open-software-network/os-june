@@ -23,13 +23,17 @@ import {
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
+import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
-import { NotesList } from "../components/notes-list/NotesList";
+import {
+  NotesList,
+  type NotesListHandle,
+} from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import {
   AppSettings,
@@ -100,6 +104,7 @@ import type {
   HermesSessionInfo,
 } from "../lib/tauri";
 import type {
+  NoteListItemDto,
   RecordingSourceMode,
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
@@ -192,9 +197,9 @@ export function App() {
   const [sessionFolders, setSessionFolders] = useState<
     Record<string, string[]>
   >({});
-  const [moveDialogSessionId, setMoveDialogSessionId] = useState<string | null>(
-    null,
-  );
+  const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<
+    string[] | null
+  >(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
   // mirroring notes-from-folder.
@@ -213,6 +218,8 @@ export function App() {
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
   const mainPanelBodyRef = useRef<HTMLDivElement | null>(null);
   const noteDetailScrollRef = useRef<HTMLDivElement | null>(null);
+  const notesListRef = useRef<NotesListHandle | null>(null);
+  const agentSessionsListRef = useRef<AgentSessionsListHandle | null>(null);
   // Where the back affordance in settings returns to — captured when settings
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] =
@@ -226,7 +233,9 @@ export function App() {
   const [folderReturnTarget, setFolderReturnTarget] = useState<
     { noteId: string; label: string } | undefined
   >();
-  const [moveDialogNoteId, setMoveDialogNoteId] = useState<string | null>(null);
+  const [moveDialogNoteIds, setMoveDialogNoteIds] = useState<string[] | null>(
+    null,
+  );
   // User's intent for system audio. Defaults true ("record everything").
   // The actual sourceMode is derived below so that granting/revoking
   // permission in System Settings flips the toggle without losing intent.
@@ -1671,7 +1680,7 @@ export function App() {
         onReportIssue={handleReportIssue}
         onSelectNote={(noteId) => void handleSelectNote(noteId)}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
-        onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+        onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
         onRemoveNoteFromFolder={(noteId, folderId) =>
           void handleRemoveNoteFromFolder(noteId, folderId)
         }
@@ -1844,6 +1853,7 @@ export function App() {
               />
             ) : activeView === "agent-sessions" ? (
               <AgentSessionsList
+                ref={agentSessionsListRef}
                 sessions={agentSessions}
                 folders={state.folders}
                 sessionFolderIds={sessionFolders}
@@ -1856,7 +1866,10 @@ export function App() {
                 }}
                 onNewSession={handleNewAgentSession}
                 onOpenMoveDialog={(sessionId) =>
-                  setMoveDialogSessionId(sessionId)
+                  setMoveDialogSessionIds([sessionId])
+                }
+                onOpenMoveSessions={(sessionIds) =>
+                  setMoveDialogSessionIds(sessionIds)
                 }
                 onRemoveFromProject={(sessionId, folderId) =>
                   void handleRemoveSessionFromFolder(sessionId, folderId)
@@ -1864,13 +1877,14 @@ export function App() {
               />
             ) : activeView === "notes" || activeView === "all-notes" ? (
               <NotesList
+                ref={notesListRef}
                 notes={state.notes}
-                selectedNoteId={state.selectedNoteId}
                 onSelectNote={(noteId) =>
                   void handleSelectNoteFromAllNotes(noteId)
                 }
                 onCreateNote={() => void handleCreateNote(null)}
-                onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+                onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
+                onOpenMoveNotes={(noteIds) => setMoveDialogNoteIds(noteIds)}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
                 onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
               />
@@ -1915,7 +1929,7 @@ export function App() {
                 onRemoveNoteFromFolder={(noteId, folderId) =>
                   void handleRemoveNoteFromFolder(noteId, folderId)
                 }
-                onOpenMoveDialog={(noteId) => setMoveDialogNoteId(noteId)}
+                onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
                 onCreateSession={(folderId) =>
                   handleNewAgentSessionInProject(folderId)
@@ -1940,7 +1954,7 @@ export function App() {
                   void handleRemoveSessionFromFolder(sessionId, folderId)
                 }
                 onOpenSessionMoveDialog={(sessionId) =>
-                  setMoveDialogSessionId(sessionId)
+                  setMoveDialogSessionIds([sessionId])
                 }
               />
             ) : selectedNote ? (
@@ -2090,33 +2104,40 @@ export function App() {
         </div>
       </section>
       <MoveNoteToFolderDialog
-        open={moveDialogNoteId !== null}
-        onClose={() => setMoveDialogNoteId(null)}
-        note={
-          moveDialogNoteId
-            ? (state.notes.find((n) => n.id === moveDialogNoteId) ?? null)
-            : null
+        open={moveDialogNoteIds !== null}
+        onClose={() => setMoveDialogNoteIds(null)}
+        notes={
+          moveDialogNoteIds
+            ? moveDialogNoteIds
+                .map((id) => state.notes.find((n) => n.id === id))
+                .filter((note): note is NoteListItemDto => note !== undefined)
+            : []
         }
         folders={state.folders}
         onSetFolder={(noteId, folderId) =>
           handleSetNoteFolder(noteId, folderId)
         }
+        onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
-        open={moveDialogSessionId !== null}
-        onClose={() => setMoveDialogSessionId(null)}
-        session={
-          moveDialogSessionId
-            ? (agentSessions.find((s) => s.id === moveDialogSessionId) ?? null)
-            : null
+        open={moveDialogSessionIds !== null}
+        onClose={() => setMoveDialogSessionIds(null)}
+        sessions={
+          moveDialogSessionIds
+            ? moveDialogSessionIds
+                .map((id) => agentSessions.find((s) => s.id === id))
+                .filter(
+                  (session): session is HermesSessionInfo =>
+                    session !== undefined,
+                )
+            : []
         }
-        currentFolderIds={
-          moveDialogSessionId ? (sessionFolders[moveDialogSessionId] ?? []) : []
-        }
+        sessionFolderIds={sessionFolders}
         folders={state.folders}
         onSetFolder={(sessionId, folderId) =>
           handleSetSessionFolder(sessionId, folderId)
         }
+        onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <UpdateDialog
         payload={pendingUpdate}

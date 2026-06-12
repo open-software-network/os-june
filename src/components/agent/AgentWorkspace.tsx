@@ -6005,7 +6005,11 @@ function ApprovalPart({
                 <span>Working out what this request does…</span>
               </p>
             ) : explainState === "ready" && explanation ? (
-              <p>{explanation}</p>
+              explanation
+                .split(/\n{2,}/)
+                .map((paragraph) => paragraph.trim())
+                .filter(Boolean)
+                .map((paragraph, index) => <p key={index}>{paragraph}</p>)
             ) : (
               // Generation unavailable (offline, signed out): keep the
               // static framing rather than an empty panel.

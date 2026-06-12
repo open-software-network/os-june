@@ -1,5 +1,7 @@
+import { IconCheckmark2Medium } from "central-icons-filled/IconCheckmark2Medium";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
@@ -7,7 +9,15 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { useEffect, useMemo, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   deleteHermesSession,
   isScheduledRunSession,
@@ -28,41 +38,176 @@ type AgentSessionsListProps = {
   onSelectSession: (session: HermesSessionInfo) => void;
   onNewSession: () => void;
   onOpenMoveDialog: (sessionId: string) => void;
+  onOpenMoveSessions: (sessionIds: string[]) => void;
   onRemoveFromProject: (sessionId: string, folderId: string) => void;
+};
+
+export type AgentSessionsListHandle = {
+  resetSelection: () => void;
 };
 
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 
-export function AgentSessionsList({
-  sessions,
-  folders,
-  sessionFolderIds,
-  workingSessionIds = EMPTY_SESSION_IDS,
-  waitingSessionIds = EMPTY_SESSION_IDS,
-  onSelectSession,
-  onNewSession,
-  onOpenMoveDialog,
-  onRemoveFromProject,
-}: AgentSessionsListProps) {
+export const AgentSessionsList = forwardRef<
+  AgentSessionsListHandle,
+  AgentSessionsListProps
+>(function AgentSessionsList(
+  {
+    sessions,
+    folders,
+    sessionFolderIds,
+    workingSessionIds = EMPTY_SESSION_IDS,
+    waitingSessionIds = EMPTY_SESSION_IDS,
+    onSelectSession,
+    onNewSession,
+    onOpenMoveDialog,
+    onOpenMoveSessions,
+    onRemoveFromProject,
+  },
+  ref,
+) {
   const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+  const [exit, setExit] = useState<null | "slide" | "fade">(null);
+  const exitCauseRef = useRef<"slide" | "fade">("fade");
+
+  const sortedSessions = useMemo(
+    () =>
+      [...sessions].sort((a, b) => {
+        const statusDelta =
+          sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
+          sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
+        if (statusDelta !== 0) return statusDelta;
+        return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
+      }),
+    [sessions, waitingSessionIds, workingSessionIds],
+  );
   const filteredSessions = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const sorted = [...sessions].sort((a, b) => {
-      const statusDelta =
-        sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
-        sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
-      if (statusDelta !== 0) return statusDelta;
-      return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
-    });
-    if (!normalized) return sorted;
-    return sorted.filter((session) =>
+    if (!normalized) return sortedSessions;
+    return sortedSessions.filter((session) =>
       `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
         sessionStatus(session.id, workingSessionIds, waitingSessionIds),
       )}`
         .toLowerCase()
         .includes(normalized),
     );
-  }, [sessions, query, waitingSessionIds, workingSessionIds]);
+  }, [sortedSessions, query, waitingSessionIds, workingSessionIds]);
+  const selectedSessionIds = useMemo(
+    () =>
+      sortedSessions
+        .filter((session) => selectedIds.has(session.id))
+        .map((session) => session.id),
+    [sortedSessions, selectedIds],
+  );
+  const visibleSelectedCount = filteredSessions.filter((session) =>
+    selectedIds.has(session.id),
+  ).length;
+  const selectedCount = selectedSessionIds.length;
+  const hasUnselectedVisibleSessions =
+    filteredSessions.length > 0 &&
+    visibleSelectedCount < filteredSessions.length;
+
+  const lastCountRef = useRef(selectedCount);
+  if (selectedCount > 0) lastCountRef.current = selectedCount;
+  const displayCount = selectedCount > 0 ? selectedCount : lastCountRef.current;
+
+  const previousCountRef = useRef(0);
+  useEffect(() => {
+    const previousCount = previousCountRef.current;
+    previousCountRef.current = selectedCount;
+    if (selectedCount > 0) {
+      setExit(null);
+      return;
+    }
+    if (previousCount === 0) return;
+    const cause = exitCauseRef.current;
+    exitCauseRef.current = "fade";
+    setExit((current) => current ?? cause);
+  }, [selectedCount]);
+
+  const barMounted = selectedCount > 0 || exit !== null;
+  const isExiting = selectedCount === 0 && exit !== null;
+
+  useEffect(() => {
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    setSelectedIds((previous) => {
+      const next = new Set([...previous].filter((id) => sessionIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    if (sessions.length === 0) {
+      setConfirmBulkDelete(false);
+      setBulkDeleteError(null);
+    }
+  }, [sessions]);
+
+  function toggleSelected(sessionId: string) {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  }
+
+  const resetSelection = useCallback(() => {
+    exitCauseRef.current = "slide";
+    setSelectedIds(new Set());
+    setConfirmBulkDelete(false);
+    setBulkDeleteError(null);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ resetSelection }), [resetSelection]);
+
+  function selectAllVisibleSessions() {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const session of filteredSessions) {
+        next.add(session.id);
+      }
+      return next;
+    });
+  }
+
+  function deselectAllVisibleSessions() {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const session of filteredSessions) {
+        next.delete(session.id);
+      }
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (selectedCount === 0 || confirmBulkDelete) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") resetSelection();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCount, confirmBulkDelete, resetSelection]);
+
+  async function handleBulkDelete() {
+    try {
+      for (const sessionId of selectedSessionIds) {
+        await deleteHermesSession(sessionId);
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+              detail: { sessionId },
+            }),
+          );
+        }, 0);
+      }
+      resetSelection();
+    } catch (err) {
+      setBulkDeleteError(messageFromError(err));
+      throw err;
+    }
+  }
 
   return (
     <section
@@ -77,9 +222,6 @@ export function AgentSessionsList({
               <span className="folders-count">{sessions.length}</span>
             ) : null}
           </h1>
-          <p className="folders-subtitle">
-            Every conversation with June across your workspace.
-          </p>
         </div>
         <button
           type="button"
@@ -122,7 +264,11 @@ export function AgentSessionsList({
           <p>No sessions match “{query.trim()}”.</p>
         </div>
       ) : (
-        <ul className="folder-notes all-notes-list" role="list">
+        <ul
+          className="folder-notes all-notes-list"
+          role="list"
+          data-selecting={selectedCount > 0}
+        >
           {filteredSessions.map((session) => (
             <AgentSessionListRow
               key={session.id}
@@ -138,6 +284,8 @@ export function AgentSessionsList({
                 workingSessionIds,
                 waitingSessionIds,
               )}
+              checked={selectedIds.has(session.id)}
+              onToggleSelected={() => toggleSelected(session.id)}
               onSelect={() => onSelectSession(session)}
               onOpenMove={() => onOpenMoveDialog(session.id)}
               onRemoveFromProject={(folderId) =>
@@ -147,9 +295,93 @@ export function AgentSessionsList({
           ))}
         </ul>
       )}
+
+      {barMounted ? (
+        <div
+          className="meetings-bulk-bar"
+          role="toolbar"
+          aria-label="Selection"
+          data-exit={isExiting ? exit : undefined}
+          onAnimationEnd={(event) => {
+            if (!isExiting || event.target !== event.currentTarget) return;
+            if (
+              event.animationName &&
+              !event.animationName.startsWith("meetings-bulk-bar-out")
+            ) {
+              return;
+            }
+            setExit(null);
+          }}
+        >
+          <span className="meetings-bulk-count">{displayCount} selected</span>
+          {hasUnselectedVisibleSessions ? (
+            <button
+              type="button"
+              className="meetings-bulk-action"
+              onClick={selectAllVisibleSessions}
+              disabled={isExiting}
+            >
+              Select all
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="meetings-bulk-action"
+            onClick={deselectAllVisibleSessions}
+            disabled={isExiting}
+          >
+            Deselect all
+          </button>
+          <button
+            type="button"
+            className="meetings-bulk-action"
+            onClick={() => onOpenMoveSessions(selectedSessionIds)}
+            disabled={isExiting}
+          >
+            Move
+          </button>
+          <button
+            type="button"
+            className="meetings-bulk-action"
+            onClick={() => setConfirmBulkDelete(true)}
+            disabled={isExiting}
+          >
+            Delete
+          </button>
+          <button
+            type="button"
+            className="meetings-bulk-dismiss"
+            aria-label="Clear selection"
+            onClick={resetSelection}
+            disabled={isExiting}
+          >
+            <IconCrossMedium size={14} />
+          </button>
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        onClose={() => {
+          setConfirmBulkDelete(false);
+          setBulkDeleteError(null);
+        }}
+        onConfirm={() => handleBulkDelete()}
+        title={`Delete ${selectedCount} ${
+          selectedCount === 1 ? "session" : "sessions"
+        }?`}
+        description={
+          bulkDeleteError ||
+          "This cannot be undone. These agent sessions will be removed."
+        }
+        confirmLabel={
+          selectedCount === 1 ? "Delete session" : "Delete sessions"
+        }
+        destructive
+      />
     </section>
   );
-}
+});
 
 function projectNameFor(
   sessionId: string,
@@ -194,6 +426,8 @@ function AgentSessionListRow({
   projectName,
   currentFolderId,
   status,
+  checked,
+  onToggleSelected,
   onSelect,
   onOpenMove,
   onRemoveFromProject,
@@ -202,6 +436,8 @@ function AgentSessionListRow({
   projectName?: string;
   currentFolderId?: string;
   status?: AgentSessionListStatus;
+  checked: boolean;
+  onToggleSelected: () => void;
   onSelect: () => void;
   onOpenMove: () => void;
   onRemoveFromProject: (folderId: string) => void;
@@ -255,11 +491,23 @@ function AgentSessionListRow({
   return (
     <li>
       <div
-        className="folder-note-row all-notes-row"
+        className="folder-note-row all-notes-row agent-session-row"
+        data-selected={checked}
         data-has-actions="true"
         data-menu-open={menu !== null}
         data-status={status}
       >
+        <label className="folder-note-checkbox">
+          <input
+            type="checkbox"
+            checked={checked}
+            aria-label={`Select ${title}`}
+            onChange={onToggleSelected}
+          />
+          <span className="folder-note-select-box" aria-hidden>
+            {checked ? <IconCheckmark2Medium size={10} /> : null}
+          </span>
+        </label>
         <button type="button" className="folder-note-main" onClick={onSelect}>
           <span className="folder-note-icon" aria-hidden>
             {isScheduledRunSession(session) ? (

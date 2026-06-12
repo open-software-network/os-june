@@ -80,10 +80,10 @@ body:active {
   height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  /* A dark tint over the native vibrancy layer — heavy enough to read as
-   * dark glass against bright content, translucent enough that the frost
-   * still shows. Matches the dictation HUD's surface (--hud-bg). */
-  background: color-mix(in oklch, var(--popover) 72%, transparent);
+  /* The shared June overlay surface — near-opaque dark glass over the
+   * vibrancy layer, matching the dictation HUD (--hud-bg), the meeting
+   * prompt, and the agent HUD. */
+  background: color-mix(in oklch, var(--popover) 92%, transparent);
   color: var(--foreground);
   overflow: hidden;
   /* Length changes ride the same clock as the native turn (TURN_SECS +

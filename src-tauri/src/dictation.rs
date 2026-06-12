@@ -71,13 +71,19 @@ pub struct HudClientRect {
     bottom: f64,
 }
 
-/// Stop-button hover state. Polled by [`spawn_hud_hover_thread`]; we don't
-/// poll from JS because WebKit throttles timers on the non-key HUD panel.
-/// (The window is sized exactly to the pill, so there's no click pass-through
-/// to manage — the whole window is interactive.)
+/// Hover state for HUD controls. Polled by [`spawn_hud_hover_thread`]; we
+/// don't poll from JS because WebKit throttles timers on the non-key HUD
+/// panel (and CSS :hover is unreliable there for the same reason). The
+/// stop button and the meeting prompt's corner dismiss each get a rect.
+/// (The window is sized exactly to the pill, so there's no click
+/// pass-through to manage — the whole window is interactive.)
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
+    dismiss_bounds: Mutex<Option<HudClientRect>>,
+    last_dismiss_hover: std::sync::atomic::AtomicBool,
+    record_bounds: Mutex<Option<HudClientRect>>,
+    last_record_hover: std::sync::atomic::AtomicBool,
 }
 
 pub fn configured_transcription_language() -> Option<String> {
@@ -553,6 +559,10 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(HudHoverState {
         stop_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
+        dismiss_bounds: Mutex::new(None),
+        last_dismiss_hover: std::sync::atomic::AtomicBool::new(false),
+        record_bounds: Mutex::new(None),
+        last_record_hover: std::sync::atomic::AtomicBool::new(false),
     });
     app.manage(HudFrameLock::default());
     spawn_hud_hover_thread(app.handle().clone());
@@ -775,6 +785,26 @@ pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Opti
     }
 }
 
+#[tauri::command]
+pub fn dictation_hud_set_dismiss_bounds(
+    state: State<'_, HudHoverState>,
+    rect: Option<HudClientRect>,
+) {
+    if let Ok(mut guard) = state.dismiss_bounds.lock() {
+        *guard = rect;
+    }
+}
+
+#[tauri::command]
+pub fn dictation_hud_set_record_bounds(
+    state: State<'_, HudHoverState>,
+    rect: Option<HudClientRect>,
+) {
+    if let Ok(mut guard) = state.record_bounds.lock() {
+        *guard = rect;
+    }
+}
+
 /// Serializes window-frame motion (resize morphs, the error shake) so two
 /// concurrent commands never fight over the window's position.
 pub struct HudFrameLock(Mutex<()>);
@@ -879,9 +909,178 @@ fn set_window_alpha(_hud: &WebviewWindow, _alpha: f64) {}
 /// measured the pill and resized the window to match — the window must never
 /// become visible before that resize, or it flashes up at a stale frame
 /// (bare frost, then a clipped pill) until the next visible-state resize.
+///
+/// `enter` marks a fresh meeting-prompt show: the window is placed at the
+/// default top-center spot (the saved drag position is the dictation
+/// pill's, not the prompt's) and — unless `animate` is false — slides down
+/// from 8px above it while its alpha ramps up. The motion is native: a CSS
+/// translate would slide the tinted card off the stationary window
+/// chrome, flashing bare edges. Ignored when the window is already up
+/// with content, where it would blink the visible pill. Blocks until the
+/// motion settles; returns whether this was a fresh entrance.
 #[tauri::command]
-pub fn dictation_hud_show(app: AppHandle) {
-    show_hud_window(&app);
+pub fn dictation_hud_show(app: AppHandle, enter: Option<bool>, animate: Option<bool>) -> bool {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return false;
+    };
+    // A window woken at alpha 0 (wake_hud_window) reports visible but the
+    // user can't see it — that still counts as a fresh entrance.
+    let entering = enter.unwrap_or(false);
+    let was_hidden = !hud.is_visible().unwrap_or(false)
+        || HUD_WOKEN_FADED.load(std::sync::atomic::Ordering::Relaxed);
+    if !hud.is_visible().unwrap_or(false) && !entering {
+        position_hud_window(&app, &hud);
+    }
+    HUD_WOKEN_FADED.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    if !(was_hidden && entering) {
+        // Plain show. An interrupted exit fade may have left the native
+        // alpha low; restore it.
+        let alpha_hud = hud.clone();
+        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
+        let _ = hud.show();
+        return was_hidden;
+    }
+
+    // The entrance is the meeting prompt, which always starts top-center.
+    // Compute the target directly and anchor the motion on it — window
+    // setters apply asynchronously on the main thread, so set_position
+    // followed by outer_position() races and can hand the motion a stale
+    // anchor, landing the prompt wherever the pill last sat.
+    let target = hud
+        .outer_size()
+        .ok()
+        .and_then(|size| default_hud_position(&hud, size));
+    let Some((x, y)) = target else {
+        let alpha_hud = hud.clone();
+        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
+        let _ = hud.show();
+        return was_hidden;
+    };
+
+    if !animate.unwrap_or(true) {
+        // Reduced motion: right spot, no slide.
+        let _ = hud.set_position(PhysicalPosition::new(x, y));
+        let alpha_hud = hud.clone();
+        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
+        let _ = hud.show();
+        return was_hidden;
+    }
+
+    // Hold the frame lock so a concurrent resize morph or shake can't
+    // capture a mid-entrance position as its anchor.
+    let lock = app.try_state::<HudFrameLock>();
+    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
+    let offset = hud
+        .scale_factor()
+        .map(|scale| (HUD_ENTER_OFFSET_LOGICAL * scale).round() as i32)
+        .unwrap_or(0);
+    let _ = hud.set_position(PhysicalPosition::new(x, y - offset));
+    {
+        let alpha_hud = hud.clone();
+        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 0.0));
+    }
+    let _ = hud.show();
+    // Position and alpha land in one main-thread closure per frame so the
+    // slide and the fade can't desync.
+    const STEPS: u32 = 18;
+    const STEP_MS: u64 = 12;
+    for step in 1..STEPS {
+        let t = f64::from(step) / f64::from(STEPS);
+        // ease-out cubic — fast start, soft landing.
+        let e = 1.0 - (1.0 - t).powi(3);
+        let frame_y = f64::from(y) - f64::from(offset) * (1.0 - e);
+        let frame_hud = hud.clone();
+        let frame = PhysicalPosition::new(x, frame_y.round() as i32);
+        let _ = app.run_on_main_thread(move || {
+            let _ = frame_hud.set_position(frame);
+            set_window_alpha(&frame_hud, e);
+        });
+        thread::sleep(Duration::from_millis(STEP_MS));
+    }
+    let _ = hud.set_position(PhysicalPosition::new(x, y));
+    let alpha_hud = hud.clone();
+    let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
+    was_hidden
+}
+
+/// Logical pixels the meeting prompt travels during its native entrance
+/// and exit motion.
+const HUD_ENTER_OFFSET_LOGICAL: f64 = 8.0;
+
+/// Swap the HUD window between its two chromes. The dictation pill uses
+/// native vibrancy frost + the NSWindow shadow, with the window sized
+/// exactly to the pill. The meeting card instead paints its own surface
+/// and CSS shadow into a transparent, click-through gutter (the webview
+/// adds it to the window size) so the corner dismiss can overhang the
+/// card's edge — impossible while the frost fills the window.
+#[tauri::command]
+pub fn dictation_hud_set_chrome(app: AppHandle, meeting: bool) {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return;
+    };
+    let _ = hud.set_shadow(!meeting);
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{
+            apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
+        };
+        if meeting {
+            if let Err(error) = clear_vibrancy(&hud) {
+                tracing::warn!(%error, "failed to clear dictation HUD vibrancy");
+            }
+        } else if let Err(error) = apply_vibrancy(
+            &hud,
+            NSVisualEffectMaterial::HudWindow,
+            Some(NSVisualEffectState::Active),
+            Some(10.0),
+        ) {
+            tracing::warn!(%error, "failed to re-apply dictation HUD vibrancy");
+        }
+    }
+}
+
+/// Native exit for the meeting prompt: the mirror of the entrance — the
+/// window slides up toward the top edge while its alpha ramps down, then
+/// hides. The frame and alpha are restored afterwards so the saved drag
+/// position doesn't creep upward and the next show starts clean. Blocks
+/// until hidden.
+#[tauri::command]
+pub fn dictation_hud_exit(app: AppHandle) {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return;
+    };
+    if !hud.is_visible().unwrap_or(false) {
+        return;
+    }
+    let lock = app.try_state::<HudFrameLock>();
+    let _guard = lock.as_ref().and_then(|lock| lock.0.lock().ok());
+    let (Ok(base), Ok(scale)) = (hud.outer_position(), hud.scale_factor()) else {
+        let _ = hud.hide();
+        return;
+    };
+    let offset = (HUD_ENTER_OFFSET_LOGICAL * scale).round() as i32;
+    // Long enough to read as a fade, matching the entrance; position and
+    // alpha land in one main-thread closure per frame so they can't
+    // desync.
+    const STEPS: u32 = 18;
+    const STEP_MS: u64 = 12;
+    for step in 1..STEPS {
+        let t = f64::from(step) / f64::from(STEPS);
+        let e = 1.0 - (1.0 - t).powi(3);
+        let y = f64::from(base.y) - f64::from(offset) * e;
+        let frame_hud = hud.clone();
+        let frame = PhysicalPosition::new(base.x, y.round() as i32);
+        let _ = app.run_on_main_thread(move || {
+            let _ = frame_hud.set_position(frame);
+            set_window_alpha(&frame_hud, 1.0 - e);
+        });
+        thread::sleep(Duration::from_millis(STEP_MS));
+    }
+    let _ = hud.hide();
+    let _ = hud.set_position(base);
+    let alpha_hud = hud.clone();
+    let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
 }
 
 /// Error-state shake. Pre-vibrancy this was a CSS translateX on the pill, but
@@ -949,8 +1148,9 @@ fn rect_contains(
     cx >= left && cx <= right && cy >= top && cy <= bottom
 }
 
-/// Polls the cursor against the cached stop-button bounds and emits hover
-/// state changes. Short-circuits when bounds are `None`.
+/// Polls the cursor against the cached control bounds (stop button, meeting
+/// dismiss) and emits hover state changes. Short-circuits when no bounds
+/// are registered.
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
         use std::sync::atomic::Ordering;
@@ -969,11 +1169,31 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let visible = hud.is_visible().unwrap_or(false);
 
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
+            let dismiss_rect = hover_state
+                .dismiss_bounds
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            let record_rect = hover_state
+                .record_bounds
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
 
-            // Hidden or no stop button on screen: drop any stale hover.
-            if !visible || stop_rect.is_none() {
+            // Hidden or no hoverable controls on screen: drop stale hover.
+            if !visible || (stop_rect.is_none() && dismiss_rect.is_none() && record_rect.is_none())
+            {
                 if hover_state.last_hover.swap(false, Ordering::Relaxed) {
                     let _ = app.emit("hud-stop-hover", false);
+                }
+                if hover_state
+                    .last_dismiss_hover
+                    .swap(false, Ordering::Relaxed)
+                {
+                    let _ = app.emit("hud-dismiss-hover", false);
+                }
+                if hover_state.last_record_hover.swap(false, Ordering::Relaxed) {
+                    let _ = app.emit("hud-record-hover", false);
                 }
                 continue;
             }
@@ -991,14 +1211,37 @@ fn spawn_hud_hover_thread(app: AppHandle) {
 
             let Some((cx, cy)) = cursor else { continue };
 
-            let is_hovered = match stop_rect.as_ref() {
+            let stop_hovered = match stop_rect.as_ref() {
                 Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
                 None => false,
             };
-            let was_hovered = hover_state.last_hover.load(Ordering::Relaxed);
-            if is_hovered != was_hovered {
-                hover_state.last_hover.store(is_hovered, Ordering::Relaxed);
-                let _ = app.emit("hud-stop-hover", is_hovered);
+            if stop_hovered != hover_state.last_hover.load(Ordering::Relaxed) {
+                hover_state
+                    .last_hover
+                    .store(stop_hovered, Ordering::Relaxed);
+                let _ = app.emit("hud-stop-hover", stop_hovered);
+            }
+
+            let dismiss_hovered = match dismiss_rect.as_ref() {
+                Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
+                None => false,
+            };
+            if dismiss_hovered != hover_state.last_dismiss_hover.load(Ordering::Relaxed) {
+                hover_state
+                    .last_dismiss_hover
+                    .store(dismiss_hovered, Ordering::Relaxed);
+                let _ = app.emit("hud-dismiss-hover", dismiss_hovered);
+            }
+
+            let record_hovered = match record_rect.as_ref() {
+                Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
+                None => false,
+            };
+            if record_hovered != hover_state.last_record_hover.load(Ordering::Relaxed) {
+                hover_state
+                    .last_record_hover
+                    .store(record_hovered, Ordering::Relaxed);
+                let _ = app.emit("hud-record-hover", record_hovered);
             }
         }
     });
@@ -2182,19 +2425,30 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         || normalized_message.contains("dictation_text_empty")
 }
 
-pub(crate) fn show_hud_window(app: &AppHandle) {
+/// True while the window has been shown fully transparent by
+/// wake_hud_window and the webview hasn't revealed it properly yet —
+/// is_visible() can't tell a transparent window from a shown one.
+static HUD_WOKEN_FADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Wake the HUD window for the meeting prompt without revealing it. The
+/// webview of a long-hidden window may be suspended and slow to process the
+/// detection event, but showing it eagerly at full alpha flashes a stale
+/// frame — bare frost, then a clipped pill — until the webview's resize
+/// lands. Show it fully transparent instead; the webview sizes the window
+/// and fades it in via dictation_hud_show.
+pub(crate) fn wake_hud_window(app: &AppHandle) {
     if let Some(hud) = app.get_webview_window("hud") {
-        // Only reposition when the HUD is coming up fresh. Within an active
-        // session the user may have dragged the pill to a spot they like;
-        // mid-session state changes (audio level, transcribing, pasting)
-        // shouldn't yank it back to the default.
-        let was_hidden = !hud.is_visible().unwrap_or(false);
-        if was_hidden {
-            position_hud_window(app, &hud);
+        if hud.is_visible().unwrap_or(false) {
+            // Already up — either with real content (leave it alone) or
+            // from an earlier wake (already transparent).
+            return;
         }
-        // An interrupted exit fade may have left the native alpha low.
+        // Meeting prompts always come up top-center; dictation_hud_show
+        // re-centers precisely once the webview has sized the window.
+        position_hud_window_top_center(&hud);
+        HUD_WOKEN_FADED.store(true, std::sync::atomic::Ordering::Relaxed);
         let alpha_hud = hud.clone();
-        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 1.0));
+        let _ = app.run_on_main_thread(move || set_window_alpha(&alpha_hud, 0.0));
         let _ = hud.show();
     }
 }
@@ -2243,6 +2497,18 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
         }
     }
 
+    if let Some((x, y)) = default_hud_position(hud, window_size) {
+        let _ = hud.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+/// Meeting prompts always enter at the default top-center spot. They're
+/// transient notifications, not the user's parked dictation pill, so the
+/// saved drag position doesn't apply to them.
+fn position_hud_window_top_center(hud: &WebviewWindow) {
+    let Ok(window_size) = hud.outer_size() else {
+        return;
+    };
     if let Some((x, y)) = default_hud_position(hud, window_size) {
         let _ = hud.set_position(PhysicalPosition::new(x, y));
     }

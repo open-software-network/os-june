@@ -87,9 +87,11 @@
           accessibility: permsMode ? "missing" : "granted",
         };
 
-        // The wizard always replays in the preview.
+        // The wizard always replays in the preview, with the discovery
+        // question unanswered so the practice step shows the whole card.
         try {
           localStorage.removeItem("june.onboarding.completedVersion");
+          localStorage.removeItem("june.onboarding.discoverySource");
           if (step) localStorage.setItem("june.onboarding.resumeStep", step);
           else localStorage.removeItem("june.onboarding.resumeStep");
         } catch (e) {}

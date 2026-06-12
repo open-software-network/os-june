@@ -10,6 +10,7 @@ const ONBOARDING_VERSION = 7;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
+const DISCOVERY_KEY = "june.onboarding.discoverySource";
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
@@ -53,6 +54,10 @@ export function resetOnboardingForReplay() {
   try {
     window.localStorage.removeItem(COMPLETED_KEY);
     window.localStorage.removeItem(RESUME_KEY);
+    // Dev-only path: forget the discovery answer too, so the replayed
+    // wizard shows the whole flow. Real version-bump replays don't come
+    // through here and keep it.
+    window.localStorage.removeItem(DISCOVERY_KEY);
   } catch {
     // Ignore; storage unavailable already behaves like a completed wizard.
   }
@@ -77,6 +82,28 @@ export function setOnboardingResumeStep(stepId: string) {
     window.localStorage.setItem(RESUME_KEY, stepId);
   } catch {
     // Ignore; worst case the wizard restarts from the top.
+  }
+}
+
+/**
+ * Where the user says they discovered June, asked once at the end of the
+ * wizard. A non-null answer is never re-asked, even when a version bump
+ * replays the wizard. Stored locally for now; reporting it home needs a
+ * scribe-api endpoint, and this is the single place to hook that up.
+ */
+export function discoverySource(): string | null {
+  try {
+    return window.localStorage.getItem(DISCOVERY_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setDiscoverySource(source: string) {
+  try {
+    window.localStorage.setItem(DISCOVERY_KEY, source);
+  } catch {
+    // Ignore; worst case the question is asked again on a replay.
   }
 }
 
@@ -109,6 +136,7 @@ export function setAgentRiskAcknowledged(acknowledged: boolean) {
 export function replayOnboarding(stepId?: string) {
   try {
     window.localStorage.removeItem(COMPLETED_KEY);
+    window.localStorage.removeItem(DISCOVERY_KEY);
     if (stepId) window.localStorage.setItem(RESUME_KEY, stepId);
     else window.localStorage.removeItem(RESUME_KEY);
   } catch {

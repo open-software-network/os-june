@@ -1,4 +1,12 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { createRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -6,9 +14,13 @@ import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../components/agent/AgentWorkspace";
-import { NotesList } from "../components/notes-list/NotesList";
+import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
+import {
+  NotesList,
+  type NotesListHandle,
+} from "../components/notes-list/NotesList";
 import { Sidebar } from "../components/sidebar/Sidebar";
-import type { NoteListItemDto } from "../lib/tauri";
+import type { FolderDto, NoteListItemDto } from "../lib/tauri";
 
 const hermesMocks = vi.hoisted(() => ({
   deleteHermesSession: vi.fn(),
@@ -393,10 +405,10 @@ describe("folders UI", () => {
     const { container } = render(
       <NotesList
         notes={notes}
-        selectedNoteId="note-2"
         onSelectNote={onSelectNote}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={vi.fn()}
       />,
@@ -420,6 +432,7 @@ describe("folders UI", () => {
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={vi.fn()}
       />,
@@ -467,6 +480,7 @@ describe("folders UI", () => {
           onSelectNote={vi.fn()}
           onCreateNote={vi.fn()}
           onOpenMoveDialog={vi.fn()}
+          onOpenMoveNotes={vi.fn()}
           onDeleteNote={vi.fn()}
           onDeleteNotes={vi.fn()}
         />,
@@ -519,6 +533,7 @@ describe("folders UI", () => {
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={vi.fn()}
       />,
@@ -534,6 +549,7 @@ describe("folders UI", () => {
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={vi.fn()}
       />,
@@ -554,6 +570,7 @@ describe("folders UI", () => {
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={onDeleteNotes}
       />,
@@ -566,10 +583,73 @@ describe("folders UI", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
     await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
-    await user.click(screen.getByRole("button", { name: "Delete 2 notes" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
     await user.click(screen.getByRole("button", { name: "Delete notes" }));
 
     expect(onDeleteNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
+
+    // A confirmed delete clears the selection and slides the bar out.
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(bar).toHaveAttribute("data-exit", "slide");
+    fireEvent.animationEnd(bar, {
+      animationName: "meetings-bulk-bar-out-slide",
+    });
+    expect(screen.queryByRole("toolbar", { name: "Selection" })).toBeNull();
+  });
+
+  it("opens the move dialog with every selected meeting", async () => {
+    const user = userEvent.setup();
+    const onOpenMoveNotes = vi.fn();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={onOpenMoveNotes}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
+    await user.click(screen.getByRole("button", { name: "Move" }));
+
+    expect(onOpenMoveNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
+  });
+
+  it("can clear selected meetings after a bulk move succeeds", async () => {
+    const user = userEvent.setup();
+    const notesListRef = createRef<NotesListHandle>();
+    render(
+      <NotesList
+        ref={notesListRef}
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
+
+    expect(
+      screen.getByRole("toolbar", { name: "Selection" }),
+    ).toHaveTextContent("2 selected");
+
+    act(() => notesListRef.current?.resetSelection());
+
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(bar).toHaveAttribute("data-exit", "slide");
+    fireEvent.animationEnd(bar, {
+      animationName: "meetings-bulk-bar-out-slide",
+    });
+    expect(screen.queryByRole("toolbar", { name: "Selection" })).toBeNull();
   });
 
   it("selects all visible meetings after one meeting is selected", async () => {
@@ -581,6 +661,7 @@ describe("folders UI", () => {
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={onDeleteNotes}
       />,
@@ -588,7 +669,7 @@ describe("folders UI", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
     await user.click(screen.getByRole("button", { name: "Select all" }));
-    await user.click(screen.getByRole("button", { name: "Delete 2 notes" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
     await user.click(screen.getByRole("button", { name: "Delete notes" }));
 
     expect(onDeleteNotes).toHaveBeenCalledWith(["note-2", "note-1"]);
@@ -602,6 +683,7 @@ describe("folders UI", () => {
         onSelectNote={vi.fn()}
         onCreateNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
         onDeleteNote={vi.fn()}
         onDeleteNotes={vi.fn()}
       />,
@@ -611,12 +693,142 @@ describe("folders UI", () => {
     await user.click(screen.getByRole("button", { name: "Select all" }));
     await user.click(screen.getByRole("button", { name: "Deselect all" }));
 
-    expect(screen.queryByRole("button", { name: "Delete 2 notes" })).toBeNull();
+    // Deselect all empties the selection, so the bar fades out and unmounts
+    // once its exit animation ends. jsdom never fires animation events, so
+    // drive it manually.
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(bar).toHaveAttribute("data-exit", "fade");
+    fireEvent.animationEnd(bar, {
+      animationName: "meetings-bulk-bar-out-fade",
+    });
+
+    expect(screen.queryByRole("toolbar", { name: "Selection" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
     expect(
       screen.getByRole("checkbox", { name: "Select Second" }),
     ).not.toBeChecked();
     expect(
       screen.getByRole("checkbox", { name: "Select New note" }),
     ).not.toBeChecked();
+  });
+
+  it("slides the bar out and unmounts it after clearing the selection", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+
+    // The × is a deliberate dismiss, so the bar slides out before unmounting.
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(bar).toHaveAttribute("data-exit", "slide");
+    fireEvent.animationEnd(bar, {
+      animationName: "meetings-bulk-bar-out-slide",
+    });
+
+    expect(screen.queryByRole("toolbar", { name: "Selection" })).toBeNull();
+  });
+
+  it("cancels the exit when a note is reselected mid-animation", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesList
+        notes={notes}
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select Second" }));
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveAttribute(
+      "data-exit",
+      "slide",
+    );
+
+    // Re-selecting mid-exit shows the live bar again.
+    await user.click(screen.getByRole("checkbox", { name: "Select New note" }));
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(bar).not.toHaveAttribute("data-exit");
+    expect(within(bar).getByText("1 selected")).toBeInTheDocument();
+  });
+});
+
+describe("MoveNoteToFolderDialog", () => {
+  const moveFolders: FolderDto[] = [
+    {
+      id: "folder-1",
+      name: "Alpha",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: "folder-2",
+      name: "Beta",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+
+  it("moves every selected note to the picked project", async () => {
+    const user = userEvent.setup();
+    const onSetFolder = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={notes}
+        folders={moveFolders}
+        onSetFolder={onSetFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Move 2 meeting notes" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("option", { name: /Beta/ }));
+    await user.click(screen.getByRole("button", { name: "Move" }));
+
+    expect(onSetFolder).toHaveBeenCalledTimes(2);
+    expect(onSetFolder).toHaveBeenNthCalledWith(1, "note-2", "folder-2");
+    expect(onSetFolder).toHaveBeenNthCalledWith(2, "note-1", "folder-2");
+    expect(onMoved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps single-note copy and excludes its current project", async () => {
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={vi.fn()}
+        notes={[notes[0]]}
+        folders={moveFolders}
+        onSetFolder={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Move meeting note" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
+    expect(screen.getByRole("option", { name: /Beta/ })).toBeInTheDocument();
   });
 });

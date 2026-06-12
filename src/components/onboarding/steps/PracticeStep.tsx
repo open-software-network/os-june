@@ -1,13 +1,28 @@
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { discoverySource, setDiscoverySource } from "../../../lib/onboarding";
 import { JuneMark } from "../../account/AccountGate";
 import { KeycapShortcut } from "../../shortcuts/KeycapShortcut";
 import { useShortcutCapture } from "../../shortcuts/use-shortcut-capture";
+import { Select } from "../../ui/Select";
 import { StepActions, StepCard } from "../StepChrome";
 
 // June "types" for a beat before its greeting lands — the small theater that
 // makes the demo read as a live session rather than a printed screenshot.
 const TYPING_MS = 1100;
+
+const DISCOVERY_QUESTION = "Where did you hear about June?";
+
+const DISCOVERY_OPTIONS = [
+  { value: "friend", label: "Friend or coworker" },
+  { value: "x-twitter", label: "X (Twitter)" },
+  { value: "youtube", label: "YouTube" },
+  { value: "instagram-tiktok", label: "Instagram or TikTok" },
+  { value: "podcast-newsletter", label: "Podcast or newsletter" },
+  { value: "ai-chat", label: "ChatGPT or another AI" },
+  { value: "search", label: "Search engine" },
+  { value: "other", label: "Other" },
+];
 
 /**
  * First contact with June, and the dictation rep in one: a session card where
@@ -32,6 +47,12 @@ export function DictationPracticeStep({
   const [value, setValue] = useState("");
   const [greeted, setGreeted] = useState(false);
   const succeeded = value.trim().length >= 4;
+
+  // One last question, Mobbin's end-of-flow attribution slot. Asked only if
+  // it has never been answered — a version-bump replay must not survey the
+  // same user twice — and it never gates Continue.
+  const [discovered, setDiscovered] = useState<string | null>(discoverySource);
+  const askDiscovery = useRef(discoverySource() === null).current;
 
   const capture = useShortcutCapture({
     kind: "push_to_talk",
@@ -113,6 +134,24 @@ export function DictationPracticeStep({
         </div>
       </div>
       {capture.error ? <p className="welcome-status">{capture.error}</p> : null}
+      {askDiscovery ? (
+        <div className="onboarding-discovery">
+          <div className="onboarding-discovery-head">
+            <h2>{DISCOVERY_QUESTION}</h2>
+            <span className="onboarding-discovery-optional">Optional</span>
+          </div>
+          <Select
+            ariaLabel={DISCOVERY_QUESTION}
+            value={discovered}
+            options={DISCOVERY_OPTIONS}
+            placeholder="Choose one"
+            onChange={(source) => {
+              setDiscovered(source);
+              setDiscoverySource(source);
+            }}
+          />
+        </div>
+      ) : null}
       <StepActions
         continueLabel="Start using June"
         onContinue={onContinue}

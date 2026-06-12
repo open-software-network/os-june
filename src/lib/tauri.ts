@@ -860,6 +860,24 @@ export async function toggleHermesBridgeToolset(input: {
   );
 }
 
+export type AgentCliAccessStatus = {
+  enabled: boolean;
+};
+
+/** Whether sandboxed sessions may write the state folders of installed
+ * agent CLIs (Claude Code, Codex, Gemini, opencode). */
+export async function hermesAgentCliAccess() {
+  return invoke<AgentCliAccessStatus>("hermes_agent_cli_access");
+}
+
+/** Persists the Agent CLI access opt-in and retires the sandboxed runtime so
+ * the next session spawns with matching sandbox grants. */
+export async function setHermesAgentCliAccess(enabled: boolean) {
+  return invoke<AgentCliAccessStatus>("set_hermes_agent_cli_access", {
+    request: { enabled },
+  });
+}
+
 export async function hermesBridgeMessagingPlatforms() {
   return invoke<HermesMessagingPlatformsResponse>(
     "hermes_bridge_messaging_platforms",

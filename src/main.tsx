@@ -28,6 +28,11 @@ if (import.meta.env.DEV) {
   void import("./lib/agent-hud-demo").then(({ registerAgentHudDemo }) =>
     registerAgentHudDemo({ local: false }),
   );
+  // Same pattern for the meeting-detection prompt: __meetingHud("detected")
+  // drives the real dictation HUD window over the Tauri bus.
+  void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
+    registerMeetingHudDemo({ local: false }),
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconMicrophone } from "central-icons-filled/IconMicrophone";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { spinners } from "unicode-animations";
 import {
   clamp,
@@ -30,20 +34,51 @@ type DictationHudEvent = {
   };
 };
 
-const appWindow = getCurrentWindow();
+// Absent on the standalone browser page (no Tauri bridge), where the demo
+// driver exercises the pill — getCurrentWindow() throws there.
+const appWindow = (() => {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return undefined;
+  }
+})();
 const hud = document.querySelector<HTMLDivElement>("#hud");
 const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
 const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
-const agentLabel = document.querySelector<HTMLElement>("#hud-agent-label");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
 const meetingStartButton =
   document.querySelector<HTMLButtonElement>("#hud-meeting-start");
+const meetingAppLabel = document.querySelector<HTMLElement>("#hud-meeting-app");
 const meetingDismissButton = document.querySelector<HTMLButtonElement>(
   "#hud-meeting-dismiss",
 );
 const statusText = document.querySelector<HTMLElement>("#hud-status");
+
+// House iconography (central-icons), injected like the agent HUD does.
+if (meetingDismissButton) {
+  meetingDismissButton.innerHTML = renderToStaticMarkup(
+    createElement(IconCrossSmall, {
+      size: 12,
+      ariaHidden: true,
+      focusable: false,
+    }),
+  );
+}
+const meetingStartIcon = document.querySelector<HTMLElement>(
+  ".hud-meeting-start-icon",
+);
+if (meetingStartIcon) {
+  meetingStartIcon.innerHTML = renderToStaticMarkup(
+    createElement(IconMicrophone, {
+      size: 14,
+      ariaHidden: true,
+      focusable: false,
+    }),
+  );
+}
 
 let hideTimer: number | undefined;
 let meetingPromptTimer: number | undefined;
@@ -58,8 +93,14 @@ const brailleWave = spinners.waverows;
 
 // Matches the .hud[data-state="exiting"] transition in hud.css.
 const EXIT_TRANSITION_MS = 160;
+// Matches the .hud.is-morphing fade (60ms) plus a frame of slack.
+const MORPH_FADE_MS = 80;
+// Transparent, click-through margin around the meeting card. Its CSS
+// shadow paints here and the corner dismiss overhangs into it — the card
+// runs without the native frost (dictation_hud_set_chrome), so the window
+// can be bigger than the surface, agent-HUD style.
+const MEETING_WINDOW_GUTTER = 16;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
-const AGENT_HANDOFF_TIMEOUT_MS = 4_000;
 
 function invokeBestEffort(command: string, args?: Record<string, unknown>) {
   try {
@@ -111,12 +152,9 @@ const HUD_WHISPER_FLOOR = 0.06;
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
   const previous = hud.dataset.state;
-  const widthBefore = hud.getBoundingClientRect().width;
+  const sizeBefore = hud.getBoundingClientRect();
   hud.dataset.state = state;
   statusText.textContent = status;
-  if (agentLabel) {
-    agentLabel.textContent = state === "agent-received" ? status : "";
-  }
   if (errorText) {
     errorText.textContent =
       state === "silent-error" || state === "error" ? status : "";
@@ -134,16 +172,28 @@ function setHud(state: string, status: string) {
   } else if (previous === "listening") {
     clearStopHover();
   }
-  // Pill width varies by state and the window must track it exactly (the
-  // frosted surface is a window-filling native vibrancy view). When the width
+  // Pill size varies by state and the window must track it exactly (the
+  // frosted surface is a window-filling native vibrancy view). When the size
   // actually changes, morph: contents crossfade while the glass eases over —
-  // also what keeps the wider pill from painting clipped before the resize.
+  // also what keeps a bigger pill from painting clipped before the resize.
+  // The meeting card is taller as well as wider, so height counts too.
   if (state !== previous && hud) {
+    if ((previous === "meeting") !== (state === "meeting")) {
+      // Crossing the meeting boundary swaps the window chrome: the card
+      // paints its own shadow into a gutter; every other state restores
+      // the vibrancy pill (see MEETING_WINDOW_GUTTER).
+      invokeBestEffort("dictation_hud_set_chrome", {
+        meeting: state === "meeting",
+      });
+    }
     if (state === "meeting") clearStopHover();
+    if (state === "exiting") return;
     hud.offsetWidth;
-    const widthAfter = hud.getBoundingClientRect().width;
+    const sizeAfter = hud.getBoundingClientRect();
     void syncWindowToPill({
-      morph: Math.ceil(widthAfter) !== Math.ceil(widthBefore),
+      morph:
+        Math.ceil(sizeAfter.width) !== Math.ceil(sizeBefore.width) ||
+        Math.ceil(sizeAfter.height) !== Math.ceil(sizeBefore.height),
     });
   }
 }
@@ -269,6 +319,54 @@ function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
 }
 
+function setDismissHover(isHovered: boolean) {
+  meetingDismissButton?.classList.toggle("is-hovered", isHovered);
+}
+
+// Meeting-card hover, computed natively against rects pushed from here —
+// CSS :hover is unreliable on the non-key HUD panel, see .hud-stop.
+// Hovering anywhere over the card (plus the overhanging X) reveals the
+// corner dismiss; hovering the record button paints its hover wash.
+function pushDismissBoundsToNative() {
+  if (!hud || hud.dataset.state !== "meeting") {
+    invokeBestEffort("dictation_hud_set_dismiss_bounds", { rect: null });
+    invokeBestEffort("dictation_hud_set_record_bounds", { rect: null });
+    return;
+  }
+  const card = hud.getBoundingClientRect();
+  const cross = meetingDismissButton?.getBoundingClientRect();
+  invokeBestEffort("dictation_hud_set_dismiss_bounds", {
+    rect: {
+      left: Math.min(card.left, cross?.left ?? card.left),
+      top: Math.min(card.top, cross?.top ?? card.top),
+      right: card.right,
+      bottom: card.bottom,
+    },
+  });
+  const record = meetingStartButton?.getBoundingClientRect();
+  invokeBestEffort("dictation_hud_set_record_bounds", {
+    rect: record
+      ? {
+          left: record.left,
+          right: record.right,
+          top: record.top,
+          bottom: record.bottom,
+        }
+      : null,
+  });
+}
+
+function setRecordHover(isHovered: boolean) {
+  meetingStartButton?.classList.toggle("is-hovered", isHovered);
+}
+
+function clearDismissHover() {
+  setDismissHover(false);
+  setRecordHover(false);
+  invokeBestEffort("dictation_hud_set_dismiss_bounds", { rect: null });
+  invokeBestEffort("dictation_hud_set_record_bounds", { rect: null });
+}
+
 // Hover + click pass-through are computed in Rust against rects we push from
 // here. WebKit throttles JS timers on the non-key HUD panel, so any polling
 // done in JS only fires reliably during a mouse-down.
@@ -291,18 +389,49 @@ function pushStopBoundsToNative() {
 // the native motion finishes).
 async function syncWindowToPill(options?: { morph?: boolean }) {
   if (!hud) return;
+  // ABC Diatype may still be loading on the window's first show; measuring
+  // with the fallback font bakes the wrong width into the window frame.
+  if (typeof document.fonts?.ready?.then === "function") {
+    if (document.fonts.status === "loading") {
+      try {
+        await document.fonts.ready;
+      } catch {
+        // Best effort; the fallback metrics are close enough to recover on
+        // the next state change.
+      }
+    }
+  }
   hud.offsetWidth;
-  const { width, height } = hud.getBoundingClientRect();
-  if (options?.morph) hud.classList.add("is-morphing");
+  let { width, height } = hud.getBoundingClientRect();
+  // The meeting card's window includes the transparent gutter its CSS
+  // shadow and overhanging dismiss paint into.
+  if (hud.dataset.state === "meeting") {
+    width += MEETING_WINDOW_GUTTER * 2;
+    height += MEETING_WINDOW_GUTTER * 2;
+  }
+  if (options?.morph) {
+    hud.classList.add("is-morphing");
+    // Let the contents finish fading before the glass starts moving: the
+    // webview lays out at the final size immediately, so anything still
+    // visible during the native ease paints clipped by the old frame —
+    // worst on the meeting card, which changes height as well as width.
+    if (!prefersReducedMotion()) {
+      await new Promise((resolve) => window.setTimeout(resolve, MORPH_FADE_MS));
+    }
+  }
+  // Exact floats — Rust rounds at physical pixels. Ceiling here oversized
+  // the window by up to a point, leaving a bright sliver of bare frost
+  // around the dark card.
   await invokeBestEffortAsync("dictation_hud_set_size", {
-    width: Math.ceil(width),
-    height: Math.ceil(height),
+    width,
+    height,
     animate: !prefersReducedMotion(),
   });
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       hud?.classList.remove("is-morphing");
       pushStopBoundsToNative();
+      pushDismissBoundsToNative();
     });
   });
 }
@@ -331,6 +460,15 @@ function fadeWindowAlpha(requestId: number) {
     };
     window.requestAnimationFrame(step);
   });
+}
+
+// Fallback entrance for the standalone browser page, where the native
+// slide+fade (dictation_hud_show with enter) has no bridge to run on.
+function replayCssEntrance() {
+  if (!hud) return;
+  hud.classList.remove("hud-enter");
+  hud.offsetWidth;
+  hud.classList.add("hud-enter");
 }
 
 // matchMedia is absent in the jsdom test environment.
@@ -383,27 +521,47 @@ async function hideHud() {
   clearHideTimer();
   clearMeetingPromptTimer();
   clearStopHover();
+  clearDismissHover();
+  let nativeExit = false;
   if (hud) {
-    hud.dataset.state = "exiting";
+    const meetingExit =
+      hud.dataset.state === "meeting" && !prefersReducedMotion();
+    hud.classList.toggle("hud-exit-up", meetingExit);
+    setHud("exiting", statusText?.textContent || "Idle");
     stopBraille();
-    // CSS dissolves the content; the native alpha ramp fades the frost +
-    // shadow with it. The timeout race guards against rAF stalling if the
-    // window is already occluded/hidden.
-    await Promise.race([
-      fadeWindowAlpha(requestId),
-      new Promise((resolve) =>
-        window.setTimeout(resolve, EXIT_TRANSITION_MS + 60),
-      ),
-    ]);
+    if (meetingExit) {
+      // The meeting card leaves the way it came in: a native slide-up +
+      // fade that also hides the window (the invoke resolves once it's
+      // hidden). CSS can't do the motion — see showHud.
+      try {
+        await invoke("dictation_hud_exit");
+        nativeExit = true;
+      } catch {
+        // No bridge: fall through to the plain alpha fade.
+      }
+    }
+    if (!nativeExit) {
+      // CSS dissolves the content; the native alpha ramp fades the frost +
+      // shadow with it. The timeout race guards against rAF stalling if the
+      // window is already occluded/hidden.
+      await Promise.race([
+        fadeWindowAlpha(requestId),
+        new Promise((resolve) =>
+          window.setTimeout(resolve, EXIT_TRANSITION_MS + 60),
+        ),
+      ]);
+    }
   }
   if (requestId !== hideRequestId) return;
-  await appWindow.hide();
+  // hide() rejects on the standalone browser page (no Tauri bridge); the
+  // demo driver still needs the state machine to advance.
+  await appWindow?.hide().catch(() => {});
   setWindowAlpha(1);
   // Don't park on "exiting" (opacity 0, pointer-events none): if the native
   // window is ever shown again without new content, a pill stuck in that
   // state renders as a bare, undraggable gray bar.
   if (hud?.dataset.state === "exiting" && requestId === hideRequestId) {
-    hud.dataset.state = "idle";
+    setHud("idle", "Idle");
   }
 }
 
@@ -416,13 +574,30 @@ async function showHud() {
   // is what keeps the pill from flashing up as a bare gray bar, or clipped
   // at a stale width from a previous state.
   await syncWindowToPill();
-  await invokeBestEffortAsync("dictation_hud_show");
+  // A fresh meeting prompt always enters at the top-center default spot,
+  // and (motion permitting) slides down from the top edge while the
+  // window alpha ramps up. The motion is native (the invoke resolves when
+  // it settles): a CSS translate would slide the card off the stationary
+  // window chrome, flashing bare edges.
+  const meetingEntrance = hud?.dataset.state === "meeting";
+  const animate = !prefersReducedMotion();
+  try {
+    await invoke("dictation_hud_show", {
+      enter: meetingEntrance ? true : null,
+      animate,
+    });
+  } catch {
+    // No bridge (standalone page): fall back to the CSS entrance.
+    if (meetingEntrance && animate) replayCssEntrance();
+  }
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
     clearStopHover();
+    pushDismissBoundsToNative();
   } else {
     pushStopBoundsToNative();
+    pushDismissBoundsToNative();
   }
 }
 
@@ -528,9 +703,16 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
       // the window back down — otherwise only the frosted surface shows: a
       // gray bar that can't be dragged or dismissed.
       if (pillIsBlank(hud?.dataset.state)) {
-        void appWindow.hide().catch(() => {});
+        void appWindow?.hide().catch(() => {});
       }
       return;
+    }
+    // Set the app line before the pill is measured so the window is sized
+    // for it. Heartbeats refresh it (the mic can move between apps).
+    if (meetingAppLabel) {
+      meetingAppLabel.textContent = meetingAppLine(
+        meetingEvent.payload?.appLabels,
+      );
     }
     setHud("meeting", "Meeting detected");
     await showHud();
@@ -545,9 +727,22 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
       void hideHud();
     } else if (pillIsBlank(hud?.dataset.state)) {
       // Heal a contentless window left visible by an earlier show.
-      void appWindow.hide().catch(() => {});
+      void appWindow?.hide().catch(() => {});
     }
   }
+}
+
+// "Zoom" / "Zoom, Chrome" — the friendly labels Rust derives from the
+// processes holding the microphone. Detection is mic-based, so when no
+// label survives validation, say what we actually know.
+function meetingAppLine(labels: unknown) {
+  const names = Array.isArray(labels)
+    ? labels.filter(
+        (label): label is string =>
+          typeof label === "string" && label.trim() !== "",
+      )
+    : [];
+  return names.length > 0 ? names.join(", ") : "Microphone in use";
 }
 
 function pillIsBlank(state: string | undefined) {
@@ -563,18 +758,17 @@ function canShowMeetingPrompt(state: string | undefined) {
   );
 }
 
-async function handleAgentStatusEventPayload(payload: unknown) {
+function handleAgentStatusEventPayload(payload: unknown) {
   const event = parseEvent(payload) as unknown as
     | AgentSessionStatusDetail
     | undefined;
   if (event?.status !== "received") return;
 
-  clearMeetingPromptTimer();
-  clearHideTimer();
+  // Audible ack only: the agent HUD (top right) is the visual announcement
+  // for a new session, and the dictation pill was already hidden by the
+  // agent_session_prompt event. The tone covers the eyes-elsewhere voice
+  // handoff without a second pill claiming the screen.
   playAgentStartTone();
-  setHud("agent-received", event.summary || "June is starting");
-  await showHud();
-  hideSoon(AGENT_HANDOFF_TIMEOUT_MS);
 }
 
 function parseEvent(payload: unknown): DictationHudEvent | undefined {
@@ -595,7 +789,7 @@ dragHandle?.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
-  void appWindow.startDragging().catch(() => {});
+  void appWindow?.startDragging().catch(() => {});
 });
 
 stopButton?.addEventListener("click", async (event) => {
@@ -646,19 +840,57 @@ meetingDismissButton?.addEventListener("click", (event) => {
 
 void listen("dictation-event", async (event) => {
   await handleDictationEventPayload(event.payload);
-});
+}).catch(() => {});
 
 void listen("meeting-detection-event", async (event) => {
   await handleMeetingDetectionEventPayload(event.payload);
-});
+}).catch(() => {});
 
 void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
   await handleAgentStatusEventPayload(event.payload);
-});
+}).catch(() => {});
 
 void listen<boolean>("hud-stop-hover", (event) => {
   setStopHover(Boolean(event.payload));
+}).catch(() => {});
+
+void listen<boolean>("hud-dismiss-hover", (event) => {
+  setDismissHover(Boolean(event.payload));
+}).catch(() => {});
+
+void listen<boolean>("hud-record-hover", (event) => {
+  setRecordHover(Boolean(event.payload));
+}).catch(() => {});
+
+// Cold-start companion to the await in syncWindowToPill: the Diatype load
+// may only BEGIN once the prompt first paints text, after the measurement.
+// When the faces land, re-fit the window to whatever is showing.
+if (typeof document.fonts?.ready?.then === "function") {
+  void document.fonts.ready.then(() => {
+    const state = hud?.dataset.state;
+    if (state && state !== "idle" && state !== "exiting") {
+      void syncWindowToPill();
+    }
+  });
+}
+
+// Local mirrors of the Tauri listeners, same as the agent HUD page: the
+// demo driver dispatches window events when the bridge is absent.
+window.addEventListener("dictation-event", (event) => {
+  void handleDictationEventPayload((event as CustomEvent).detail);
 });
+
+window.addEventListener("meeting-detection-event", (event) => {
+  void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
+});
+
+// Console driver for this page when served standalone in a browser:
+// __meetingHud("detected") etc. See lib/meeting-hud-demo.ts.
+if (import.meta.env.DEV) {
+  void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
+    registerMeetingHudDemo({ local: true }),
+  );
+}
 
 void invoke<string | undefined>("latest_dictation_event")
   .then((payload) => {

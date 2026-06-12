@@ -41,36 +41,25 @@
         class="hud-error-text"
         aria-hidden="true"
       ></span>
-      <span
-        id="hud-agent-label"
-        class="hud-agent-label"
-        aria-hidden="true"
-      ></span>
-      <span id="hud-meeting-label" class="hud-meeting-label"
-        >Meeting detected</span
-      >
+      <span class="hud-meeting-body">
+        <span class="hud-meeting-mark" aria-hidden="true"></span>
+        <span class="hud-meeting-text">
+          <span id="hud-meeting-label" class="hud-meeting-label"
+            >Meeting detected</span
+          >
+          <span id="hud-meeting-app" class="hud-meeting-app"></span>
+        </span>
+      </span>
       <button id="hud-meeting-start" class="hud-meeting-start" type="button">
-        Start transcription
+        <span class="hud-meeting-start-icon" aria-hidden="true"></span>
+        Record
       </button>
       <button
         id="hud-meeting-dismiss"
         class="hud-meeting-dismiss"
         type="button"
         aria-label="Dismiss meeting prompt"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.5"
-          stroke-linecap="round"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
+      ></button>
       <button
         id="hud-stop"
         class="hud-stop"

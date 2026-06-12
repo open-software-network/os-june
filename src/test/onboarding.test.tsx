@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   applyOnboardingReplayFlag,
+  discoverySource,
   isAgentRiskAcknowledged,
   isOnboardingComplete,
   markOnboardingComplete,
   onboardingResumeStep,
   resetOnboardingForReplay,
+  setDiscoverySource,
   setOnboardingResumeStep,
 } from "../lib/onboarding";
 import type { AccountStatus } from "../lib/tauri";
@@ -613,15 +615,49 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Talk to June" });
   });
 
+  it("records where the user heard about June", async () => {
+    const user = userEvent.setup();
+    setOnboardingResumeStep("dictation-practice");
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "Talk to June" });
+
+    await user.click(
+      screen.getByRole("button", { name: "Where did you hear about June?" }),
+    );
+    await user.click(screen.getByRole("option", { name: "YouTube" }));
+
+    expect(discoverySource()).toBe("youtube");
+    // The trigger keeps showing the choice, and answering never gates the
+    // step: Continue still waits on the dictation rep, not the survey.
+    expect(
+      screen.getByRole("button", { name: "Where did you hear about June?" }),
+    ).toHaveTextContent("YouTube");
+  });
+
+  it("never re-asks an answered discovery question", async () => {
+    // A version-bump replay walks existing users through the wizard again;
+    // the survey must not come back for someone who already answered it.
+    setDiscoverySource("youtube");
+    setOnboardingResumeStep("dictation-practice");
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "Talk to June" });
+
+    expect(screen.queryByText("Where did you hear about June?")).toBeNull();
+  });
+
   it("resets only onboarding progress when replaying the wizard", () => {
     markOnboardingComplete();
     setOnboardingResumeStep("setup");
+    setDiscoverySource("youtube");
     localStorage.setItem("june.agent.riskAcknowledged", "true");
 
     resetOnboardingForReplay();
 
     expect(isOnboardingComplete()).toBe(false);
     expect(onboardingResumeStep()).toBeNull();
+    // The dev replay forgets the discovery answer (so the replayed wizard
+    // shows the whole flow) but keeps the agent-risk acknowledgment.
+    expect(discoverySource()).toBeNull();
     expect(isAgentRiskAcknowledged()).toBe(true);
   });
 

@@ -47,31 +47,71 @@ describe("meeting detection HUD", () => {
     vi.useRealTimers();
   });
 
-  it("shows the start transcription prompt when a meeting is detected", async () => {
+  it("shows the take notes prompt when a meeting is detected", async () => {
     await loadHud();
 
     await emit("meeting-detection-event", {
       type: "meeting_detected",
-      payload: { activeProcessCount: 1 },
+      payload: { activeProcessCount: 1, appLabels: ["Zoom"] },
     });
 
     expect(hudElement().dataset.state).toBe("meeting");
     expect(document.querySelector("#hud-meeting-label")).toHaveTextContent(
       "Meeting detected",
     );
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
+      "Zoom",
+    );
     expect(document.querySelector("#hud-meeting-start")).toHaveTextContent(
-      "Start transcription",
+      "Record",
     );
     expect(hudShowCalls()).toBe(1);
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
       rect: null,
     });
-    // The window is resized to the measured pill (jsdom rects are zero).
+    // The window is resized to the measured pill (jsdom rects are zero)
+    // plus the meeting card's transparent gutter on each side.
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_size", {
-      width: 0,
-      height: 0,
+      width: 32,
+      height: 32,
       animate: true,
     });
+  });
+
+  it("joins multiple app labels and falls back when none arrive", async () => {
+    await loadHud();
+
+    await emit("meeting-detection-event", {
+      type: "meeting_detected",
+      payload: { activeProcessCount: 2, appLabels: ["Zoom", "Chrome"] },
+    });
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
+      "Zoom, Chrome",
+    );
+
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
+      "Microphone in use",
+    );
+  });
+
+  it("accepts local window events from the demo driver", async () => {
+    await loadHud();
+
+    window.dispatchEvent(
+      new CustomEvent("meeting-detection-event", {
+        detail: {
+          type: "meeting_detected",
+          payload: { activeProcessCount: 1, appLabels: ["Teams"] },
+        },
+      }),
+    );
+    await Promise.resolve();
+
+    expect(hudElement().dataset.state).toBe("meeting");
+    expect(document.querySelector("#hud-meeting-app")).toHaveTextContent(
+      "Teams",
+    );
   });
 
   it("emits a start transcription request when the button is clicked", async () => {
@@ -140,11 +180,12 @@ describe("meeting detection HUD", () => {
 
     await emit("meeting-detection-event", { type: "meeting_cleared" });
 
-    expect(hudElement().dataset.state).toBe("exiting");
-    // Drain the in-flight exit: on real timers its hide() fires ~220ms after
-    // this test ends and lands mid-way through a later test's call counts.
-    await vi.advanceTimersByTimeAsync(220);
+    // The meeting exit is native motion (dictation_hud_exit resolves when
+    // the window is hidden), so the pill lands back on idle immediately
+    // under the mocked invoke.
     expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(chromeCalls()).toEqual([true, false]);
   });
 
   it("hides and suppresses the prompt after 30 seconds without a click", async () => {
@@ -157,11 +198,9 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(hudElement().dataset.state).toBe("exiting");
-    // Exit completes via the timeout fallback (EXIT_TRANSITION_MS + 60) —
-    // jsdom's rAF isn't driven by fake timers, so the alpha ramp never runs.
-    await vi.advanceTimersByTimeAsync(220);
+    // The native exit (mocked invoke) completes immediately.
     expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(hudElement().dataset.state).toBe("idle");
 
     mocks.invoke.mockClear();
     await emit("meeting-detection-event", { type: "meeting_detected" });
@@ -189,14 +228,13 @@ describe("meeting detection HUD", () => {
     expect(hudElement().dataset.state).not.toBe("meeting");
   });
 
-  it("returns the pill to idle once the exit transition completes", async () => {
+  it("returns the pill to idle once the exit completes", async () => {
     vi.useFakeTimers();
     await loadHud();
     await emit("meeting-detection-event", { type: "meeting_detected" });
     await emit("meeting-detection-event", { type: "meeting_cleared" });
 
-    expect(hudElement().dataset.state).toBe("exiting");
-    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
     expect(hudElement().dataset.state).toBe("idle");
   });
 
@@ -276,8 +314,7 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
-  it("briefly acknowledges a Hey June agent handoff", async () => {
-    vi.useFakeTimers();
+  it("does not claim the HUD for an agent handoff (the agent HUD announces it)", async () => {
     await loadHud();
 
     await emit(AGENT_SESSION_STATUS_EVENT, {
@@ -285,42 +322,8 @@ describe("meeting detection HUD", () => {
       summary: "June is starting.",
     });
 
-    expect(hudElement().dataset.state).toBe("agent-received");
-    expect(document.querySelector("#hud-agent-label")).toHaveTextContent(
-      "June is starting.",
-    );
-    expect(hudShowCalls()).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(4000);
-    expect(hudElement().dataset.state).toBe("exiting");
-    // Drain the in-flight exit so its hide() can't leak into a later test.
-    await vi.advanceTimersByTimeAsync(220);
-    expect(mocks.hide).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the agent handoff visible when it races the dictation handoff hide", async () => {
-    vi.useFakeTimers();
-    await loadHud();
-    await emit("dictation-event", { type: "finalizing_transcript" });
-
-    await emit("dictation-event", {
-      type: "agent_session_prompt",
-      payload: { prompt: "open the browser." },
-    });
-    await emit(AGENT_SESSION_STATUS_EVENT, {
-      status: "received",
-      summary: "June is starting.",
-    });
-    await vi.advanceTimersByTimeAsync(160);
-
-    expect(mocks.hide).not.toHaveBeenCalled();
-    expect(hudElement().dataset.state).toBe("agent-received");
-
-    await vi.advanceTimersByTimeAsync(4000);
-    expect(hudElement().dataset.state).toBe("exiting");
-    // Drain the in-flight exit so its hide() can't leak into a later test.
-    await vi.advanceTimersByTimeAsync(220);
-    expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(hudShowCalls()).toBe(0);
   });
 
   it("does not claim the HUD for ongoing agent progress", async () => {
@@ -357,6 +360,12 @@ function hudShowCalls() {
   ).length;
 }
 
+function chromeCalls() {
+  return mocks.invoke.mock.calls
+    .filter(([command]) => command === "dictation_hud_set_chrome")
+    .map(([, args]) => (args as { meeting: boolean }).meeting);
+}
+
 function hudElement() {
   const hud = document.querySelector<HTMLDivElement>("#hud");
   expect(hud).toBeTruthy();
@@ -381,9 +390,17 @@ function hudMarkup() {
         <span class="hud-error-mark" aria-hidden="true"></span>
       </div>
       <span id="hud-error-text" class="hud-error-text" aria-hidden="true"></span>
-      <span id="hud-agent-label" class="hud-agent-label" aria-hidden="true"></span>
-      <span id="hud-meeting-label" class="hud-meeting-label">Meeting detected</span>
-      <button id="hud-meeting-start" class="hud-meeting-start" type="button">Start transcription</button>
+      <span class="hud-meeting-body">
+        <span class="hud-meeting-mark" aria-hidden="true"></span>
+        <span class="hud-meeting-text">
+          <span id="hud-meeting-label" class="hud-meeting-label">Meeting detected</span>
+          <span id="hud-meeting-app" class="hud-meeting-app"></span>
+        </span>
+      </span>
+      <button id="hud-meeting-start" class="hud-meeting-start" type="button">
+        <span class="hud-meeting-start-icon" aria-hidden="true"></span>
+        Record
+      </button>
       <button id="hud-meeting-dismiss" class="hud-meeting-dismiss" type="button" aria-label="Dismiss meeting prompt"></button>
       <button id="hud-stop" class="hud-stop" type="button" aria-label="Stop dictation">
         <span class="hud-stop-glyph" aria-hidden="true"></span>

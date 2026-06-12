@@ -505,7 +505,10 @@ pub async fn suggest_agent_session_title(prompt: &str) -> Result<String, AppErro
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 24
+        // Sized for reasoning models: hidden thinking spends from the same
+        // budget as the 2-to-5-word title, and a cap hit mid-think yields no
+        // title at all.
+        "max_tokens": 500
     }))
     .await?;
     if !(200..300).contains(&response.status) {
@@ -640,7 +643,7 @@ pub async fn explain_agent_approval(
         "messages": [
             {
                 "role": "system",
-                "content": "An AI agent paused mid-task to ask its user for permission. Explain what this specific request would actually do, in plain language the user can act on: name the files, hosts, or data involved, decode any flags or shell syntax, and call out anything risky or hard to undo (deleting or overwriting files, sending data off the machine, spending money). Use 2 to 4 short sentences. Never be generic, never use markdown or headings, and never tell the user which button to press."
+                "content": "An AI agent paused mid-task to ask its user for permission. Explain what this specific request would actually do, in plain language the user can act on: name the files, hosts, or data involved, decode any flags or shell syntax, and call out anything risky or hard to undo (deleting or overwriting files, sending data off the machine, spending money). Keep it as short as the request allows: a few sentences for a simple command, short paragraphs (separated by blank lines) only when the request genuinely needs them. Never be generic, never use markdown or headings, and never tell the user which button to press."
             },
             {
                 "role": "user",
@@ -648,7 +651,12 @@ pub async fn explain_agent_approval(
             }
         ],
         "temperature": 0.2,
-        "max_tokens": 220
+        // Generous on purpose: reasoning models spend hidden thinking from
+        // this same budget (a 220-token cap once cut the visible answer off
+        // mid-word), and a complex script can legitimately need several
+        // paragraphs to explain. A one-shot side call is cheap; a truncated
+        // safety explanation is not.
+        "max_tokens": 8000
     }))
     .await?;
     if !(200..300).contains(&response.status) {
@@ -693,15 +701,54 @@ pub fn verify_url() -> String {
     format!("{}/verify", scribe_api_url())
 }
 
+/// Final assistant text from a chat completion, normalized for reasoning
+/// models: inline `<think>` blocks are stripped, and when generation stopped
+/// at the token cap (`finish_reason: "length"`) the text is cut back to its
+/// last complete sentence so the UI never shows a mid-word fragment. Returns
+/// `None` when nothing presentable survives (e.g. the cap landed inside an
+/// unterminated think block), which callers surface as a generation error.
 fn extract_chat_completion_text(value: &serde_json::Value) -> Option<String> {
-    value
-        .get("choices")?
-        .as_array()?
-        .first()?
-        .get("message")?
-        .get("content")?
-        .as_str()
-        .map(str::to_string)
+    let choice = value.get("choices")?.as_array()?.first()?;
+    let content = choice.get("message")?.get("content")?.as_str()?;
+    let text = strip_think_blocks(content);
+    let truncated = choice
+        .get("finish_reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("length");
+    let text = if truncated {
+        trim_to_sentence_boundary(&text)
+    } else {
+        text.trim().to_string()
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+/// Removes `<think>...</think>` spans some reasoning models inline into
+/// `content`. An unterminated `<think>` means the token cap landed inside the
+/// reasoning itself, so nothing after it is an answer; drop it all.
+fn strip_think_blocks(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => return out.trim().to_string(),
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+/// Cuts capped output back to its last sentence terminator. A fragment with
+/// no terminator has no complete sentence to keep, so it yields an empty
+/// string rather than a mid-word cutoff.
+fn trim_to_sentence_boundary(text: &str) -> String {
+    let trimmed = text.trim_end();
+    match trimmed.rfind(['.', '!', '?']) {
+        Some(index) => trimmed[..=index].trim().to_string(),
+        None => String::new(),
+    }
 }
 
 fn clean_agent_session_title(value: &str) -> Option<String> {
@@ -902,6 +949,59 @@ fn scribe_api_url() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_text_and_strips_inline_think_blocks() {
+        let value = serde_json::json!({
+            "choices": [{
+                "message": { "content": "<think>weighing the risks here</think>This reads two files." },
+                "finish_reason": "stop"
+            }]
+        });
+        assert_eq!(
+            extract_chat_completion_text(&value).as_deref(),
+            Some("This reads two files.")
+        );
+    }
+
+    #[test]
+    fn capped_output_is_cut_to_its_last_complete_sentence() {
+        // The screenshot bug: finish_reason "length" used to surface
+        // "This checks whether your ANTHROPI" verbatim.
+        let value = serde_json::json!({
+            "choices": [{
+                "message": { "content": "This checks your config. It then probes whether your ANTHROPI" },
+                "finish_reason": "length"
+            }]
+        });
+        assert_eq!(
+            extract_chat_completion_text(&value).as_deref(),
+            Some("This checks your config.")
+        );
+    }
+
+    #[test]
+    fn capped_output_with_no_complete_sentence_yields_none() {
+        let value = serde_json::json!({
+            "choices": [{
+                "message": { "content": "This checks whether your ANTHROPI" },
+                "finish_reason": "length"
+            }]
+        });
+        assert_eq!(extract_chat_completion_text(&value), None);
+    }
+
+    #[test]
+    fn cap_landing_inside_reasoning_yields_none() {
+        // Unterminated <think>: the budget ran out before any answer text.
+        let value = serde_json::json!({
+            "choices": [{
+                "message": { "content": "<think>first I should check the key, then" },
+                "finish_reason": "length"
+            }]
+        });
+        assert_eq!(extract_chat_completion_text(&value), None);
+    }
 
     #[test]
     fn cleans_agent_session_titles() {

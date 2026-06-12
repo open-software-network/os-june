@@ -1,4 +1,5 @@
 @import "./tokens.css";
+@import "./fonts.css";
 
 /*
  * Dictation HUD.
@@ -29,6 +30,11 @@
   --muted-foreground: oklch(0.709 0.0015 84.59);
   --border: oklch(1 0 0 / 12%);
   --destructive: oklch(0.704 0.191 22.216);
+  /* The brand terracotta lifted for the dark glass — same pair the agent
+   * HUD uses for its "needs input" mark, so the meeting prompt speaks the
+   * same color language. */
+  --attention: oklch(0.74 0.13 42);
+  --attention-bright: oklch(0.88 0.09 55);
 
   color: var(--foreground);
   background: transparent;
@@ -58,10 +64,11 @@ body {
 }
 
 .hud {
-  /* A dark tint over the native vibrancy layer — heavy enough to read as
-   * dark glass against bright content, translucent enough that the frost
-   * still shows. Matches the meeting HUD's surface. */
-  --hud-bg: color-mix(in oklch, var(--popover) 72%, transparent);
+  /* The agent HUD's surface recipe — near-opaque dark glass doing the
+   * legibility work itself, with the vibrancy frost just warming the
+   * edges. One surface across every June overlay (agent HUD, this pill,
+   * the meeting card, the recording indicator). */
+  --hud-bg: color-mix(in oklch, var(--popover) 92%, transparent);
   --hud-border: var(--border);
   --hud-bar: var(--foreground);
   --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
@@ -73,6 +80,7 @@ body {
   --hud-danger: var(--destructive);
   --hud-alert: var(--hud-danger);
 
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-1);
@@ -251,50 +259,113 @@ body {
   transform: translateY(-0.5px);
 }
 
-.hud-agent-label {
+/* Meeting prompt card -------------------------------------------------- */
+
+/* Mark + two-line text in the agent HUD's row grid: the leading icon
+ * lives in the same 14px column, riding the title's first line. */
+.hud-meeting-body {
   display: none;
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  line-height: 1;
-  /* Fixed cap — see .hud-error-text. */
-  max-width: 240px;
+  /* auto, not 1fr — see the .hud-meeting-text sizing note. */
+  grid-template-columns: 14px auto;
+  column-gap: var(--sp-2);
+  align-items: start;
+}
+
+/* The June mark, exactly as the agent HUD draws it for a session that
+ * needs input: the glyph as a CSS mask in the attention terracotta, with
+ * the shimmer pass painting through its shape. The meeting prompt is the
+ * same moment — June is waiting on the user. */
+.hud-meeting-mark {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 14'%3E%3Cpath d='M11.5 6.5C11.7761 6.5 12 6.72386 12 7V8.5C12 8.77614 11.7761 9 11.5 9H10.4141C10.2815 9.00002 10.1543 9.05273 10.0605 9.14648L9.64648 9.56055C9.55273 9.6543 9.50002 9.78148 9.5 9.91406V11C9.5 11.2761 9.27614 11.5 9 11.5H3.41406C3.28148 11.5 3.1543 11.5527 3.06055 11.6465L2.64648 12.0605C2.55273 12.1543 2.50002 12.2815 2.5 12.4141V13.5C2.5 13.7761 2.27614 14 2 14H0.5C0.223858 14 0 13.7761 0 13.5V12C0 11.7239 0.223858 11.5 0.5 11.5H1.58594C1.71852 11.5 1.8457 11.4473 1.93945 11.3535L2.35352 10.9395C2.44727 10.8457 2.49998 10.7185 2.5 10.5859V9.5C2.5 9.22386 2.72386 9 3 9H8.58594C8.71852 8.99998 8.8457 8.94727 8.93945 8.85352L9.35352 8.43945C9.44727 8.3457 9.49998 8.21852 9.5 8.08594V7C9.5 6.72386 9.72386 6.5 10 6.5H11.5Z'/%3E%3Cpath d='M11.5 0C11.7761 0 12 0.223858 12 0.5V2C12 2.27614 11.7761 2.5 11.5 2.5H10.4141C10.2815 2.50002 10.1543 2.55273 10.0605 2.64648L9.64648 3.06055C9.55273 3.1543 9.50002 3.28148 9.5 3.41406V4.5C9.5 4.77614 9.27614 5 9 5H3.41406C3.28148 5.00002 3.1543 5.05273 3.06055 5.14648L2.64648 5.56055C2.55273 5.6543 2.50002 5.78148 2.5 5.91406V7C2.5 7.27614 2.27614 7.5 2 7.5H0.5C0.223858 7.5 0 7.27614 0 7V5.5C0 5.22386 0.223858 5 0.5 5H1.58594C1.71852 4.99998 1.8457 4.94727 1.93945 4.85352L2.35352 4.43945C2.44727 4.3457 2.49998 4.21852 2.5 4.08594V3C2.5 2.72386 2.72386 2.5 3 2.5H8.58594C8.71852 2.49998 8.8457 2.44727 8.93945 2.35352L9.35352 1.93945C9.44727 1.8457 9.49998 1.71852 9.5 1.58594V0.5C9.5 0.223858 9.72386 0 10 0H11.5Z'/%3E%3C/svg%3E");
+  --mark-base: var(--attention);
+  --mark-shine: var(--attention-bright);
+
+  position: relative;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transform: translateY(-0.5px);
+  background-color: var(--mark-base);
+  mask: var(--mark) center / 10px 12px no-repeat;
+  -webkit-mask: var(--mark) center / 10px 12px no-repeat;
+}
+
+.hud-meeting-mark::before {
+  position: absolute;
+  inset: -1px auto -1px -65%;
+  width: 55%;
+  content: "";
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in oklch, var(--mark-shine) 20%, transparent) 30%,
+    var(--mark-shine) 50%,
+    color-mix(in oklch, var(--mark-shine) 20%, transparent) 70%,
+    transparent 100%
+  );
+  filter: blur(0.2px);
+  transform: translate3d(0, 0, 0) skewX(-16deg);
+  will-change: transform;
+  animation: hud-mark-shimmer 1150ms linear infinite;
+}
+
+/* Title over the app holding the mic, in the agent HUD's row type.
+ * Deliberately NOT shrinkable (no min-width: 0): the window is sized to
+ * the measured pill, and a column that can shrink makes the measurement
+ * circular — the pill fits whatever the window last was, the window never
+ * grows, and the button paints over the truncated title. */
+.hud-meeting-text {
+  display: grid;
 }
 
 .hud-meeting-label {
-  display: none;
   color: var(--foreground);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  line-height: 1;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
   white-space: nowrap;
-  transform: translateY(-0.5px);
 }
 
+.hud-meeting-app {
+  /* Fixed cap, not vw-relative — see .hud-error-text. */
+  max-width: 200px;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Primary action: the app's record affordance — the meeting-notes warm
+ * tile (peach surface, terracotta mic) with a label so the action stays
+ * unambiguous at HUD size. A capsule, not a rounded rect: the button sits
+ * 13px inside the card's 10px corner, far too deep for a concentric
+ * radius, and a capsule opts out of echoing the container curve. */
 .hud-meeting-start {
   display: none;
   align-items: center;
-  justify-content: center;
-  height: 24px;
-  min-width: 126px;
-  padding: 0 var(--sp-3);
+  gap: var(--sp-2);
+  height: var(--control-md);
+  padding: 0 var(--sp-4) 0 var(--sp-3);
   border: 0;
-  border-radius: 6px;
-  background: var(--foreground);
-  color: var(--background);
+  border-radius: var(--r-pill);
+  background: var(--warm-soft);
+  color: var(--warm-strong);
   cursor: pointer;
   font: inherit;
   font-size: var(--fs-sm);
-  font-weight: 700;
+  font-weight: var(--fw-medium);
   line-height: 1;
   white-space: nowrap;
-  box-shadow:
-    inset 0 -1px 0 oklch(0% 0 none / 18%),
-    0 1px 2px oklch(0% 0 none / 28%);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Hover arrives as `.is-hovered` from the native polling thread (see
+ * .hud-stop); the bare :hover covers the standalone browser page. */
+.hud-meeting-start.is-hovered,
+.hud-meeting-start:hover {
+  background: color-mix(in oklch, var(--warm-soft) 84%, var(--warm-strong));
 }
 
 .hud-meeting-start:active {
@@ -307,25 +378,45 @@ body {
   transform: none;
 }
 
-/* Quiet ghost next to the filled primary action: dismissal must read as
- * secondary to "Start transcription". */
+.hud-meeting-start-icon,
+.hud-meeting-start-icon svg {
+  display: block;
+}
+
+/* Corner dismiss: overhangs the card's top-left corner into the window
+ * gutter, Granola-style. Same semantics as the prompt timing out. */
 .hud-meeting-dismiss {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  z-index: 2;
   display: none;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--hud-handle);
+  border: 1px solid var(--hud-border);
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  color: var(--foreground);
   cursor: pointer;
+  opacity: 0;
+  box-shadow: var(--shadow-sm);
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.hud-meeting-dismiss:hover {
-  background: var(--hud-stop-bg-hover);
-  color: var(--foreground);
+.hud-meeting-dismiss svg {
+  display: block;
+}
+
+/* Revealed by hovering anywhere over the card. In the app that arrives as
+ * `.is-hovered` from the native polling thread (see .hud-stop); the CSS
+ * :hover covers the standalone browser page. */
+.hud-meeting-dismiss.is-hovered,
+.hud[data-state="meeting"]:hover .hud-meeting-dismiss,
+.hud-meeting-dismiss:focus-visible {
+  opacity: 1;
 }
 
 .hud-meeting-dismiss:active {
@@ -412,12 +503,43 @@ body {
 }
 
 .hud[data-state="meeting"] {
-  gap: var(--sp-2);
-  padding: 3px 4px 3px 3px;
+  /* The window chrome is swapped for this state (dictation_hud_set_chrome):
+   * no native frost or shadow — this CSS shadow paints into the
+   * transparent gutter around the card (see MEETING_WINDOW_GUTTER in
+   * hud.ts). */
+  gap: 0;
+  height: 54px;
+  padding: 0 var(--sp-4) 0 0;
+  box-shadow: var(--shadow-md);
 }
 
+/* Entrance fallback for the standalone browser page only — in the app the
+ * slide+fade is native window motion (dictation_hud_show with enter), so
+ * the frost and shadow travel with the card instead of being left bare at
+ * the window edges. hud.ts adds the class when the bridge is absent. */
+.hud.hud-enter[data-state="meeting"] {
+  animation: hud-meeting-enter var(--t-slow) var(--ease-out);
+}
+
+/* The drag affordance is a single quiet grabber line spanning the card's
+ * left edge — still the drag handle. */
 .hud[data-state="meeting"] > .hud-handle {
+  width: 20px;
+  height: 100%;
   margin-right: 0;
+  border-radius: 0;
+}
+
+.hud[data-state="meeting"] .hud-handle svg {
+  display: none;
+}
+
+.hud[data-state="meeting"] .hud-handle::before {
+  content: "";
+  width: 2px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--foreground) 28%, transparent);
 }
 
 .hud[data-state="meeting"] .hud-viz,
@@ -425,24 +547,17 @@ body {
   display: none;
 }
 
-.hud[data-state="meeting"] .hud-meeting-label,
-.hud[data-state="meeting"] .hud-meeting-start,
-.hud[data-state="meeting"] .hud-meeting-dismiss {
+.hud[data-state="meeting"] .hud-meeting-body {
+  display: grid;
+  margin-right: var(--sp-7);
+}
+
+.hud[data-state="meeting"] .hud-meeting-start {
   display: inline-flex;
 }
 
-.hud[data-state="agent-received"] {
-  gap: var(--sp-2);
-  padding-inline: 3px var(--sp-4);
-}
-
-.hud[data-state="agent-received"] .hud-agent-label {
-  display: block;
-}
-
-.hud[data-state="agent-received"] .hud-viz,
-.hud[data-state="agent-received"] .hud-stop {
-  display: none;
+.hud[data-state="meeting"] .hud-meeting-dismiss {
+  display: inline-flex;
 }
 
 /* Text-only pill for hard errors. The "not allowed" wobble is native now —
@@ -453,7 +568,8 @@ body {
   gap: var(--sp-2);
   padding-inline: var(--sp-3) var(--sp-4);
   border-color: color-mix(in oklch, var(--hud-danger) 28%, var(--border));
-  background: color-mix(in oklch, var(--popover) 72%, var(--hud-danger) 22%);
+  /* The shared 92%-opacity surface, with the danger tint folded in. */
+  background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
 }
 
 .hud[data-state="silent-error"] {
@@ -508,6 +624,32 @@ body {
   pointer-events: none;
 }
 
+/* The meeting card's exit is native window motion (dictation_hud_exit):
+ * the whole window slides up and fades, frost included. Keep the content
+ * put and opaque so CSS doesn't double the motion or strand bare frost. */
+.hud.hud-exit-up[data-state="exiting"] {
+  opacity: 1;
+  transform: none;
+}
+
+/* A transform-only highlight pass across the masked mark — the agent
+ * HUD's shimmer, same cadence. */
+@keyframes hud-mark-shimmer {
+  to {
+    transform: translate3d(360%, 0, 0) skewX(-16deg);
+  }
+}
+
+/* Translate + opacity ONLY — no scale. The window is sized from rects
+ * measured while this plays; a scale would bake the shrunken size into
+ * the window frame and clip the card. */
+@keyframes hud-meeting-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hud,
   .hud > *,
@@ -515,5 +657,10 @@ body {
   .hud-stop::before,
   .hud-bar::before {
     transition: none;
+  }
+
+  .hud.hud-enter[data-state="meeting"],
+  .hud-meeting-mark::before {
+    animation: none;
   }
 }
