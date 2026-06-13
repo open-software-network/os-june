@@ -15,7 +15,7 @@ export function messageFromError(err: unknown) {
  * (`... 'error_code': 4301, 'message': 'insufficient_credits'`). */
 export function isInsufficientCreditsMessage(message?: string) {
   if (!message) return false;
-  return /out of credits|insufficient credits|insufficient_credits|balance is too low/i.test(
+  return /out of credits|insufficient[-_\s]?credits|insufficient_available_balance|balance is too low|error_code['"]?\s*:\s*4301/i.test(
     message,
   );
 }
