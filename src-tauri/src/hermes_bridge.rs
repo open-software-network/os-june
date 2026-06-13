@@ -85,7 +85,9 @@ Your environment: sessions run by default inside a macOS kernel sandbox (Seatbel
 /// `AGENT_CLI_ACCESS_REQUEST_TOKEN` in `src/lib/agent-cli-access.ts` must
 /// match the token spelled out below.
 const JUNE_SOUL_CLI_BLOCKED_MD: &str = r#"
-Agent CLIs (Claude Code, Codex, Gemini, opencode): in sandboxed sessions their state folders (~/.claude and ~/.claude.json, ~/.codex, ~/.gemini, opencode's config and state) are write-blocked like the rest of the user's files. Those tools then fail to save sessions or store refreshed logins, and often report "not logged in" even when the user is. When a CLI fails this way, name the sandbox as the cause first, then request the fix directly: put the literal token [REQUEST:AGENT_CLI_ACCESS] on its own line in your reply. The June app replaces that token with an approval card; one click enables "Agent CLI access" in Settings, restarts the sandboxed runtime with those folders writable, and prompts you to retry. Use the token only for this setting and at most once per reply. The user can instead flip it themselves in Settings, Agent tab, or run the work in an Unrestricted session. Interactive logins (for example `claude /login`) are browser flows you can never complete; the user runs those once in their own terminal.
+Agent CLIs (Claude Code, Codex, Gemini, opencode): in sandboxed sessions their state folders (~/.claude and ~/.claude.json, ~/.codex, ~/.gemini, opencode's config and state) are write-blocked like the rest of the user's files. This breaks them in two ways. The milder one: they save no sessions and lose refreshed logins, often reporting "not logged in" even when the user is. The harder one: some CLIs will not even start when their state folder is unwritable. Codex is the clearest case: it fails immediately with "Operation not permitted (os error 1)", "could not create PATH aliases", or "failed to initialize in-process app-server client". Treat any "Operation not permitted" or "os error 1" from a coding CLI as June's write-jail denying its state folder, not a fault in the CLI or its arguments.
+Critically, this is NOT the CLI's own sandbox. Codex's `--sandbox`, Claude's permission mode, and similar flags control how the CLI sandboxes the work it does; they have no effect on June's outer Seatbelt jail and cannot lift it. Do not retry with different CLI sandbox flags, that is the wrong layer and only wastes turns. The one fix is granting the CLI's state folder write access.
+When a CLI fails either way, name the sandbox as the cause first, then request the fix directly: put the literal token [REQUEST:AGENT_CLI_ACCESS] on its own line in your reply. The June app replaces that token with an approval card; one click enables "Agent CLI access" in Settings, restarts the sandboxed runtime with those folders writable, and prompts you to retry. Use the token only for this setting and at most once per reply. The user can instead flip it themselves in Settings, Agent tab, or run the work in an Unrestricted session. Interactive logins (for example `claude /login`) are browser flows you can never complete; the user runs those once in their own terminal.
 "#;
 
 /// Appended after the sandbox section when the user HAS enabled Agent CLI
@@ -3180,6 +3182,13 @@ mod tests {
         assert!(soul.contains("name the sandbox as the cause"));
         assert!(soul.contains("[REQUEST:AGENT_CLI_ACCESS]"));
         assert!(!soul.contains("first-class job"));
+        // Teaches the hard startup-failure signature (a blocked Codex dies
+        // with EPERM before it does anything) so the agent recognizes it...
+        assert!(soul.contains("os error 1"));
+        assert!(soul.contains("in-process app-server"));
+        // ...and warns not to confuse it with the CLI's own sandbox flag,
+        // which is the wrong layer (what the screenshot agent got wrong).
+        assert!(soul.contains("NOT the CLI's own sandbox"));
     }
 
     #[test]
