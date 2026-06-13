@@ -8107,12 +8107,17 @@ input:focus-visible,
 
 /* Routines — Hermes scheduled automations. Shares the Dictation page chrome
  * (.folders-* header/search) and the dictation row action buttons. */
+.routines-workspace,
+.routine-detail {
+  --routines-describe-clearance: calc(var(--sp-12) * 3 + var(--sp-7));
+}
+
 .routines-workspace {
   width: 100%;
   max-width: var(--content-max);
   margin: 0 auto;
   /* The bottom padding clears the describe bar fixed over the page tail. */
-  padding: var(--sp-10) 0 140px;
+  padding: var(--sp-10) 0 var(--routines-describe-clearance);
   display: flex;
   flex-direction: column;
   gap: var(--sp-6);
@@ -8483,7 +8488,7 @@ input:focus-visible,
   max-width: var(--content-max);
   margin: 0 auto;
   /* The bottom padding clears the describe bar fixed over the page tail. */
-  padding: var(--sp-8) 0 140px;
+  padding: var(--sp-8) 0 var(--routines-describe-clearance);
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);

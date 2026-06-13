@@ -345,6 +345,27 @@ describe("RoutinesView templates and creation", () => {
       "Create the job with enabled_toolsets set to exactly: terminal, file, code_execution",
     );
   });
+
+  it("dismisses the describe mode menu with Escape", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning brief");
+
+    const composer = screen.getByRole("form", {
+      name: "Describe a routine to June",
+    });
+    await userEvent.click(
+      within(composer).getByRole("button", { name: /sandboxed/i }),
+    );
+    expect(
+      within(composer).getByRole("menuitemradio", { name: /unrestricted/i }),
+    ).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    expect(
+      within(composer).queryByRole("menuitemradio", { name: /unrestricted/i }),
+    ).toBeNull();
+  });
 });
 
 describe("RoutinesView detail", () => {
@@ -377,6 +398,28 @@ describe("RoutinesView detail", () => {
         prompt: "List my unread notes only.",
       }),
     );
+  });
+
+  it("restores a blank local name after saving unrelated changes", async () => {
+    mocks.listRoutines
+      .mockResolvedValueOnce([job()])
+      .mockResolvedValueOnce([job()]);
+    renderView();
+
+    const instructions = await openDetail("Morning summary");
+    const name = screen.getByRole("textbox", { name: "Routine name" });
+
+    await userEvent.clear(name);
+    await userEvent.clear(instructions);
+    await userEvent.type(instructions, "List my unread notes only.");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.updateRoutine).toHaveBeenCalledWith("abc123", {
+        prompt: "List my unread notes only.",
+      }),
+    );
+    await waitFor(() => expect(name).toHaveValue("Morning summary"));
   });
 
   it("saves a schedule preset change as a cron expression", async () => {

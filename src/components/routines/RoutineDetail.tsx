@@ -82,6 +82,7 @@ export function RoutineDetail({
   const menuWrapRef = useRef<HTMLDivElement>(null);
   const detailsTabRef = useRef<HTMLButtonElement>(null);
   const historyTabRef = useRef<HTMLButtonElement>(null);
+  const previousRoutineNameRef = useRef(routine.name);
   useEffect(() => () => window.clearTimeout(queueTimer.current), []);
 
   useEffect(() => {
@@ -101,6 +102,16 @@ export function RoutineDetail({
       window.removeEventListener("keydown", onKey);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    const previousName = previousRoutineNameRef.current;
+    previousRoutineNameRef.current = routine.name;
+    setName((current) => {
+      const trimmed = current.trim();
+      if (!trimmed || trimmed === previousName) return routine.name;
+      return current;
+    });
+  }, [routine]);
 
   useLayoutEffect(() => {
     function updateIndicator() {

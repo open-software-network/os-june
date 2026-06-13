@@ -761,8 +761,15 @@ function DescribeBar({
         setMenuOpen(false);
       }
     }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
     window.addEventListener("mousedown", onPointer);
-    return () => window.removeEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [menuOpen]);
 
   return (
