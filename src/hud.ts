@@ -195,11 +195,9 @@ function setHud(state: string, status: string): HudTransition {
   if (errorText && state !== "exiting") {
     errorText.textContent = state === "error" ? status : "";
   }
-  // The error draw-out collapse class is owned by the reveal/retract
-  // sequence (see playErrorReveal, retractErrorLayer). Leave it alone for
-  // "error" (the reveal manages it) and "exiting" (the retract must hold
-  // through the fade); clear it for any other state so a stray collapse
-  // can't follow into the next pill.
+  // The error reveal collapse class is owned by the reveal/exit sequence.
+  // Leave it alone for "error" and "exiting": the reveal removes it after
+  // sizing, and error exits clear it before fading the expanded HUD in place.
   if (state !== "error" && state !== "exiting") {
     hud.classList.remove("hud-reveal-collapsed");
   }

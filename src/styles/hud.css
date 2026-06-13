@@ -220,12 +220,7 @@ body {
   color: var(--foreground);
 }
 
-.hud[data-state="error"] .hud-error-icon {
-  display: grid;
-  place-items: center;
-  color: var(--destructive);
-}
-
+.hud[data-state="error"] .hud-error-icon,
 .hud.hud-error-exit[data-state="exiting"] .hud-error-icon {
   display: grid;
   place-items: center;
@@ -617,7 +612,8 @@ body {
  * the message layer draws out of. It uses the agent HUD's clean dark glass
  * with no native vibrancy rim. The "not allowed" wobble is native
  * (dictation_hud_shake jiggles the window itself). */
-.hud[data-state="error"] {
+.hud[data-state="error"],
+.hud.hud-error-exit[data-state="exiting"] {
   justify-content: center;
   gap: var(--sp-2);
   padding: 4px var(--sp-2);
@@ -625,7 +621,8 @@ body {
 
 /* The pill is its own centered cluster now, so the handle drops the
  * push-everything-right margin. */
-.hud[data-state="error"] > .hud-handle {
+.hud[data-state="error"] > .hud-handle,
+.hud.hud-error-exit[data-state="exiting"] > .hud-handle {
   margin-right: 0;
 }
 
