@@ -1,42 +1,52 @@
-import { HermesGatewayClient } from "./hermes-gateway";
-import { hermesBridgeStatus, startHermesBridge } from "./tauri";
+import {
+  createHermesBridgeCronJob,
+  deleteHermesBridgeCronJob,
+  hermesBridgeCronJobAction,
+  hermesBridgeCronJobs,
+  hermesBridgeStatus,
+  startHermesBridge,
+  updateHermesBridgeCronJob,
+  type HermesCronJobRecord,
+} from "./tauri";
 
-/** A Hermes cron job as returned by the gateway's `cron.manage` method
- * (Hermes formats jobs via `_format_job`, so field names are snake_case). */
+/** A Hermes cron job as the app works with it: the raw dashboard-API record
+ * flattened to what the Routines surfaces read. Unlike the gateway's
+ * formatted listing this carries the full `prompt`, so the editor can show
+ * and update instructions without an agent round trip. */
 export type RoutineJob = {
   job_id: string;
   name: string;
+  prompt: string;
   prompt_preview: string;
   schedule: string;
   repeat: string;
   deliver: string;
+  created_at: string | null;
   next_run_at: string | null;
   last_run_at: string | null;
   last_status: "ok" | "error" | null;
+  last_error?: string | null;
   last_delivery_error?: string | null;
   enabled: boolean;
   state: "scheduled" | "paused" | "completed";
-  paused_at?: string | null;
   paused_reason?: string | null;
-  /** Per-job toolset override (`_format_job` includes it only when set).
-   * Absent means the job runs under the sandboxed cron default the app
-   * writes into config.yaml (CRON_SANDBOXED_TOOLSETS in hermes_bridge.rs);
-   * the scheduler gives this field precedence over that gate, so its
-   * presence with machine-touching toolsets is what makes a routine
-   * unrestricted. */
+  /** Per-job toolset override. Absent means the job runs under the sandboxed
+   * cron default the app writes into config.yaml (CRON_SANDBOXED_TOOLSETS in
+   * hermes_bridge.rs); the scheduler gives this field precedence over that
+   * gate, so its presence with machine-touching toolsets is what makes a
+   * routine unrestricted. */
   enabled_toolsets?: string[];
-  /** Shell script attached to the job (`_format_job` includes it only when
-   * set). The scheduler runs it as a plain subprocess of the unjailed
-   * gateway on every tick — as the whole job for `no_agent` jobs, as the
-   * wake-gate pre-run otherwise — so it sits entirely outside the toolset
-   * gate. Any script-backed routine is unrestricted no matter what its
-   * toolsets say. */
+  /** Shell script attached to the job. The scheduler runs it as a plain
+   * subprocess of the unjailed gateway on every tick — as the whole job for
+   * `no_agent` jobs, as the wake-gate pre-run otherwise — so it sits entirely
+   * outside the toolset gate. Any script-backed routine is unrestricted no
+   * matter what its toolsets say. */
   script?: string | null;
   /** True for script-only jobs (no agent run at all). Implies `script`. */
   no_agent?: boolean;
 };
 
-/** The toolsets June must put on a routine the user opted into Unrestricted.
+/** The toolsets June puts on a routine the user opted into Unrestricted.
  * Hermes's full default set minus the toolsets its scheduler always strips
  * from cron agents (cronjob, messaging, clarify) and the default-off niche
  * sets. Keep in sync with CRON_SANDBOXED_TOOLSETS in hermes_bridge.rs, which
@@ -87,77 +97,131 @@ export function routineUnrestricted(
   );
 }
 
-type CronManageResponse = {
-  success?: boolean;
-  error?: string;
-  count?: number;
-  jobs?: RoutineJob[];
-  job?: RoutineJob;
-};
-
-// One gateway socket for the Routines view, lazily connected and reused across
-// calls. AgentWorkspace keeps its own client; sharing would couple this view's
-// lifecycle to the agent chat's reconnect logic for no benefit — the gateway
-// accepts multiple sockets.
-let client: HermesGatewayClient | undefined;
-
-async function gatewayRequest<T>(
-  method: string,
-  params: Record<string, unknown>,
-): Promise<T> {
+/** The dashboard API lives on the bridge process, so make sure one is up
+ * before calling — same lazy-start the gateway client used to do. */
+async function withBridge<T>(run: () => Promise<T>): Promise<T> {
   const status = await hermesBridgeStatus();
-  const bridge = status.running ? status : await startHermesBridge();
-  const wsUrl = bridge.connection?.wsUrl;
-  if (!wsUrl) throw new Error("Hermes did not return a gateway URL.");
-  if (!client) client = new HermesGatewayClient();
-  await client.connect(wsUrl);
-  return client.request<T>(method, params);
+  if (!status.running) await startHermesBridge();
+  return run();
 }
 
-// Hermes reports cron tool failures two ways: a JSON-RPC error (the request
-// rejects) or an `{ success: false, error }` payload passed through from the
-// cronjob tool. Normalize the latter into a throw so callers handle one shape.
-async function manageRoutines(
-  params: Record<string, unknown>,
-): Promise<CronManageResponse> {
-  const response = await gatewayRequest<CronManageResponse | undefined>(
-    "cron.manage",
-    params,
-  );
-  if (response?.success === false) {
-    throw new Error(
-      response.error || "Hermes could not complete the routine action.",
-    );
-  }
-  return response ?? {};
+function routineFromRecord(record: HermesCronJobRecord): RoutineJob {
+  const prompt = record.prompt ?? "";
+  const times = record.repeat?.times;
+  const state =
+    record.state === "paused" || record.state === "completed"
+      ? record.state
+      : (record.enabled ?? true)
+        ? "scheduled"
+        : "paused";
+  return {
+    job_id: record.id,
+    name: record.name || prompt.slice(0, 50) || record.id,
+    prompt,
+    prompt_preview: prompt.length > 100 ? `${prompt.slice(0, 100)}...` : prompt,
+    schedule: record.schedule_display || "?",
+    repeat: times ? `${times}x` : "forever",
+    deliver: record.deliver || "local",
+    created_at: record.created_at ?? null,
+    next_run_at: record.next_run_at ?? null,
+    last_run_at: record.last_run_at ?? null,
+    last_status: record.last_status ?? null,
+    last_error: record.last_error ?? null,
+    last_delivery_error: record.last_delivery_error ?? null,
+    enabled: record.enabled ?? true,
+    state,
+    paused_reason: record.paused_reason ?? null,
+    enabled_toolsets: record.enabled_toolsets ?? undefined,
+    script: record.script ?? null,
+    no_agent: record.no_agent ?? false,
+  };
 }
 
 export async function listRoutines(): Promise<RoutineJob[]> {
-  const response = await manageRoutines({ action: "list" });
-  return response.jobs ?? [];
+  const records = await withBridge(() => hermesBridgeCronJobs());
+  return records.map(routineFromRecord);
 }
 
-/** The gateway's `cron.manage` reads the job reference from the wire param
- * `name` and resolves it as ID-or-name with exact ID match winning (Hermes
- * `resolve_job_ref`). Send the unique `job_id`, never the display name — two
- * routines can share a name, which Hermes rejects as ambiguous. */
+/** Creates a routine directly through the dashboard API. The create endpoint
+ * only takes prompt/schedule/name, so the unrestricted opt-in lands as an
+ * immediate follow-up update; a failure there surfaces rather than silently
+ * leaving the job sandboxed. */
+export async function createRoutine(input: {
+  prompt: string;
+  schedule: string;
+  name?: string;
+  unrestricted?: boolean;
+}): Promise<RoutineJob> {
+  return withBridge(async () => {
+    const created = await createHermesBridgeCronJob({
+      prompt: input.prompt,
+      schedule: input.schedule,
+      name: input.name,
+    });
+    if (!input.unrestricted) return routineFromRecord(created);
+    const widened = await updateHermesBridgeCronJob(created.id, {
+      enabled_toolsets: UNRESTRICTED_ROUTINE_TOOLSETS,
+    });
+    return routineFromRecord(widened);
+  });
+}
+
+export type RoutineUpdates = {
+  name?: string;
+  schedule?: string;
+  prompt?: string;
+  /** True widens the job to UNRESTRICTED_ROUTINE_TOOLSETS. False restores
+   * the sandboxed cron default — clearing the toolset override AND any
+   * attached script, since scripts run outside the toolset gate. */
+  unrestricted?: boolean;
+};
+
+export async function updateRoutine(
+  jobId: string,
+  updates: RoutineUpdates,
+): Promise<RoutineJob> {
+  const payload: Record<string, unknown> = {};
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.schedule !== undefined) payload.schedule = updates.schedule;
+  if (updates.prompt !== undefined) payload.prompt = updates.prompt;
+  if (updates.unrestricted === true) {
+    payload.enabled_toolsets = UNRESTRICTED_ROUTINE_TOOLSETS;
+  } else if (updates.unrestricted === false) {
+    payload.enabled_toolsets = null;
+    payload.script = null;
+    payload.no_agent = false;
+  }
+  const record = await withBridge(() =>
+    updateHermesBridgeCronJob(jobId, payload),
+  );
+  return routineFromRecord(record);
+}
+
 export function pauseRoutine(jobId: string) {
-  return manageRoutines({ action: "pause", name: jobId });
+  return withBridge(() => hermesBridgeCronJobAction(jobId, "pause"));
 }
 
 export function resumeRoutine(jobId: string) {
-  return manageRoutines({ action: "resume", name: jobId });
+  return withBridge(() => hermesBridgeCronJobAction(jobId, "resume"));
+}
+
+/** Queues an immediate run. The launchd-managed gateway picks the job up on
+ * its next scheduler tick, so the run starts within about a minute — and
+ * only if the gateway is running. */
+export function triggerRoutine(jobId: string) {
+  return withBridge(() => hermesBridgeCronJobAction(jobId, "trigger"));
 }
 
 export function removeRoutine(jobId: string) {
-  return manageRoutines({ action: "remove", name: jobId });
+  return withBridge(() => deleteHermesBridgeCronJob(jobId));
 }
 
-/** Builds the agent prompt for "create a routine": June owns naming and
- * scheduling via its cronjob tool, so the user only describes the outcome.
- * The mode line carries the user's per-routine sandbox choice: sandboxed
- * routines must NOT set enabled_toolsets (the cron platform gate in
- * config.yaml then applies), unrestricted ones set the explicit override. */
+/** Builds the agent prompt for the "describe it" creation path: June owns
+ * naming and scheduling via its cronjob tool, so the user only describes the
+ * outcome. The mode line carries the user's per-routine sandbox choice:
+ * sandboxed routines must NOT set enabled_toolsets (the cron platform gate
+ * in config.yaml then applies), unrestricted ones set the explicit
+ * override. */
 export function routineCreationPrompt(
   description: string,
   options?: { unrestricted?: boolean },
@@ -170,26 +234,5 @@ export function routineCreationPrompt(
     `Here is what it should do: ${description.trim()}`,
     mode,
     "Pick a short descriptive name and an appropriate schedule (ask me if the timing is unclear), create the job, then confirm what you created and when it will first run.",
-  ].join("\n\n");
-}
-
-/** Builds the agent prompt for "edit a routine". Editing also goes through
- * June: the gateway's cron.manage has no update action (the bundled Hermes
- * runtime is pinned upstream), while the agent's cronjob tool supports
- * partial updates — it can change just the schedule without ever reading or
- * re-sending the full prompt, which the list API truncates to a preview. */
-export function routineEditPrompt(
-  routine: Pick<
-    RoutineJob,
-    "job_id" | "name" | "schedule" | "enabled_toolsets" | "script" | "no_agent"
-  >,
-  changes: string,
-) {
-  const mode = routineUnrestricted(routine) ? "unrestricted" : "sandboxed";
-  return [
-    `Update my existing routine "${routine.name}" (cron job id ${routine.job_id}) using your cronjob tool's update action.`,
-    `It currently runs: ${routine.schedule}. The routine is currently ${mode}. Here is what should change: ${changes.trim()}`,
-    `If I asked to make it unrestricted, update the job with enabled_toolsets set to exactly: ${UNRESTRICTED_ROUTINE_TOOLSETS.join(", ")}. If I asked to make it sandboxed, clear enabled_toolsets and any script on the job so the restricted cron default applies again (cron scripts run as shell subprocesses outside the sandbox, so a sandboxed routine must not have one).`,
-    "Only modify the fields I asked about and leave everything else on the job untouched. Confirm the updated job and when it runs next.",
   ].join("\n\n");
 }

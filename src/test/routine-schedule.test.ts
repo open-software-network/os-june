@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { humanizeSchedule } from "../lib/routine-schedule";
+import {
+  compactScheduleLabel,
+  draftFromSchedule,
+  humanizeSchedule,
+  scheduleFromDraft,
+} from "../lib/routine-schedule";
 
 /** Mirrors the formatter's locale-aware clock rendering so assertions hold
  * regardless of the machine locale running the suite. */
@@ -102,5 +107,101 @@ describe("humanizeSchedule", () => {
     // it wrongly is worse than showing the expression.
     expect(humanizeSchedule("0 9 1 * 1")).toBe("0 9 1 * 1");
     expect(humanizeSchedule("*/0 * * * *")).toBe("*/0 * * * *");
+  });
+});
+
+describe("compactScheduleLabel", () => {
+  it("removes redundant at before clock times", () => {
+    expect(compactScheduleLabel("0 9 * * 1-5")).toBe(`Weekdays ${time(9, 0)}`);
+    expect(compactScheduleLabel("0 8 * * 1")).toBe(
+      `Every Monday ${time(8, 0)}`,
+    );
+  });
+
+  it("leaves non-clock at phrases unchanged", () => {
+    expect(compactScheduleLabel("30 * * * *")).toBe("Every hour at :30");
+  });
+});
+
+describe("scheduleFromDraft", () => {
+  it("renders day-based drafts as five-field cron", () => {
+    expect(scheduleFromDraft({ kind: "daily", time: "09:00" })).toBe(
+      "0 9 * * *",
+    );
+    expect(scheduleFromDraft({ kind: "weekdays", time: "08:30" })).toBe(
+      "30 8 * * 1-5",
+    );
+    expect(scheduleFromDraft({ kind: "weekly", day: 5, time: "16:00" })).toBe(
+      "0 16 * * 5",
+    );
+  });
+
+  it("renders intervals in Hermes's grammar, preferring hours", () => {
+    expect(scheduleFromDraft({ kind: "interval", minutes: 30 })).toBe(
+      "every 30m",
+    );
+    expect(scheduleFromDraft({ kind: "interval", minutes: 120 })).toBe(
+      "every 2h",
+    );
+  });
+
+  it("passes custom expressions through trimmed", () => {
+    expect(
+      scheduleFromDraft({ kind: "custom", expression: " 0 9 1 * * " }),
+    ).toBe("0 9 1 * *");
+  });
+});
+
+describe("draftFromSchedule", () => {
+  it("maps the presets back onto the picker", () => {
+    expect(draftFromSchedule("0 9 * * *")).toEqual({
+      kind: "daily",
+      time: "09:00",
+    });
+    expect(draftFromSchedule("30 8 * * 1-5")).toEqual({
+      kind: "weekdays",
+      time: "08:30",
+    });
+    expect(draftFromSchedule("0 16 * * 5")).toEqual({
+      kind: "weekly",
+      day: 5,
+      time: "16:00",
+    });
+    // Hermes normalizes intervals to minutes; an hour's worth still maps.
+    expect(draftFromSchedule("every 90m")).toEqual({
+      kind: "interval",
+      minutes: 90,
+    });
+    expect(draftFromSchedule("every 2h")).toEqual({
+      kind: "interval",
+      minutes: 120,
+    });
+  });
+
+  it("parks anything it cannot phrase in custom, unchanged", () => {
+    expect(draftFromSchedule("*/15 * * * *")).toEqual({
+      kind: "custom",
+      expression: "*/15 * * * *",
+    });
+    expect(draftFromSchedule("0 9 1 * *")).toEqual({
+      kind: "custom",
+      expression: "0 9 1 * *",
+    });
+    expect(draftFromSchedule("2026-07-01T09:00")).toEqual({
+      kind: "custom",
+      expression: "2026-07-01T09:00",
+    });
+  });
+
+  it("round-trips every preset draft", () => {
+    const drafts = [
+      { kind: "daily", time: "07:05" },
+      { kind: "weekdays", time: "18:45" },
+      { kind: "weekly", day: 0, time: "10:00" },
+      { kind: "interval", minutes: 45 },
+    ] as const;
+    for (const draft of drafts) {
+      expect(draftFromSchedule(scheduleFromDraft(draft))).toEqual(draft);
+    }
   });
 });

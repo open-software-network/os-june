@@ -327,15 +327,12 @@ export function App() {
     },
     [publishAgentMenuBarState],
   );
-  const handleAgentHudVisibilityRequest = useCallback(
-    (enabled: boolean) => {
-      setAgentHudEnabled(enabled);
-      void (enabled ? agentHudShow() : agentHudHide()).catch((err) => {
-        setError(messageFromError(err));
-      });
-    },
-    [],
-  );
+  const handleAgentHudVisibilityRequest = useCallback((enabled: boolean) => {
+    setAgentHudEnabled(enabled);
+    void (enabled ? agentHudShow() : agentHudHide()).catch((err) => {
+      setError(messageFromError(err));
+    });
+  }, []);
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
   const originFolder = originFolderId
@@ -1854,11 +1851,6 @@ export function App() {
                   // The agent workspace is unmounted while Routines is shown,
                   // so the pending marker alone is consumed on mount — no
                   // window event needed (it could double-submit the session).
-                  markAgentNewSessionPending(prompt);
-                  setActiveAgentSession(undefined);
-                  setActiveView("agent");
-                }}
-                onEditRoutine={(prompt) => {
                   markAgentNewSessionPending(prompt);
                   setActiveAgentSession(undefined);
                   setActiveView("agent");

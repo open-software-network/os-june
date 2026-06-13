@@ -1,5 +1,5 @@
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
-import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
+import { IconZap } from "central-icons/IconZap";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
@@ -419,7 +419,7 @@ export function Sidebar({
       {
         id: "quick:routines",
         label: "Go to Routines",
-        icon: <IconArrowsRepeat size={15} />,
+        icon: <IconZap size={15} />,
         searchText: normalizeCommandQuery("routines go to"),
         action: () => onChangeView("routines"),
       },
@@ -926,7 +926,7 @@ export function Sidebar({
               onClick={() => onChangeView("routines")}
             >
               <span className="sidebar-nav-icon">
-                <IconArrowsRepeat size={16} />
+                <IconZap size={16} />
               </span>
               <span className="sidebar-nav-label">Routines</span>
             </button>

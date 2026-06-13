@@ -82,6 +82,10 @@ export function humanizeSchedule(schedule: string): string {
   );
 }
 
+export function compactScheduleLabel(schedule: string): string {
+  return humanizeSchedule(schedule).replace(/\bat (?=\d{1,2}:\d{2}\b)/, "");
+}
+
 function parseField(
   raw: string,
   min: number,
@@ -242,6 +246,80 @@ function joinAnd(parts: string[]): string {
   if (parts.length <= 1) return parts[0] ?? "";
   if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
   return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
+/** The structured shape behind the routine editor's schedule picker. Covers
+ * the schedules the picker can express; anything else round-trips through
+ * `custom` untouched so an exotic cron expression survives an unrelated edit.
+ * `time` is the "HH:MM" shape of `<input type="time">`. */
+export type ScheduleDraft =
+  | { kind: "daily"; time: string }
+  | { kind: "weekdays"; time: string }
+  | { kind: "weekly"; day: number; time: string }
+  | { kind: "interval"; minutes: number }
+  | { kind: "custom"; expression: string };
+
+/** Renders a draft as a schedule string Hermes parses: five-field cron for
+ * the clock-time kinds, its "every Nm"/"every Nh" interval grammar, or the
+ * custom expression verbatim. */
+export function scheduleFromDraft(draft: ScheduleDraft): string {
+  switch (draft.kind) {
+    case "daily":
+      return `${cronTime(draft.time)} * * *`;
+    case "weekdays":
+      return `${cronTime(draft.time)} * * 1-5`;
+    case "weekly":
+      return `${cronTime(draft.time)} * * ${draft.day}`;
+    case "interval":
+      return draft.minutes % 60 === 0
+        ? `every ${draft.minutes / 60}h`
+        : `every ${draft.minutes}m`;
+    case "custom":
+      return draft.expression.trim();
+  }
+}
+
+function cronTime(time: string): string {
+  const [hour, minute] = time.split(":").map(Number);
+  return `${minute || 0} ${hour || 0}`;
+}
+
+/** Maps a stored schedule back onto the picker. Mirrors the subset
+ * `scheduleFromDraft` emits — a fixed clock time daily, on weekdays, or on
+ * one weekday, plus Hermes-normalized intervals — and parks everything else
+ * in `custom` rather than misreading it. */
+export function draftFromSchedule(schedule: string): ScheduleDraft {
+  const trimmed = schedule.trim();
+
+  const interval = trimmed.match(
+    /^every\s+(\d+)\s*(m|h|min|minutes?|hours?)$/i,
+  );
+  if (interval) {
+    const amount = Number(interval[1]);
+    const minutes = interval[2].toLowerCase().startsWith("h")
+      ? amount * 60
+      : amount;
+    if (minutes > 0) return { kind: "interval", minutes };
+  }
+
+  const fields = trimmed.split(/\s+/);
+  if (fields.length === 5) {
+    const minute = singleValue(parseField(fields[0], 0, 59) ?? { kind: "any" });
+    const hour = singleValue(parseField(fields[1], 0, 23) ?? { kind: "any" });
+    const dayOfWeek = parseField(fields[4], 0, 7, DAY_TOKENS);
+    const dateFree = fields[2] === "*" && fields[3] === "*";
+    if (minute !== null && hour !== null && dateFree && dayOfWeek) {
+      const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+      const days = normalizeDayOfWeek(dayOfWeek);
+      if (days.kind === "any") return { kind: "daily", time };
+      if (days.kind === "values" && sameValues(days.values, [1, 2, 3, 4, 5]))
+        return { kind: "weekdays", time };
+      if (days.kind === "values" && days.values.length === 1)
+        return { kind: "weekly", day: days.values[0], time };
+    }
+  }
+
+  return { kind: "custom", expression: trimmed };
 }
 
 function ordinal(value: number): string {

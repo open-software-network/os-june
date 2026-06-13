@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   pauseRoutine: vi.fn(),
   resumeRoutine: vi.fn(),
   removeRoutine: vi.fn(),
+  createRoutine: vi.fn<() => Promise<RoutineJob>>(),
+  updateRoutine: vi.fn<() => Promise<RoutineJob>>(),
+  triggerRoutine: vi.fn(),
 }));
 
 vi.mock("../lib/hermes-routines", async (importOriginal) => ({
@@ -30,10 +33,12 @@ function job(overrides: Partial<RoutineJob> = {}): RoutineJob {
   return {
     job_id: "abc123",
     name: "Morning summary",
+    prompt: "Summarize my unread notes and flag anything urgent.",
     prompt_preview: "Summarize my unread notes",
-    schedule: "every day at 9:00",
+    schedule: "0 9 * * *",
     repeat: "forever",
     deliver: "local",
+    created_at: "2026-06-01T09:00:00",
     next_run_at: "2026-06-10T09:00:00",
     last_run_at: null,
     last_status: null,
@@ -54,15 +59,38 @@ function run(overrides: Partial<HermesSessionInfo> = {}): HermesSessionInfo {
   };
 }
 
+function renderView(
+  props: Partial<{
+    onCreateRoutine: (prompt: string) => void;
+    onOpenRun: (session: HermesSessionInfo) => void;
+  }> = {},
+) {
+  return render(
+    <RoutinesView
+      onCreateRoutine={props.onCreateRoutine ?? vi.fn()}
+      onOpenRun={props.onOpenRun ?? vi.fn()}
+    />,
+  );
+}
+
+async function openDetail(name: string) {
+  const list = await screen.findByRole("list", { name: "Routines" });
+  await userEvent.click(within(list).getByText(name));
+  return screen.findByRole("textbox", { name: "Instructions" });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.pauseRoutine.mockResolvedValue({ success: true });
-  mocks.resumeRoutine.mockResolvedValue({ success: true });
-  mocks.removeRoutine.mockResolvedValue({ success: true });
+  mocks.pauseRoutine.mockResolvedValue({});
+  mocks.resumeRoutine.mockResolvedValue({});
+  mocks.removeRoutine.mockResolvedValue({});
+  mocks.triggerRoutine.mockResolvedValue({});
+  mocks.createRoutine.mockResolvedValue(job());
+  mocks.updateRoutine.mockResolvedValue(job());
   adapterMocks.listScheduledRunSessions.mockResolvedValue([]);
 });
 
-describe("RoutinesView", () => {
+describe("RoutinesView list", () => {
   it("lists routines with schedule and state", async () => {
     mocks.listRoutines.mockResolvedValue([
       job(),
@@ -74,19 +102,13 @@ describe("RoutinesView", () => {
         last_status: "error",
       }),
     ]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
 
     expect(await screen.findByText("Morning summary")).toBeInTheDocument();
     expect(screen.getByText("Weekly digest")).toBeInTheDocument();
     expect(screen.getByText("Paused")).toBeInTheDocument();
     expect(screen.getByText("Last run failed")).toBeInTheDocument();
-    expect(screen.getByText("Summarize my unread notes")).toBeInTheDocument();
+    expect(screen.queryByText("Summarize my unread notes")).toBeNull();
   });
 
   it("shows cron schedules as plain language and matches it in search", async () => {
@@ -99,20 +121,14 @@ describe("RoutinesView", () => {
         schedule: "0 8 * * 1",
       }),
     ]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
 
     const nine = new Date(2000, 0, 1, 9, 0).toLocaleTimeString(undefined, {
       hour: "numeric",
       minute: "2-digit",
     });
     expect(
-      await screen.findByText(`Weekdays at ${nine}`, { exact: false }),
+      await screen.findByText(`Weekdays ${nine}`, { exact: false }),
     ).toBeInTheDocument();
     expect(screen.queryByText("0 9 * * 1-5", { exact: false })).toBeNull();
 
@@ -120,80 +136,6 @@ describe("RoutinesView", () => {
     await userEvent.type(screen.getByRole("searchbox"), "weekdays");
     expect(screen.getByText("Morning summary")).toBeInTheDocument();
     expect(screen.queryByText("Weekly digest")).toBeNull();
-  });
-
-  it("defaults a new routine to sandboxed and says so in the prompt", async () => {
-    mocks.listRoutines.mockResolvedValue([]);
-    const onCreateRoutine = vi.fn();
-    render(
-      <RoutinesView
-        onCreateRoutine={onCreateRoutine}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-
-    await userEvent.click(
-      (await screen.findAllByRole("button", { name: /new routine/i }))[0],
-    );
-    const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByRole("radio", { name: "Sandboxed" }),
-    ).toHaveAttribute("aria-checked", "true");
-    expect(dialog).toHaveTextContent(
-      "It cannot run commands or change your files.",
-    );
-
-    await userEvent.type(
-      within(dialog).getByRole("textbox"),
-      "watch the weather and message me",
-    );
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Ask June to set it up" }),
-    );
-
-    const prompt = onCreateRoutine.mock.calls[0][0] as string;
-    expect(prompt).toContain("Do not set enabled_toolsets");
-    // Cron scripts run as shell subprocesses outside the toolset gate, so a
-    // sandboxed routine must not get one either.
-    expect(prompt).toContain("Do not attach a script");
-    expect(prompt).not.toContain("Create the job with enabled_toolsets");
-  });
-
-  it("creates an unrestricted routine only after the explicit opt-in", async () => {
-    mocks.listRoutines.mockResolvedValue([]);
-    const onCreateRoutine = vi.fn();
-    render(
-      <RoutinesView
-        onCreateRoutine={onCreateRoutine}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-
-    await userEvent.click(
-      (await screen.findAllByRole("button", { name: /new routine/i }))[0],
-    );
-    const dialog = await screen.findByRole("dialog");
-    await userEvent.click(
-      within(dialog).getByRole("radio", { name: "Unrestricted" }),
-    );
-    expect(dialog).toHaveTextContent(
-      "June can run commands and change any file your account can.",
-    );
-
-    await userEvent.type(
-      within(dialog).getByRole("textbox"),
-      "clean up my downloads folder nightly",
-    );
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Ask June to set it up" }),
-    );
-
-    const prompt = onCreateRoutine.mock.calls[0][0] as string;
-    expect(prompt).toContain(
-      "Create the job with enabled_toolsets set to exactly: terminal, file, code_execution",
-    );
   });
 
   it("badges routines that carry machine toolsets or a cron script", async () => {
@@ -214,155 +156,323 @@ describe("RoutinesView", () => {
         no_agent: true,
       }),
     ]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
 
     expect(await screen.findByText("Nightly cleanup")).toBeInTheDocument();
     // Badges for the toolset-widened and the script-backed routines, none
     // for the sandboxed one.
-    expect(screen.getAllByText("Unrestricted")).toHaveLength(2);
+    const list = screen.getByRole("list", { name: "Routines" });
+    expect(within(list).getAllByText("Unrestricted")).toHaveLength(2);
   });
 
-  it("shows the empty state and routes creation through the agent prompt", async () => {
-    mocks.listRoutines.mockResolvedValue([]);
-    const onCreateRoutine = vi.fn();
-    render(
-      <RoutinesView
-        onCreateRoutine={onCreateRoutine}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-
-    expect(await screen.findByText("Put June on a schedule")).toBeVisible();
-    await userEvent.click(
-      screen.getAllByRole("button", { name: /new routine/i })[0],
-    );
-
-    const dialog = await screen.findByRole("dialog");
-    await userEvent.type(
-      within(dialog).getByRole("textbox"),
-      "every morning, email me a digest",
-    );
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Ask June to set it up" }),
-    );
-
-    expect(onCreateRoutine).toHaveBeenCalledTimes(1);
-    const prompt = onCreateRoutine.mock.calls[0][0] as string;
-    expect(prompt).toContain("every morning, email me a digest");
-    expect(prompt).toContain("cronjob tool");
-  });
-
-  it("routes an edit through the agent prompt with the job reference", async () => {
+  it("shows starter routines once routines exist", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
-    const onEditRoutine = vi.fn();
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={onEditRoutine}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
+    renderView();
 
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Edit “Morning summary”");
-    await userEvent.type(
-      within(dialog).getByRole("textbox"),
-      "run at 7am instead",
-    );
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Ask June to update it" }),
-    );
-
-    expect(onEditRoutine).toHaveBeenCalledTimes(1);
-    const prompt = onEditRoutine.mock.calls[0][0] as string;
-    expect(prompt).toContain("run at 7am instead");
-    expect(prompt).toContain("abc123");
-    expect(prompt).toContain("Morning summary");
-    expect(prompt).toContain("update action");
-    // No enabled_toolsets on the fixture, so the prompt reports the
-    // sandboxed default and carries the mode-change instructions.
-    expect(prompt).toContain("currently sandboxed");
+    expect(await screen.findByText("Morning summary")).toBeInTheDocument();
+    const starters = screen.getByRole("region", { name: "Starter routines" });
+    expect(within(starters).getByText("Morning brief")).toBeInTheDocument();
   });
 
-  it("does not send an edit with an empty description", async () => {
+  it("pauses a scheduled routine from its detail toggle and reloads", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
-    const onEditRoutine = vi.fn();
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={onEditRoutine}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
-
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByRole("button", { name: "Ask June to update it" }),
-    ).toBeDisabled();
-    expect(onEditRoutine).not.toHaveBeenCalled();
-  });
-
-  it("pauses a scheduled routine and reloads the list", async () => {
-    mocks.listRoutines.mockResolvedValue([job()]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
+    renderView();
+    await openDetail("Morning summary");
 
     mocks.listRoutines.mockResolvedValue([job({ state: "paused" })]);
-    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    const toggle = screen.getByRole("switch", {
+      name: "Morning summary active",
+    });
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
 
     await waitFor(() =>
       expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"),
     );
     expect(await screen.findByText("Paused")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
   });
 
-  it("resumes a paused routine", async () => {
+  it("resumes a paused routine from its detail toggle", async () => {
     mocks.listRoutines.mockResolvedValue([job({ state: "paused" })]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
+    renderView();
+    await openDetail("Morning summary");
 
-    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    const toggle = screen.getByRole("switch", {
+      name: "Morning summary active",
+    });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
     await waitFor(() =>
       expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123"),
     );
   });
 
-  it("deletes a routine after confirmation", async () => {
+  it("surfaces a failed reload after a successful pause", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
+    renderView();
+    await openDetail("Morning summary");
 
-    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    mocks.listRoutines.mockRejectedValue(new Error("reload failed"));
+    await userEvent.click(
+      screen.getByRole("switch", { name: "Morning summary active" }),
+    );
+
+    expect(await screen.findByText("reload failed")).toBeInTheDocument();
+  });
+
+  it("surfaces a load error", async () => {
+    mocks.listRoutines.mockRejectedValue(new Error("gateway down"));
+    renderView();
+    expect(await screen.findByText("gateway down")).toBeInTheDocument();
+  });
+});
+
+describe("RoutinesView templates and creation", () => {
+  it("shows starter templates while no routine exists", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+
+    expect(await screen.findByText("Morning brief")).toBeVisible();
+    expect(screen.getByText("Morning brief")).toBeInTheDocument();
+    expect(screen.getByText("Weekly review")).toBeInTheDocument();
+  });
+
+  it("opens the editor prefilled from a starter template", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning brief");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Add Morning brief" }),
+    );
+
+    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue(
+      "Morning brief",
+    );
+    const instructions = screen.getByRole("textbox", {
+      name: "Instructions",
+    }) as HTMLTextAreaElement;
+    expect(instructions.value).toContain("morning brief");
+    // The template schedule "0 8 * * 1-5" lands on the Weekdays preset.
+    expect(
+      screen.getByRole("button", { name: "Schedule type" }),
+    ).toHaveTextContent("Weekdays");
+  });
+
+  it("creates a routine from the editor and opens its detail page", async () => {
+    mocks.listRoutines.mockResolvedValueOnce([]);
+    renderView();
+    await screen.findByText("Morning brief");
+
+    await userEvent.click(screen.getByRole("button", { name: "New routine" }));
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Instructions" }),
+      "Summarize my unread notes and flag anything urgent.",
+    );
+    mocks.listRoutines.mockResolvedValue([job()]);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(mocks.createRoutine).toHaveBeenCalledWith({
+        prompt: "Summarize my unread notes and flag anything urgent.",
+        schedule: "0 9 * * *",
+        name: undefined,
+        unrestricted: false,
+      }),
+    );
+    // Creation lands on the new routine's detail page.
+    expect(
+      await screen.findByRole("textbox", { name: "Routine name" }),
+    ).toHaveValue("Morning summary");
+  });
+
+  it("routes the describe path through the agent prompt, sandboxed by default", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    const onCreateRoutine = vi.fn();
+    renderView({ onCreateRoutine });
+    await screen.findByText("Morning brief");
+
+    // The composer bar is permanently anchored to the page bottom.
+    const composer = screen.getByRole("form", {
+      name: "Describe a routine to June",
+    });
+    // Its sandbox trigger reflects the default mode.
+    expect(
+      within(composer).getByRole("button", { name: /sandboxed/i }),
+    ).toBeInTheDocument();
+
+    await userEvent.type(
+      within(composer).getByRole("textbox"),
+      "watch the weather and message me",
+    );
+    await userEvent.click(
+      within(composer).getByRole("button", { name: "Ask June to set it up" }),
+    );
+
+    const prompt = onCreateRoutine.mock.calls[0][0] as string;
+    expect(prompt).toContain("watch the weather and message me");
+    expect(prompt).toContain("cronjob tool");
+    expect(prompt).toContain("Do not set enabled_toolsets");
+    expect(prompt).not.toContain("Create the job with enabled_toolsets");
+  });
+
+  it("describes an unrestricted routine only after the explicit opt-in", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    const onCreateRoutine = vi.fn();
+    renderView({ onCreateRoutine });
+    await screen.findByText("Morning brief");
+
+    const composer = screen.getByRole("form", {
+      name: "Describe a routine to June",
+    });
+    // Arm Unrestricted through the composer's sandbox menu.
+    await userEvent.click(
+      within(composer).getByRole("button", { name: /sandboxed/i }),
+    );
+    await userEvent.click(
+      within(composer).getByRole("menuitemradio", { name: /unrestricted/i }),
+    );
+    await userEvent.type(
+      within(composer).getByRole("textbox"),
+      "clean up my downloads folder nightly",
+    );
+    await userEvent.click(
+      within(composer).getByRole("button", { name: "Ask June to set it up" }),
+    );
+
+    const prompt = onCreateRoutine.mock.calls[0][0] as string;
+    expect(prompt).toContain(
+      "Create the job with enabled_toolsets set to exactly: terminal, file, code_execution",
+    );
+  });
+});
+
+describe("RoutinesView detail", () => {
+  it("opens a routine with its full instructions", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+
+    const instructions = await openDetail("Morning summary");
+    expect(instructions).toHaveValue(
+      "Summarize my unread notes and flag anything urgent.",
+    );
+    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue(
+      "Morning summary",
+    );
+  });
+
+  it("saves only the changed fields", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+
+    const instructions = await openDetail("Morning summary");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await userEvent.clear(instructions);
+    await userEvent.type(instructions, "List my unread notes only.");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.updateRoutine).toHaveBeenCalledWith("abc123", {
+        prompt: "List my unread notes only.",
+      }),
+    );
+  });
+
+  it("saves a schedule preset change as a cron expression", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    // The stored "0 9 * * *" lands on Daily; switch the preset to Weekdays.
+    const trigger = screen.getByRole("button", { name: "Schedule type" });
+    expect(trigger).toHaveTextContent("Daily");
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("option", { name: "Weekdays" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.updateRoutine).toHaveBeenCalledWith("abc123", {
+        schedule: "0 9 * * 1-5",
+      }),
+    );
+  });
+
+  it("widens access after the explicit unrestricted opt-in", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(screen.getByRole("button", { name: "Unrestricted" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.updateRoutine).toHaveBeenCalledWith("abc123", {
+        unrestricted: true,
+      }),
+    );
+  });
+
+  it("queues an immediate run", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await waitFor(() =>
+      expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"),
+    );
+    expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
+  });
+
+  it("shows this routine's runs and opens one on click", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    const mine = run();
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      mine,
+      run({
+        id: "cron_other77_20260609_080000",
+        title: "Someone else's run",
+      }),
+    ]);
+    const onOpenRun = vi.fn();
+    renderView({ onOpenRun });
+    await openDetail("Morning summary");
+    await userEvent.click(screen.getByRole("tab", { name: "Run history" }));
+
+    const history = screen.getByRole("tabpanel", { name: "Run history" });
+    expect(
+      within(history).getByText("Morning Summary Digest"),
+    ).toBeInTheDocument();
+    expect(within(history).queryByText("Someone else's run")).toBeNull();
+
+    await userEvent.click(
+      within(history).getByRole("button", { name: /morning summary digest/i }),
+    );
+    expect(onOpenRun).toHaveBeenCalledWith(mine);
+  });
+
+  it("surfaces the last run failure", async () => {
+    mocks.listRoutines.mockResolvedValue([
+      job({ last_status: "error", last_error: "Model quota exhausted" }),
+    ]);
+    renderView();
+    await openDetail("Morning summary");
+
+    expect(screen.getByText(/Model quota exhausted/)).toBeInTheDocument();
+  });
+
+  it("deletes a routine after confirmation and returns to the list", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Routine actions" }),
+    );
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Delete routine" }),
+    );
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(
       within(dialog).getByRole("button", { name: "Delete" }),
@@ -371,75 +481,41 @@ describe("RoutinesView", () => {
     await waitFor(() =>
       expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123"),
     );
-    await waitFor(() =>
-      expect(screen.queryByText("Morning summary")).not.toBeInTheDocument(),
-    );
+    // Back on the (now empty) list page.
+    expect(await screen.findByText("Morning brief")).toBeInTheDocument();
   });
 
-  it("surfaces a failed reload after a successful pause", async () => {
-    mocks.listRoutines.mockResolvedValue([job()]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
-
-    mocks.listRoutines.mockRejectedValue(new Error("reload failed"));
-    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
-
-    expect(await screen.findByText("reload failed")).toBeInTheDocument();
-  });
-
-  it("surfaces a failed delete in the error banner", async () => {
+  it("surfaces a failed delete and keeps the routine", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     mocks.removeRoutine.mockRejectedValue(new Error("remove failed"));
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
-    await screen.findByText("Morning summary");
+    renderView();
+    await openDetail("Morning summary");
 
-    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Routine actions" }),
+    );
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Delete routine" }),
+    );
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(
       within(dialog).getByRole("button", { name: "Delete" }),
     );
 
     expect(await screen.findByText("remove failed")).toBeInTheDocument();
-    // The routine stays listed — only a successful delete removes the row.
-    expect(screen.getByText("Morning summary")).toBeInTheDocument();
-  });
-
-  it("surfaces a load error", async () => {
-    mocks.listRoutines.mockRejectedValue(new Error("gateway down"));
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
+    expect(screen.getByRole("textbox", { name: "Routine name" })).toHaveValue(
+      "Morning summary",
     );
-    expect(await screen.findByText("gateway down")).toBeInTheDocument();
   });
+});
 
+describe("RoutinesView run history", () => {
   it("lists run history under the routines and opens a run on click", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     const session = run();
     adapterMocks.listScheduledRunSessions.mockResolvedValue([session]);
     const onOpenRun = vi.fn();
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={onOpenRun}
-      />,
-    );
+    renderView({ onOpenRun });
 
     const history = await screen.findByRole("region", { name: "Run history" });
     // The run is labeled with its routine's name (matched via the job id
@@ -466,13 +542,7 @@ describe("RoutinesView", () => {
         preview: "Metrics are flat week over week.",
       }),
     ]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
 
     const history = await screen.findByRole("region", { name: "Run history" });
     expect(
@@ -493,13 +563,7 @@ describe("RoutinesView", () => {
         last_active: "2026-06-09T08:00:30Z",
       }),
     ]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
     await screen.findByRole("region", { name: "Run history" });
 
     await userEvent.type(screen.getByRole("searchbox"), "weekly");
@@ -516,13 +580,7 @@ describe("RoutinesView", () => {
 
   it("shows a quiet hint while no routine has run yet", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
 
     const history = await screen.findByRole("region", { name: "Run history" });
     expect(within(history).getByText(/No runs yet/)).toBeInTheDocument();
@@ -533,13 +591,7 @@ describe("RoutinesView", () => {
     adapterMocks.listScheduledRunSessions.mockRejectedValue(
       new Error("session store down"),
     );
-    render(
-      <RoutinesView
-        onCreateRoutine={vi.fn()}
-        onEditRoutine={vi.fn()}
-        onOpenRun={vi.fn()}
-      />,
-    );
+    renderView();
 
     expect(await screen.findByText("Morning summary")).toBeInTheDocument();
     const history = screen.getByRole("region", { name: "Run history" });

@@ -992,6 +992,150 @@ pub async fn delete_hermes_bridge_session(
     .await
 }
 
+/// The bridge's cron dashboard API spans Hermes profiles; June only ever
+/// provisions the root profile, so every call pins `profile=default`. That
+/// skips the server's cross-profile job scan and keeps jobs from any other
+/// Hermes home out of the app.
+const CRON_PROFILE_QUERY: &str = "profile=default";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateHermesCronJobRequest {
+    pub prompt: String,
+    pub schedule: String,
+    pub name: Option<String>,
+    pub deliver: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHermesCronJobRequest {
+    pub job_id: String,
+    /// Partial job fields, passed through as the dashboard API's `updates`
+    /// map. The bridge re-derives the run plan when `schedule` changes and
+    /// rejects immutable fields (`id`), so no client-side mirroring here.
+    pub updates: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesCronJobActionRequest {
+    pub job_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesCronJobRequest {
+    pub job_id: String,
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_cron_jobs(
+    bridge: State<'_, HermesBridge>,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::GET,
+        &format!("/api/cron/jobs?{CRON_PROFILE_QUERY}"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn create_hermes_bridge_cron_job(
+    bridge: State<'_, HermesBridge>,
+    request: CreateHermesCronJobRequest,
+) -> Result<serde_json::Value, AppError> {
+    let mut body = serde_json::json!({
+        "prompt": request.prompt,
+        "schedule": request.schedule,
+    });
+    if let Some(name) = request
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["name"] = serde_json::Value::String(name.to_string());
+    }
+    if let Some(deliver) = request
+        .deliver
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["deliver"] = serde_json::Value::String(deliver.to_string());
+    }
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::POST,
+        &format!("/api/cron/jobs?{CRON_PROFILE_QUERY}"),
+        Some(body),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn update_hermes_bridge_cron_job(
+    bridge: State<'_, HermesBridge>,
+    request: UpdateHermesCronJobRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::PUT,
+        &format!(
+            "/api/cron/jobs/{}?{CRON_PROFILE_QUERY}",
+            urlencoding::encode(&request.job_id)
+        ),
+        Some(serde_json::json!({ "updates": request.updates })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_cron_job_action(
+    bridge: State<'_, HermesBridge>,
+    request: HermesCronJobActionRequest,
+) -> Result<serde_json::Value, AppError> {
+    let action = request.action.as_str();
+    // The action becomes a path segment; whitelist it rather than encode it.
+    if !matches!(action, "pause" | "resume" | "trigger") {
+        return Err(AppError::new(
+            "hermes_cron_action_invalid",
+            "Unknown routine action.",
+        ));
+    }
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::POST,
+        &format!(
+            "/api/cron/jobs/{}/{action}?{CRON_PROFILE_QUERY}",
+            urlencoding::encode(&request.job_id)
+        ),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_hermes_bridge_cron_job(
+    bridge: State<'_, HermesBridge>,
+    request: HermesCronJobRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::DELETE,
+        &format!(
+            "/api/cron/jobs/{}?{CRON_PROFILE_QUERY}",
+            urlencoding::encode(&request.job_id)
+        ),
+        None,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn hermes_bridge_filesystem_snapshot(
     app: AppHandle,

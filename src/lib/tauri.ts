@@ -962,6 +962,71 @@ export async function ensureHermesBridgeSession(input: {
   });
 }
 
+/** A raw cron job record from the bridge's dashboard API, as stored in
+ * Hermes's jobs file — unlike the gateway's formatted view, `prompt` is the
+ * full text and `schedule` is the parsed structure next to its display
+ * string. Only the fields the app reads are typed. */
+export type HermesCronJobRecord = {
+  id: string;
+  name: string;
+  prompt: string;
+  schedule?: { kind?: string } | null;
+  schedule_display?: string | null;
+  repeat?: { times?: number | null; completed?: number } | null;
+  deliver?: string | null;
+  enabled?: boolean;
+  state?: string | null;
+  paused_reason?: string | null;
+  created_at?: string | null;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_status?: "ok" | "error" | null;
+  last_error?: string | null;
+  last_delivery_error?: string | null;
+  enabled_toolsets?: string[] | null;
+  script?: string | null;
+  no_agent?: boolean;
+};
+
+export async function hermesBridgeCronJobs() {
+  return invoke<HermesCronJobRecord[]>("hermes_bridge_cron_jobs");
+}
+
+export async function createHermesBridgeCronJob(input: {
+  prompt: string;
+  schedule: string;
+  name?: string;
+  deliver?: string;
+}) {
+  return invoke<HermesCronJobRecord>("create_hermes_bridge_cron_job", {
+    request: input,
+  });
+}
+
+export async function updateHermesBridgeCronJob(
+  jobId: string,
+  updates: Record<string, unknown>,
+) {
+  return invoke<HermesCronJobRecord>("update_hermes_bridge_cron_job", {
+    request: { jobId, updates },
+  });
+}
+
+export async function hermesBridgeCronJobAction(
+  jobId: string,
+  action: "pause" | "resume" | "trigger",
+) {
+  return invoke<HermesCronJobRecord>("hermes_bridge_cron_job_action", {
+    request: { jobId, action },
+  });
+}
+
+export async function deleteHermesBridgeCronJob(jobId: string) {
+  return invoke<unknown>("delete_hermes_bridge_cron_job", {
+    request: { jobId },
+  });
+}
+
 export async function updateHermesBridgeMessagingPlatform(input: {
   platformId: string;
   enabled?: boolean;

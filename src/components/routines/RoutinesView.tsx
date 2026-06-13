@@ -1,53 +1,67 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
-import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
+import { IconArrowUp } from "central-icons/IconArrowUp";
+import { IconCalendarRepeat } from "central-icons/IconCalendarRepeat";
+import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
-import { IconPause } from "central-icons/IconPause";
 import { IconPencil } from "central-icons/IconPencil";
-import { IconPlay } from "central-icons/IconPlay";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconPlay } from "central-icons/IconPlay";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
-import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { IconTrashCan } from "central-icons/IconTrashCan";
+import { IconZap } from "central-icons/IconZap";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listScheduledRunSessions,
   scheduledRunJobId,
-  sessionTimestamp,
 } from "../../lib/hermes-adapter";
 import {
+  createRoutine,
   listRoutines,
   pauseRoutine,
   removeRoutine,
   resumeRoutine,
   routineCreationPrompt,
-  routineEditPrompt,
   routineUnrestricted,
+  triggerRoutine,
+  updateRoutine,
   type RoutineJob,
+  type RoutineUpdates,
 } from "../../lib/hermes-routines";
-import { humanizeSchedule } from "../../lib/routine-schedule";
+import {
+  compactScheduleLabel,
+  humanizeSchedule,
+} from "../../lib/routine-schedule";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import type { HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { Dialog } from "../ui/Dialog";
-import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
+import { RoutineCreate, type RoutineCreateInput } from "./RoutineCreate";
+import { RoutineDetail } from "./RoutineDetail";
+import { formatRunTime, RoutineRunList } from "./RoutineRunList";
+import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 
 const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: HermesSessionInfo[] = [];
 
 type RoutinesViewProps = {
-  /** Hands off a composed agent prompt; the app opens a new June session with
-   * it so the agent does the actual cron-job creation — and, for edits, the
-   * cron-job update. */
+  /** The chat-first creation path: hands off a composed agent prompt and the
+   * app opens a new June session with it, so the agent does the cron-job
+   * setup (naming, scheduling) from a plain description. */
   onCreateRoutine: (prompt: string) => void;
-  onEditRoutine: (prompt: string) => void;
   /** Opens a past run (a cron-sourced Hermes session) in the agent view. */
   onOpenRun: (session: HermesSessionInfo) => void;
 };
 
+type Page =
+  | { kind: "list" }
+  | { kind: "create"; template?: RoutineTemplate }
+  | { kind: "detail"; jobId: string };
+
 export function RoutinesView({
   onCreateRoutine,
-  onEditRoutine,
   onOpenRun,
 }: RoutinesViewProps) {
   const [allRoutines, setRoutines] = useState<RoutineJob[]>([]);
@@ -57,14 +71,17 @@ export function RoutinesView({
   const [query, setQuery] = useState("");
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<RoutineJob | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-  // Per-routine mode choice for the routine being composed. Defaults to
+  const [page, setPage] = useState<Page>({ kind: "list" });
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [describeDraft, setDescribeDraft] = useState("");
+  const [refreshSpins, setRefreshSpins] = useState(0);
+  // Per-routine mode choice for the routine being described. Defaults to
   // sandboxed on every open: like the chat picker, Unrestricted is a
   // deliberate per-creation opt-in, never a sticky preference.
-  const [draftUnrestricted, setDraftUnrestricted] = useState(false);
-  const [editTarget, setEditTarget] = useState<RoutineJob | null>(null);
-  const [editDraft, setEditDraft] = useState("");
+  const [describeUnrestricted, setDescribeUnrestricted] = useState(false);
   const [allRuns, setRuns] = useState<HermesSessionInfo[]>([]);
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
 
@@ -85,8 +102,11 @@ export function RoutinesView({
       const jobs = await listRoutines();
       setRoutines(sortRoutines(jobs));
       setError(null);
+      return null;
     } catch (err) {
-      setError(messageFromError(err));
+      const message = messageFromError(err);
+      setError(message);
+      return message;
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -120,7 +140,7 @@ export function RoutinesView({
     return routines.filter((routine) =>
       // Match the displayed wording too, so "weekdays" finds a routine whose
       // stored schedule is "0 9 * * 1-5".
-      `${routine.name} ${routine.prompt_preview} ${routine.schedule} ${humanizeSchedule(routine.schedule)}`
+      `${routine.name} ${routine.prompt_preview} ${routine.schedule} ${humanizeSchedule(routine.schedule)} ${compactScheduleLabel(routine.schedule)}`
         .toLowerCase()
         .includes(normalized),
     );
@@ -161,18 +181,61 @@ export function RoutinesView({
     });
   }
 
-  async function togglePaused(routine: RoutineJob) {
+  async function toggleActive(routine: RoutineJob) {
     markBusy(routine.job_id, true);
     try {
       if (routine.state === "paused") await resumeRoutine(routine.job_id);
       else await pauseRoutine(routine.job_id);
       // loadRoutines manages the error banner itself (clears on success,
       // sets on failure) — clearing here would mask a failed reload.
-      await loadRoutines();
+      const reloadError = await loadRoutines();
+      setDetailError(reloadError);
     } catch (err) {
       setError(messageFromError(err));
+      setDetailError(messageFromError(err));
     } finally {
       markBusy(routine.job_id, false);
+    }
+  }
+
+  async function runNow(routine: RoutineJob) {
+    markBusy(routine.job_id, true);
+    try {
+      await triggerRoutine(routine.job_id);
+      setDetailError(null);
+    } catch (err) {
+      setDetailError(messageFromError(err));
+      throw err;
+    } finally {
+      markBusy(routine.job_id, false);
+    }
+  }
+
+  async function saveRoutine(jobId: string, updates: RoutineUpdates) {
+    setSaving(true);
+    try {
+      await updateRoutine(jobId, updates);
+      await loadRoutines();
+      setDetailError(null);
+    } catch (err) {
+      setDetailError(messageFromError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitCreate(input: RoutineCreateInput) {
+    setCreating(true);
+    try {
+      const created = await createRoutine(input);
+      await loadRoutines();
+      setCreateError(null);
+      setDetailError(null);
+      setPage({ kind: "detail", jobId: created.job_id });
+    } catch (err) {
+      setCreateError(messageFromError(err));
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -180,43 +243,126 @@ export function RoutinesView({
     const routine = pendingDelete;
     if (!routine) return;
     // ConfirmDialog swallows a thrown error (it only keeps itself open), so
-    // route failures to the banner like togglePaused does instead.
+    // route failures to the banner like toggleActive does instead.
     try {
       await removeRoutine(routine.job_id);
       setRoutines((prev) =>
         prev.filter((entry) => entry.job_id !== routine.job_id),
       );
       setError(null);
+      setPage((current) =>
+        current.kind === "detail" && current.jobId === routine.job_id
+          ? { kind: "list" }
+          : current,
+      );
     } catch (err) {
       setError(messageFromError(err));
+      setDetailError(messageFromError(err));
     }
   }
 
-  function openCreate() {
-    setDraft("");
-    setDraftUnrestricted(false);
-    setCreateOpen(true);
-  }
-
-  function openEdit(routine: RoutineJob) {
-    setEditDraft("");
-    setEditTarget(routine);
-  }
-
-  function submitEdit() {
-    const routine = editTarget;
-    const changes = editDraft.trim();
-    if (!routine || !changes) return;
-    setEditTarget(null);
-    onEditRoutine(routineEditPrompt(routine, changes));
-  }
-
-  function submitCreate() {
-    const description = draft.trim();
+  function submitDescribe() {
+    const description = describeDraft.trim();
     if (!description) return;
-    setCreateOpen(false);
+    setDescribeDraft("");
     onCreateRoutine(
-      routineCreationPrompt(description, { unrestricted: draftUnrestricted }),
+      routineCreationPrompt(description, {
+        unrestricted: describeUnrestricted,
+      }),
+    );
+  }
+
+  function openCreate(template?: RoutineTemplate) {
+    setCreateError(null);
+    setPage({ kind: "create", template });
+  }
+
+  function openDetail(routine: RoutineJob) {
+    setDetailError(null);
+    setPage({ kind: "detail", jobId: routine.job_id });
+  }
+
+  function refreshNow() {
+    setRefreshSpins((spins) => spins + 1);
+    void refresh();
+  }
+
+  const detailRoutine =
+    page.kind === "detail" ? (routinesById.get(page.jobId) ?? null) : null;
+
+  // A detail page whose routine vanished (deleted from another surface,
+  // emptied by a reload) falls back to the list instead of a dead end.
+  useEffect(() => {
+    if (page.kind === "detail" && !loading && !detailRoutine) {
+      setPage({ kind: "list" });
+    }
+  }, [page.kind, loading, detailRoutine]);
+
+  // The describe bar is the chat composer, anchored to the bottom of the
+  // panel like the agent session pages — always there, so describing a
+  // routine to June never needs a button first.
+  const describeBar = (
+    <DescribeBar
+      draft={describeDraft}
+      unrestricted={describeUnrestricted}
+      onDraftChange={setDescribeDraft}
+      onUnrestrictedChange={setDescribeUnrestricted}
+      onSubmit={submitDescribe}
+    />
+  );
+
+  const dialogs = (
+    <>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        onConfirm={confirmDelete}
+        title={`Delete “${pendingDelete?.name ?? ""}”?`}
+        description="June will stop running this routine. This can’t be undone."
+        confirmLabel="Delete"
+        destructive
+      />
+    </>
+  );
+
+  if (page.kind === "create") {
+    return (
+      <>
+        <RoutineCreate
+          template={page.template}
+          creating={creating}
+          error={createError}
+          onBack={() => setPage({ kind: "list" })}
+          onCreate={(input) => void submitCreate(input)}
+        />
+        {describeBar}
+        {dialogs}
+      </>
+    );
+  }
+
+  if (page.kind === "detail" && detailRoutine) {
+    const routineRuns = runs.filter(
+      (run) => scheduledRunJobId(run.id) === detailRoutine.job_id,
+    );
+    return (
+      <>
+        <RoutineDetail
+          key={detailRoutine.job_id}
+          routine={detailRoutine}
+          runs={routineRuns}
+          busy={busyIds.has(detailRoutine.job_id)}
+          saving={saving}
+          error={detailError}
+          onBack={() => setPage({ kind: "list" })}
+          onSave={(updates) => saveRoutine(detailRoutine.job_id, updates)}
+          onToggleActive={() => void toggleActive(detailRoutine)}
+          onRunNow={() => runNow(detailRoutine)}
+          onDelete={() => setPendingDelete(detailRoutine)}
+          onOpenRun={onOpenRun}
+        />
+        {dialogs}
+      </>
     );
   }
 
@@ -237,7 +383,7 @@ export function RoutinesView({
         <button
           type="button"
           className="primary-action primary-solid"
-          onClick={openCreate}
+          onClick={() => openCreate()}
         >
           <IconPlusMedium size={13} />
           New routine
@@ -257,14 +403,18 @@ export function RoutinesView({
           </label>
           <button
             type="button"
-            className="routines-refresh"
+            className="icon-button routines-refresh"
             aria-label="Refresh"
             aria-busy={refreshing}
-            data-busy={refreshing || undefined}
             disabled={refreshing}
-            onClick={() => void refresh()}
+            title="Refresh"
+            onClick={refreshNow}
           >
-            <IconArrowRotateClockwise size={14} />
+            <IconArrowRotateClockwise
+              size={14}
+              className="balance-refresh-icon"
+              style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
+            />
           </button>
         </div>
       ) : null}
@@ -276,44 +426,35 @@ export function RoutinesView({
           <p>Loading routines…</p>
         </div>
       ) : routines.length === 0 ? (
-        <EmptyState
-          label="Create your first routine"
-          icon={<IconArrowsRepeat size={28} />}
-          title="Put June on a schedule"
-          description="Describe something June should do every morning, every hour, or at a specific time. A routine runs it for you automatically."
-          action={
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              onClick={openCreate}
-            >
-              <IconPlusMedium size={13} />
-              New routine
-            </button>
-          }
-        />
+        <div className="routines-hero">
+          <TemplateGrid onPick={openCreate} />
+        </div>
       ) : filtered.length === 0 ? (
         <div className="folders-empty">
           <p>No routines match “{query.trim()}”.</p>
         </div>
       ) : (
-        <ul className="routines-list" role="list">
+        <ul className="routines-list" role="list" aria-label="Routines">
           {filtered.map((routine) => (
             <RoutineRow
               key={routine.job_id}
               routine={routine}
               busy={busyIds.has(routine.job_id)}
-              onTogglePaused={() => void togglePaused(routine)}
-              onEdit={() => openEdit(routine)}
+              onOpen={() => openDetail(routine)}
+              onRunNow={() =>
+                void runNow(routine).catch((err) =>
+                  setError(messageFromError(err)),
+                )
+              }
               onDelete={() => setPendingDelete(routine)}
             />
           ))}
         </ul>
       )}
 
-      {/* Hidden while everything is empty (the routines empty state owns the
-       * page) and while a search matches no runs; shown otherwise, including
-       * when only orphaned runs of deleted routines remain. */}
+      {/* Hidden while everything is empty (the hero owns the page) and while
+       * a search matches no runs; shown otherwise, including when only
+       * orphaned runs of deleted routines remain. */}
       {!loading &&
       (query.trim()
         ? filteredRuns.length > 0
@@ -336,266 +477,216 @@ export function RoutinesView({
               No runs yet. When a routine fires, its session appears here.
             </p>
           ) : (
-            <ul className="routines-list routines-runs-list" role="list">
-              {filteredRuns.map((run) => (
-                <RunRow
-                  key={run.id}
-                  run={run}
-                  label={runLabel(run)}
-                  onOpen={() => onOpenRun(run)}
-                />
-              ))}
-            </ul>
+            <div className="routines-runs-panel">
+              <RoutineRunList
+                runs={filteredRuns}
+                label={runLabel}
+                onOpen={onOpenRun}
+              />
+            </div>
           )}
         </section>
       ) : null}
 
-      <Dialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        leading={<IconArrowsRepeat size={15} />}
-        title="New routine"
-        description="Tell June what to do and when. It opens a new session to set the routine up, and you can fine-tune the schedule there."
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setCreateOpen(false)}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={!draft.trim()}
-              onClick={submitCreate}
-            >
-              Ask June to set it up
-            </button>
-          </>
-        }
-      >
-        <textarea
-          className="routines-create-input"
-          rows={4}
-          placeholder="Every weekday at 9am, summarize my unread notes…"
-          value={draft}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              submitCreate();
-            }
-          }}
-        />
-        <div
-          className="routines-mode-picker"
-          role="radiogroup"
-          aria-label="What can this routine change?"
-        >
-          <button
-            type="button"
-            role="radio"
-            aria-checked={!draftUnrestricted}
-            onClick={() => setDraftUnrestricted(false)}
-          >
-            <IconShieldCheck size={14} aria-hidden />
-            Sandboxed
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={draftUnrestricted}
-            onClick={() => setDraftUnrestricted(true)}
-          >
-            <IconShieldCrossed size={14} aria-hidden />
-            Unrestricted
-          </button>
-        </div>
-        <p className="routines-mode-hint">
-          {draftUnrestricted
-            ? "When it fires, June can run commands and change any file your account can."
-            : "The routine can read the web, use memory, and message you. It cannot run commands or change your files."}
-        </p>
-      </Dialog>
+      {!loading && routines.length > 0 && !query.trim() ? (
+        <section className="routines-starters" aria-label="Starter routines">
+          <header className="routines-section-header">
+            <h2>Starter routines</h2>
+          </header>
+          <TemplateGrid onPick={openCreate} />
+        </section>
+      ) : null}
 
-      <Dialog
-        open={editTarget !== null}
-        onClose={() => setEditTarget(null)}
-        leading={<IconPencil size={15} />}
-        title={`Edit “${editTarget?.name ?? ""}”`}
-        description="Tell June what should change: the schedule, the task, or the name. It opens a session to apply the update."
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setEditTarget(null)}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={!editDraft.trim()}
-              onClick={submitEdit}
-            >
-              Ask June to update it
-            </button>
-          </>
-        }
-      >
-        <textarea
-          className="routines-create-input"
-          rows={4}
-          placeholder="Run at 7am instead, and only on weekdays…"
-          value={editDraft}
-          onChange={(event) => setEditDraft(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              submitEdit();
-            }
-          }}
-        />
-      </Dialog>
-
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        onClose={() => setPendingDelete(null)}
-        onConfirm={confirmDelete}
-        title={`Delete “${pendingDelete?.name ?? ""}”?`}
-        description="June will stop running this routine. This can’t be undone."
-        confirmLabel="Delete"
-        destructive
-      />
+      {describeBar}
+      {dialogs}
     </section>
+  );
+}
+
+function TemplateGrid({
+  onPick,
+}: {
+  onPick: (template: RoutineTemplate) => void;
+}) {
+  return (
+    <ul className="routines-template-grid" role="list">
+      {ROUTINE_TEMPLATES.map((template) => (
+        <li key={template.id} className="routines-template-card">
+          <span className="routines-template-icon" aria-hidden>
+            <template.icon size={15} />
+          </span>
+          <div className="routines-template-body">
+            <span className="routines-template-name">
+              {template.name}
+              {template.unrestricted ? (
+                // The list rows spell the badge out; cards just flash the
+                // warm shield and let the tip carry the explanation.
+                <HoverTip
+                  tip="This starter needs full access: when it fires, June can run commands and change any file your account can. You confirm that before creating it."
+                  className="routines-item-badge routines-item-badge-warm routines-badge-compact"
+                  tabIndex={0}
+                  aria-label="Unrestricted"
+                >
+                  <IconShieldCrossed size={11} aria-hidden />
+                </HoverTip>
+              ) : null}
+            </span>
+            <p className="routines-template-description">
+              {template.description}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="icon-button routines-template-add"
+            aria-label={`Add ${template.name}`}
+            onClick={() => onPick(template)}
+          >
+            <IconPlusMedium size={13} aria-hidden />
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 function RoutineRow({
   routine,
   busy,
-  onTogglePaused,
-  onEdit,
+  onOpen,
+  onRunNow,
   onDelete,
 }: {
   routine: RoutineJob;
   busy: boolean;
-  onTogglePaused: () => void;
-  onEdit: () => void;
+  onOpen: () => void;
+  onRunNow: () => void;
   onDelete: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const paused = routine.state === "paused";
   const completed = routine.state === "completed";
-  const meta = [
-    humanizeSchedule(routine.schedule),
-    completed
-      ? routine.last_run_at
-        ? `Last ran ${formatRunTime(routine.last_run_at)}`
-        : null
-      : routine.next_run_at
-        ? `Next ${formatRunTime(routine.next_run_at)}`
-        : null,
-  ].filter(Boolean);
+  const status = paused ? "Paused" : completed ? "Completed" : null;
+  const activity =
+    completed && routine.last_run_at
+      ? `Last ran ${formatRunTime(routine.last_run_at)}`
+      : null;
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function close(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   return (
-    <li className="routines-item" data-state={routine.state}>
-      <span className="routines-item-icon" aria-hidden>
-        <IconArrowsRepeat size={14} />
-      </span>
-      <div className="routines-item-body">
-        <span className="routines-item-title">
-          <span className="routines-item-name">{routine.name}</span>
-          {routineUnrestricted(routine) ? (
-            <HoverTip
-              tip="This routine runs with full access: when it fires, June can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
-              className="routines-item-badge routines-item-badge-warm"
-              tabIndex={0}
+    <li
+      className="routines-item"
+      data-state={routine.state}
+      data-menu-open={menuOpen || undefined}
+    >
+      <button type="button" className="routines-item-open" onClick={onOpen}>
+        <span className="routines-item-icon" aria-hidden>
+          <IconZap size={14} />
+        </span>
+        <span className="routines-item-body">
+          <span className="routines-item-title">
+            <span className="routines-item-name">{routine.name}</span>
+            {routineUnrestricted(routine) ? (
+              <HoverTip
+                tip="This routine runs with full access: when it fires, June can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
+                className="routines-item-badge routines-item-badge-warm"
+                tabIndex={0}
+              >
+                <IconShieldCrossed size={11} aria-hidden />
+                Unrestricted
+              </HoverTip>
+            ) : null}
+            {routine.last_status === "error" ? (
+              <span className="routines-item-badge routines-item-badge-error">
+                Last run failed
+              </span>
+            ) : null}
+          </span>
+        </span>
+        <span className="routines-item-meta" aria-label="Routine metadata">
+          <span className="routine-meta-pill">
+            <IconCalendarRepeat size={12} aria-hidden />
+            {compactScheduleLabel(routine.schedule)}
+          </span>
+          {activity ? (
+            <span className="routine-meta-pill">{activity}</span>
+          ) : null}
+          {status ? <span className="routine-meta-pill">{status}</span> : null}
+        </span>
+      </button>
+      <span className="routines-item-actions">
+        <span className="routines-item-menu-wrap" ref={menuRef}>
+          <button
+            type="button"
+            className="icon-button routines-item-menu-trigger"
+            aria-label={`Actions for ${routine.name}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <IconDotGrid1x3Horizontal size={13} />
+          </button>
+          {menuOpen ? (
+            <span
+              className="sidebar-identity-menu routines-action-menu"
+              role="menu"
             >
-              <IconShieldCrossed size={11} aria-hidden />
-              Unrestricted
-            </HoverTip>
-          ) : null}
-          {paused ? <span className="routines-item-badge">Paused</span> : null}
-          {completed ? (
-            <span className="routines-item-badge">Completed</span>
-          ) : null}
-          {routine.last_status === "error" ? (
-            <span className="routines-item-badge routines-item-badge-error">
-              Last run failed
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpen();
+                }}
+              >
+                <IconPencil size={14} />
+                Edit
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={busy || routine.state !== "scheduled"}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onRunNow();
+                }}
+              >
+                <IconPlay size={14} />
+                Run now
+              </button>
+              <span className="context-menu-separator" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="destructive"
+                disabled={busy}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onDelete();
+                }}
+              >
+                <IconTrashCan size={14} />
+                Delete routine
+              </button>
             </span>
           ) : null}
         </span>
-        {routine.prompt_preview ? (
-          <p className="routines-item-prompt">{routine.prompt_preview}</p>
-        ) : null}
-      </div>
-      <span className="routines-item-meta">{meta.join(" · ")}</span>
-      <span className="routines-item-actions">
-        <button
-          type="button"
-          className="dictation-row-act"
-          aria-label="Edit"
-          disabled={busy}
-          onClick={onEdit}
-        >
-          <IconPencil size={14} />
-        </button>
-        {!completed ? (
-          <button
-            type="button"
-            className="dictation-row-act"
-            aria-label={paused ? "Resume" : "Pause"}
-            disabled={busy}
-            onClick={onTogglePaused}
-          >
-            {paused ? <IconPlay size={14} /> : <IconPause size={14} />}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="dictation-row-act dictation-row-act-danger"
-          aria-label="Delete"
-          disabled={busy}
-          onClick={onDelete}
-        >
-          <IconTrashCanSimple size={14} />
-        </button>
       </span>
-    </li>
-  );
-}
-
-/** One past run: a cron-sourced session, labeled with its routine's name and
- * opened in the agent view on click so the whole conversation is readable. */
-function RunRow({
-  run,
-  label,
-  onOpen,
-}: {
-  run: HermesSessionInfo;
-  label: string;
-  onOpen: () => void;
-}) {
-  const preview = run.preview?.trim();
-  return (
-    <li className="routines-run">
-      <button type="button" className="routines-run-button" onClick={onOpen}>
-        <span className="routines-item-icon" aria-hidden>
-          <IconArrowsRepeat size={14} />
-        </span>
-        <span className="routines-run-body">
-          <span className="routines-run-name">{label}</span>
-          {preview ? (
-            <span className="routines-run-preview">{preview}</span>
-          ) : null}
-        </span>
-        <span className="routines-run-time">
-          {formatRunTime(sessionTimestamp(run))}
-        </span>
-      </button>
     </li>
   );
 }
@@ -616,41 +707,160 @@ function timeValue(iso: string | null | undefined) {
   return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
 }
 
-function formatRunTime(iso: string) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  const now = new Date();
-  const time = date.toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  if (isSameDate(date, now)) return `today ${time}`;
-  const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1);
-  if (isSameDate(date, tomorrow)) return `tomorrow ${time}`;
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (isSameDate(date, yesterday)) return `yesterday ${time}`;
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function isSameDate(left: Date, right: Date) {
-  return (
-    left.getFullYear() === right.getFullYear() &&
-    left.getMonth() === right.getMonth() &&
-    left.getDate() === right.getDate()
-  );
-}
-
 function messageFromError(err: unknown) {
   if (err && typeof err === "object" && "message" in err) {
     const message = (err as { message?: unknown }).message;
     if (typeof message === "string" && message) return message;
   }
   return "Routines are unavailable. Is June's agent running?";
+}
+
+const DESCRIBE_MODE_OPTIONS = [
+  {
+    unrestricted: false,
+    icon: <IconShieldCheck size={16} aria-hidden />,
+    title: "Sandboxed",
+    description:
+      "The routine can read the web and memory but cannot touch your files.",
+  },
+  {
+    unrestricted: true,
+    icon: <IconShieldCrossed size={16} aria-hidden />,
+    title: "Unrestricted",
+    description: "When it fires, June can change any file your account can.",
+  },
+] as const;
+
+/** The chat experience as the routines pages' bottom bar: the agent
+ * composer's box, sandbox trigger, and send arrow (same classes, same
+ * affordances), permanently anchored like on the agent session pages.
+ * Submitting hands the description off to a real June session that sets the
+ * routine up. */
+function DescribeBar({
+  draft,
+  unrestricted,
+  onDraftChange,
+  onUnrestrictedChange,
+  onSubmit,
+}: {
+  draft: string;
+  unrestricted: boolean;
+  onDraftChange: (draft: string) => void;
+  onUnrestrictedChange: (unrestricted: boolean) => void;
+  onSubmit: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const rootRef = useRef<HTMLFormElement>(null);
+
+  // The sandbox menu dismisses on any outside click, like the composer's
+  // own popovers.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onPointer(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    return () => window.removeEventListener("mousedown", onPointer);
+  }, [menuOpen]);
+
+  return (
+    <div className="routines-describe">
+      <form
+        ref={rootRef}
+        className="routines-describe-composer"
+        aria-label="Describe a routine to June"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div className="agent-composer-box">
+          <textarea
+            rows={1}
+            value={draft}
+            placeholder="Have June help you set up a routine"
+            onChange={(event) => onDraftChange(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+          />
+          <div className="agent-composer-toolbar">
+            <button
+              type="button"
+              className="agent-sandbox-trigger"
+              data-unrestricted={unrestricted ? "true" : undefined}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              title="Change what this routine can touch"
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              {unrestricted ? (
+                <IconShieldCrossed size={14} aria-hidden />
+              ) : (
+                <IconShieldCheck size={14} aria-hidden />
+              )}
+              {unrestricted ? "Unrestricted" : "Sandboxed"}
+              <IconChevronDownSmall size={12} aria-hidden />
+            </button>
+            <div className="agent-composer-actions">
+              <button
+                type="submit"
+                className="agent-composer-send"
+                disabled={!draft.trim()}
+                aria-label="Ask June to set it up"
+              >
+                <IconArrowUp size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+        {menuOpen ? (
+          <div
+            className="agent-sandbox-menu"
+            role="menu"
+            aria-label="What can this routine change?"
+          >
+            <p className="agent-sandbox-menu-title">
+              What can this routine change?
+            </p>
+            {DESCRIBE_MODE_OPTIONS.map((option) => (
+              <button
+                key={option.title}
+                type="button"
+                role="menuitemradio"
+                aria-checked={unrestricted === option.unrestricted}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onUnrestrictedChange(option.unrestricted);
+                }}
+              >
+                {option.icon}
+                <span className="agent-sandbox-option">
+                  <span className="agent-sandbox-option-title">
+                    {option.title}
+                  </span>
+                  <span className="agent-sandbox-option-desc">
+                    {option.description}
+                  </span>
+                </span>
+                {unrestricted === option.unrestricted ? (
+                  <IconCheckmark1Small
+                    size={16}
+                    aria-hidden
+                    className="agent-sandbox-option-check"
+                  />
+                ) : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </form>
+    </div>
+  );
 }

@@ -5199,6 +5199,19 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* Warm add-on: the indicator and selected label go terracotta. Callers pass
+ * the class while the armed option warrants the accent (the routines access
+ * picker uses it for Unrestricted). After the base selected-state rules on
+ * purpose: same specificity, so the warm color must come later to win. */
+.segmented-warm .segmented-indicator {
+  background: var(--warm-soft);
+}
+
+.segmented-warm button[aria-pressed="true"],
+.segmented-warm button[aria-pressed="true"] > svg {
+  color: var(--warm-strong);
+}
+
 /* Editor body ------------------------------------------------------- */
 
 .editor-content {
@@ -8098,7 +8111,8 @@ input:focus-visible,
   width: 100%;
   max-width: var(--content-max);
   margin: 0 auto;
-  padding: var(--sp-10) 0 var(--sp-8);
+  /* The bottom padding clears the describe bar fixed over the page tail. */
+  padding: var(--sp-10) 0 140px;
   display: flex;
   flex-direction: column;
   gap: var(--sp-6);
@@ -8113,45 +8127,6 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
-/* Per-routine mode picker in the create dialog: the same Sandboxed vs
- * Unrestricted split as the chat composer's shield menu, rendered as a
- * two-option radio row. The selected option borrows the sandbox trigger's
- * warm accent when Unrestricted is armed. */
-.routines-mode-picker {
-  margin-top: var(--sp-3);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  padding: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-}
-
-.routines-mode-picker button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  padding: 3px var(--sp-3);
-  border: 0;
-  border-radius: calc(var(--r-md) - 2px);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-family: inherit;
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-.routines-mode-picker button[aria-checked="true"] {
-  background: color-mix(in oklch, var(--muted) 70%, transparent);
-  color: var(--foreground);
-}
-
-.routines-mode-picker button[aria-checked="true"]:last-child {
-  background: var(--warm-soft);
-  color: var(--warm-strong);
-}
-
 .routines-mode-hint {
   margin: var(--sp-2) 0 0;
   color: var(--muted-foreground);
@@ -8159,48 +8134,8 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-/* Warm twin of .routines-item-badge for routines that run with full machine
- * access (same family as the session bar's Unrestricted badge). */
-.routines-item-badge-warm {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  background: var(--warm-soft);
-  color: var(--warm-strong);
-}
-
-.routines-item-badge-warm svg {
-  color: var(--warm-strong);
-}
-
 .routines-refresh {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
-}
-
-.routines-refresh:hover {
-  background: color-mix(in oklch, var(--muted) 60%, transparent);
-  color: var(--foreground);
-}
-
-.routines-refresh[data-busy] svg {
-  animation: spinner-spin 0.8s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .routines-refresh[data-busy] svg {
-    animation: none;
-  }
+  flex: 0 0 auto;
 }
 
 .routines-list {
@@ -8212,14 +8147,15 @@ input:focus-visible,
   list-style: none;
 }
 
+/* Each row is one button (icon | body | metadata) that opens the routine's
+ * detail page, with the overflow menu as a sibling so row actions never nest
+ * inside the navigation button. */
 .routines-item {
   position: relative;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--sp-3);
-  margin: 0 calc(-1 * var(--sp-4));
-  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  align-items: stretch;
+  margin: 0;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   transition: background-color var(--t-fast) var(--ease-out);
 }
@@ -8227,6 +8163,27 @@ input:focus-visible,
 .routines-item:hover,
 .routines-item:focus-within {
   background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+.routines-item-open {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.routines-item-open:focus-visible {
+  outline: none;
 }
 
 .routines-item-icon {
@@ -8283,8 +8240,221 @@ input:focus-visible,
   color: var(--destructive);
 }
 
-.routines-item-prompt {
+/* Warm twin of .routines-item-badge for routines that run with full machine
+ * access (same family as the session bar's Unrestricted badge). Declared
+ * after the base badge on purpose — same specificity, so the warm fill must
+ * come later to win. */
+.routines-item-badge-warm {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.routines-item-badge-warm svg {
+  color: var(--warm-strong);
+}
+
+/* Icon-only spelling of a badge, for tight spots like template cards. */
+.routines-badge-compact {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+}
+
+.routines-item-meta {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  padding-top: 1px;
+  max-width: min(52vw, 520px);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.routines-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-4) 0 0;
+}
+
+.routines-item-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.routines-item-menu-trigger {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.routines-item:hover .routines-item-menu-trigger,
+.routines-item:focus-within .routines-item-menu-trigger,
+.routines-item[data-menu-open="true"] .routines-item-menu-trigger {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.routines-action-menu {
+  top: calc(100% + var(--sp-1));
+  right: 0;
+  bottom: auto;
+  left: auto;
+  min-width: 172px;
+  box-shadow:
+    0 12px 32px oklch(0% 0 none / 12%),
+    0 2px 6px oklch(0% 0 none / 6%);
+}
+
+.routines-action-menu .destructive {
+  color: var(--destructive);
+}
+
+.routines-action-menu .destructive:hover {
+  background: color-mix(in oklch, var(--destructive-soft) 55%, transparent);
+}
+
+.routines-action-menu .destructive > svg {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--muted-foreground));
+}
+
+/* Empty-state hero: the starter gallery owns the page until the first
+ * routine exists. */
+.routines-hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-top: var(--sp-6);
+}
+
+/* The describe bar IS the chat composer: same box, sandbox trigger, and
+ * send classes as the agent workspace, permanently anchored to the bottom
+ * of the main panel (same axis math as .editor-footer) like on the agent
+ * session pages. */
+.routines-describe {
+  position: fixed;
+  left: calc(var(--sidebar-w-current, var(--sidebar-w)) + var(--sp-8));
+  right: calc(var(--sp-3) + var(--sp-8));
+  bottom: calc(var(--sp-3) + var(--sp-5) * 2);
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.routines-describe-composer {
+  pointer-events: auto;
+  position: relative;
+  width: min(var(--content-max), 100%);
+}
+
+.routines-describe-composer .agent-composer-box {
+  max-width: none;
+  box-shadow: var(--shadow-lg);
+}
+
+/* Mirrors `.agent-composer textarea` — the box is reused outside the
+ * composer form, so the field styling comes along here. */
+.routines-describe-composer textarea {
+  width: 100%;
+  resize: none;
+  border: 0;
+  padding: 6px var(--sp-5);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.5;
+  outline: none;
+}
+
+.routines-describe-composer textarea::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* The flyout hugs the panel bottom, so the sandbox menu opens upward. */
+.routines-describe-composer .agent-sandbox-menu {
+  top: auto;
+  bottom: calc(100% + var(--sp-1));
+}
+
+/* Starter templates: settings-card-shaped tiles with a quiet Add action. */
+.routines-templates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.routines-starters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
+}
+
+.routines-section-header h2 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
   margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-xl);
+  line-height: var(--control-lg);
+}
+
+.routines-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routines-template-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+}
+
+.routines-template-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+}
+
+.routines-template-body {
+  min-width: 0;
+}
+
+.routines-template-name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.routines-template-description {
+  margin: 2px 0 0;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
@@ -8292,60 +8462,318 @@ input:focus-visible,
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  overflow-wrap: anywhere;
 }
 
-.routines-item-meta {
-  padding-top: 3px;
+.routines-template-add {
+  align-self: center;
+}
+
+/* Routine detail/editor: the folder-detail shape — a sticky breadcrumb bar
+ * carrying the actions (run now, pause/resume, save), with the editable name
+ * and settings-style cards in a constrained column beneath it. */
+.routine-detail {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.routine-detail-content {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  /* The bottom padding clears the describe bar fixed over the page tail. */
+  padding: var(--sp-8) 0 140px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.routine-detail-name {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: var(--fs-2xl);
+  line-height: 1.2;
+}
+
+.routine-detail-name:focus {
+  outline: none;
+}
+
+.routine-detail-name::placeholder {
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.routines-item:hover .routines-item-meta,
-.routines-item:focus-within .routines-item-meta {
-  opacity: 0;
+.routine-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
 }
 
-.routines-item-actions {
-  position: absolute;
-  z-index: 2;
-  top: var(--sp-3);
-  right: var(--sp-4);
+.routine-detail-title-row .routine-detail-name {
+  flex: 1 1 auto;
+}
+
+.routine-detail-active-control {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+}
+
+.routine-detail-active-control[data-state="active"] {
+  color: var(--warm-strong);
+}
+
+.routine-detail-active-control[data-state="active"]
+  .switch[data-state="checked"] {
+  background: var(--warm-strong);
+}
+
+.routine-detail-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* .btn is 28px tall against .primary-action's 32px; level the action rows
+ * that mix them. */
+.routine-detail-actions .btn,
+.dialog-footer .btn {
+  height: var(--control-lg);
+}
+
+.routine-detail-menu-trigger {
+  width: var(--control-lg);
+  padding: 0;
+  justify-content: center;
+}
+
+.routine-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: 0;
+}
+
+.routine-meta-pill {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
-  min-height: 28px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.routines-item:hover .routines-item-actions,
-.routines-item:focus-within .routines-item-actions {
-  opacity: 1;
-  pointer-events: auto;
+.routine-meta-pill svg {
+  flex: 0 0 auto;
 }
 
-.routines-create-input {
+.routine-meta-pill-warm {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.routine-meta-pill-warm svg {
+  color: var(--warm-strong);
+}
+
+.routine-detail-failure {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--destructive) 10%, transparent);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.routine-detail-tabs {
+  --routine-tabs-indicator-x: 0px;
+  --routine-tabs-indicator-w: 0px;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: var(--sp-5);
+  min-height: 34px;
+  margin-top: var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.routine-detail-tabs::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: var(--routine-tabs-indicator-w);
+  height: 1px;
+  background: var(--warm-strong);
+  transform: translateX(var(--routine-tabs-indicator-x));
+  transition:
+    transform var(--t-med) var(--ease-out),
+    width var(--t-med) var(--ease-out);
+}
+
+.routine-detail-tabs button {
+  position: relative;
+  min-height: 34px;
+  padding: 0 0 var(--sp-2);
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease-out),
+    opacity var(--t-fast) var(--ease-out);
+}
+
+.routine-detail-tabs button:hover {
+  color: var(--foreground);
+}
+
+.routine-detail-tabs button[aria-selected="true"] {
+  color: var(--foreground);
+}
+
+.routine-detail-tabs button:focus-visible {
+  outline: none;
+  color: var(--foreground);
+}
+
+.routine-detail-body {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--sp-4);
+}
+
+/* The prompt editor is its own card: a settings-card-shaped text box that
+ * starts at one line and grows with its content (GrowingTextarea drives the
+ * height); past the cap it scrolls. */
+.routine-detail-instructions {
   width: 100%;
-  min-height: 96px;
-  padding: var(--sp-3);
+  max-height: 480px;
+  padding: var(--sp-4) var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  resize: vertical;
+  overflow-y: auto;
+}
+
+.routine-detail-instructions:focus {
+  outline: none;
+  border-color: var(--ring);
+}
+
+.routine-detail-script-note {
+  margin: var(--sp-4) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Schedule picker: one row where the cadence select swaps its companion
+ * controls inline, with a humanized preview line confirming the pick. */
+.schedule-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.schedule-picker-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* The settings select trigger carries settings-row chrome (32px, 220px
+ * min-width, full border); in this row it reads as an inline dropdown
+ * instead — body-size text, no border until hovered, sized to content. The
+ * negative margin swallows the trigger's own left padding so its text sits
+ * flush with the card content (and the preview line below). */
+.schedule-picker .select-trigger {
+  min-width: 0;
+  height: var(--control-md);
+  margin-left: calc(-1 * var(--sp-2));
+  padding: 0 26px 0 var(--sp-2);
+  border-color: transparent;
+  font-size: var(--fs-md);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.schedule-picker .select-trigger:hover {
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+}
+
+.schedule-picker .select-trigger > svg {
+  right: var(--sp-2);
+}
+
+/* The popover normally spans its trigger; content-sized inline triggers are
+ * narrower than the longest option, so let it grow to fit instead. */
+.schedule-picker .select-popover {
+  right: auto;
+  width: max-content;
+  min-width: 100%;
+}
+
+.schedule-picker .select-popover button {
+  white-space: nowrap;
+}
+
+.schedule-picker input {
+  height: var(--control-md);
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: transparent;
   color: var(--foreground);
   font: inherit;
   font-size: var(--fs-md);
-  line-height: 1.45;
-  resize: vertical;
 }
 
-.routines-create-input:focus {
+.schedule-picker input:focus {
   outline: none;
   border-color: var(--ring);
+}
+
+.schedule-picker input[type="number"] {
+  width: 64px;
+}
+
+.schedule-picker-custom {
+  flex: 1;
+  min-width: 200px;
+}
+
+.schedule-picker-preview {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
 }
 
 /* Run history: past scheduled runs under the routines list. Rows reuse the
@@ -8355,7 +8783,7 @@ input:focus-visible,
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  margin-top: var(--sp-4);
+  margin-top: var(--sp-6);
 }
 
 .routines-runs-header h2 {
@@ -8365,8 +8793,8 @@ input:focus-visible,
   margin: 0;
   font-family: var(--font-serif);
   font-weight: 400;
-  font-size: var(--fs-2xl);
-  line-height: 1.2;
+  font-size: var(--fs-xl);
+  line-height: var(--control-lg);
 }
 
 .routines-runs-empty {
@@ -8374,6 +8802,25 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
+}
+
+.routines-runs-panel {
+  padding: var(--sp-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.routines-runs-card {
+  padding: var(--sp-2);
+}
+
+.routines-runs-card .routines-runs-empty {
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.routines-runs-card .routines-run {
+  margin: 0;
 }
 
 .routines-run {
