@@ -1113,6 +1113,68 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
+  it("stops instantly even when the interrupt request hasn't resolved", async () => {
+    // Immediacy regression: the stopped UI must not wait on the gateway
+    // round-trip. Make session.interrupt hang forever and assert the Stop
+    // control still gives way to Send right away.
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      // The interrupt never settles — the UI must still reflect stopped.
+      if (method === "session.interrupt") {
+        return new Promise(() => {});
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "summarize the current page",
+      }),
+    );
+
+    const stop = await screen.findByRole("button", { name: "Stop June" });
+    await userEvent.click(stop);
+
+    // The interrupt request was fired (and never resolves)...
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "runtime-session-2",
+      }),
+    );
+    // ...yet the Stop control is already gone and the listener torn down,
+    // proving the stop did not block on the RPC.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
+    );
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
+  });
+
   it("keeps an opened thinking disclosure open while reasoning streams", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

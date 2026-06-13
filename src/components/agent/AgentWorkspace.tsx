@@ -2877,6 +2877,27 @@ export function AgentWorkspace({
   async function stopHermesSession(sessionId: string) {
     if (stoppingSessionIds.has(sessionId)) return;
     setStoppingSessionIds((current) => new Set(current).add(sessionId));
+
+    // Stop the UI FIRST, synchronously, before the interrupt RPC. Stopping
+    // must feel instant: the moment the user clicks, the session reads as
+    // stopped (the Stop control gives way to Send) rather than staying
+    // "working" until the gateway round-trip acks. Tearing down the
+    // per-session listener here also means a straggler "running" event
+    // arriving while the interrupt is in flight can't flip the session back
+    // to working (and on a gateway drop no terminal event ever comes to do
+    // it). The interrupt then fires below to actually halt the runtime agent.
+    sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    const activityCounts = clearSessionActivity(sessionId);
+    dispatchAgentSessionStatus({
+      sessionId,
+      title:
+        hermesSessionItems.find((session) => session.id === sessionId)
+          ?.title ?? "Agent session",
+      status: "cancelled",
+      summary: "Stopped.",
+      ...activityCounts,
+    });
+
     try {
       const runtimeSessionId = runtimeSessionIds[sessionId];
       if (runtimeSessionId) {
@@ -2888,23 +2909,9 @@ export function AgentWorkspace({
         });
       }
     } catch {
-      // Fall through to the local cleanup below.
+      // The UI already reflects stopped; a failed interrupt (gateway down)
+      // must not leave the session reading as working.
     } finally {
-      // Tear down the per-session gateway listener along with the flags —
-      // a straggler "running" event arriving after the interrupt would
-      // otherwise flip the session straight back to working (and on a
-      // gateway drop no terminal event ever comes to unregister it).
-      sessionGatewayUnlistenRef.current.get(sessionId)?.();
-      const activityCounts = clearSessionActivity(sessionId);
-      dispatchAgentSessionStatus({
-        sessionId,
-        title:
-          hermesSessionItems.find((session) => session.id === sessionId)
-            ?.title ?? "Agent session",
-        status: "cancelled",
-        summary: "Stopped.",
-        ...activityCounts,
-      });
       setStoppingSessionIds((current) => {
         const next = new Set(current);
         next.delete(sessionId);
