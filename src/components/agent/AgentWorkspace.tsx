@@ -3951,7 +3951,7 @@ export function AgentWorkspace({
               <p className="agent-hero-footnote">
                 {bridgeStarting
                   ? "Getting June ready…"
-                  : "June runs privately on your Mac."}
+                  : heroPrivacyFootnote(generationModel, generationPrivacyBadge)}
               </p>
             </div>
           ) : null}
@@ -4434,6 +4434,28 @@ function ComposerModelPopover({
       ) : null}
     </div>
   );
+}
+
+// Footnote under the hero composer. June's agent runs on the user's Mac, but
+// model calls go out to the provider, so the privacy claim has to match the
+// active model: encrypted into the enclave (E2EE), private (zero retention),
+// or anonymized (identity stripped, prompts may be retained). Name the model
+// so it's clear what's running; fall back to the plain line when none is known.
+function heroPrivacyFootnote(
+  model: VeniceModelDto | undefined,
+  badge: ModelPrivacyBadge | undefined,
+): string {
+  if (!model) return "June runs locally.";
+  switch (badge?.mode) {
+    case "e2ee":
+      return `June runs locally. Calls to ${model.name} are end-to-end encrypted.`;
+    case "private":
+      return `June runs locally. Calls to ${model.name} are private.`;
+    case "anonymous":
+      return `June runs locally. Calls to ${model.name} are anonymized.`;
+    default:
+      return `June runs locally. You're running ${model.name}.`;
+  }
 }
 
 // Shared content of the model hover cards: name with the privacy chip
