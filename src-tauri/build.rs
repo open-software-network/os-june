@@ -1,4 +1,4 @@
-const SYSTEM_AUDIO_HELPER_MIN_MACOS_VERSION: &str = "14.2";
+const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
 
 fn main() {
@@ -135,6 +135,8 @@ fn build_system_audio_helper() {
         return;
     }
     println!("cargo:rerun-if-changed={}", source.display());
+    let system_audio_min_macos_version = read_system_audio_min_macos_version(&manifest_dir)
+        .expect("system audio minimum macOS version should be configured");
 
     let helper_dir = manifest_dir
         .parent()
@@ -161,11 +163,7 @@ fn build_system_audio_helper() {
     let mut should_sign = false;
     if !executable_current {
         let mut command = std::process::Command::new("swiftc");
-        configure_swift_command(
-            &mut command,
-            &manifest_dir,
-            SYSTEM_AUDIO_HELPER_MIN_MACOS_VERSION,
-        );
+        configure_swift_command(&mut command, &manifest_dir, &system_audio_min_macos_version);
         let status = command
             .arg("-framework")
             .arg("Foundation")
@@ -213,7 +211,7 @@ fn build_system_audio_helper() {
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
-  <string>{SYSTEM_AUDIO_HELPER_MIN_MACOS_VERSION}</string>
+  <string>{system_audio_min_macos_version}</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSAudioCaptureUsageDescription</key>
@@ -233,6 +231,17 @@ fn build_system_audio_helper() {
     if should_sign || has_signing_identity() {
         sign_helper_app(&manifest_dir, &app_dir);
     }
+}
+
+fn read_system_audio_min_macos_version(manifest_dir: &std::path::Path) -> Option<String> {
+    let version_file = manifest_dir.join(SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE);
+    println!("cargo:rerun-if-changed={}", version_file.display());
+    let version = std::fs::read_to_string(version_file).ok()?;
+    let version = version.trim();
+    if version.is_empty() {
+        return None;
+    }
+    Some(version.to_string())
 }
 
 fn build_dictation_helper() {

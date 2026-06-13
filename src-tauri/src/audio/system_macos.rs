@@ -6,7 +6,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SYSTEM_AUDIO_MIN_MACOS_LABEL: &str = "14.2";
+const SYSTEM_AUDIO_MIN_MACOS_VERSION: &str =
+    include_str!("../../system-audio-min-macos-version.txt");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MacosVersion {
+    major: u32,
+    minor: u32,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct SystemAudioStats {
@@ -204,7 +211,8 @@ pub fn system_audio_readiness() -> SourceReadinessDto {
         let capture_available = os_supported && helper_available;
         let message = if !os_supported {
             Some(format!(
-                "System audio capture requires macOS {SYSTEM_AUDIO_MIN_MACOS_LABEL} or later. Use microphone-only recording on this Mac."
+                "System audio capture requires macOS {} or later. Use microphone-only recording on this Mac.",
+                system_audio_min_macos_version_label()
             ))
         } else if !helper_available {
             Some(
@@ -344,17 +352,31 @@ fn macos_version_supports_system_audio() -> bool {
 }
 
 fn macos_version_string_supports_system_audio(version: &str) -> bool {
+    let Some(current) = parse_macos_version(version) else {
+        return false;
+    };
+    let Some(minimum) = parse_macos_version(SYSTEM_AUDIO_MIN_MACOS_VERSION) else {
+        return false;
+    };
+    current >= minimum
+}
+
+fn system_audio_min_macos_version_label() -> &'static str {
+    SYSTEM_AUDIO_MIN_MACOS_VERSION.trim()
+}
+
+fn parse_macos_version(version: &str) -> Option<MacosVersion> {
     let mut parts = version.trim().split('.').map(|part| part.parse::<u32>());
     let major = match parts.next() {
         Some(Ok(major)) => major,
-        _ => return false,
+        _ => return None,
     };
     let minor = match parts.next() {
         Some(Ok(minor)) => minor,
-        Some(Err(_)) => return false,
+        Some(Err(_)) => return None,
         None => 0,
     };
-    major > 14 || (major == 14 && minor >= 2)
+    Some(MacosVersion { major, minor })
 }
 
 pub fn helper_app_path() -> PathBuf {
@@ -575,7 +597,12 @@ fn dump_helper_log(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
-    use super::macos_version_string_supports_system_audio;
+    use super::{macos_version_string_supports_system_audio, system_audio_min_macos_version_label};
+
+    #[test]
+    fn system_audio_support_label_uses_shared_minimum_version() {
+        assert_eq!(system_audio_min_macos_version_label(), "14.2");
+    }
 
     #[test]
     fn system_audio_support_starts_at_macos_14_2() {
