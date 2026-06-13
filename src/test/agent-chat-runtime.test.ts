@@ -831,6 +831,8 @@ describe("Agent chat runtime", () => {
   // exact shape reaches us as persisted assistant text and as live event text.
   const CREDITS_ERROR =
     "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}";
+  const CREDITS_ENVELOPE =
+    '{"data":null,"success":false,"error_code":4301,"message":"insufficient_credits"}';
 
   it("folds a live insufficient-credits error event into a credits notice", () => {
     const turns = buildAgentChatTurns(
@@ -862,6 +864,40 @@ describe("Agent chat runtime", () => {
 
     expect(turns[0]?.parts).toEqual([
       { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
+  });
+
+  it("folds a persisted Scribe insufficient-credits envelope into a credits notice", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: CREDITS_ENVELOPE,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "notice", kind: "credits", text: "insufficient_credits" },
+    ]);
+  });
+
+  it("folds a persisted bare insufficient-credits message into a credits notice", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: "Your balance is too low. Add funds to continue.",
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "notice",
+        kind: "credits",
+        text: "Your balance is too low. Add funds to continue.",
+      },
     ]);
   });
 
@@ -949,12 +985,20 @@ describe("Agent chat runtime", () => {
         {
           type: "subagent.tool",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page", tool_preview: "edit privacy.tsx" },
+          payload: {
+            subagent_id: "sa-1",
+            goal: "Write the privacy page",
+            tool_preview: "edit privacy.tsx",
+          },
         },
         {
           type: "subagent.complete",
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page", summary: "Done: 1 file written" },
+          payload: {
+            subagent_id: "sa-1",
+            goal: "Write the privacy page",
+            summary: "Done: 1 file written",
+          },
         },
       ],
     );
@@ -973,8 +1017,12 @@ describe("Agent chat runtime", () => {
       status: "running",
     });
     // The first subagent's row accumulated its activity then its summary.
-    expect((tools?.[0] as { text?: string }).text).toContain("edit privacy.tsx");
-    expect((tools?.[0] as { text?: string }).text).toContain("Done: 1 file written");
+    expect((tools?.[0] as { text?: string }).text).toContain(
+      "edit privacy.tsx",
+    );
+    expect((tools?.[0] as { text?: string }).text).toContain(
+      "Done: 1 file written",
+    );
   });
 
   it("keeps the goal label when a later subagent event omits it", () => {

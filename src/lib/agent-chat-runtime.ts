@@ -260,7 +260,18 @@ function creditsNotice(text: string): AgentChatNoticePart | undefined {
 function creditsNoticeFromTurnText(
   text: string,
 ): AgentChatNoticePart | undefined {
-  return /^\s*error\b/i.test(text) ? creditsNotice(text) : undefined;
+  if (/^\s*error\b/i.test(text)) return creditsNotice(text);
+  return looksLikeCreditFailurePayload(text) ? creditsNotice(text) : undefined;
+}
+
+function looksLikeCreditFailurePayload(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/^insufficient[-_\s]?credits[.!]?$/i.test(trimmed)) return true;
+  if (/^insufficient_available_balance[.!]?$/i.test(trimmed)) return true;
+  if (/^your balance is too low\b/i.test(trimmed)) return true;
+  if (/error_code['"]?\s*:\s*4301/i.test(trimmed)) return true;
+  return false;
 }
 
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
@@ -402,7 +413,8 @@ function appendLiveHermesEvents(
       const taskIndex =
         typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
       const key =
-        subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+        subagentId ??
+        (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
       const partId = `subagent:${key}`;
       const goal = stringValue(payload?.goal);
       const taskCountRaw = payload?.task_count;

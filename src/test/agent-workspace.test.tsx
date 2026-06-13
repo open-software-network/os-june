@@ -2832,6 +2832,38 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
   });
 
+  it("renders an out-of-credits notice when prompt submit rejects before a transcript turn exists", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(
+          new Error(
+            "Scribe agent provider failed: insufficient_credits: Your balance is too low. Add funds to continue.",
+          ),
+        );
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText(/June stopped because your balance ran out/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Scribe agent provider failed/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Add funds" }));
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+  });
+
   it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {
     const user = userEvent.setup();
     mocks.osAccountsTopUp.mockResolvedValue(undefined);

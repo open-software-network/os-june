@@ -160,7 +160,10 @@ import {
   pricingLabel,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { messageFromError } from "../../lib/errors";
+import {
+  isInsufficientCreditsMessage,
+  messageFromError,
+} from "../../lib/errors";
 import {
   displayedUserMessageText,
   issueReportPrompt,
@@ -2072,6 +2075,12 @@ export function AgentWorkspace({
     }
   }
 
+  function topUpCredits() {
+    void osAccountsTopUp().catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
+  }
+
   // The "+" picker routes through the same bridge import as drag-drop so the
   // agent always gets a real, readable path.
   async function pickAttachments() {
@@ -2891,8 +2900,8 @@ export function AgentWorkspace({
     dispatchAgentSessionStatus({
       sessionId,
       title:
-        hermesSessionItems.find((session) => session.id === sessionId)
-          ?.title ?? "Agent session",
+        hermesSessionItems.find((session) => session.id === sessionId)?.title ??
+        "Agent session",
       status: "cancelled",
       summary: "Stopped.",
       ...activityCounts,
@@ -3745,11 +3754,7 @@ export function AgentWorkspace({
               sessionUnrestricted(selectedHermesSessionId),
             )
           }
-          onTopUp={() =>
-            void osAccountsTopUp().catch((err: unknown) =>
-              setError(messageFromError(err)),
-            )
-          }
+          onTopUp={topUpCredits}
           onClarify={(part, answer) =>
             void respondToClarify(
               selectedHermesSessionId,
@@ -3821,11 +3826,7 @@ export function AgentWorkspace({
             onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
-            onTopUp={() =>
-              void osAccountsTopUp().catch((err: unknown) =>
-                setError(messageFromError(err)),
-              )
-            }
+            onTopUp={topUpCredits}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -3905,15 +3906,19 @@ export function AgentWorkspace({
           data-hero-leaving={heroLeaving ? "true" : undefined}
         >
           {error ? (
-            <AgentErrorBanner
-              message={error}
-              onRetry={
-                GATEWAY_CONNECTION_ERROR.test(error)
-                  ? () => void retryGatewayConnection()
-                  : undefined
-              }
-              onDismiss={() => setError(null)}
-            />
+            isInsufficientCreditsMessage(error) ? (
+              <CreditsNoticePart onTopUp={topUpCredits} />
+            ) : (
+              <AgentErrorBanner
+                message={error}
+                onRetry={
+                  GATEWAY_CONNECTION_ERROR.test(error)
+                    ? () => void retryGatewayConnection()
+                    : undefined
+                }
+                onDismiss={() => setError(null)}
+              />
+            )
           ) : null}
           <div className="agent-hero-heading">
             <h2 className="agent-hero-title">{heroGreeting}</h2>
@@ -3967,15 +3972,19 @@ export function AgentWorkspace({
                   onDismiss={galleryNoop}
                 />
               ) : error ? (
-                <AgentErrorBanner
-                  message={error}
-                  onRetry={
-                    GATEWAY_CONNECTION_ERROR.test(error)
-                      ? () => void retryGatewayConnection()
-                      : undefined
-                  }
-                  onDismiss={() => setError(null)}
-                />
+                isInsufficientCreditsMessage(error) ? (
+                  <CreditsNoticePart onTopUp={topUpCredits} />
+                ) : (
+                  <AgentErrorBanner
+                    message={error}
+                    onRetry={
+                      GATEWAY_CONNECTION_ERROR.test(error)
+                        ? () => void retryGatewayConnection()
+                        : undefined
+                    }
+                    onDismiss={() => setError(null)}
+                  />
+                )
               ) : null}
               {detailContent}
               {composer}

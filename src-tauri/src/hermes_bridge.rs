@@ -43,6 +43,7 @@ const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+const SCRIBE_ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -2577,7 +2578,9 @@ async fn handle_scribe_provider_connection(
                     let status = response.status;
                     let content_type = response.content_type.clone();
                     let body = response.collect_body().await.unwrap_or_default();
-                    match translate_context_overflow_error(&body) {
+                    match translate_context_overflow_error(&body)
+                        .or_else(|| translate_insufficient_credits_error(&body))
+                    {
                         Some(rewritten) => {
                             write_json_response(&mut stream, status, rewritten).await?;
                         }
@@ -2723,6 +2726,38 @@ fn translate_context_overflow_error(body: &[u8]) -> Option<serde_json::Value> {
             .to_string(),
     );
     Some(value)
+}
+
+/// Rewrites Scribe's insufficient-credit envelope into the OpenAI-style error
+/// shape Hermes's provider client expects for chat-completions failures. The
+/// status code stays 402, but the runtime now has an `error.message` to emit
+/// and persist, so the desktop UI can render its out-of-credits notice.
+fn translate_insufficient_credits_error(body: &[u8]) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if value.get("error_code")?.as_i64()? != SCRIBE_ERR_INSUFFICIENT_CREDITS {
+        return None;
+    }
+    let raw_message = value
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .unwrap_or("insufficient_credits");
+    let message = if raw_message == "insufficient_credits" {
+        "insufficient_credits: Your balance is too low. Add funds to continue.".to_string()
+    } else {
+        raw_message.to_string()
+    };
+    Some(serde_json::json!({
+        "error": {
+            "message": message.clone(),
+            "type": "insufficient_credits",
+            "code": "insufficient_credits",
+        },
+        "success": false,
+        "error_code": SCRIBE_ERR_INSUFFICIENT_CREDITS,
+        "message": message,
+    }))
 }
 
 /// The proxy's `/v1/models` listing. Hermes resolves a custom provider's
@@ -2954,6 +2989,42 @@ mod tests {
         assert!(message.starts_with("prompt_too_long"));
         assert_eq!(rewritten["error_code"], 2001);
         assert_eq!(rewritten["success"], false);
+    }
+
+    #[test]
+    fn insufficient_credits_rejection_translates_to_openai_error() {
+        // Hermes's provider client expects chat-completions failures in the
+        // OpenAI error shape. The Scribe envelope alone can disappear before
+        // the gateway emits a visible event.
+        let body =
+            br#"{"data":null,"success":false,"error_code":4301,"message":"insufficient_credits"}"#;
+
+        let rewritten = translate_insufficient_credits_error(body).expect("translated");
+
+        let message = rewritten["error"]["message"].as_str().expect("message");
+        assert!(message.contains("insufficient_credits"));
+        assert!(message.contains("Add funds"));
+        assert_eq!(rewritten["error"]["type"], "insufficient_credits");
+        assert_eq!(rewritten["error"]["code"], "insufficient_credits");
+        assert_eq!(rewritten["error_code"], 4301);
+        assert_eq!(rewritten["success"], false);
+    }
+
+    #[test]
+    fn non_credit_errors_do_not_translate_to_openai_billing_error() {
+        for body in [
+            br#"{"data":null,"success":false,"error_code":2001,"message":"prompt_too_long"}"#
+                .as_slice(),
+            br#"{"error":{"message":"rate limited"}}"#.as_slice(),
+            b"not json at all".as_slice(),
+            br#"{"error_code":"4301","message":"insufficient_credits"}"#.as_slice(),
+        ] {
+            assert!(
+                translate_insufficient_credits_error(body).is_none(),
+                "must not rewrite: {}",
+                String::from_utf8_lossy(body),
+            );
+        }
     }
 
     #[test]
