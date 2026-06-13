@@ -13,6 +13,7 @@ import {
 } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
+import { CreditBalanceBanner } from "../components/account/CreditBalanceBanner";
 import { TrialGate } from "../components/account/TrialGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
@@ -394,6 +395,14 @@ export function App() {
     try {
       await osAccountsLogout();
       handleAccountChanged({ signedIn: false, configured: account.configured });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleTopUpCredits() {
+    try {
+      await osAccountsTopUp();
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -1881,6 +1890,12 @@ export function App() {
       />
       <section className="main-panel">
         {accessibilityBlocked ? <PermissionBanner /> : null}
+        {!accessibilityBlocked ? (
+          <CreditBalanceBanner
+            account={account}
+            onTopUp={() => void handleTopUpCredits()}
+          />
+        ) : null}
         <div
           ref={mainPanelBodyRef}
           className="main-panel-body"
@@ -2210,11 +2225,7 @@ export function App() {
                         throw err;
                       }
                     }}
-                    onTopUp={() =>
-                      void osAccountsTopUp().catch((err: unknown) =>
-                        setError(messageFromError(err)),
-                      )
-                    }
+                    onTopUp={() => void handleTopUpCredits()}
                     onAssignFolder={(folderId) =>
                       void handleSetNoteFolder(selectedNote.id, folderId)
                     }

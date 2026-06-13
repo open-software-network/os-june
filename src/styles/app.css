@@ -6439,7 +6439,8 @@ input:focus-visible,
   }
 }
 
-.permission-banner-message {
+.permission-banner-message,
+.credit-balance-banner-message {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -6449,7 +6450,8 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.permission-banner-eyebrow {
+.permission-banner-eyebrow,
+.credit-balance-banner-eyebrow {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -6458,11 +6460,13 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.permission-banner-body {
+.permission-banner-body,
+.credit-balance-banner-body {
   color: var(--muted-foreground);
 }
 
-.permission-banner-actions {
+.permission-banner-actions,
+.credit-balance-banner-actions {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
