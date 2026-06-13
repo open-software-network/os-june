@@ -5,6 +5,12 @@ June ships signed, notarized macOS builds with in-app auto-updates through
 signatures, the DMG, and `latest.json` are published to the public
 `open-software-network/os-scribe-releases` repo.
 
+## macOS support
+
+June supports macOS 14.0 and later, including macOS 15. System audio capture
+uses Core Audio process taps and is available only on macOS 14.2 and later. On
+macOS 14.0 or 14.1, recording falls back to microphone-only mode.
+
 The first updater-capable build must be installed manually once — earlier builds
 ship without the updater, so they can't pull it in — and every release after that
 updates in place. Choose the release version per semver when you run the release
