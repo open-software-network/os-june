@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   checkForScribeUpdate,
   installScribeUpdate,
+  prepareScribeUpdate,
   type UpdaterUpdate,
 } from "../app/update-decision";
 
@@ -119,5 +120,37 @@ describe("installScribeUpdate", () => {
       contentLength: 100,
     });
     expect(relaunch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("prepareScribeUpdate", () => {
+  it("reports download progress and marks the update ready without relaunching", async () => {
+    const candidate = update(" Ready after relaunch. ");
+    const reportProgress = vi.fn();
+    const reportReady = vi.fn();
+
+    await prepareScribeUpdate({
+      update: candidate,
+      reportProgress,
+      reportReady,
+      reportFailure: vi.fn(),
+    });
+
+    expect(candidate.downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(reportProgress).toHaveBeenCalledWith({
+      state: "downloading",
+      downloadedBytes: 40,
+      contentLength: 100,
+    });
+    expect(reportProgress).toHaveBeenCalledWith({
+      state: "installing",
+      downloadedBytes: 40,
+      contentLength: 100,
+    });
+    expect(reportReady).toHaveBeenCalledWith({
+      update: candidate,
+      version: "0.2.0",
+      notes: "Ready after relaunch.",
+    });
   });
 });
