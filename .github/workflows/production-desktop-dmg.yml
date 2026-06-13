@@ -306,6 +306,66 @@ jobs:
           git pull --rebase origin main
           git push origin main
 
+      - name: Notify Slack on release
+        if: ${{ success() }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret is not configured; skipping Slack notification."
+            exit 0
+          fi
+          payload=$(cat <<EOF
+          {
+            "text": ":rocket: *June v${VERSION} released*",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": ":rocket: *June v${VERSION} released*"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Version:*\nv${VERSION}"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Download:*\n<https://github.com/open-software-network/os-june-releases/releases/latest/download/June_aarch64.dmg|macOS DMG (Apple Silicon)>"
+                  }
+                ]
+              },
+              {
+                "type": "actions",
+                "elements": [
+                  {
+                    "type": "button",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "View release"
+                    },
+                    "url": "https://github.com/open-software-network/os-june-releases/releases/tag/v${VERSION}"
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+          )
+          response=$(curl -sS -f -X POST \
+            -H "Content-Type: application/json" \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL" 2>&1) || {
+            echo "::warning::Slack notification failed: $response"
+            exit 0
+          }
+          echo "Slack notification sent successfully."
+
       - name: Summary
         run: |
           {
