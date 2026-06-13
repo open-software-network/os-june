@@ -27,6 +27,8 @@ const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+const LEGACY_GROWTH_LOOPS_JOB_NAME: &str = "June growth-loops watcher";
+const LEGACY_GROWTH_LOOPS_SCRIPT: &str = "loops-watcher.sh";
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
@@ -262,6 +264,9 @@ async fn start_hermes_bridge_inner(
         urlencoding::encode(&token)
     );
     let hermes_home = resolve_scribe_hermes_home(app)?;
+    if let Err(error) = pause_legacy_growth_loops_job(&hermes_home) {
+        eprintln!("failed to pause legacy Hermes growth-loops cron job: {error}");
+    }
     let command_resolution = resolve_hermes_command(app, &hermes_home).await?;
     let command = command_resolution.command;
     let _command_source = command_resolution.source;
@@ -1043,6 +1048,78 @@ display:
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
 }
 
+fn pause_legacy_growth_loops_job(hermes_home: &Path) -> Result<bool, String> {
+    let jobs_path = hermes_home.join("cron").join("jobs.json");
+    if !jobs_path.exists() {
+        return Ok(false);
+    }
+
+    let raw = fs::read_to_string(&jobs_path).map_err(|error| error.to_string())?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let Some(jobs) = value.get_mut("jobs").and_then(|jobs| jobs.as_array_mut()) else {
+        return Ok(false);
+    };
+
+    let paused_at = chrono::Utc::now().to_rfc3339();
+    let mut changed = false;
+    for job in jobs {
+        if !is_legacy_growth_loops_job(job) {
+            continue;
+        }
+        if job.get("enabled").and_then(|value| value.as_bool()) == Some(false)
+            && job.get("state").and_then(|value| value.as_str()) == Some("paused")
+        {
+            continue;
+        }
+        if let Some(object) = job.as_object_mut() {
+            object.insert("enabled".to_string(), serde_json::Value::Bool(false));
+            object.insert(
+                "state".to_string(),
+                serde_json::Value::String("paused".to_string()),
+            );
+            object.insert(
+                "paused_at".to_string(),
+                serde_json::Value::String(paused_at.clone()),
+            );
+            object.insert(
+                "paused_reason".to_string(),
+                serde_json::Value::String(
+                    "Disabled by June startup cleanup for legacy growth-loops watcher.".to_string(),
+                ),
+            );
+            changed = true;
+        }
+    }
+
+    if changed {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "updated_at".to_string(),
+                serde_json::Value::String(paused_at),
+            );
+        }
+        let formatted = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+        fs::write(&jobs_path, format!("{formatted}\n")).map_err(|error| error.to_string())?;
+    }
+
+    Ok(changed)
+}
+
+fn is_legacy_growth_loops_job(job: &serde_json::Value) -> bool {
+    let Some(object) = job.as_object() else {
+        return false;
+    };
+
+    object.get("name").and_then(|value| value.as_str()) == Some(LEGACY_GROWTH_LOOPS_JOB_NAME)
+        && object.get("script").and_then(|value| value.as_str()) == Some(LEGACY_GROWTH_LOOPS_SCRIPT)
+        && object.get("no_agent").and_then(|value| value.as_bool()) == Some(true)
+        && object
+            .get("prompt")
+            .and_then(|value| value.as_str())
+            .is_none_or(|value| value.trim().is_empty())
+}
+
 struct FilesystemRootCandidate {
     id: String,
     label: String,
@@ -1512,5 +1589,56 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn pauses_only_legacy_growth_loops_cron_job() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let cron_dir = home.path().join("cron");
+        fs::create_dir_all(&cron_dir).expect("cron dir");
+        fs::write(
+            cron_dir.join("jobs.json"),
+            r#"{
+  "jobs": [
+    {
+      "id": "legacy",
+      "name": "June growth-loops watcher",
+      "prompt": "",
+      "script": "loops-watcher.sh",
+      "no_agent": true,
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null
+    },
+    {
+      "id": "user-job",
+      "name": "User reminder",
+      "prompt": "check something",
+      "script": "loops-watcher.sh",
+      "no_agent": true,
+      "enabled": true,
+      "state": "scheduled"
+    }
+  ],
+  "updated_at": "2026-06-13T00:00:00Z"
+}
+"#,
+        )
+        .expect("jobs");
+
+        assert!(pause_legacy_growth_loops_job(home.path()).expect("pause job"));
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(cron_dir.join("jobs.json")).expect("read"))
+                .expect("json");
+        let jobs = value["jobs"].as_array().expect("jobs array");
+        assert_eq!(jobs[0]["enabled"], false);
+        assert_eq!(jobs[0]["state"], "paused");
+        assert!(jobs[0]["paused_at"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(jobs[1]["enabled"], true);
+        assert_eq!(jobs[1]["state"], "scheduled");
     }
 }
