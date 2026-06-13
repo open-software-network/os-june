@@ -825,6 +825,39 @@ pub fn dictation_hud_set_record_bounds(
     }
 }
 
+#[tauri::command]
+pub fn dictation_hud_preferred_error_placement(app: AppHandle) -> String {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return "below".to_string();
+    };
+    let Ok(window_size) = hud.outer_size() else {
+        return "below".to_string();
+    };
+    let Some(position) = current_or_next_hud_position(&app, &hud, window_size) else {
+        return "below".to_string();
+    };
+
+    let center_x = position.x as f64 + window_size.width as f64 / 2.0;
+    let center_y = position.y as f64 + window_size.height as f64 / 2.0;
+    let monitor = hud
+        .monitor_from_point(center_x, center_y)
+        .ok()
+        .flatten()
+        .or_else(|| hud.current_monitor().ok().flatten())
+        .or_else(|| hud.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return "below".to_string();
+    };
+
+    let work_area = monitor.work_area();
+    let work_mid_y = work_area.position.y as f64 + work_area.size.height as f64 / 2.0;
+    if center_y > work_mid_y {
+        "above".to_string()
+    } else {
+        "below".to_string()
+    }
+}
+
 /// Serializes window-frame motion (resize morphs, the error shake) so two
 /// concurrent commands never fight over the window's position.
 pub struct HudFrameLock(Mutex<()>);
@@ -1028,34 +1061,20 @@ pub fn dictation_hud_show(app: AppHandle, enter: Option<bool>, animate: Option<b
 /// and exit motion.
 const HUD_ENTER_OFFSET_LOGICAL: f64 = 8.0;
 
-/// Swap the HUD window between its two chromes. The dictation pill uses
-/// native vibrancy frost + the NSWindow shadow, with the window sized
-/// exactly to the pill. The meeting card instead paints its own surface
-/// and CSS shadow into a transparent, click-through gutter (the webview
-/// adds it to the window size) so the corner dismiss can overhang the
-/// card's edge — impossible while the frost fills the window.
+/// Keep the HUD window on frostless chrome. The webview paints its own CSS
+/// surface and shadow into a transparent, click-through gutter, matching the
+/// agent HUD and avoiding native vibrancy rims or end-of-exit repaint flashes.
 #[tauri::command]
-pub fn dictation_hud_set_chrome(app: AppHandle, meeting: bool) {
+pub fn dictation_hud_set_chrome(app: AppHandle, _frostless: bool) {
     let Some(hud) = app.get_webview_window("hud") else {
         return;
     };
-    let _ = hud.set_shadow(!meeting);
+    let _ = hud.set_shadow(false);
     #[cfg(target_os = "macos")]
     {
-        use window_vibrancy::{
-            apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
-        };
-        if meeting {
-            if let Err(error) = clear_vibrancy(&hud) {
-                tracing::warn!(%error, "failed to clear dictation HUD vibrancy");
-            }
-        } else if let Err(error) = apply_vibrancy(
-            &hud,
-            NSVisualEffectMaterial::HudWindow,
-            Some(NSVisualEffectState::Active),
-            Some(10.0),
-        ) {
-            tracing::warn!(%error, "failed to re-apply dictation HUD vibrancy");
+        use window_vibrancy::clear_vibrancy;
+        if let Err(error) = clear_vibrancy(&hud) {
+            tracing::warn!(%error, "failed to clear dictation HUD vibrancy");
         }
     }
 }
@@ -2558,6 +2577,33 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
     }
 }
 
+fn current_or_next_hud_position(
+    app: &AppHandle,
+    hud: &WebviewWindow,
+    window_size: PhysicalSize<u32>,
+) -> Option<PhysicalPosition<i32>> {
+    if hud.is_visible().unwrap_or(false)
+        && !HUD_WOKEN_FADED.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        if let Ok(position) = hud.outer_position() {
+            return Some(position);
+        }
+    }
+
+    if let Some(state) = app.try_state::<HudPosition>() {
+        let saved = state.inner.lock().ok().and_then(|guard| *guard);
+        if let Some((x, y)) = saved {
+            if hud_position_is_visible(hud, x, y, window_size) {
+                return Some(PhysicalPosition::new(x, y));
+            }
+        }
+    }
+
+    default_hud_position(hud, window_size)
+        .map(|(x, y)| PhysicalPosition::new(x, y))
+        .or_else(|| hud.outer_position().ok())
+}
+
 /// Meeting prompts always enter at the default top-center spot. They're
 /// transient notifications, not the user's parked dictation pill, so the
 /// saved drag position doesn't apply to them.
@@ -2627,24 +2673,17 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         hud.set_skip_taskbar(true)
             .map_err(|error| error.to_string())?;
-        // The window is exactly the pill; depth comes from the native window
-        // shadow instead of a CSS one painted into a transparent gutter.
-        hud.set_shadow(true).map_err(|error| error.to_string())?;
+        // The webview paints the HUD surface and shadow into a transparent
+        // gutter, matching the agent HUD. Keep native shadow/vibrancy off so
+        // no frosted rim or large repaint can appear during transitions.
+        hud.set_shadow(false).map_err(|error| error.to_string())?;
 
         #[cfg(target_os = "macos")]
         {
             make_hud_nonactivating(&hud);
-            // Real behind-window blur (CSS backdrop-filter can't sample other
-            // apps' pixels). The radius must match the pill's CSS
-            // border-radius (--r-lg, 10px). Mirrors the meeting HUD.
-            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-            if let Err(error) = apply_vibrancy(
-                &hud,
-                NSVisualEffectMaterial::HudWindow,
-                Some(NSVisualEffectState::Active),
-                Some(10.0),
-            ) {
-                tracing::warn!(%error, "failed to apply dictation HUD vibrancy");
+            use window_vibrancy::clear_vibrancy;
+            if let Err(error) = clear_vibrancy(&hud) {
+                tracing::warn!(%error, "failed to clear dictation HUD vibrancy");
             }
         }
 

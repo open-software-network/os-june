@@ -115,7 +115,10 @@ export function registerDictationHudDemo({ local }: DictationHudDemoOptions) {
 
   function error() {
     cancelTimers();
-    emitDictation("error", { message: "Dictation failed." });
+    // A real-world message long enough to exercise the expanded error card.
+    emitDictation("error", {
+      message: "Dictation recorded no text. Try again.",
+    });
   }
 
   function silent() {

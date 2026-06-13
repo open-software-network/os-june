@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CONDUCTOR_REPO_WORKSPACES_DIR=""
+if [[ "$ROOT_DIR" == */conductor/workspaces/*/* ]]; then
+  CONDUCTOR_REPO_WORKSPACES_DIR="$(dirname "$ROOT_DIR")"
+fi
 FRONTEND_PORT="${VITE_PORT:-1421}"
 API_PID=""
 
@@ -36,7 +40,7 @@ if [[ -n "$existing_frontend_pids" ]]; then
       exit $?
     fi
 
-    if [[ "$command" == *"vite"* && "$cwd" == */conductor/workspaces/os-scribe/* ]]; then
+    if [[ -n "$CONDUCTOR_REPO_WORKSPACES_DIR" && "$command" == *"vite"* && "$cwd" == "$CONDUCTOR_REPO_WORKSPACES_DIR"/* ]]; then
       echo "Stopping Vite from another workspace: $cwd (pid $pid)" >&2
       kill "$pid" 2>/dev/null || true
       continue

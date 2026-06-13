@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -56,6 +57,8 @@ const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
 const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
+const errorIcon = document.querySelector<HTMLElement>(".hud-error-icon");
+const errorLayer = document.querySelector<HTMLElement>(".hud-error-layer");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
 const meetingStartButton =
   document.querySelector<HTMLButtonElement>("#hud-meeting-start");
@@ -70,6 +73,15 @@ if (meetingDismissButton) {
   meetingDismissButton.innerHTML = renderToStaticMarkup(
     createElement(IconCrossSmall, {
       size: 12,
+      ariaHidden: true,
+      focusable: false,
+    }),
+  );
+}
+if (errorIcon) {
+  errorIcon.innerHTML = renderToStaticMarkup(
+    createElement(IconExclamationCircle, {
+      size: 16,
       ariaHidden: true,
       focusable: false,
     }),
@@ -95,20 +107,29 @@ let brailleFrame = 0;
 let meetingPromptSuppressed = false;
 let pendingMeetingPrompt: DictationHudEvent | undefined;
 let hideRequestId = 0;
+let showRequestId = 0;
+let showQueue: Promise<void> = Promise.resolve();
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
 const brailleWave = spinners.waverows;
 
-// Matches the .hud[data-state="exiting"] transition in hud.css.
-const EXIT_TRANSITION_MS = 160;
+// Matches the .hud[data-state="exiting"] transition in hud.css. Long
+// enough to read as a deliberate dissolve rather than a blink-out.
+const EXIT_TRANSITION_MS = 240;
 // Matches the .hud.is-morphing fade (60ms) plus a frame of slack.
 const MORPH_FADE_MS = 80;
-// Transparent, click-through margin around the meeting card. Its CSS
-// shadow paints here and the corner dismiss overhangs into it — the card
-// runs without the native frost (dictation_hud_set_chrome), so the window
-// can be bigger than the surface, agent-HUD style.
-const MEETING_WINDOW_GUTTER = 16;
+// Transparent, click-through margin around the frostless HUD surface. Its
+// CSS shadow paints here and the meeting dismiss can overhang the card's
+// edge. This is the agent HUD model: transparent native window, CSS-painted
+// surface, no native vibrancy rim.
+const WINDOW_GUTTER = 16;
+// Gap between the error pill and the message layer that draws above/below it
+// — must match the .hud-error-layer margin in hud.css.
+const ERROR_LAYER_GAP = 8;
+// The error message layer's reveal / retract — must track the
+// .hud-error-layer grid-template-rows transition (--t-med) in hud.css.
+const ERROR_REVEAL_MS = 160;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 
 function invokeBestEffort(command: string, args?: Record<string, unknown>) {
@@ -158,14 +179,29 @@ const HUD_WHISPER_FLOOR = 0.06;
 // The idle pulse + speech wave live in the shared meter (IDLE_PULSE_*,
 // SPEECH_WAVE_*, withWaveLayers) so the HUD and recorder move identically.
 
-function setHud(state: string, status: string) {
-  if (!hud || !statusText) return;
+type HudTransition = {
+  changed: boolean;
+  previous?: string;
+};
+
+function setHud(state: string, status: string): HudTransition {
+  if (!hud || !statusText) return { changed: false };
   const previous = hud.dataset.state;
-  const sizeBefore = hud.getBoundingClientRect();
   hud.dataset.state = state;
   statusText.textContent = status;
-  if (errorText) {
+  // Keep the error message through "exiting" so it dissolves with the
+  // window's native alpha fade instead of vanishing a frame early; the
+  // post-hide flip to "idle" clears it.
+  if (errorText && state !== "exiting") {
     errorText.textContent = state === "error" ? status : "";
+  }
+  // The error draw-out collapse class is owned by the reveal/retract
+  // sequence (see playErrorReveal, retractErrorLayer). Leave it alone for
+  // "error" (the reveal manages it) and "exiting" (the retract must hold
+  // through the fade); clear it for any other state so a stray collapse
+  // can't follow into the next pill.
+  if (state !== "error" && state !== "exiting") {
+    hud.classList.remove("hud-reveal-collapsed");
   }
   if (state === "transcribing" || state === "pasting") {
     startBraille();
@@ -180,30 +216,30 @@ function setHud(state: string, status: string) {
   } else if (previous === "listening") {
     clearStopHover();
   }
-  // Pill size varies by state and the window must track it exactly (the
-  // frosted surface is a window-filling native vibrancy view). When the size
-  // actually changes, morph: contents crossfade while the glass eases over —
-  // also what keeps a bigger pill from painting clipped before the resize.
-  // The meeting card is taller as well as wider, so height counts too.
   if (state !== previous && hud) {
-    if ((previous === "meeting") !== (state === "meeting")) {
-      // Crossing the meeting boundary swaps the window chrome: the card
-      // paints its own shadow into a gutter; every other state restores
-      // the vibrancy pill (see MEETING_WINDOW_GUTTER).
+    if (usesFrostlessChrome(previous) !== usesFrostlessChrome(state)) {
+      // Kept for compatibility with older native windows; in normal builds
+      // every state is frostless and this branch does not run.
       invokeBestEffort("dictation_hud_set_chrome", {
-        meeting: state === "meeting",
+        frostless: usesFrostlessChrome(state),
       });
     }
     if (state === "meeting") clearStopHover();
-    if (state === "exiting") return;
-    hud.offsetWidth;
-    const sizeAfter = hud.getBoundingClientRect();
-    void syncWindowToPill({
-      morph:
-        Math.ceil(sizeAfter.width) !== Math.ceil(sizeBefore.width) ||
-        Math.ceil(sizeAfter.height) !== Math.ceil(sizeBefore.height),
-    });
   }
+  return { changed: state !== previous, previous };
+}
+
+async function updateErrorPlacement() {
+  if (!hud) return;
+  let placement: unknown;
+  try {
+    placement = await Promise.resolve(
+      invoke("dictation_hud_preferred_error_placement"),
+    );
+  } catch {
+    placement = undefined;
+  }
+  hud.dataset.errorPlacement = placement === "above" ? "above" : "below";
 }
 
 function startBarLoop() {
@@ -389,13 +425,50 @@ function pushStopBoundsToNative() {
   });
 }
 
+// The native window size the current state wants. getBoundingClientRect
+// includes transforms, and the exit leaves one in play: "exiting" eases the
+// pill to scale(0.94), and when the window hides mid-flight the suspended
+// webview freezes that transition wherever it stood until the next show. A
+// fresh show measured through the frozen scale baked a too-narrow frame
+// into the window — the pill came up clipped flat at the right edge, then
+// visibly snapped to full width when the settle pass healed it. Kill
+// in-flight transitions for the measurement so every property sits at its
+// end value.
+function measureWindowSize() {
+  if (!hud) return { width: 0, height: 0 };
+  hud.classList.add("hud-snap");
+  hud.offsetWidth;
+  let { width, height } = hud.getBoundingClientRect();
+  if (hud.dataset.state === "error" && errorLayer) {
+    // The message layer is centered above/below the pill (.hud-snap forces
+    // it to its full drawn-out height for this measurement). Mirror its slot
+    // on the opposite vertical side so the center-anchored native resize
+    // leaves the pill dead centre while the layer reveals vertically.
+    const layer = errorLayer.getBoundingClientRect();
+    width = Math.max(width, layer.width);
+    height += 2 * (ERROR_LAYER_GAP + layer.height);
+  }
+  if (usesFrostlessChrome(hud.dataset.state)) {
+    // The frostless HUD includes the transparent gutter its CSS shadow (and
+    // the meeting card's overhanging dismiss) paint into. The center-anchored
+    // native resize splits it evenly, so the surface stays put.
+    width += WINDOW_GUTTER * 2;
+    height += WINDOW_GUTTER * 2;
+  }
+  hud.classList.remove("hud-snap");
+  return { width, height };
+}
+
 // Resize the native window to the pill's measured size (Rust re-anchors so
 // the pill center stays put), then refresh the stop-button rect once layout
 // has settled at the new size — the pill's client position shifts when the
 // window around it changes. With `morph` the contents fade out while the
 // glass eases to its new frame, then fade back in (the invoke resolves when
 // the native motion finishes).
-async function syncWindowToPill(options?: { morph?: boolean }) {
+async function syncWindowToPill(options?: {
+  animate?: boolean;
+  morph?: boolean;
+}) {
   if (!hud) return;
   // ABC Diatype may still be loading on the window's first show; measuring
   // with the fallback font bakes the wrong width into the window frame.
@@ -409,14 +482,6 @@ async function syncWindowToPill(options?: { morph?: boolean }) {
       }
     }
   }
-  hud.offsetWidth;
-  let { width, height } = hud.getBoundingClientRect();
-  // The meeting card's window includes the transparent gutter its CSS
-  // shadow and overhanging dismiss paint into.
-  if (hud.dataset.state === "meeting") {
-    width += MEETING_WINDOW_GUTTER * 2;
-    height += MEETING_WINDOW_GUTTER * 2;
-  }
   if (options?.morph) {
     hud.classList.add("is-morphing");
     // Let the contents finish fading before the glass starts moving: the
@@ -427,13 +492,14 @@ async function syncWindowToPill(options?: { morph?: boolean }) {
       await new Promise((resolve) => window.setTimeout(resolve, MORPH_FADE_MS));
     }
   }
+  const { width, height } = measureWindowSize();
   // Exact floats — Rust rounds at physical pixels. Ceiling here oversized
   // the window by up to a point, leaving a bright sliver of bare frost
   // around the dark card.
   await invokeBestEffortAsync("dictation_hud_set_size", {
     width,
     height,
-    animate: !prefersReducedMotion(),
+    animate: options?.animate ?? !prefersReducedMotion(),
   });
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
@@ -444,8 +510,8 @@ async function syncWindowToPill(options?: { morph?: boolean }) {
   });
 }
 
-// The native window alpha drives the exit dissolve — CSS opacity can't fade
-// the vibrancy frost or the native shadow behind the webview.
+// The native window alpha drives the exit dissolve so the CSS surface, shadow,
+// and transparent gutter fade as one unit.
 function setWindowAlpha(alpha: number) {
   invokeBestEffort("dictation_hud_set_alpha", { alpha });
 }
@@ -526,15 +592,26 @@ function startMeetingPromptTimer() {
 
 async function hideHud() {
   const requestId = ++hideRequestId;
+  showRequestId += 1;
   clearHideTimer();
+  clearFrameSettleTimer();
   clearMeetingPromptTimer();
   clearStopHover();
   clearDismissHover();
+  const exitState = hud?.dataset.state;
+  const exitingError = exitState === "error";
+  if (exitingError) {
+    hud?.classList.remove("hud-reveal-collapsed");
+  }
   let nativeExit = false;
   if (hud) {
     const meetingExit =
       hud.dataset.state === "meeting" && !prefersReducedMotion();
     hud.classList.toggle("hud-exit-up", meetingExit);
+    hud.classList.toggle("hud-error-exit", exitingError);
+    if (exitState) {
+      hud.dataset.exitState = exitState;
+    }
     setHud("exiting", statusText?.textContent || "Idle");
     stopBraille();
     if (meetingExit) {
@@ -549,9 +626,9 @@ async function hideHud() {
       }
     }
     if (!nativeExit) {
-      // CSS dissolves the content; the native alpha ramp fades the frost +
-      // shadow with it. The timeout race guards against rAF stalling if the
-      // window is already occluded/hidden.
+      // CSS dissolves the content; the native alpha ramp fades the whole
+      // transparent window with it. The timeout race guards against rAF
+      // stalling if the window is already occluded/hidden.
       await Promise.race([
         fadeWindowAlpha(requestId),
         new Promise((resolve) =>
@@ -569,19 +646,63 @@ async function hideHud() {
   // window is ever shown again without new content, a pill stuck in that
   // state renders as a bare, undraggable gray bar.
   if (hud?.dataset.state === "exiting" && requestId === hideRequestId) {
+    hud.classList.remove("hud-error-exit");
+    delete hud.dataset.exitState;
     setHud("idle", "Idle");
   }
 }
 
-async function showHud() {
+function shouldMorphTransition(transition: HudTransition) {
+  return (
+    transition.changed &&
+    transition.previous !== undefined &&
+    !pillIsBlank(transition.previous) &&
+    !pillIsBlank(hud?.dataset.state)
+  );
+}
+
+function showOptionsForTransition(transition: HudTransition) {
+  const current = hud?.dataset.state;
+  const processingContinuation =
+    (transition.previous === "listening" && current === "transcribing") ||
+    (transition.previous === "transcribing" && current === "pasting") ||
+    (transition.previous === "pasting" && current === "pasting");
+  const morph = !processingContinuation && shouldMorphTransition(transition);
+  return {
+    fresh: transition.changed && pillIsBlank(transition.previous),
+    morph,
+  };
+}
+
+function showHud(options?: { fresh?: boolean; morph?: boolean }) {
+  const requestId = ++showRequestId;
   hideRequestId += 1;
   clearHideTimer();
+  clearFrameSettleTimer();
+
+  const run = showQueue.then(() => showHudNow(requestId, options));
+  showQueue = run.catch(() => {});
+  return run;
+}
+
+async function showHudNow(
+  requestId: number,
+  options?: { fresh?: boolean; morph?: boolean },
+) {
+  if (requestId !== showRequestId) return;
+  if (options?.fresh) {
+    setWindowAlpha(0);
+  }
   // Size the window to the pill before it appears, then let Rust position
   // and show it (dictation_hud_show also restores the native alpha an
   // interrupted exit fade may have left low). Showing only after the resize
   // is what keeps the pill from flashing up as a bare gray bar, or clipped
   // at a stale width from a previous state.
-  await syncWindowToPill();
+  await syncWindowToPill({
+    animate: options?.morph ? !prefersReducedMotion() : false,
+    morph: options?.morph,
+  });
+  if (requestId !== showRequestId) return;
   // A fresh meeting prompt always enters at the top-center default spot,
   // and (motion permitting) slides down from the top edge while the
   // window alpha ramps up. The motion is native (the invoke resolves when
@@ -598,6 +719,7 @@ async function showHud() {
     // No bridge (standalone page): fall back to the CSS entrance.
     if (meetingEntrance && animate) replayCssEntrance();
   }
+  if (requestId !== showRequestId) return;
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
@@ -620,22 +742,30 @@ async function showHud() {
 const FRAME_SETTLE_DELAY_MS = 120;
 let frameSettleTimer: number | undefined;
 
+function clearFrameSettleTimer() {
+  if (frameSettleTimer !== undefined) {
+    window.clearTimeout(frameSettleTimer);
+    frameSettleTimer = undefined;
+  }
+}
+
 function assertWindowMatchesPill() {
   // Standalone browser page: the viewport is the whole tab, never the pill.
   if (!appWindow) return;
-  if (frameSettleTimer !== undefined) window.clearTimeout(frameSettleTimer);
+  clearFrameSettleTimer();
   frameSettleTimer = window.setTimeout(() => {
     frameSettleTimer = undefined;
     const state = hud?.dataset.state;
     if (!hud || !state || state === "idle" || state === "exiting") return;
-    const gutter = state === "meeting" ? MEETING_WINDOW_GUTTER * 2 : 0;
-    const rect = hud.getBoundingClientRect();
+    const expected = measureWindowSize();
     const drift = Math.max(
-      Math.abs(window.innerWidth - (rect.width + gutter)),
-      Math.abs(window.innerHeight - (rect.height + gutter)),
+      Math.abs(window.innerWidth - expected.width),
+      Math.abs(window.innerHeight - expected.height),
     );
     // Rust rounds the frame at physical pixels; allow a point of slack.
-    if (drift > 1.5) void syncWindowToPill();
+    // Snap, don't ease: this corrects a pill the user already sees as
+    // settled, and easing it reads as the window morphing on its own.
+    if (drift > 1.5) void syncWindowToPill({ animate: false });
   }, FRAME_SETTLE_DELAY_MS);
 }
 
@@ -652,8 +782,8 @@ async function handleDictationEventPayload(payload: unknown) {
 
   if (dictationEvent.type === "listening_started") {
     resetBars();
-    setHud("listening", "Listening");
-    await showHud();
+    const transition = setHud("listening", "Listening");
+    await showHud(showOptionsForTransition(transition));
     return;
   }
 
@@ -679,23 +809,23 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "finalizing_transcript") {
-    setHud("transcribing", "Transcribing");
-    await showHud();
+    const transition = setHud("transcribing", "Transcribing");
+    await showHud(showOptionsForTransition(transition));
     return;
   }
 
   if (dictationEvent.type === "final_transcript") {
-    setHud("pasting", "Pasting");
-    await showHud();
+    const transition = setHud("pasting", "Pasting");
+    await showHud(showOptionsForTransition(transition));
     return;
   }
 
   if (dictationEvent.type === "paste_target") {
-    setHud(
+    const transition = setHud(
       "pasting",
       `Pasting into ${dictationEvent.payload?.app || "previous app"}`,
     );
-    await showHud();
+    await showHud(showOptionsForTransition(transition));
     return;
   }
 
@@ -752,12 +882,32 @@ async function handleDictationEventPayload(payload: unknown) {
     const message = String(
       dictationEvent.payload?.message ?? "Dictation failed.",
     ).trim();
-    setHud("error", message || "Dictation failed.");
-    await showHud();
+    await updateErrorPlacement();
+    const transition = setHud("error", message || "Dictation failed.");
+    // Render the pill with the message layer drawn in, snap the window to
+    // the full (layer-included) size with no native motion, then draw the
+    // layer out in CSS — the pill never moves and nothing clips.
+    hud?.classList.add("hud-reveal-collapsed");
+    await showHud({ fresh: pillIsBlank(transition.previous) });
+    playErrorReveal();
     triggerShake();
     // Hold long enough for the shake to finish and the message to read.
     hideSoon(1800);
   }
+}
+
+// Drop the collapse so the message layer draws out of the pill. The pill was
+// rendered collapsed and the window already snapped to the full size, so
+// this is a pure CSS draw-out within the still window.
+function playErrorReveal() {
+  if (!hud) return;
+  if (prefersReducedMotion()) {
+    hud.classList.remove("hud-reveal-collapsed");
+    return;
+  }
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => hud?.classList.remove("hud-reveal-collapsed")),
+  );
 }
 
 async function handleMeetingDetectionEventPayload(payload: unknown) {
@@ -804,8 +954,8 @@ async function showMeetingPrompt(meetingEvent: DictationHudEvent) {
       meetingEvent.payload?.appLabels,
     );
   }
-  setHud("meeting", "Meeting detected");
-  await showHud();
+  const transition = setHud("meeting", "Meeting detected");
+  await showHud(showOptionsForTransition(transition));
   startMeetingPromptTimer();
 }
 
@@ -837,6 +987,14 @@ function meetingAppLine(labels: unknown) {
 
 function pillIsBlank(state: string | undefined) {
   return state === undefined || state === "idle" || state === "exiting";
+}
+
+// Every state runs without native frost or native shadow. The HUD paints the
+// same CSS surface and drop shadow as the agent HUD into a transparent gutter.
+// Keeping idle/exiting frostless prevents any chrome swap during hide.
+function usesFrostlessChrome(state: string | undefined) {
+  void state;
+  return true;
 }
 
 function canShowMeetingPrompt(state: string | undefined) {
@@ -886,7 +1044,8 @@ stopButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   setStopHover(false);
   if (hud?.dataset.state === "listening") {
-    setHud("transcribing", "Transcribing");
+    const transition = setHud("transcribing", "Transcribing");
+    void showHud(showOptionsForTransition(transition));
   }
   try {
     await invoke("dictation_helper_command", {

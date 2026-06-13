@@ -6,19 +6,12 @@
  *
  * Forced dark regardless of system theme — the HUD is a transient overlay
  * that needs to read consistently against any wallpaper or app behind it.
- * Layout: [drag handle] [audio viz] [stop button], inside a frosted pill.
+ * Layout: [drag handle] [audio viz] [stop button], inside a compact
+ * frostless CSS surface.
  *
- * The window is sized exactly to the pill (dictation.rs resizes it to the
- * rect hud.ts measures per state): the frosted surface is a native
- * NSVisualEffectView behind the webview (CSS backdrop-filter can't sample
- * other apps' pixels) and depth comes from the native NSWindow shadow, so
- * there's no CSS shadow or blur here — just a translucent tint over vibrancy.
- * Mirrors the meeting HUD (meeting-hud.css).
- *
- * Platform note: the vibrancy/shadow path is macOS-only (cfg-gated in
- * dictation.rs) and there's deliberately no CSS blur fallback — the app
- * ships macOS-only, so on other platforms the pill would render as a solid
- * tint. If that ever changes, reintroduce a backdrop-filter fallback here.
+ * The native window is transparent and slightly larger than the pill so the
+ * CSS shadow can paint into its gutter. This matches the agent HUD: no native
+ * vibrancy, no NSVisualEffectView rim, no inset-looking frost edge.
  */
 
 :root {
@@ -65,9 +58,8 @@ body {
 
 .hud {
   /* The agent HUD's surface recipe — near-opaque dark glass doing the
-   * legibility work itself, with the vibrancy frost just warming the
-   * edges. One surface across every June overlay (agent HUD, this pill,
-   * the meeting card, the recording indicator). */
+   * legibility work itself. One surface across the agent HUD, this pill,
+   * the meeting card, and the error reveal. */
   --hud-bg: color-mix(in oklch, var(--popover) 92%, transparent);
   --hud-border: var(--border);
   --hud-bar: var(--foreground);
@@ -77,28 +69,25 @@ body {
    * same regardless of OS color scheme — --accent here would leak the
    * light-mode (near-white) value into the always-dark HUD. */
   --hud-stop-bg-hover: color-mix(in oklch, var(--foreground) 16%, transparent);
-  --hud-danger: var(--destructive);
-  --hud-alert: var(--hud-danger);
 
   position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-1);
   height: 32px;
-  /* Borderless, like the agent HUD: on the vibrancy surface a 1px hairline
-   * reads far harder than it does over the agent HUD's CSS glass, so the
-   * pills looked mismatched. The 4px inset (was 3px + 1px border) keeps the
-   * inner 6px-radius controls concentric inside the 10px outer radius. */
+  /* Borderless, like the agent HUD. The 4px inset keeps the inner
+   * 6px-radius controls concentric inside the 10px outer radius. */
   padding: 4px;
-  /* Must match the vibrancy view's corner radius set in dictation.rs so
-   * tint and frost trace the same curve. */
   border-radius: var(--r-lg);
   background: var(--hud-bg);
+  box-shadow: var(--shadow-md);
   color: var(--foreground);
   pointer-events: auto;
+  /* Paced for the exit dissolve — must track EXIT_TRANSITION_MS in hud.ts
+   * so the content fade and the native window alpha land together. */
   transition:
-    opacity 120ms var(--ease-out),
-    transform 160ms var(--ease-out);
+    opacity 200ms var(--ease-out),
+    transform 240ms var(--ease-out);
 }
 
 /* Resize morph: while the glass eases to a new frame the contents sit at
@@ -199,17 +188,13 @@ body {
   transition: height 22ms linear;
 }
 
-.hud-braille,
-.hud-error-mark {
+.hud-braille {
   position: absolute;
   inset: 0;
   display: none;
   align-items: center;
   justify-content: center;
   text-align: center;
-}
-
-.hud-braille {
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1;
@@ -218,52 +203,111 @@ body {
   transform: translateY(-1px);
 }
 
-.hud-error-mark {
+/* Error reveal (Wispr-style): the pill itself stays put and a glass layer
+ * opens above or below it to show the message, then retracts on dismiss.
+ * The layer is absolutely positioned so it never moves the pill; the window
+ * is pre-sized to fit the layer mirrored vertically (see measureWindowSize
+ * in hud.ts) so the center-anchored resize keeps the pill centered. No
+ * native size animation and no content crossfade — the motion is entirely
+ * this CSS reveal, matching the agent HUD's 0fr -> 1fr expansion. */
+
+/* The error icon rides inside the pill (the fixed anchor), next to the
+ * handle, marking the state while the message layer is still drawn in. */
+.hud-error-icon {
+  display: none;
   width: 16px;
   height: 16px;
-  border: 1px solid color-mix(in oklch, var(--hud-alert) 70%, transparent);
-  border-radius: 999px;
+  color: var(--foreground);
 }
 
-.hud-error-mark::before,
-.hud-error-mark::after {
-  content: "";
+.hud[data-state="error"] .hud-error-icon {
+  display: grid;
+  place-items: center;
+  color: var(--destructive);
+}
+
+.hud.hud-error-exit[data-state="exiting"] .hud-error-icon {
+  display: grid;
+  place-items: center;
+  color: var(--destructive);
+}
+
+.hud-error-icon svg {
+  display: block;
+}
+
+/* The drawn-out message panel: its own glass surface, on top, attached to
+ * the pill's vertical edge. .hud-reveal-collapsed clips it back into the
+ * pill before the window fades. */
+.hud-error-layer {
   position: absolute;
-  top: 7px;
-  left: 4px;
-  width: 7px;
-  height: 1.5px;
-  border-radius: 999px;
-  background: var(--hud-alert);
-}
-
-.hud-error-mark::before {
-  transform: rotate(45deg);
-}
-
-.hud-error-mark::after {
-  transform: rotate(-45deg);
-}
-
-.hud-error-text {
+  left: 50%;
+  z-index: 1;
   display: none;
-  color: color-mix(in oklch, var(--foreground) 92%, var(--hud-alert));
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  line-height: 1;
-  /* Fixed cap, not vw-relative: the window is resized to fit the measured
-   * pill, so a vw clamp would be circular (pill fits whatever it last was). */
-  max-width: 460px;
-  /* Not shrinkable — same trap as .hud-meeting-text: overflow: hidden gives a
-   * flex child an automatic min-width of 0, so it shrinks to the stale window
-   * width and the pill measures the old size, never growing. flex-shrink: 0
-   * keeps the intrinsic width so syncWindowToPill measures the true size.
-   * max-width + ellipsis still cap pathological messages. */
-  flex-shrink: 0;
+  grid-template-rows: 1fr;
+  width: max-content;
+  max-width: 360px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  border-radius: var(--r-md);
+  background: var(--hud-bg);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  transition:
+    grid-template-rows var(--t-med) var(--ease-out),
+    opacity var(--t-fast) var(--ease-out);
+}
+
+.hud[data-state="error"] .hud-error-layer {
+  display: grid;
+}
+
+.hud.hud-error-exit[data-state="exiting"] .hud-error-layer {
+  display: grid;
+}
+
+.hud[data-error-placement="below"] .hud-error-layer,
+.hud:not([data-error-placement="above"]) .hud-error-layer {
+  top: 100%;
+  margin-top: var(--sp-2);
+  transform: translateX(-50%);
+  transform-origin: top center;
+}
+
+.hud[data-error-placement="above"] .hud-error-layer {
+  bottom: 100%;
+  margin-bottom: var(--sp-2);
+  transform: translateX(-50%);
+  transform-origin: bottom center;
+}
+
+/* Drawn in: the panel collapses to nothing at the pill's edge. hud.ts holds
+ * this while the window snaps to full size, then drops it so the panel draws
+ * out; on dismiss it is re-added so the panel retracts before the fade. */
+.hud.hud-reveal-collapsed .hud-error-layer {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+/* The window measurement (taken under .hud-snap) always reads the panel at
+ * full height, never the collapsed start, so the window is sized to fit it. */
+.hud.hud-snap .hud-error-layer {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* Single line so the reveal is a clean vertical open with no reflow; the
+ * layer's overflow does the clipping, ellipsis catches a rare long one. */
+.hud-error-message {
+  display: block;
+  min-height: 0;
+  padding: 6px 11px;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.35;
   white-space: nowrap;
-  transform: translateY(-0.5px);
+  text-overflow: ellipsis;
 }
 
 /* Meeting prompt card -------------------------------------------------- */
@@ -334,7 +378,8 @@ body {
 }
 
 .hud-meeting-app {
-  /* Fixed cap, not vw-relative — see .hud-error-text. */
+  /* Fixed cap, not vw-relative: the window is resized to fit the measured
+   * pill, so a vw clamp would be circular (pill fits whatever it last was). */
   max-width: 200px;
   overflow: hidden;
   color: var(--muted-foreground);
@@ -504,24 +549,18 @@ body {
 }
 
 /* State machine ------------------------------------------------------- */
-.hud[data-state="error"] .hud-handle {
-  display: none;
-}
-
-.hud[data-state="meeting"] {
-  /* The window chrome is swapped for this state (dictation_hud_set_chrome):
-   * no native frost or shadow — this CSS shadow paints into the
-   * transparent gutter around the card (see MEETING_WINDOW_GUTTER in
-   * hud.ts). */
+.hud[data-state="meeting"],
+.hud[data-state="exiting"][data-exit-state="meeting"] {
+  /* Same frostless CSS surface as the compact pill, with meeting-specific
+   * layout inside the transparent shadow gutter. */
   gap: 0;
   height: 54px;
   padding: 0 var(--sp-4) 0 0;
-  box-shadow: var(--shadow-md);
 }
 
 /* Entrance fallback for the standalone browser page only — in the app the
  * slide+fade is native window motion (dictation_hud_show with enter), so
- * the frost and shadow travel with the card instead of being left bare at
+ * the surface and shadow travel with the card instead of being left bare at
  * the window edges. hud.ts adds the class when the bridge is absent. */
 .hud.hud-enter[data-state="meeting"] {
   animation: hud-meeting-enter var(--t-slow) var(--ease-out);
@@ -529,18 +568,21 @@ body {
 
 /* The drag affordance is a single quiet grabber line spanning the card's
  * left edge — still the drag handle. */
-.hud[data-state="meeting"] > .hud-handle {
+.hud[data-state="meeting"] > .hud-handle,
+.hud[data-state="exiting"][data-exit-state="meeting"] > .hud-handle {
   width: 20px;
   height: 100%;
   margin-right: 0;
   border-radius: 0;
 }
 
-.hud[data-state="meeting"] .hud-handle svg {
+.hud[data-state="meeting"] .hud-handle svg,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-handle svg {
   display: none;
 }
 
-.hud[data-state="meeting"] .hud-handle::before {
+.hud[data-state="meeting"] .hud-handle::before,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-handle::before {
   content: "";
   width: 2px;
   height: 22px;
@@ -549,81 +591,108 @@ body {
 }
 
 .hud[data-state="meeting"] .hud-viz,
-.hud[data-state="meeting"] .hud-stop {
+.hud[data-state="meeting"] .hud-stop,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-viz,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-stop {
   display: none;
 }
 
-.hud[data-state="meeting"] .hud-meeting-body {
+.hud[data-state="meeting"] .hud-meeting-body,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-meeting-body {
   display: grid;
   margin-right: var(--sp-7);
 }
 
-.hud[data-state="meeting"] .hud-meeting-start {
+.hud[data-state="meeting"] .hud-meeting-start,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-meeting-start {
   display: inline-flex;
 }
 
-.hud[data-state="meeting"] .hud-meeting-dismiss {
+.hud[data-state="meeting"] .hud-meeting-dismiss,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-meeting-dismiss {
   display: inline-flex;
 }
 
-/* Text-only pill for hard errors. The "not allowed" wobble is native now —
- * dictation_hud_shake jiggles the window itself, because a CSS translateX
- * would slide the tint off the stationary vibrancy frost. */
+/* Error pill (the fixed anchor): the compact handle + error-icon pill that
+ * the message layer draws out of. It uses the agent HUD's clean dark glass
+ * with no native vibrancy rim. The "not allowed" wobble is native
+ * (dictation_hud_shake jiggles the window itself). */
 .hud[data-state="error"] {
-  --hud-alert: var(--hud-danger);
+  justify-content: center;
   gap: var(--sp-2);
-  padding-inline: var(--sp-3) var(--sp-4);
-  /* The shared 92%-opacity surface, with the danger tint folded in (the
-   * pill is borderless now, so the error cue lives entirely in this tint). */
-  background: color-mix(in oklch, var(--popover) 78%, var(--hud-danger) 22%);
+  padding: 4px var(--sp-2);
+}
+
+/* The pill is its own centered cluster now, so the handle drops the
+ * push-everything-right margin. */
+.hud[data-state="error"] > .hud-handle {
+  margin-right: 0;
 }
 
 .hud[data-state="transcribing"] .hud-viz,
-.hud[data-state="pasting"] .hud-viz {
-  /* Braille replaces the bars + stop-button footprint while the handle stays
-   * available for moving the HUD during finalization. */
+.hud[data-state="pasting"] .hud-viz,
+.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-viz,
+.hud[data-state="exiting"][data-exit-state="pasting"] .hud-viz {
+  /* Braille replaces the bars + stop-button footprint while the handle
+   * stays available for moving the HUD. */
   width: 88px;
 }
 
+/* The audio viz gives way entirely to the message body. */
 .hud[data-state="error"] .hud-viz {
+  display: none;
+}
+
+.hud.hud-error-exit[data-state="exiting"] .hud-viz {
   display: none;
 }
 
 .hud[data-state="transcribing"] .hud-bars,
 .hud[data-state="pasting"] .hud-bars,
-.hud[data-state="error"] .hud-bars {
+.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-bars,
+.hud[data-state="exiting"][data-exit-state="pasting"] .hud-bars {
   display: none;
 }
 
 .hud[data-state="transcribing"] .hud-braille,
-.hud[data-state="pasting"] .hud-braille {
+.hud[data-state="pasting"] .hud-braille,
+.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-braille,
+.hud[data-state="exiting"][data-exit-state="pasting"] .hud-braille {
   display: flex;
-}
-
-.hud[data-state="error"] .hud-error-text {
-  display: block;
 }
 
 /* Stop button only matters while we're still capturing audio. */
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
-.hud[data-state="error"] .hud-stop {
+.hud[data-state="error"] .hud-stop,
+.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-stop,
+.hud[data-state="exiting"][data-exit-state="pasting"] .hud-stop,
+.hud.hud-error-exit[data-state="exiting"] .hud-stop {
   display: none;
 }
 
 /* Rapid fade exit. Triggered by setting data-state="exiting" before the
- * window hides — the content dissolves while the native window alpha ramps
- * down with it. No blur: the window edge is the pill edge now, so the bleed
- * would clip (softness comes from the native alpha fade instead). */
+ * window hides. Keep the same frostless CSS surface through the fade; native
+ * alpha handles the whole transparent window. */
 .hud[data-state="exiting"] {
   opacity: 0;
   transform: scale(0.94);
   pointer-events: none;
 }
 
-/* The meeting card's exit is native window motion (dictation_hud_exit):
- * the whole window slides up and fades, frost included. Keep the content
- * put and opaque so CSS doesn't double the motion or strand bare frost. */
+/* Transition kill-switch, held by syncWindowToPill (hud.ts) across one
+ * forced reflow so every in-flight transition lands at its end value before
+ * the pill is measured. getBoundingClientRect includes transforms, and an
+ * exit frozen mid-fade by the hidden webview's suspended timeline would
+ * otherwise be measured at the exiting scale, baking a too-narrow frame
+ * into the window. */
+.hud.hud-snap,
+.hud.hud-snap > * {
+  transition: none !important;
+}
+
+/* The meeting card's exit is native window motion (dictation_hud_exit).
+ * Keep the content put and opaque so CSS doesn't double the motion. */
 .hud.hud-exit-up[data-state="exiting"] {
   opacity: 1;
   transform: none;

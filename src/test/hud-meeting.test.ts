@@ -78,7 +78,7 @@ describe("meeting detection HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_size", {
       width: 32,
       height: 32,
-      animate: true,
+      animate: false,
     });
   });
 
@@ -207,6 +207,34 @@ describe("meeting detection HUD", () => {
     expect(hudShowCalls()).toBe(1);
   });
 
+  it("preserves the meeting prompt layout during native meeting exit", async () => {
+    await loadHud();
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+
+    let resolveExit: (() => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_exit") {
+        return new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    document.querySelector<HTMLButtonElement>("#hud-meeting-dismiss")?.click();
+    await Promise.resolve();
+
+    expect(hudElement().dataset.state).toBe("exiting");
+    expect(hudElement().dataset.exitState).toBe("meeting");
+    expect(hudElement().classList.contains("hud-exit-up")).toBe(true);
+
+    resolveExit?.();
+
+    await vi.waitFor(() => expect(mocks.hide).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(hudElement().dataset.state).toBe("idle"));
+    expect(hudElement().dataset.exitState).toBeUndefined();
+  });
+
   it("ignores a dismiss click outside the meeting prompt state", async () => {
     await loadHud();
     hudElement().dataset.state = "listening";
@@ -231,7 +259,7 @@ describe("meeting detection HUD", () => {
     // under the mocked invoke.
     expect(mocks.hide).toHaveBeenCalledOnce();
     expect(hudElement().dataset.state).toBe("idle");
-    expect(chromeCalls()).toEqual([true, false]);
+    expect(chromeCalls()).toEqual([]);
   });
 
   it("hides and suppresses the prompt after 30 seconds without a click", async () => {
@@ -341,7 +369,7 @@ describe("meeting detection HUD", () => {
     // Drain the in-flight exit. Its fallback timeout dies with the fake
     // clock, but the rAF alpha ramp keeps running on real time after this
     // test ends and would land its hide() inside the next test's counts.
-    await vi.advanceTimersByTimeAsync(220);
+    await vi.advanceTimersByTimeAsync(320);
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
@@ -364,8 +392,115 @@ describe("meeting detection HUD", () => {
     expect(hudElement().dataset.state).toBe("exiting");
     expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
 
-    await vi.advanceTimersByTimeAsync(220);
+    await vi.advanceTimersByTimeAsync(320);
     expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
+  it("uses agent-style frostless chrome for the compact listening pill", async () => {
+    await loadHud();
+
+    await emit("dictation-event", { type: "listening_started" });
+
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(chromeCalls()).toEqual([]);
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "dictation_hud_set_size",
+      expect.objectContaining({ width: 32, height: 32 }),
+    );
+  });
+
+  it("fades the processing HUD in place when paste completes", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", {
+      type: "paste_target",
+      payload: { app: "Notes" },
+    });
+    mocks.invoke.mockClear();
+
+    await emit("dictation-event", { type: "paste_completed" });
+
+    expect(hudElement().dataset.state).toBe("exiting");
+    expect(hudElement().dataset.exitState).toBe("pasting");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
+
+    await vi.advanceTimersByTimeAsync(320);
+
+    expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(hudElement().dataset.exitState).toBeUndefined();
+  });
+
+  it("switches from listening to transcribing without a morph flash", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    let resolveResize: (() => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_set_size") {
+        return new Promise<void>((resolve) => {
+          resolveResize = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const finalizing = emit("dictation-event", {
+      type: "finalizing_transcript",
+    });
+    await Promise.resolve();
+    expect(sizeCalls()).toHaveLength(1);
+    expect(sizeCalls()[0]?.[1]).toMatchObject({ animate: false });
+    expect(hudShowCalls()).toBe(0);
+
+    resolveResize?.();
+    await finalizing;
+
+    expect(sizeCalls()).toHaveLength(1);
+    expect(hudShowCalls()).toBe(1);
+  });
+
+  it("snap-sizes an interrupted fresh listening show before revealing it", async () => {
+    await loadHud();
+    hudElement().dataset.state = "exiting";
+    mocks.invoke.mockClear();
+
+    await emit("dictation-event", { type: "listening_started" });
+
+    const setAlphaIndex = invokeCallIndex("dictation_hud_set_alpha");
+    const setSizeIndex = invokeCallIndex("dictation_hud_set_size");
+    const showIndex = invokeCallIndex("dictation_hud_show");
+
+    expect(setAlphaIndex).toBeGreaterThanOrEqual(0);
+    expect(setSizeIndex).toBeGreaterThan(setAlphaIndex);
+    expect(showIndex).toBeGreaterThan(setSizeIndex);
+    expect(sizeCalls()[0]?.[1]).toMatchObject({ animate: false });
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_alpha", {
+      alpha: 0,
+    });
+  });
+
+  it("measures the pill with in-flight transitions snapped to their end values", async () => {
+    await loadHud();
+    const hud = hudElement();
+    // Mid-exit: the scale(0.94)/opacity transition is still in play (or
+    // frozen by a hidden webview) when the next show measures the pill.
+    hud.dataset.state = "exiting";
+    const snappedAtMeasure: boolean[] = [];
+    const measure = hud.getBoundingClientRect.bind(hud);
+    vi.spyOn(hud, "getBoundingClientRect").mockImplementation(() => {
+      snappedAtMeasure.push(hud.classList.contains("hud-snap"));
+      return measure();
+    });
+
+    await emit("dictation-event", { type: "listening_started" });
+
+    // The window-sizing measurement reads the rect under .hud-snap
+    // (transition: none), so a frozen exit scale can't undersize the frame.
+    expect(snappedAtMeasure[0]).toBe(true);
+    expect(hud.classList.contains("hud-snap")).toBe(false);
   });
 
   it("shakes the listening pill instead of toasting when dictation is already listening", async () => {
@@ -406,6 +541,98 @@ describe("meeting detection HUD", () => {
     expect(hudShowCalls()).toBe(1);
   });
 
+  it("reveals the error message below the pill by default", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "finalizing_transcript" });
+    mocks.invoke.mockClear();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "transcription_failed",
+        message: "Dictation recorded no text. Try again.",
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("error");
+    const message = document.querySelector("#hud-error-text");
+    expect(message).toHaveTextContent("Dictation recorded no text. Try again.");
+    expect(hudElement().dataset.errorPlacement).toBe("below");
+    // The message lives inside the HUD window now (the layer opens from the
+    // pill), not as a detached caption sibling.
+    expect(document.querySelector("#hud #hud-error-text")).not.toBeNull();
+    // The HUD is frostless from native setup through every state, so this
+    // transition no longer swaps native chrome mid-flow.
+    expect(chromeCalls()).toEqual([]);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "dictation_hud_caption_fits_below",
+      expect.anything(),
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "dictation_hud_preferred_error_placement",
+    );
+    // The window is sized to fit the message layer mirrored above/below the
+    // pill, plus the shadow gutter (jsdom rects are zero: 2 gaps tall and
+    // 2 gutters all round).
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "dictation_hud_set_size",
+      expect.objectContaining({ width: 32, height: 48 }),
+    );
+  });
+
+  it("reveals the error message above the pill when native placement asks for it", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return Promise.resolve("above");
+      }
+      return Promise.resolve(undefined);
+    });
+    await loadHud();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "transcription_failed",
+        message: "Dictation recorded no text. Try again.",
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("error");
+    expect(hudElement().dataset.errorPlacement).toBe("above");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Dictation recorded no text. Try again.",
+    );
+  });
+
+  it("fades the expanded error in place when the error exits", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", {
+      type: "error",
+      payload: { message: "Dictation recorded no text. Try again." },
+    });
+    mocks.invoke.mockClear();
+
+    // Error exits by fading the expanded panel in place, not retracting it
+    // back into the compact recorder pill.
+    await vi.advanceTimersByTimeAsync(1800);
+    expect(hudElement().dataset.state).toBe("exiting");
+    expect(hudElement().classList.contains("hud-error-exit")).toBe(true);
+    expect(hudElement().classList.contains("hud-reveal-collapsed")).toBe(false);
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Dictation recorded no text. Try again.",
+    );
+
+    await vi.advanceTimersByTimeAsync(320);
+
+    expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(chromeCalls()).toEqual([]);
+    // The message survives the exit fade (it dissolves with the window) and
+    // clears once the pill parks on idle.
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
+  });
+
   it("hides when a Hey June prompt starts an agent session", async () => {
     vi.useFakeTimers();
     await loadHud();
@@ -417,7 +644,7 @@ describe("meeting detection HUD", () => {
     });
 
     expect(hudElement().dataset.state).toBe("exiting");
-    await vi.advanceTimersByTimeAsync(220);
+    await vi.advanceTimersByTimeAsync(320);
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
@@ -467,10 +694,22 @@ function hudShowCalls() {
   ).length;
 }
 
+function sizeCalls() {
+  return mocks.invoke.mock.calls.filter(
+    ([command]) => command === "dictation_hud_set_size",
+  );
+}
+
+function invokeCallIndex(commandName: string) {
+  return mocks.invoke.mock.calls.findIndex(
+    ([command]) => command === commandName,
+  );
+}
+
 function chromeCalls() {
   return mocks.invoke.mock.calls
     .filter(([command]) => command === "dictation_hud_set_chrome")
-    .map(([, args]) => (args as { meeting: boolean }).meeting);
+    .map(([, args]) => (args as { frostless: boolean }).frostless);
 }
 
 function hudElement() {
@@ -494,9 +733,11 @@ function hudMarkup() {
           <span class="hud-bar"></span>
         </div>
         <span id="hud-braille" class="hud-braille" aria-hidden="true"></span>
-        <span class="hud-error-mark" aria-hidden="true"></span>
       </div>
-      <span id="hud-error-text" class="hud-error-text" aria-hidden="true"></span>
+      <span class="hud-error-icon" aria-hidden="true"></span>
+      <span class="hud-error-layer" aria-hidden="true">
+        <span id="hud-error-text" class="hud-error-message"></span>
+      </span>
       <span class="hud-meeting-body">
         <span class="hud-meeting-mark" aria-hidden="true"></span>
         <span class="hud-meeting-text">
