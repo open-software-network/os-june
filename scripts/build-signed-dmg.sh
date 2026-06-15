@@ -145,7 +145,10 @@ cd "$ROOT_DIR"
 pnpm tauri build --bundles dmg "$@"
 
 shopt -s nullglob
-dmgs=("$ROOT_DIR"/src-tauri/target/release/bundle/dmg/*.dmg)
+dmgs=(
+  "$ROOT_DIR"/src-tauri/target/*-apple-darwin/release/bundle/dmg/*.dmg
+  "$ROOT_DIR"/src-tauri/target/release/bundle/dmg/*.dmg
+)
 if [[ "${#dmgs[@]}" -eq 0 ]]; then
   echo "No DMG artifacts found after build." >&2
   exit 1

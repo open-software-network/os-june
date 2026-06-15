@@ -3,13 +3,14 @@
 June ships signed, notarized macOS builds with in-app auto-updates through
 `tauri-plugin-updater`. The source repo stays private; update artifacts,
 signatures, the DMG, and `latest.json` are published to the public
-`open-software-network/os-scribe-releases` repo.
+`open-software-network/os-june-releases` repo.
 
 ## macOS support
 
-June supports macOS 14.0 and later, including macOS 15. System audio capture
-uses Core Audio process taps and is available only on macOS 14.2 and later. On
-macOS 14.0 or 14.1, recording falls back to microphone-only mode.
+June supports macOS 14.0 and later on Apple Silicon and Intel Macs, including
+macOS 15. Production and staging builds ship as universal macOS apps. System
+audio capture uses Core Audio process taps and is available only on macOS 14.2
+and later. On macOS 14.0 or 14.1, recording falls back to microphone-only mode.
 
 The first updater-capable build must be installed manually once — earlier builds
 ship without the updater, so they can't pull it in — and every release after that
@@ -20,7 +21,7 @@ workflow; don't hard-code a specific number in this runbook.
 
 Create or confirm these before cutting the first updater release:
 
-- Public GitHub repo: `open-software-network/os-scribe-releases`.
+- Public GitHub repo: `open-software-network/os-june-releases`.
 - Release GitHub App (org-owned) installed on the public releases repo with
   `contents:write`, exposed as `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`.
   The workflow mints a short-lived, repo-scoped token from it at run time
@@ -75,16 +76,16 @@ The workflow performs the release steps in order:
    Python deps, and the prebuilt dashboard UI, signed Mach-O by Mach-O and
    shipped under `Resources/native/hermes` so first launch needs no network
    install. Adds roughly 110 MB compressed to the DMG.
-7. Builds the `aarch64-apple-darwin` app and DMG with `tauri-action`.
+7. Builds the `universal-apple-darwin` app and DMG with `tauri-action`.
 8. Signs with the Apple Developer ID cert, notarizes with Apple API key
    credentials, signs updater artifacts with the Ed25519 updater key, and
    publishes the release assets plus `latest.json` to
-   `open-software-network/os-scribe-releases`.
+   `open-software-network/os-june-releases`.
 
 The app polls:
 
 ```text
-https://github.com/open-software-network/os-scribe-releases/releases/latest/download/latest.json
+https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json
 ```
 
 That endpoint is baked into shipped builds. Keep it alive until every install
@@ -106,13 +107,12 @@ been installed over a previous updater-capable build and relaunched successfully
 ## First updater release validation
 
 After the workflow publishes a release, download the DMG from
-`open-software-network/os-scribe-releases`, install the app into
+`open-software-network/os-june-releases`, install the app into
 `/Applications`, and run:
 
 ```sh
-VERSION="0.2.0"
 APP="/Applications/June.app"
-DMG="$HOME/Downloads/June_${VERSION}_aarch64.dmg"
+DMG="$HOME/Downloads/June_universal.dmg"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose "$APP"
@@ -120,9 +120,13 @@ spctl --assess --type install --verbose "$DMG"
 xcrun stapler validate "$APP"
 xcrun stapler validate "$DMG"
 plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
+lipo -archs "$APP/Contents/MacOS/os-scribe"
+lipo -archs "$APP/Contents/Resources/native/bin/June Dictation Helper.app/Contents/MacOS/june-dictation-helper"
+lipo -archs "$APP/Contents/Resources/native/bin/June.app/Contents/MacOS/june-system-audio-recorder"
 ```
 
-Confirm `osscribe` appears in `CFBundleURLSchemes`.
+Confirm `osscribe` appears in `CFBundleURLSchemes` and each `lipo` command
+prints both `x86_64` and `arm64`.
 
 For the first updater-to-updater validation, install an older updater-capable
 build, run **June -> Check for updates…**, confirm the prompt shows the
