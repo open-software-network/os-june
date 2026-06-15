@@ -45,7 +45,9 @@ fn ensure_bundled_hermes_dir() {
         return;
     };
     if hermes_dir.exists() {
-        if !hermes_dir.join("bin").join("hermes").exists() {
+        if !hermes_dir.join("bin").join("hermes").exists()
+            && !hermes_dir.join("bin").join("hermes.exe").exists()
+        {
             // Placeholder (or partial) dir: nothing to validate.
             return;
         }

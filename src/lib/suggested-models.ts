@@ -16,12 +16,12 @@ export type SuggestedModel = {
  * Curation snapshot (June 2026), from the live Venice catalog plus public
  * benchmarks (SWE-bench agentic coding, Artificial Analysis intelligence
  * index):
- * - GLM 5.1: latest GLM flagship, top-tier agentic coding and tool use among
- *   open models, 200K context, $1.75/$5.50 per 1M tokens — June's default.
+ * - DeepSeek V4 Flash: latest DeepSeek efficiency flagship, 1M context,
+ *   $0.17/$0.35 per 1M tokens — June's new default, fast and capable.
+ * - GLM 5.1: top-tier agentic coding and tool use among open models, 200K
+ *   context, $1.75/$5.50 per 1M tokens.
  * - Kimi K2.6: leads the open-weights intelligence rankings, built for long
  *   agentic tool runs, 256K context, $0.85/$4.66.
- * - GLM 4.7: Venice's own catalog default and "function calling default" —
- *   near-flagship quality at a fraction of the price, $0.55/$2.65.
  * - Parakeet: fast, accurate everyday dictation at the lowest price tier.
  * - Whisper Large v3: best multilingual accuracy at the same low price.
  *
@@ -35,9 +35,14 @@ export type SuggestedModel = {
 export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
   generation: [
     {
+      id: "deepseek-v4-flash",
+      reason:
+        "Best value: the latest DeepSeek efficiency flagship with 1M context, strong reasoning and coding, anonymized inference, and the lowest price.",
+    },
+    {
       id: "zai-org-glm-5-1",
       reason:
-        "Best overall: the latest GLM flagship, with top-tier agentic coding and tool use among open models and zero data retention.",
+        "Best overall among open models: top-tier agentic coding and tool use, with private zero-retention inference.",
     },
     {
       id: "kimi-k2-6",
@@ -47,7 +52,7 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
     {
       id: "zai-org-glm-4.7",
       reason:
-        "Best value: near-flagship quality at a fraction of the price, and Venice's own default for tool calling, with zero data retention.",
+        "Best value classic pick: near-flagship quality at a fraction of the price, and Venice's own default for tool calling, with zero data retention.",
     },
   ],
   transcription: [

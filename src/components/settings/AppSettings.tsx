@@ -161,7 +161,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
-  generationModel: "zai-org-glm-5-1",
+  generationModel: "deepseek-v4-flash",
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;
@@ -663,7 +663,7 @@ export function AppSettings({
     ? "Input device used for dictation."
     : defaultMicrophone?.name
       ? `Auto-detect uses ${defaultMicrophone.name}.`
-      : "Auto-detect uses the current macOS input.";
+      : "Auto-detect uses the current system input.";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
     ...microphones,

@@ -13,10 +13,7 @@ import {
   setOnboardingResumeStep,
   subscribeToOnboardingComplete,
 } from "../lib/onboarding";
-import type {
-  AccountStatus,
-  RecordingSourceReadinessDto,
-} from "../lib/tauri";
+import type { AccountStatus, RecordingSourceReadinessDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -188,6 +185,34 @@ describe("OnboardingFlow", () => {
         payload: { microphone: "granted", accessibility: "granted" },
       }),
     });
+  }
+
+  function stubNavigatorPlatform(platform: string, userAgent: string) {
+    const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+    const ownUserAgent = Object.getOwnPropertyDescriptor(
+      navigator,
+      "userAgent",
+    );
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      get: () => platform,
+    });
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      get: () => userAgent,
+    });
+    return () => {
+      if (ownPlatform) {
+        Object.defineProperty(navigator, "platform", ownPlatform);
+      } else {
+        Reflect.deleteProperty(navigator, "platform");
+      }
+      if (ownUserAgent) {
+        Object.defineProperty(navigator, "userAgent", ownUserAgent);
+      } else {
+        Reflect.deleteProperty(navigator, "userAgent");
+      }
+    };
   }
 
   it("walks the full flow for a subscribed user", async () => {
@@ -708,6 +733,36 @@ describe("OnboardingFlow", () => {
         type: "request_microphone_permission",
       }),
     );
+  });
+
+  it("only requires microphone access on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      await renderFlow();
+
+      expect(
+        screen.getByText("Dictation and meeting notes need microphone access."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
+      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+
+      emitDictationEvent?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("probes system audio when the permissions screen shows", async () => {

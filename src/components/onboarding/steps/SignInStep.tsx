@@ -13,7 +13,7 @@ import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 const JUNE_POINTS = [
   {
     icon: IconSparkle,
-    title: "An agent on your Mac",
+    title: "An agent on your computer",
     detail: "Hand June real work. It runs the session and comes back done.",
   },
   {
@@ -25,7 +25,7 @@ const JUNE_POINTS = [
     icon: IconLock,
     title: "Private by default",
     detail:
-      "Prompts leave your Mac only for inference, on zero-retention models by default.",
+      "Prompts leave your device only for inference, on zero-retention models by default.",
   },
 ];
 

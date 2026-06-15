@@ -147,7 +147,7 @@ describe("AppSettings", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-1",
+        generationModel: "deepseek-v4-flash",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
@@ -156,7 +156,7 @@ describe("AppSettings", () => {
       selectedModel:
         mode === "transcription"
           ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5-1",
+          : "deepseek-v4-flash",
       models:
         mode === "transcription"
           ? [
@@ -199,6 +199,21 @@ describe("AppSettings", () => {
               },
             ]
           : [
+              {
+                provider: "venice",
+                id: "deepseek-v4-flash",
+                name: "DeepSeek V4 Flash",
+                modelType: "text",
+                description:
+                  "Efficiency-optimized 284B MoE model with 1M context.",
+                privacy: "anonymized",
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 170,
+                outputCreditsPerMillionTokens: 350,
+                contextTokens: 1000000,
+                traits: [],
+                capabilities: ["supportsFunctionCalling"],
+              },
               {
                 provider: "venice",
                 id: "zai-org-glm-5-1",
@@ -258,7 +273,7 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-1",
+      generationModel: mode === "generation" ? modelId : "deepseek-v4-flash",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
@@ -1145,7 +1160,7 @@ describe("AppSettings", () => {
         screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
       ).toBeGreaterThan(0);
       expect(screen.getAllByText("Private mode").length).toBeGreaterThan(0);
-      expect(screen.getByText("Anonymous mode")).toBeInTheDocument();
+      expect(screen.getAllByText("Anonymous mode").length).toBeGreaterThan(0);
       expect(screen.queryByText("Anon")).not.toBeInTheDocument();
       await user.click(
         await screen.findByRole("option", { name: /Venice Uncensored/ }),

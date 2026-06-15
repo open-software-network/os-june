@@ -258,7 +258,7 @@ export const AgentSessionsList = forwardRef<
           label="Start your first session"
           icon={<IconBubble3 size={28} />}
           title="Put June to work"
-          description="Ask June to check on your Mac, dig through your files, or research a topic. Each session keeps one task's conversation and everything it produces in one place."
+          description="Ask June to check on your computer, dig through your files, or research a topic. Each session keeps one task's conversation and everything it produces in one place."
           action={
             <button
               type="button"

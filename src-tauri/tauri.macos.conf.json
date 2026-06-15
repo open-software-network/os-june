@@ -1,5 +1,21 @@
 {
   "build": {
     "runner": "../scripts/cargo-os-scribe-runner.sh"
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": {
+      "../.tauri-helper/June.app": "native/bin/June.app",
+      "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",
+      "../.tauri-hermes/hermes": "native/hermes"
+    },
+    "macOS": {
+      "bundleName": "June",
+      "entitlements": "Entitlements.plist",
+      "exceptionDomain": "",
+      "frameworks": [],
+      "infoPlist": "Info.plist",
+      "minimumSystemVersion": "14.0"
+    }
   }
 }

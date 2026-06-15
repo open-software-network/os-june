@@ -195,20 +195,20 @@ describe("AgentWorkspace", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-1",
+        generationModel: "deepseek-v4-flash",
       },
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5-1",
+      selectedModel: "deepseek-v4-flash",
       models: [
         {
           provider: "venice",
-          id: "zai-org-glm-5-1",
-          name: "GLM 5.1",
+          id: "deepseek-v4-flash",
+          name: "DeepSeek V4 Flash",
           modelType: "text",
-          privacy: "private",
+          privacy: "anonymized",
           traits: [],
           capabilities: [],
         },
@@ -539,14 +539,14 @@ describe("AgentWorkspace", () => {
 
     // The session composer carries the same model trigger as the hero.
     await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+      await screen.findByRole("button", { name: "Model: DeepSeek V4 Flash" }),
     );
 
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
     expect(
-      within(dialog).getByRole("option", { name: /GLM 5.1/ }),
+      within(dialog).getByRole("option", { name: /DeepSeek V4 Flash/ }),
     ).toBeInTheDocument();
   });
 
@@ -578,6 +578,13 @@ describe("AgentWorkspace", () => {
       modelType: "text",
       selectedModel: "zai-org-glm-5-1",
       models: catalog,
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-1",
+      },
     });
     mocks.setVeniceModel.mockResolvedValue(undefined);
     const user = userEvent.setup();
@@ -633,7 +640,7 @@ describe("AgentWorkspace", () => {
   it("refreshes the model privacy label when generation model settings change", async () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(await screen.findByText("Private mode")).toBeInTheDocument();
+    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
 
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
@@ -2450,14 +2457,14 @@ describe("AgentWorkspace", () => {
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5-1",
+      selectedModel: "deepseek-v4-flash",
       models: [
         {
           provider: "venice",
-          id: "zai-org-glm-5-1",
-          name: "GLM 5.1",
+          id: "deepseek-v4-flash",
+          name: "DeepSeek V4 Flash",
           modelType: "text",
-          privacy: "private",
+          privacy: "anonymized",
           traits: [],
           capabilities: ["functionCalling"],
         },
@@ -2485,7 +2492,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+      await screen.findByRole("button", { name: "Model: DeepSeek V4 Flash" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
