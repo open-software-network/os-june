@@ -10,11 +10,13 @@ export function isMacLikePlatform() {
 }
 
 export function primaryShortcutLabel(key: string) {
-  return isMacLikePlatform() ? `⌘ ${key}` : `Ctrl ${key}`;
+  // No space after the ⌘ glyph (it reads tight), but keep one after the
+  // "Ctrl" word so Windows labels don't run together as "CtrlN".
+  return isMacLikePlatform() ? `⌘${key}` : `Ctrl ${key}`;
 }
 
 export function primaryShiftShortcutLabel(key: string) {
-  return isMacLikePlatform() ? `⌘ ⇧ ${key}` : `Ctrl Shift ${key}`;
+  return isMacLikePlatform() ? `⌘⇧${key}` : `Ctrl Shift ${key}`;
 }
 
 export function isPrimaryShortcut(

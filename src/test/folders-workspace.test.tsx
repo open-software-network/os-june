@@ -139,7 +139,7 @@ describe("Sidebar primary navigation", () => {
       />,
     );
 
-    expect(screen.getByText("⌘ K")).toBeInTheDocument();
+    expect(screen.getByText("⌘K")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "k", metaKey: true });
 
