@@ -215,6 +215,13 @@ describe("OnboardingFlow", () => {
     };
   }
 
+  function stubMacNavigatorPlatform() {
+    return stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
+    );
+  }
+
   it("walks the full flow for a subscribed user", async () => {
     const user = userEvent.setup();
     const onComplete = await renderFlow();
@@ -765,47 +772,58 @@ describe("OnboardingFlow", () => {
     }
   });
 
-  it("probes system audio when the permissions screen shows", async () => {
+  it("probes system audio when the macOS permissions screen shows", async () => {
     // The probe is what surfaces the system-audio TCC prompt on a fresh
     // install; it must fire here, in context, not after onboarding.
-    await renderFlow();
-    await waitFor(() =>
-      expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
-        "microphonePlusSystem",
-      ),
-    );
+    const restoreNavigator = stubMacNavigatorPlatform();
+    try {
+      await renderFlow();
+      await waitFor(() =>
+        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
+          "microphonePlusSystem",
+        ),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("keeps continue locked and falls back to settings when system audio is denied", async () => {
     const user = userEvent.setup();
+    const restoreNavigator = stubMacNavigatorPlatform();
     mocks.checkRecordingSourceReadiness.mockResolvedValue(
       systemAudioReadiness(false),
     );
-    await renderFlow();
-    grantPermissions();
+    try {
+      await renderFlow();
+      grantPermissions();
 
-    await screen.findByText(
-      "Turned off in System Settings. Flip the toggle and June will notice.",
-    );
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+      await screen.findByText(
+        "Turned off in System Settings. Flip the toggle and June will notice.",
+      );
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
 
-    await user.click(
-      screen.getByRole("button", { name: "Allow system audio access" }),
-    );
-    expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+      await user.click(
+        screen.getByRole("button", { name: "Allow system audio access" }),
+      );
+      expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
 
-    // The user flips the toggle and comes back; the focus re-probe picks
-    // up the grant.
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(
-      systemAudioReadiness(true),
-    );
-    window.dispatchEvent(new Event("focus"));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+      // The user flips the toggle and comes back; the focus re-probe picks
+      // up the grant.
+      mocks.checkRecordingSourceReadiness.mockResolvedValue(
+        systemAudioReadiness(true),
+      );
+      window.dispatchEvent(new Event("focus"));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("does not block continue when system audio is unsupported", async () => {
+    const restoreNavigator = stubMacNavigatorPlatform();
     const readiness = systemAudioReadiness(false);
     const sysIdx = readiness.sources.findIndex((s) => s.source === "system");
     readiness.sources[sysIdx] = {
@@ -813,13 +831,17 @@ describe("OnboardingFlow", () => {
       permissionState: "unsupported",
     };
     mocks.checkRecordingSourceReadiness.mockResolvedValue(readiness);
-    await renderFlow();
-    grantPermissions();
+    try {
+      await renderFlow();
+      grantPermissions();
 
-    await screen.findByText("Needs macOS 14.2 or later.");
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+      await screen.findByText("Needs macOS 14.2 or later.");
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 });
 

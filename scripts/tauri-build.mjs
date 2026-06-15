@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const platformBundles = {
   darwin: ["app", "dmg"],
@@ -33,7 +36,7 @@ if (bundles && !hasBundleOverride) {
 }
 args.push(...userArgs);
 
-const child = spawn("tauri", args, {
+const child = spawn(tauriCommand(), args, {
   shell: process.platform === "win32",
   stdio: "inherit",
 });
@@ -71,4 +74,11 @@ function platformForTarget(targetTriple) {
     return "darwin";
   }
   return undefined;
+}
+
+function tauriCommand() {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
+  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
+  return existsSync(localBinary) ? localBinary : "tauri";
 }
