@@ -1234,6 +1234,22 @@ export function App() {
     [state.selectedFolderId],
   );
 
+  // Mirrors the sidebar's "New session" button so the agent sessions list
+  // can start a fresh chat with the same pending-session handshake. Memoized
+  // so the ⌘N keydown listener below subscribes once instead of every render.
+  const handleNewAgentSession = useCallback(() => {
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending();
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+      );
+    }, 0);
+  }, []);
+
   useEffect(() => {
     if (
       appBlocked ||
@@ -1256,15 +1272,21 @@ export function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (!isCreateNoteShortcut(event)) return;
       if (document.querySelector('[role="dialog"]')) return;
-      event.preventDefault();
-      void handleCreateNote(null);
+      if (isNewSessionShortcut(event)) {
+        event.preventDefault();
+        handleNewAgentSession();
+        return;
+      }
+      if (isCreateNoteShortcut(event)) {
+        event.preventDefault();
+        void handleCreateNote(null);
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleCreateNote]);
+  }, [handleCreateNote, handleNewAgentSession]);
 
   function handleSelectFolder(folderId?: string) {
     setFolderReturnTarget(undefined);
@@ -1402,21 +1424,6 @@ export function App() {
     } catch (err) {
       setError(messageFromError(err));
     }
-  }
-
-  // Mirrors the sidebar's "New session" button so the agent sessions list
-  // can start a fresh chat with the same pending-session handshake.
-  function handleNewAgentSession() {
-    pendingSessionProjectRef.current = null;
-    setAgentOrigin(undefined);
-    markAgentNewSessionPending();
-    setActiveAgentSession(undefined);
-    setActiveView("agent");
-    window.setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-      );
-    }, 0);
   }
 
   // "Report an issue": the fresh-chat handshake in issue-report mode. The
@@ -2006,11 +2013,11 @@ export function App() {
                           ],
                         }
                       : {
-                          backLabel: "Back to agents",
+                          backLabel: "Back to sessions",
                           onBack: handleReturnToAgentsList,
                           crumbs: [
                             {
-                              label: "Agents",
+                              label: "Sessions",
                               onClick: handleReturnToAgentsList,
                             },
                           ],
@@ -2560,8 +2567,23 @@ export function isAccessibilityBlocked(state?: string) {
   return state !== undefined && state !== "granted";
 }
 
-function isCreateNoteShortcut(event: KeyboardEvent) {
+function isNewSessionShortcut(event: KeyboardEvent) {
   return event.key.toLowerCase() === "n" && isPrimaryShortcut(event);
+}
+
+function isCreateNoteShortcut(event: KeyboardEvent) {
+  // Primary modifier + Shift + N. isPrimaryShortcut rejects Shift, so check
+  // the primary modifier with Shift masked off, then require Shift on top.
+  return (
+    event.key.toLowerCase() === "n" &&
+    event.shiftKey &&
+    isPrimaryShortcut({
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: false,
+    })
+  );
 }
 
 function stringPayloadValue(value: unknown) {

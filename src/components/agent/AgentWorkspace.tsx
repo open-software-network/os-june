@@ -3919,7 +3919,7 @@ export function AgentWorkspace({
   return (
     <section
       className="agent-workspace"
-      aria-label="Agent"
+      aria-label="Session"
       data-artifact-panel={artifactPanel ? "open" : undefined}
       data-hero={heroMode ? "true" : undefined}
     >
@@ -4778,7 +4778,7 @@ function AgentSessionBar({
             ))
           ) : (
             <li>
-              <span className="detail-breadcrumb-label">Agent</span>
+              <span className="detail-breadcrumb-label">Session</span>
             </li>
           )}
           {title !== undefined ? (

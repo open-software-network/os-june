@@ -26,6 +26,7 @@ import {
 import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
+import { primaryShortcutLabel } from "../../lib/platform";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -73,6 +74,7 @@ export const AgentSessionsList = forwardRef<
   // install would see it, real data untouched underneath.
   const sessions = useForcedEmptyStates() ? NO_SESSIONS : allSessions;
   const [query, setQuery] = useState("");
+  const newSessionShortcut = primaryShortcutLabel("N");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
@@ -218,12 +220,12 @@ export const AgentSessionsList = forwardRef<
   return (
     <section
       className="all-notes-workspace agent-sessions-workspace"
-      aria-label="Agents"
+      aria-label="Sessions"
     >
       <header className="folders-header">
         <div className="folders-heading">
           <h1>
-            Agents
+            Sessions
             {sessions.length > 0 ? (
               <span className="folders-count">{sessions.length}</span>
             ) : null}
@@ -236,6 +238,9 @@ export const AgentSessionsList = forwardRef<
         >
           <IconPlusMedium size={13} />
           New session
+          <kbd className="primary-action-kbd" aria-hidden>
+            {newSessionShortcut}
+          </kbd>
         </button>
       </header>
 

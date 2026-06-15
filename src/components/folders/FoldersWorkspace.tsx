@@ -820,7 +820,7 @@ function FolderDetail({
             {folderSessions.length > 0 ? (
               <>
                 <div className="folder-actions-row">
-                  <h2 className="folder-notes-title">Agents</h2>
+                  <h2 className="folder-notes-title">Sessions</h2>
                 </div>
                 <FolderSessionList
                   folder={folder}
