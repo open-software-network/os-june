@@ -22,6 +22,8 @@ const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
+const INVALID_SCRIBE_RESPONSE_MESSAGE: &str =
+    "The processing service returned an invalid response.";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -864,8 +866,30 @@ where
 {
     let status = response.status();
     let body = response.text().await.map_err(network_error)?;
-    let envelope: ApiEnvelope<T> = serde_json::from_str(&body)
-        .map_err(|error| AppError::new("scribe_api_response_invalid", error.to_string()))?;
+    parse_response_body(path, status, &body)
+}
+
+fn parse_response_body<T>(
+    path: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let envelope: ApiEnvelope<T> = serde_json::from_str(body).map_err(|error| {
+        tracing::warn!(
+            path,
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            %error,
+            "scribe api returned a non-json response"
+        );
+        AppError::new(
+            "scribe_api_response_invalid",
+            INVALID_SCRIBE_RESPONSE_MESSAGE,
+        )
+    })?;
     if envelope.success {
         return envelope
             .data
@@ -1025,6 +1049,21 @@ mod tests {
             Some("Create a Quarterly Planning Briefing With Follow")
         );
         assert_eq!(clean_agent_session_title("   "), None);
+    }
+
+    #[test]
+    fn invalid_scribe_response_hides_json_parser_error() {
+        let result = parse_response_body::<GenerateResponse>(
+            "/v1/notes/generate",
+            reqwest::StatusCode::BAD_GATEWAY,
+            "",
+        );
+
+        assert!(result.is_err());
+        let error = result.err().expect("invalid response should fail");
+        assert_eq!(error.code, "scribe_api_response_invalid");
+        assert_eq!(error.message, INVALID_SCRIBE_RESPONSE_MESSAGE);
+        assert!(!error.message.contains("expected value"));
     }
 
     #[test]

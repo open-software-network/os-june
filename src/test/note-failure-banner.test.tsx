@@ -34,6 +34,15 @@ describe("userFacingFailureMessage", () => {
       "Microphone: No speech detected. Try speaking louder or moving closer to the microphone.",
     );
   });
+
+  it("hides raw JSON parser failures from saved notes", () => {
+    expect(userFacingFailureMessage("expected value at line 1 column 1")).toBe(
+      "The processing service returned an invalid response.",
+    );
+    expect(
+      userFacingFailureMessage("Microphone: expected value at line 1 column 1"),
+    ).toBe("Microphone: The processing service returned an invalid response.");
+  });
 });
 
 describe("NoteFailureBanner", () => {

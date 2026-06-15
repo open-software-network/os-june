@@ -40,10 +40,21 @@ function friendlyFailureSegment(message: string) {
   if (normalized.includes("no_speech") || normalized.includes("no speech")) {
     friendly =
       "No speech detected. Try speaking louder or moving closer to the microphone.";
+  } else if (isInvalidScribeResponseMessage(body)) {
+    friendly = "The processing service returned an invalid response.";
   } else if (normalized.includes("upstream_provider_failed")) {
     friendly = "The transcription provider could not process this audio.";
   }
   return source ? `${source}: ${friendly}` : friendly;
+}
+
+function isInvalidScribeResponseMessage(message: string) {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("scribe_api_response_invalid") ||
+    normalized.includes("processing service returned an invalid response") ||
+    /^expected value at line \d+ column \d+$/.test(normalized)
+  );
 }
 
 export function NoteFailureBanner({
