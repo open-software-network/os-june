@@ -13,6 +13,10 @@ export function primaryShortcutLabel(key: string) {
   return isMacLikePlatform() ? `⌘ ${key}` : `Ctrl ${key}`;
 }
 
+export function primaryShiftShortcutLabel(key: string) {
+  return isMacLikePlatform() ? `⌘ ⇧ ${key}` : `Ctrl Shift ${key}`;
+}
+
 export function isPrimaryShortcut(
   event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ) {

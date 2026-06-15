@@ -1582,7 +1582,7 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Agent" }));
     const hudSwitch = await screen.findByRole("switch", {
-      name: "Show agent HUD",
+      name: "Show sessions HUD",
     });
 
     expect(hudSwitch).toHaveAttribute("aria-checked", "true");

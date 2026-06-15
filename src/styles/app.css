@@ -4139,6 +4139,22 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.sidebar-nav-shortcut {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .sidebar[data-collapsed="true"] .sidebar-nav-label {
   display: none;
 }

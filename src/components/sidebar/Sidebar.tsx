@@ -1,6 +1,7 @@
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconZap } from "central-icons/IconZap";
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBrain2 } from "central-icons/IconBrain2";
@@ -203,7 +204,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
     title: "AI",
     items: [
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
-      { id: "agent", label: "Agent", icon: <IconBubble3 size={16} /> },
+      { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
     ],
   },
   {
@@ -241,6 +242,7 @@ export function Sidebar({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
   const searchShortcut = primaryShortcutLabel("K");
+  const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>(
     [],
@@ -374,7 +376,7 @@ export function Sidebar({
         return {
           id: `agent:${session.id}`,
           label: title,
-          meta: "Agent",
+          meta: "Session",
           icon: <IconBubble3 size={15} />,
           searchText: normalizeCommandQuery(
             `${title} ${session.preview ?? ""} agent session`,
@@ -877,6 +879,9 @@ export function Sidebar({
                 <IconPlusMedium size={15} />
               </span>
               <span className="sidebar-nav-label">New session</span>
+              <kbd className="sidebar-nav-shortcut" aria-hidden="true">
+                {newSessionShortcut}
+              </kbd>
             </button>
             <button
               type="button"
@@ -974,7 +979,7 @@ export function Sidebar({
 
           <section
             className="sidebar-section sidebar-agent-section"
-            aria-label="Agent sessions"
+            aria-label="Sessions"
             data-active={
               activeView === "agent" || activeView === "agent-sessions"
             }
@@ -985,7 +990,7 @@ export function Sidebar({
                 className="section-title-label section-title-open"
                 onClick={() => onChangeView("agent-sessions")}
               >
-                Agent
+                Sessions
               </button>
               {/* Same destination as the header — the hover affordance just
                * makes the "this opens a list" behavior legible. */}

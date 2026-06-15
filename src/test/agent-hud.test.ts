@@ -693,7 +693,7 @@ describe("agent HUD", () => {
 
     expect(menuElement().hidden).toBe(false);
     expect(menuElement()).toHaveAttribute("aria-hidden", "false");
-    expect(hideHudButton()).toHaveTextContent("Hide agent HUD");
+    expect(hideHudButton()).toHaveTextContent("Hide sessions HUD");
 
     hideHudButton().click();
     await flushPromises();
@@ -872,7 +872,7 @@ function agentHudMarkup() {
         hidden
       >
         <button id="agent-hud-hide" type="button" role="menuitem">
-          Hide agent HUD
+          Hide sessions HUD
         </button>
       </div>
     </main>

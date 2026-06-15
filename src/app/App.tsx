@@ -1256,15 +1256,21 @@ export function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (!isCreateNoteShortcut(event)) return;
       if (document.querySelector('[role="dialog"]')) return;
-      event.preventDefault();
-      void handleCreateNote(null);
+      if (isNewSessionShortcut(event)) {
+        event.preventDefault();
+        handleNewAgentSession();
+        return;
+      }
+      if (isCreateNoteShortcut(event)) {
+        event.preventDefault();
+        void handleCreateNote(null);
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleCreateNote]);
+  }, [handleCreateNote, handleNewAgentSession]);
 
   function handleSelectFolder(folderId?: string) {
     setFolderReturnTarget(undefined);
@@ -2006,11 +2012,11 @@ export function App() {
                           ],
                         }
                       : {
-                          backLabel: "Back to agents",
+                          backLabel: "Back to sessions",
                           onBack: handleReturnToAgentsList,
                           crumbs: [
                             {
-                              label: "Agents",
+                              label: "Sessions",
                               onClick: handleReturnToAgentsList,
                             },
                           ],
@@ -2560,8 +2566,23 @@ export function isAccessibilityBlocked(state?: string) {
   return state !== undefined && state !== "granted";
 }
 
-function isCreateNoteShortcut(event: KeyboardEvent) {
+function isNewSessionShortcut(event: KeyboardEvent) {
   return event.key.toLowerCase() === "n" && isPrimaryShortcut(event);
+}
+
+function isCreateNoteShortcut(event: KeyboardEvent) {
+  // Primary modifier + Shift + N. isPrimaryShortcut rejects Shift, so check
+  // the primary modifier with Shift masked off, then require Shift on top.
+  return (
+    event.key.toLowerCase() === "n" &&
+    event.shiftKey &&
+    isPrimaryShortcut({
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: false,
+    })
+  );
 }
 
 function stringPayloadValue(value: unknown) {

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 import { OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
@@ -223,7 +224,25 @@ describe("App shortcuts", () => {
     }));
   });
 
-  it("creates a loose note with Command-N but ignores bare n", async () => {
+  it("starts a new session with Command-N", async () => {
+    const onNewSession = vi.fn();
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+
+    try {
+      render(<App />);
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+      fireEvent.keyDown(window, { key: "n", metaKey: true });
+
+      await waitFor(() => expect(onNewSession).toHaveBeenCalled());
+      expect(mocks.createNote).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+    }
+  });
+
+  it("creates a loose note with Command-Shift-N but ignores bare n", async () => {
     render(<App />);
 
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
@@ -231,7 +250,7 @@ describe("App shortcuts", () => {
     fireEvent.keyDown(window, { key: "n" });
     expect(mocks.createNote).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(window, { key: "n", metaKey: true });
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
 
     await waitFor(() =>
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),

@@ -175,7 +175,7 @@ where
     let new_session_item = MenuItem::with_id(
         manager,
         MENU_NEW_SESSION_ID,
-        "New Agent Session...",
+        "New session...",
         true,
         None::<&str>,
     )?;
@@ -196,9 +196,9 @@ where
             MENU_SHOW_AGENT_HUD_ID
         },
         if state.agent_hud_enabled {
-            "Hide agent HUD"
+            "Hide sessions HUD"
         } else {
-            "Show agent HUD"
+            "Show sessions HUD"
         },
         true,
         None::<&str>,
@@ -284,7 +284,7 @@ fn status_label(state: &AgentMenuBarState) -> String {
             pluralize(state.active_count, "session", "sessions")
         );
     }
-    "No active agent sessions".to_string()
+    "No active sessions".to_string()
 }
 
 fn last_status_label(last_status: &AgentMenuBarLastStatus) -> String {
