@@ -11,7 +11,11 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  CSSProperties,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
 import { TrialGate } from "../components/account/TrialGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
@@ -43,7 +47,22 @@ import {
   type SettingsTab,
 } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
+import { TabBar, type TabItem } from "../components/tabs/TabBar";
+import {
+  defaultNav,
+  makeTabId,
+  navEquals,
+  type Tab,
+  type TabNav,
+} from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
+import { IconNoteText } from "central-icons/IconNoteText";
+import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconProjects } from "central-icons/IconProjects";
+import { IconZap } from "central-icons/IconZap";
+import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -111,6 +130,7 @@ import {
 } from "../lib/agent-hud-settings";
 import type {
   BootstrapResponse,
+  FolderDto,
   NoteDto,
   RecordingStatusDto,
   AccountStatus,
@@ -169,6 +189,79 @@ function sidebarMaxWidth() {
   );
 }
 
+const TAB_ICON_SIZE = 14;
+
+// The icon + label a tab shows for a snapshot. Titles for entity views (note,
+// project, agent session) are looked up live from the loaded data, so a tab's
+// label tracks renames without storing a stale copy.
+function tabMeta(
+  nav: TabNav,
+  notes: NoteListItemDto[],
+  folders: FolderDto[],
+  sessions: HermesSessionInfo[],
+): { title: string; icon: ReactNode } {
+  switch (nav.view) {
+    case "meetings": {
+      const note = nav.noteId
+        ? notes.find((n) => n.id === nav.noteId)
+        : undefined;
+      return {
+        title: note?.title?.trim() || "Untitled note",
+        icon: <IconNoteText size={TAB_ICON_SIZE} />,
+      };
+    }
+    case "folders": {
+      const folder = nav.folderId
+        ? folders.find((f) => f.id === nav.folderId)
+        : undefined;
+      return {
+        title: folder?.name?.trim() || "Projects",
+        icon: <IconProjects size={TAB_ICON_SIZE} />,
+      };
+    }
+    case "agent": {
+      const session = nav.agentSessionId
+        ? sessions.find((s) => s.id === nav.agentSessionId)
+        : undefined;
+      return {
+        title: session?.title?.trim() || "New session",
+        icon: <IconBubble3 size={TAB_ICON_SIZE} />,
+      };
+    }
+    case "agent-sessions":
+      return {
+        title: "Sessions",
+        icon: <IconBubble3 size={TAB_ICON_SIZE} />,
+      };
+    case "all-notes":
+      return {
+        title: "All notes",
+        icon: <IconNoteText size={TAB_ICON_SIZE} />,
+      };
+    case "routines":
+      return {
+        title: "Routines",
+        icon: <IconZap size={TAB_ICON_SIZE} />,
+      };
+    case "dictation":
+      return {
+        title: "Dictation",
+        icon: <IconMicrophone size={TAB_ICON_SIZE} />,
+      };
+    case "settings":
+      return {
+        title: "Settings",
+        icon: <IconSettingsGear4 size={TAB_ICON_SIZE} />,
+      };
+    case "notes":
+    default:
+      return {
+        title: "Notes",
+        icon: <IconNoteText size={TAB_ICON_SIZE} />,
+      };
+  }
+}
+
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
   const [state, dispatch] = useReducer(
@@ -194,6 +287,18 @@ export function App() {
   });
   const activeViewRef = useRef<SidebarView>(activeView);
   activeViewRef.current = activeView;
+  // Browser-style tabs. Each tab is a saved navigation snapshot; the active tab
+  // mirrors live navigation (so a single tab behaves exactly like before),
+  // while switching or opening a tab restores its snapshot. The first tab
+  // matches the launch view (agent hero on mac, notes elsewhere).
+  const [tabs, setTabs] = useState<Tab[]>(() => [
+    { id: makeTabId(), nav: { view: isMacLikePlatform() ? "agent" : "notes" } },
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0]!.id);
+  // Set while restoring a tab's snapshot into live state: the capture effect
+  // skips writes until live navigation settles onto the target (note loads are
+  // async), so a half-applied snapshot never overwrites the tab it came from.
+  const restoreTargetRef = useRef<TabNav | null>(null);
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
   const [pendingAgentReply, setPendingAgentReply] =
@@ -377,6 +482,289 @@ export function App() {
   const noteHasBreadcrumb = !!(originFolder || originAllNotes);
   const detailScrollerActive =
     activeView === "folders" && !!state.selectedFolderId;
+
+  // ---- Tabs ------------------------------------------------------------
+  // The current live navigation, reduced to a snapshot. Fields are gated by
+  // view so the active tab only churns when something it actually shows
+  // changes (see navEquals).
+  const liveNav = useMemo<TabNav>(
+    () => ({
+      view: activeView,
+      noteId: activeView === "meetings" ? selectedNoteId : undefined,
+      originFolderId: activeView === "meetings" ? originFolderId : undefined,
+      originAllNotes: activeView === "meetings" ? originAllNotes : undefined,
+      folderId: activeView === "folders" ? state.selectedFolderId : undefined,
+      agentSessionId:
+        activeView === "agent" ? activeAgentSession?.id : undefined,
+      agentOrigin: activeView === "agent" ? agentOrigin : undefined,
+    }),
+    [
+      activeView,
+      selectedNoteId,
+      originFolderId,
+      originAllNotes,
+      state.selectedFolderId,
+      activeAgentSession?.id,
+      agentOrigin,
+    ],
+  );
+
+  // Mirror live navigation into the active tab. While a restore is in flight we
+  // hold off until live nav settles onto the target, then release — this keeps
+  // an async note load mid-switch from stamping a half-built snapshot onto the
+  // tab we're moving to.
+  useEffect(() => {
+    if (restoreTargetRef.current) {
+      if (navEquals(restoreTargetRef.current, liveNav)) {
+        restoreTargetRef.current = null;
+      }
+      return;
+    }
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === activeTabId && !navEquals(tab.nav, liveNav)
+          ? { ...tab, nav: liveNav }
+          : tab,
+      ),
+    );
+  }, [liveNav, activeTabId]);
+
+  // Keep the latest selected note id reachable from applyNav without making it
+  // a dependency (which would rebuild the callback on every note change).
+  const selectedNoteIdRef = useRef(selectedNoteId);
+  useEffect(() => {
+    selectedNoteIdRef.current = selectedNoteId;
+  }, [selectedNoteId]);
+
+  // Push a snapshot into live state. Used by tab switch / open only; in-tab
+  // navigation keeps flowing through the existing handlers untouched.
+  const applyNav = useCallback(
+    (nav: TabNav) => {
+      // The guard only needs to bridge the async note fetch — everything else
+      // applies synchronously. So hold capture only while a fetch is in flight
+      // and release it when the fetch settles (success or failure), never tying
+      // release to a target that might be unreachable (a deleted session/note).
+      restoreTargetRef.current = nav;
+      setAgentOrigin(nav.view === "agent" ? nav.agentOrigin : undefined);
+      setOriginFolderId(
+        nav.view === "meetings" ? nav.originFolderId : undefined,
+      );
+      setOriginAllNotes(nav.view === "meetings" ? !!nav.originAllNotes : false);
+      if (nav.view === "folders") {
+        dispatch({ type: "folderSelected", folderId: nav.folderId });
+      }
+      if (nav.view === "agent") {
+        const session = nav.agentSessionId
+          ? agentSessions.find((s) => s.id === nav.agentSessionId)
+          : undefined;
+        setActiveAgentSession(session);
+      } else {
+        setActiveAgentSession(undefined);
+      }
+      const needsNoteLoad =
+        nav.view === "meetings" &&
+        !!nav.noteId &&
+        selectedNoteIdRef.current !== nav.noteId;
+      if (needsNoteLoad) {
+        const noteId = nav.noteId!;
+        void getNote(noteId)
+          .then((note) => dispatch({ type: "noteLoaded", note }))
+          .catch((err: unknown) => setError(messageFromError(err)))
+          .finally(() => {
+            // A newer restore may have superseded this one — only release the
+            // guard if it's still ours.
+            if (restoreTargetRef.current === nav) {
+              restoreTargetRef.current = null;
+            }
+          });
+      } else {
+        // Nothing async to wait for — let capture resume immediately.
+        restoreTargetRef.current = null;
+      }
+      setActiveView(nav.view);
+    },
+    [agentSessions],
+  );
+
+  function activateTab(id: string) {
+    if (id === activeTabId) return;
+    const target = tabs.find((tab) => tab.id === id);
+    if (!target) return;
+    setActiveTabId(id);
+    applyNav(target.nav);
+  }
+
+  // Open a fresh tab on the given snapshot and focus it. The active tab's own
+  // snapshot was already captured by the mirror effect, so nothing is lost.
+  function openTab(nav: TabNav) {
+    const id = makeTabId();
+    const index = tabs.findIndex((tab) => tab.id === activeTabId);
+    const next = [...tabs];
+    // Drop the new tab in just to the right of the active one, like a browser.
+    next.splice(index < 0 ? tabs.length : index + 1, 0, { id, nav });
+    setTabs(next);
+    setActiveTabId(id);
+    applyNav(nav);
+  }
+
+  // Drive live state to a brand-new chat: arm the new-session handshake so the
+  // agent workspace opens on the hero instead of restoring the last
+  // conversation. Mirrors handleNewAgentSession (applyNav alone would only swap
+  // state, leaving the previous chat on screen under a "New chat" label).
+  function armNewChatLive() {
+    restoreTargetRef.current = { view: "agent" };
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending();
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+      );
+    }, 0);
+  }
+
+  // The "+" / ⌘T affordance: a new tab is always a fresh chat.
+  function openNewChatTab() {
+    const id = makeTabId();
+    const index = tabs.findIndex((tab) => tab.id === activeTabId);
+    const next = [...tabs];
+    next.splice(index < 0 ? tabs.length : index + 1, 0, {
+      id,
+      nav: defaultNav(),
+    });
+    setTabs(next);
+    setActiveTabId(id);
+    armNewChatLive();
+  }
+
+  function closeTab(id: string) {
+    if (tabs.length <= 1) {
+      // Never leave the strip empty — reset the sole tab to a fresh chat.
+      const fresh = { id: makeTabId(), nav: defaultNav() };
+      setTabs([fresh]);
+      setActiveTabId(fresh.id);
+      armNewChatLive();
+      return;
+    }
+    const index = tabs.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+    const next = tabs.filter((tab) => tab.id !== id);
+    setTabs(next);
+    if (id === activeTabId) {
+      // Focus the right neighbor, falling back to the left — browser behavior.
+      const neighbor = next[index] ?? next[index - 1];
+      if (neighbor) {
+        setActiveTabId(neighbor.id);
+        applyNav(neighbor.nav);
+      }
+    }
+  }
+
+  // Keep only the given tab, focusing it. From the tab right-click menu.
+  function closeOtherTabs(id: string) {
+    const keep = tabs.find((tab) => tab.id === id);
+    if (!keep || tabs.length <= 1) return;
+    setTabs([keep]);
+    if (id !== activeTabId) {
+      setActiveTabId(id);
+      applyNav(keep.nav);
+    }
+  }
+
+  function cycleTab(delta: number) {
+    if (tabs.length <= 1) return;
+    const index = tabs.findIndex((tab) => tab.id === activeTabId);
+    if (index < 0) return;
+    const target = tabs[(index + delta + tabs.length) % tabs.length];
+    if (target) activateTab(target.id);
+  }
+
+  // Drop tabs whose note was deleted. The active tab is kept regardless: the
+  // delete handlers already move its selection on to the next note, and the
+  // capture effect reconciles its snapshot — pruning it here would fight that.
+  function pruneDeletedNoteTabs(removedIds: Set<string>) {
+    setTabs((prev) =>
+      prev.filter(
+        (tab) =>
+          tab.id === activeTabId ||
+          !(
+            tab.nav.view === "meetings" &&
+            tab.nav.noteId &&
+            removedIds.has(tab.nav.noteId)
+          ),
+      ),
+    );
+  }
+
+  // Tab keyboard shortcuts: ⌘T new, ⌘[ / ⌘] cycle, ⌘1-9 jump (9 = last).
+  // isPrimaryShortcut handles the cross-platform modifier (⌘ on mac, Ctrl on
+  // Windows) and rejects Alt/Shift. No dependency array — re-bound each render
+  // so it closes over current tabs, matching the search/new-note effects below.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!isPrimaryShortcut(event)) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      const key = event.key;
+      if (key.toLowerCase() === "t") {
+        event.preventDefault();
+        openNewChatTab();
+        return;
+      }
+      if (key === "]" || key === "}") {
+        event.preventDefault();
+        cycleTab(1);
+        return;
+      }
+      if (key === "[" || key === "{") {
+        event.preventDefault();
+        cycleTab(-1);
+        return;
+      }
+      if (/^[1-9]$/.test(key)) {
+        event.preventDefault();
+        const n = Number(key);
+        const target = n >= tabs.length ? tabs[tabs.length - 1] : tabs[n - 1];
+        if (target) activateTab(target.id);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  // Modifier state for the click that's about to fire a navigation. A
+  // capture-phase listener records it before React's bubble-phase handlers run,
+  // so any nav surface (sidebar, notes list, command palette) can open in a new
+  // tab via ⌘/Ctrl-click or middle-click without threading flags through props.
+  const newTabIntentRef = useRef(false);
+  useEffect(() => {
+    const record = (event: MouseEvent) => {
+      newTabIntentRef.current =
+        event.metaKey || event.ctrlKey || event.button === 1;
+    };
+    window.addEventListener("click", record, true);
+    window.addEventListener("auxclick", record, true);
+    return () => {
+      window.removeEventListener("click", record, true);
+      window.removeEventListener("auxclick", record, true);
+    };
+  }, []);
+  // Reads and clears the intent: true when the triggering click wanted a new tab.
+  const takeNewTabIntent = useCallback(() => {
+    const intent = newTabIntentRef.current;
+    newTabIntentRef.current = false;
+    return intent;
+  }, []);
+
+  const tabItems = useMemo<TabItem[]>(
+    () =>
+      tabs.map((tab) => ({
+        id: tab.id,
+        ...tabMeta(tab.nav, state.notes, state.folders, agentSessions),
+      })),
+    [tabs, state.notes, state.folders, agentSessions],
+  );
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
     void recoverRecording(sessionId, action)
@@ -1521,6 +1909,7 @@ export function App() {
     }
     try {
       await deleteNote(noteId);
+      pruneDeletedNoteTabs(new Set([noteId]));
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const nextNoteId = response.items[0]?.id;
@@ -1544,6 +1933,7 @@ export function App() {
     }
     try {
       await deleteNotes(noteIds);
+      pruneDeletedNoteTabs(new Set(noteIds));
       const response = await listNotes();
       dispatch({ type: "notesLoaded", notes: response.items });
       const nextNoteId = response.items[0]?.id;
@@ -1837,6 +2227,10 @@ export function App() {
         settingsTab={settingsTab}
         onSettingsTabChange={setSettingsTab}
         onChangeView={(view) => {
+          if (takeNewTabIntent()) {
+            openTab({ view });
+            return;
+          }
           if (view === "settings") openSettings();
           else setActiveView(view);
           setAgentOrigin(undefined);
@@ -1857,7 +2251,13 @@ export function App() {
         onExitSettings={() => setActiveView(settingsReturnView)}
         onSignOut={() => void handleSignOut()}
         onReportIssue={handleReportIssue}
-        onSelectNote={(noteId) => void handleSelectNote(noteId)}
+        onSelectNote={(noteId) => {
+          if (takeNewTabIntent()) {
+            openTab({ view: "meetings", noteId });
+            return;
+          }
+          void handleSelectNote(noteId);
+        }}
         onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
         onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
         onRemoveNoteFromFolder={(noteId, folderId) =>
@@ -1870,6 +2270,10 @@ export function App() {
           setActiveView("agent");
         }}
         onSelectAgentSession={(session) => {
+          if (takeNewTabIntent()) {
+            openTab({ view: "agent", agentSessionId: session.id });
+            return;
+          }
           setAgentOrigin(undefined);
           setActiveAgentSession(session);
           setActiveView("agent");
@@ -1910,374 +2314,435 @@ export function App() {
           })
         }
       />
-      <section className="main-panel">
-        {accessibilityBlocked ? <PermissionBanner /> : null}
-        <div
-          ref={mainPanelBodyRef}
-          className="main-panel-body"
-          data-active-view={activeView}
-          data-detail-scroller={detailScrollerActive ? "true" : undefined}
-          data-note-detail-scroller={
-            noteDetailScrollerActive ? "true" : undefined
-          }
-        >
-          {error ? <p className="error-banner">{error}</p> : null}
-          <div className="workspace">
-            {activeView === "settings" ? (
-              <AppSettings
-                account={account}
-                accountLoading={accountLoading}
-                sourceMode={sourceMode}
-                sourceReadiness={sourceReadiness}
-                checkingSourceReadiness={checkingSourceReadiness}
-                microphonePermissionStatus={microphoneStatus}
-                accessibilityPermissionStatus={accessibilityStatus}
-                onAccountChanged={handleAccountChanged}
-                onAccountRefresh={refreshAccount}
-                onSourceModeChange={handleSourceModeChange}
-                onEnableMicrophone={handleEnableMicrophone}
-                onEnableAccessibility={handleEnableAccessibility}
-                onEnableSystemAudio={handleEnableSystemAudio}
-                activeTab={settingsTab}
-                onTabChange={setSettingsTab}
-                onReportIssue={handleReportIssue}
-              />
-            ) : activeView === "dictation" ? (
-              <DictationHistoryView
-                onNavigateToSettings={(target) => {
-                  setSettingsReturnView(activeView);
-                  setActiveView("settings");
-                  setSettingsTab("dictation");
-                  const headingId =
-                    target === "style" ? "style-heading" : "dictionary-heading";
-                  window.setTimeout(() => {
-                    document
-                      .getElementById(headingId)
-                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-                  }, 80);
-                }}
-              />
-            ) : activeView === "routines" ? (
-              <RoutinesView
-                onCreateRoutine={(prompt) => {
-                  // The agent workspace is unmounted while Routines is shown,
-                  // so the pending marker alone is consumed on mount — no
-                  // window event needed (it could double-submit the session).
-                  markAgentNewSessionPending(prompt);
-                  setActiveAgentSession(undefined);
-                  setActiveView("agent");
-                }}
-                onOpenRun={(session) => {
-                  setAgentOrigin({ kind: "routines" });
-                  setActiveAgentSession(session);
-                  setActiveView("agent");
-                }}
-              />
-            ) : activeView === "agent" ? (
-              // The origin crumbs render inside the workspace's own sticky
-              // session bar, so they persist while the chat scrolls beneath.
-              <AgentWorkspace
-                initialSession={activeAgentSession}
-                pendingReply={pendingAgentReply}
-                origin={
-                  agentOriginFolder
-                    ? {
-                        backLabel: `Back to ${agentOriginFolder.name}`,
-                        onBack: handleReturnToAgentOriginFolder,
-                        crumbs: [
-                          {
-                            label: "Projects",
-                            onClick: () => {
-                              setActiveView("folders");
-                              dispatch({
-                                type: "folderSelected",
-                                folderId: undefined,
-                              });
-                              setActiveAgentSession(undefined);
-                              setAgentOrigin(undefined);
-                            },
-                          },
-                          {
-                            label: agentOriginFolder.name,
-                            onClick: handleReturnToAgentOriginFolder,
-                          },
-                        ],
-                      }
-                    : agentOrigin?.kind === "routines"
+      <div className="main-column">
+        <TabBar
+          tabs={tabItems}
+          activeTabId={activeTabId}
+          onActivate={activateTab}
+          onClose={closeTab}
+          onCloseOthers={closeOtherTabs}
+          onNew={openNewChatTab}
+        />
+        <section className="main-panel">
+          {accessibilityBlocked ? <PermissionBanner /> : null}
+          <div
+            ref={mainPanelBodyRef}
+            className="main-panel-body"
+            data-active-view={activeView}
+            data-detail-scroller={detailScrollerActive ? "true" : undefined}
+            data-note-detail-scroller={
+              noteDetailScrollerActive ? "true" : undefined
+            }
+          >
+            {error ? <p className="error-banner">{error}</p> : null}
+            <div className="workspace">
+              {activeView === "settings" ? (
+                <AppSettings
+                  account={account}
+                  accountLoading={accountLoading}
+                  sourceMode={sourceMode}
+                  sourceReadiness={sourceReadiness}
+                  checkingSourceReadiness={checkingSourceReadiness}
+                  microphonePermissionStatus={microphoneStatus}
+                  accessibilityPermissionStatus={accessibilityStatus}
+                  onAccountChanged={handleAccountChanged}
+                  onAccountRefresh={refreshAccount}
+                  onSourceModeChange={handleSourceModeChange}
+                  onEnableMicrophone={handleEnableMicrophone}
+                  onEnableAccessibility={handleEnableAccessibility}
+                  onEnableSystemAudio={handleEnableSystemAudio}
+                  activeTab={settingsTab}
+                  onTabChange={setSettingsTab}
+                  onReportIssue={handleReportIssue}
+                />
+              ) : activeView === "dictation" ? (
+                <DictationHistoryView
+                  onNavigateToSettings={(target) => {
+                    setSettingsReturnView(activeView);
+                    setActiveView("settings");
+                    setSettingsTab("dictation");
+                    const headingId =
+                      target === "style"
+                        ? "style-heading"
+                        : "dictionary-heading";
+                    window.setTimeout(() => {
+                      document.getElementById(headingId)?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "start",
+                      });
+                    }, 80);
+                  }}
+                />
+              ) : activeView === "routines" ? (
+                <RoutinesView
+                  onCreateRoutine={(prompt) => {
+                    // The agent workspace is unmounted while Routines is shown,
+                    // so the pending marker alone is consumed on mount — no
+                    // window event needed (it could double-submit the session).
+                    markAgentNewSessionPending(prompt);
+                    setActiveAgentSession(undefined);
+                    setActiveView("agent");
+                  }}
+                  onOpenRun={(session) => {
+                    if (takeNewTabIntent()) {
+                      openTab({
+                        view: "agent",
+                        agentSessionId: session.id,
+                        agentOrigin: { kind: "routines" },
+                      });
+                      return;
+                    }
+                    setAgentOrigin({ kind: "routines" });
+                    setActiveAgentSession(session);
+                    setActiveView("agent");
+                  }}
+                />
+              ) : activeView === "agent" ? (
+                // The origin crumbs render inside the workspace's own sticky
+                // session bar, so they persist while the chat scrolls beneath.
+                <AgentWorkspace
+                  initialSession={activeAgentSession}
+                  pendingReply={pendingAgentReply}
+                  origin={
+                    agentOriginFolder
                       ? {
-                          backLabel: "Back to routines",
-                          onBack: handleReturnToRoutines,
+                          backLabel: `Back to ${agentOriginFolder.name}`,
+                          onBack: handleReturnToAgentOriginFolder,
                           crumbs: [
                             {
-                              label: "Routines",
-                              onClick: handleReturnToRoutines,
+                              label: "Projects",
+                              onClick: () => {
+                                setActiveView("folders");
+                                dispatch({
+                                  type: "folderSelected",
+                                  folderId: undefined,
+                                });
+                                setActiveAgentSession(undefined);
+                                setAgentOrigin(undefined);
+                              },
+                            },
+                            {
+                              label: agentOriginFolder.name,
+                              onClick: handleReturnToAgentOriginFolder,
                             },
                           ],
                         }
-                      : {
-                          backLabel: "Back to sessions",
-                          onBack: handleReturnToAgentsList,
-                          crumbs: [
-                            {
-                              label: "Sessions",
-                              onClick: handleReturnToAgentsList,
-                            },
-                          ],
-                        }
-                }
-              />
-            ) : activeView === "agent-sessions" ? (
-              <AgentSessionsList
-                ref={agentSessionsListRef}
-                sessions={agentSessions}
-                folders={state.folders}
-                sessionFolderIds={sessionFolders}
-                workingSessionIds={agentWorkingSessionIds}
-                waitingSessionIds={agentWaitingSessionIds}
-                onSelectSession={(session) => {
-                  setAgentOrigin(undefined);
-                  setActiveAgentSession(session);
-                  setActiveView("agent");
-                }}
-                onNewSession={handleNewAgentSession}
-                onOpenMoveDialog={(sessionId) =>
-                  setMoveDialogSessionIds([sessionId])
-                }
-                onOpenMoveSessions={(sessionIds) =>
-                  setMoveDialogSessionIds(sessionIds)
-                }
-                onRemoveFromProject={(sessionId, folderId) =>
-                  void handleRemoveSessionFromFolder(sessionId, folderId)
-                }
-              />
-            ) : activeView === "notes" || activeView === "all-notes" ? (
-              <NotesList
-                ref={notesListRef}
-                notes={state.notes}
-                onSelectNote={(noteId) =>
-                  void handleSelectNoteFromAllNotes(noteId)
-                }
-                onCreateNote={() => void handleCreateNote(null)}
-                onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
-                onOpenMoveNotes={(noteIds) => setMoveDialogNoteIds(noteIds)}
-                onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
-                onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
-              />
-            ) : activeView === "folders" ? (
-              <FoldersWorkspace
-                folders={state.folders}
-                notes={state.notes}
-                sessions={agentSessions}
-                sessionFolderIds={sessionFolders}
-                selectedFolderId={state.selectedFolderId}
-                folderBackTarget={
-                  folderReturnTarget
-                    ? {
-                        label: `Back to ${folderReturnTarget.label}`,
-                        onBack: () =>
-                          void handleReturnToNote(folderReturnTarget.noteId),
-                      }
-                    : undefined
-                }
-                onSelectFolder={(folderId) => handleSelectFolder(folderId)}
-                onCreateFolder={(name, description) =>
-                  handleCreateFolder(name, description)
-                }
-                onRenameFolder={(folderId, name, description) =>
-                  void handleRenameFolder(folderId, name, description)
-                }
-                onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}
-                onCreateNote={(folderId) => void handleCreateNote(folderId)}
-                onSelectNote={(noteId) => {
-                  const folderId = state.selectedFolderId;
-                  if (folderId) {
-                    void handleSelectNoteFromFolder(noteId, folderId);
-                  } else {
-                    void handleSelectNote(noteId).then(() =>
-                      setActiveView("meetings"),
-                    );
+                      : agentOrigin?.kind === "routines"
+                        ? {
+                            backLabel: "Back to routines",
+                            onBack: handleReturnToRoutines,
+                            crumbs: [
+                              {
+                                label: "Routines",
+                                onClick: handleReturnToRoutines,
+                              },
+                            ],
+                          }
+                        : {
+                            backLabel: "Back to sessions",
+                            onBack: handleReturnToAgentsList,
+                            crumbs: [
+                              {
+                                label: "Sessions",
+                                onClick: handleReturnToAgentsList,
+                              },
+                            ],
+                          }
                   }
-                }}
-                onAssignNoteToFolder={(noteId, folderId) =>
-                  handleSetNoteFolder(noteId, folderId, { rethrow: true })
-                }
-                onRemoveNoteFromFolder={(noteId, folderId) =>
-                  void handleRemoveNoteFromFolder(noteId, folderId)
-                }
-                onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
-                onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
-                onCreateSession={(folderId) =>
-                  handleNewAgentSessionInProject(folderId)
-                }
-                onSelectSession={(session) => {
-                  // Remember the project so the agent view can breadcrumb
-                  // back to it.
-                  setAgentOrigin(
-                    state.selectedFolderId
-                      ? { kind: "project", folderId: state.selectedFolderId }
-                      : undefined,
-                  );
-                  setActiveAgentSession(session);
-                  setActiveView("agent");
-                }}
-                onAssignSessionToFolder={(sessionId, folderId) =>
-                  handleSetSessionFolder(sessionId, folderId, {
-                    rethrow: true,
-                  })
-                }
-                onRemoveSessionFromFolder={(sessionId, folderId) =>
-                  void handleRemoveSessionFromFolder(sessionId, folderId)
-                }
-                onOpenSessionMoveDialog={(sessionId) =>
-                  setMoveDialogSessionIds([sessionId])
-                }
-              />
-            ) : selectedNote ? (
-              <div className="note-shell">
-                {originFolder ? (
-                  <BreadcrumbBar
-                    backLabel={`Back to ${originFolder.name}`}
-                    onBack={() => {
-                      setActiveView("folders");
-                      dispatch({
-                        type: "folderSelected",
-                        folderId: originFolder.id,
+                />
+              ) : activeView === "agent-sessions" ? (
+                <AgentSessionsList
+                  ref={agentSessionsListRef}
+                  sessions={agentSessions}
+                  folders={state.folders}
+                  sessionFolderIds={sessionFolders}
+                  workingSessionIds={agentWorkingSessionIds}
+                  waitingSessionIds={agentWaitingSessionIds}
+                  onSelectSession={(session) => {
+                    if (takeNewTabIntent()) {
+                      openTab({ view: "agent", agentSessionId: session.id });
+                      return;
+                    }
+                    setAgentOrigin(undefined);
+                    setActiveAgentSession(session);
+                    setActiveView("agent");
+                  }}
+                  onNewSession={handleNewAgentSession}
+                  onOpenMoveDialog={(sessionId) =>
+                    setMoveDialogSessionIds([sessionId])
+                  }
+                  onOpenMoveSessions={(sessionIds) =>
+                    setMoveDialogSessionIds(sessionIds)
+                  }
+                  onRemoveFromProject={(sessionId, folderId) =>
+                    void handleRemoveSessionFromFolder(sessionId, folderId)
+                  }
+                />
+              ) : activeView === "notes" || activeView === "all-notes" ? (
+                <NotesList
+                  ref={notesListRef}
+                  notes={state.notes}
+                  onSelectNote={(noteId) => {
+                    if (takeNewTabIntent()) {
+                      openTab({
+                        view: "meetings",
+                        noteId,
+                        originAllNotes: true,
                       });
-                      setOriginFolderId(undefined);
-                    }}
-                    items={[
-                      {
-                        label: originFolder.name,
-                        onClick: () => {
-                          setActiveView("folders");
-                          dispatch({
-                            type: "folderSelected",
-                            folderId: originFolder.id,
-                          });
-                          setOriginFolderId(undefined);
-                        },
-                      },
-                      {
-                        label: selectedNote.title.trim() || "New note",
-                      },
-                    ]}
-                  />
-                ) : originAllNotes ? (
-                  <BreadcrumbBar
-                    backLabel="Back to meeting notes"
-                    onBack={() => {
-                      setActiveView("all-notes");
-                      setOriginAllNotes(false);
-                    }}
-                    items={[
-                      {
-                        label: "Meeting notes",
-                        onClick: () => {
-                          setActiveView("all-notes");
-                          setOriginAllNotes(false);
-                        },
-                      },
-                      {
-                        label: selectedNote.title.trim() || "New note",
-                      },
-                    ]}
-                  />
-                ) : null}
-                <div
-                  ref={noteDetailScrollRef}
-                  className="note-detail-scroll"
-                  data-has-detail-bar={noteHasBreadcrumb ? "true" : undefined}
-                >
-                  <NoteEditor
-                    note={selectedNote}
-                    folders={state.folders}
-                    recordingStatus={state.recordingStatus}
-                    sourceMode={sourceMode}
-                    sourceReadiness={sourceReadiness}
-                    recovery={selectedRecovery}
-                    onRecoverRecording={(sessionId) =>
-                      handleRecovery(sessionId, "validate")
+                      return;
                     }
-                    onDiscardRecording={(sessionId) =>
-                      handleRecovery(sessionId, "discard")
-                    }
-                    onTitleChange={(title) => void handleUpdateNote({ title })}
-                    onContentChange={(sourceNoteId, editedContent) => {
-                      // Blur fired by an editor that was already torn
-                      // down on note-switch — ignore so we don't write
-                      // the old note's content into the new selectedNote.
-                      if (sourceNoteId !== selectedNote.id) return;
-                      void handleUpdateNote({ editedContent });
-                    }}
-                    onSourceModeChange={handleSourceModeChange}
-                    onEnableSystemAudio={handleEnableSystemAudio}
-                    onEnableMicrophone={handleEnableMicrophone}
-                    microphoneBlocked={microphoneBlocked}
-                    onTabChange={(activeTab) =>
-                      void updateNote({
-                        noteId: selectedNote.id,
-                        activeTab,
-                      }).then((note) => dispatch({ type: "noteUpdated", note }))
-                    }
-                    onStartRecording={() => void handleStartRecording()}
-                    onPauseRecording={(sessionId) =>
-                      void handlePauseRecording(sessionId)
-                    }
-                    onResumeRecording={(sessionId) =>
-                      void handleResumeRecording(sessionId)
-                    }
-                    onFinishRecording={(sessionId) =>
-                      void handleFinishRecording(sessionId)
-                    }
-                    onRetry={async () => {
-                      if (!selectedNote) return;
-                      try {
-                        const note = await retryProcessing(selectedNote.id);
-                        dispatch({ type: "noteProcessingUpdated", note });
-                      } catch (err) {
-                        // Surface the failure (the banner only releases its
-                        // busy gate on rejection — it expects us to report).
-                        setError(messageFromError(err));
-                        throw err;
-                      }
-                    }}
-                    onTopUp={() =>
-                      void osAccountsTopUp().catch((err: unknown) =>
-                        setError(messageFromError(err)),
-                      )
-                    }
-                    onAssignFolder={(folderId) =>
-                      void handleSetNoteFolder(selectedNote.id, folderId)
-                    }
-                    onRemoveFolder={(folderId) =>
-                      void handleRemoveNoteFromFolder(selectedNote.id, folderId)
-                    }
-                    onNavigateToFolder={(folderId) => {
-                      setActiveView("folders");
-                      dispatch({ type: "folderSelected", folderId });
-                      setFolderReturnTarget({
-                        noteId: selectedNote.id,
-                        label: selectedNote.title.trim() || "New note",
-                      });
-                      setOriginFolderId(undefined);
-                    }}
-                    onCreateAndAssignFolder={(name) => {
-                      void (async () => {
-                        const folder = await handleCreateFolder(name);
-                        if (folder) {
-                          await handleSetNoteFolder(selectedNote.id, folder.id);
+                    void handleSelectNoteFromAllNotes(noteId);
+                  }}
+                  onCreateNote={() => void handleCreateNote(null)}
+                  onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
+                  onOpenMoveNotes={(noteIds) => setMoveDialogNoteIds(noteIds)}
+                  onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+                  onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
+                />
+              ) : activeView === "folders" ? (
+                <FoldersWorkspace
+                  folders={state.folders}
+                  notes={state.notes}
+                  sessions={agentSessions}
+                  sessionFolderIds={sessionFolders}
+                  selectedFolderId={state.selectedFolderId}
+                  folderBackTarget={
+                    folderReturnTarget
+                      ? {
+                          label: `Back to ${folderReturnTarget.label}`,
+                          onBack: () =>
+                            void handleReturnToNote(folderReturnTarget.noteId),
                         }
-                      })();
-                    }}
-                  />
+                      : undefined
+                  }
+                  onSelectFolder={(folderId) => handleSelectFolder(folderId)}
+                  onCreateFolder={(name, description) =>
+                    handleCreateFolder(name, description)
+                  }
+                  onRenameFolder={(folderId, name, description) =>
+                    void handleRenameFolder(folderId, name, description)
+                  }
+                  onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}
+                  onCreateNote={(folderId) => void handleCreateNote(folderId)}
+                  onSelectNote={(noteId) => {
+                    const folderId = state.selectedFolderId;
+                    if (takeNewTabIntent()) {
+                      openTab({
+                        view: "meetings",
+                        noteId,
+                        originFolderId: folderId,
+                      });
+                      return;
+                    }
+                    if (folderId) {
+                      void handleSelectNoteFromFolder(noteId, folderId);
+                    } else {
+                      void handleSelectNote(noteId).then(() =>
+                        setActiveView("meetings"),
+                      );
+                    }
+                  }}
+                  onAssignNoteToFolder={(noteId, folderId) =>
+                    handleSetNoteFolder(noteId, folderId, { rethrow: true })
+                  }
+                  onRemoveNoteFromFolder={(noteId, folderId) =>
+                    void handleRemoveNoteFromFolder(noteId, folderId)
+                  }
+                  onOpenMoveDialog={(noteId) => setMoveDialogNoteIds([noteId])}
+                  onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+                  onCreateSession={(folderId) =>
+                    handleNewAgentSessionInProject(folderId)
+                  }
+                  onSelectSession={(session) => {
+                    // Remember the project so the agent view can breadcrumb
+                    // back to it.
+                    const agentOriginValue = state.selectedFolderId
+                      ? ({
+                          kind: "project",
+                          folderId: state.selectedFolderId,
+                        } as const)
+                      : undefined;
+                    if (takeNewTabIntent()) {
+                      openTab({
+                        view: "agent",
+                        agentSessionId: session.id,
+                        agentOrigin: agentOriginValue,
+                      });
+                      return;
+                    }
+                    setAgentOrigin(agentOriginValue);
+                    setActiveAgentSession(session);
+                    setActiveView("agent");
+                  }}
+                  onAssignSessionToFolder={(sessionId, folderId) =>
+                    handleSetSessionFolder(sessionId, folderId, {
+                      rethrow: true,
+                    })
+                  }
+                  onRemoveSessionFromFolder={(sessionId, folderId) =>
+                    void handleRemoveSessionFromFolder(sessionId, folderId)
+                  }
+                  onOpenSessionMoveDialog={(sessionId) =>
+                    setMoveDialogSessionIds([sessionId])
+                  }
+                />
+              ) : selectedNote ? (
+                <div className="note-shell">
+                  {originFolder ? (
+                    <BreadcrumbBar
+                      backLabel={`Back to ${originFolder.name}`}
+                      onBack={() => {
+                        setActiveView("folders");
+                        dispatch({
+                          type: "folderSelected",
+                          folderId: originFolder.id,
+                        });
+                        setOriginFolderId(undefined);
+                      }}
+                      items={[
+                        {
+                          label: originFolder.name,
+                          onClick: () => {
+                            setActiveView("folders");
+                            dispatch({
+                              type: "folderSelected",
+                              folderId: originFolder.id,
+                            });
+                            setOriginFolderId(undefined);
+                          },
+                        },
+                        {
+                          label: selectedNote.title.trim() || "New note",
+                        },
+                      ]}
+                    />
+                  ) : originAllNotes ? (
+                    <BreadcrumbBar
+                      backLabel="Back to meeting notes"
+                      onBack={() => {
+                        setActiveView("all-notes");
+                        setOriginAllNotes(false);
+                      }}
+                      items={[
+                        {
+                          label: "Meeting notes",
+                          onClick: () => {
+                            setActiveView("all-notes");
+                            setOriginAllNotes(false);
+                          },
+                        },
+                        {
+                          label: selectedNote.title.trim() || "New note",
+                        },
+                      ]}
+                    />
+                  ) : null}
+                  <div
+                    ref={noteDetailScrollRef}
+                    className="note-detail-scroll"
+                    data-has-detail-bar={noteHasBreadcrumb ? "true" : undefined}
+                  >
+                    <NoteEditor
+                      note={selectedNote}
+                      folders={state.folders}
+                      recordingStatus={state.recordingStatus}
+                      sourceMode={sourceMode}
+                      sourceReadiness={sourceReadiness}
+                      recovery={selectedRecovery}
+                      onRecoverRecording={(sessionId) =>
+                        handleRecovery(sessionId, "validate")
+                      }
+                      onDiscardRecording={(sessionId) =>
+                        handleRecovery(sessionId, "discard")
+                      }
+                      onTitleChange={(title) =>
+                        void handleUpdateNote({ title })
+                      }
+                      onContentChange={(sourceNoteId, editedContent) => {
+                        // Blur fired by an editor that was already torn
+                        // down on note-switch — ignore so we don't write
+                        // the old note's content into the new selectedNote.
+                        if (sourceNoteId !== selectedNote.id) return;
+                        void handleUpdateNote({ editedContent });
+                      }}
+                      onSourceModeChange={handleSourceModeChange}
+                      onEnableSystemAudio={handleEnableSystemAudio}
+                      onEnableMicrophone={handleEnableMicrophone}
+                      microphoneBlocked={microphoneBlocked}
+                      onTabChange={(activeTab) =>
+                        void updateNote({
+                          noteId: selectedNote.id,
+                          activeTab,
+                        }).then((note) =>
+                          dispatch({ type: "noteUpdated", note }),
+                        )
+                      }
+                      onStartRecording={() => void handleStartRecording()}
+                      onPauseRecording={(sessionId) =>
+                        void handlePauseRecording(sessionId)
+                      }
+                      onResumeRecording={(sessionId) =>
+                        void handleResumeRecording(sessionId)
+                      }
+                      onFinishRecording={(sessionId) =>
+                        void handleFinishRecording(sessionId)
+                      }
+                      onRetry={async () => {
+                        if (!selectedNote) return;
+                        try {
+                          const note = await retryProcessing(selectedNote.id);
+                          dispatch({ type: "noteProcessingUpdated", note });
+                        } catch (err) {
+                          // Surface the failure (the banner only releases its
+                          // busy gate on rejection — it expects us to report).
+                          setError(messageFromError(err));
+                          throw err;
+                        }
+                      }}
+                      onTopUp={() =>
+                        void osAccountsTopUp().catch((err: unknown) =>
+                          setError(messageFromError(err)),
+                        )
+                      }
+                      onAssignFolder={(folderId) =>
+                        void handleSetNoteFolder(selectedNote.id, folderId)
+                      }
+                      onRemoveFolder={(folderId) =>
+                        void handleRemoveNoteFromFolder(
+                          selectedNote.id,
+                          folderId,
+                        )
+                      }
+                      onNavigateToFolder={(folderId) => {
+                        setActiveView("folders");
+                        dispatch({ type: "folderSelected", folderId });
+                        setFolderReturnTarget({
+                          noteId: selectedNote.id,
+                          label: selectedNote.title.trim() || "New note",
+                        });
+                        setOriginFolderId(undefined);
+                      }}
+                      onCreateAndAssignFolder={(name) => {
+                        void (async () => {
+                          const folder = await handleCreateFolder(name);
+                          if (folder) {
+                            await handleSetNoteFolder(
+                              selectedNote.id,
+                              folder.id,
+                            );
+                          }
+                        })();
+                      }}
+                    />
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <section className="editor-empty" aria-label="Opening note" />
-            )}
+              ) : (
+                <section className="editor-empty" aria-label="Opening note" />
+              )}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
       <MoveNoteToFolderDialog
         open={moveDialogNoteIds !== null}
         onClose={() => setMoveDialogNoteIds(null)}
