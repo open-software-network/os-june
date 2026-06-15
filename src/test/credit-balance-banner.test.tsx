@@ -52,13 +52,13 @@ describe("shouldShowLowCreditBanner", () => {
     ).toBe(false);
   });
 
-  it("falls back to usdMillis when older payloads omit credits", () => {
+  it("stays hidden when older payloads omit credit units", () => {
     const account = activeAccount({
       balance: { usdMillis: METERED_USAGE_CREDIT_FLOOR - 1 },
     });
 
-    expect(accountCreditBalance(account)).toBe(METERED_USAGE_CREDIT_FLOOR - 1);
-    expect(shouldShowLowCreditBanner(account)).toBe(true);
+    expect(accountCreditBalance(account)).toBeUndefined();
+    expect(shouldShowLowCreditBanner(account)).toBe(false);
   });
 
   it("prefers credits when both balance fields are present", () => {
@@ -108,7 +108,7 @@ describe("CreditBalanceBanner", () => {
     render(<CreditBalanceBanner account={activeAccount()} onTopUp={onTopUp} />);
 
     expect(
-      screen.getByRole("alert", { name: "Low credit balance" }),
+      screen.getByRole("status", { name: "Low credit balance" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Low balance")).toBeInTheDocument();
     expect(

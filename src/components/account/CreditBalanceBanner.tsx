@@ -17,7 +17,7 @@ export function CreditBalanceBanner({ account, onTopUp }: Props) {
   return (
     <section
       className="message-card credit-balance-banner"
-      role="alert"
+      role="status"
       aria-label="Low credit balance"
     >
       <p className="credit-balance-banner-message">
@@ -50,7 +50,7 @@ export function shouldShowLowCreditBanner(account: AccountStatus) {
 }
 
 export function accountCreditBalance(account: AccountStatus) {
-  return account.balance?.credits ?? account.balance?.usdMillis;
+  return account.balance?.credits;
 }
 
 function hasMeteredAccess(account: AccountStatus) {
