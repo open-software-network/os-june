@@ -1183,6 +1183,62 @@ describe("AppSettings", () => {
     }
   });
 
+  it("accepts local model IDs for transcription and text selection", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Change transcription model",
+      }),
+    );
+    let dialog = await screen.findByRole("dialog", {
+      name: "Transcription model",
+    });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Local ASR model ID" }),
+      "local-whisper",
+    );
+    await user.click(within(dialog).getByRole("button", { name: /Use/i }));
+
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "transcription",
+      "local-whisper",
+    );
+    expect(await screen.findByText("local-whisper")).toBeInTheDocument();
+    expect(screen.getAllByText("Custom model").length).toBeGreaterThan(0);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Change text model",
+      }),
+    );
+    dialog = await screen.findByRole("dialog", { name: "Text model" });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Local text model ID" }),
+      "ollama/qwen3:30b",
+    );
+    await user.click(within(dialog).getByRole("button", { name: /Use/i }));
+
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "ollama/qwen3:30b",
+    );
+    expect(await screen.findByText("ollama/qwen3:30b")).toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(

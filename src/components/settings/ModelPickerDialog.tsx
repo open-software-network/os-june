@@ -4,6 +4,7 @@ import { IconFire1 } from "central-icons/IconFire1";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -106,8 +107,12 @@ export function ModelPickerDialog({
   // looks across the whole catalog, since three curated rows aren't worth
   // searching.
   const [tab, setTab] = useState<"suggested" | "all">("suggested");
+  const [localModelId, setLocalModelId] = useState("");
   useEffect(() => {
-    if (open) setTab("suggested");
+    if (open) {
+      setTab("suggested");
+      setLocalModelId("");
+    }
   }, [open, mode]);
   const suggested = useMemo(
     () => suggestedModelsForMode(mode, options),
@@ -144,6 +149,15 @@ export function ModelPickerDialog({
   }, [options, query, searching, suggested, tab]);
   const showReasons = !searching && tab === "suggested" && suggested.length > 0;
   const title = mode === "transcription" ? "Transcription model" : "Text model";
+  const localModelIdValue = localModelId.trim();
+  const localModelLabel =
+    mode === "transcription" ? "Local ASR model ID" : "Local text model ID";
+  const localModelPlaceholder =
+    mode === "transcription" ? "local-whisper" : "ollama/qwen3:30b";
+  const localModelDescription =
+    mode === "transcription"
+      ? "Enter the model ID exposed by your local Scribe API. It will be used for recordings and dictation."
+      : "Enter the model ID exposed by your local Scribe API. Local text models should support tool calls for the agent.";
 
   return (
     <Dialog
@@ -164,6 +178,37 @@ export function ModelPickerDialog({
           aria-label="Search models"
         />
       </label>
+      <form
+        className="model-picker-local"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (localModelIdValue) onSelect(localModelIdValue);
+        }}
+      >
+        <div className="model-picker-local-copy">
+          <p className="model-picker-local-title">Use local model</p>
+          <p className="model-picker-local-description">
+            {localModelDescription}
+          </p>
+        </div>
+        <div className="model-picker-local-controls">
+          <input
+            className="model-picker-local-input"
+            value={localModelId}
+            onChange={(event) => setLocalModelId(event.currentTarget.value)}
+            placeholder={localModelPlaceholder}
+            aria-label={localModelLabel}
+          />
+          <button
+            type="submit"
+            className="btn btn-secondary model-picker-local-submit"
+            disabled={!localModelIdValue}
+          >
+            <IconPlusMedium size={14} aria-hidden />
+            Use
+          </button>
+        </div>
+      </form>
       {!searching && suggested.length > 0 ? (
         <div
           className="model-picker-tabs"
@@ -246,17 +291,12 @@ export function ModelPickerDialog({
   );
 }
 
-export function selectedModel(options: VeniceModelDto[], value: string) {
-  return (
-    options.find((model) => model.id === value) ?? {
-      provider: "",
-      id: value,
-      name: value,
-      modelType: "",
-      traits: [],
-      capabilities: [],
-    }
-  );
+export function selectedModel(
+  options: VeniceModelDto[],
+  value: string,
+  mode?: ProviderModelMode,
+) {
+  return options.find((model) => model.id === value) ?? localModel(value, mode);
 }
 
 export function pricingLabel(model: VeniceModelDto) {
@@ -351,19 +391,34 @@ function trimNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-export function modelOptions(models: VeniceModelDto[], selectedModel: string) {
-  if (models.some((model) => model.id === selectedModel)) {
+export function modelOptions(
+  models: VeniceModelDto[],
+  selectedModel: string,
+  mode?: ProviderModelMode,
+) {
+  const modelId = selectedModel.trim();
+  if (!modelId || models.some((model) => model.id === modelId)) {
     return models;
   }
-  return [
-    {
-      provider: "",
-      id: selectedModel,
-      name: selectedModel,
-      modelType: "",
-      traits: [],
-      capabilities: [],
-    },
-    ...models,
-  ];
+  return [localModel(modelId, mode), ...models];
+}
+
+function localModel(modelId: string, mode?: ProviderModelMode): VeniceModelDto {
+  const trimmed = modelId.trim();
+  const modelType =
+    mode === "transcription" ? "asr" : mode === "generation" ? "text" : "";
+  return {
+    provider: "local",
+    id: trimmed,
+    name: trimmed,
+    modelType,
+    description:
+      mode === "transcription"
+        ? "Custom speech-to-text model."
+        : "Custom text model.",
+    priceUnit: "local",
+    priceDescription: "Custom model",
+    traits: ["custom"],
+    capabilities: mode === "generation" ? ["supportsFunctionCalling"] : [],
+  };
 }
