@@ -2656,6 +2656,11 @@ input:focus-visible,
  * The hero composer keeps the base opaque card — nothing scrolls there. */
 .agent-composer:not([data-hero="true"]) .agent-composer-box {
   background: color-mix(in oklch, var(--card) 92%, transparent);
+  --agent-composer-scroll-fade: color-mix(
+    in oklch,
+    var(--card) 92%,
+    transparent
+  );
   -webkit-backdrop-filter: saturate(140%) blur(36px);
   backdrop-filter: saturate(140%) blur(36px);
 }
@@ -2727,20 +2732,20 @@ input:focus-visible,
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  /* Bottom-anchored so that while the JS FLIP animates the box height, the
-   * toolbar stays pinned to the bottom edge and new lines reveal from the
-   * rising top edge. */
+  /* Bottom-anchored so the toolbar stays pinned while the editor grows above
+   * it. */
   justify-content: flex-end;
   gap: var(--sp-1);
   width: 100%;
   max-width: min(var(--chat-max), var(--content-max));
   padding: var(--sp-1);
+  --agent-composer-scroll-fade: var(--card);
   border: 1px solid var(--border-subtle);
   /* Squircle, not a pill — a calmer rounded-rect. */
   border-radius: var(--r-xl);
   background: var(--card);
   box-shadow: var(--shadow-sm);
-  /* Clips the rising top edge during the FLIP height glide. */
+  /* Keeps child focus rings and media clipped to the rounded surface. */
   overflow: hidden;
   transition:
     border-color var(--t-fast) var(--ease-out),
@@ -3229,16 +3234,15 @@ input:focus-visible,
   box-shadow: var(--shadow-md);
 }
 
-.agent-composer textarea {
+/* The ProseMirror composer (replaces the old textarea). The element sizes
+ * itself with its content up to the cap, then scrolls — no JS height-setting,
+ * unlike the textarea which had no field-sizing in WKWebView. */
+.agent-composer-editor {
   width: 100%;
   min-height: var(--control-lg);
   max-height: 200px;
-  resize: none;
-  /* Hidden until the auto-grow caps out at max-height — the grow effect in
-   * AgentWorkspace flips this to auto then. Below the cap the field always
-   * fits its content, and auto here makes the overlay scrollbar flash on
-   * every line growth (the measurement passes through height:auto). */
-  overflow-y: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 0;
   /* Symmetric vertical padding centers the single line; the horizontal
    * padding keeps the placeholder/text comfortably off the box edge. The
@@ -3250,13 +3254,219 @@ input:focus-visible,
   font-size: var(--fs-lg);
   line-height: 1.5;
   outline: none;
-  /* Growth is animated by the JS FLIP in AgentWorkspace (box height +
-   * textarea transform together) — a CSS height transition here would fight
-   * those measurements. */
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.agent-composer textarea::placeholder {
+.agent-composer-editor-root {
+  position: relative;
+  width: 100%;
+  min-height: var(--control-lg);
+  overflow: hidden;
+}
+
+/* Same edge-fade recipe as the composer model list: overlays are pinned to the
+ * scroll viewport, and data-fade-* only appears when that edge has hidden
+ * content. This turns the capped editor's hard clip into a soft melt. */
+.agent-composer-editor-root::before,
+.agent-composer-editor-root::after {
+  content: "";
+  position: absolute;
+  right: var(--sp-1);
+  left: 0;
+  z-index: 1;
+  height: 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-editor-root::before {
+  top: 0;
+  background: linear-gradient(
+    to bottom,
+    var(--agent-composer-scroll-fade),
+    transparent
+  );
+}
+
+.agent-composer-editor-root::after {
+  bottom: 0;
+  background: linear-gradient(
+    to top,
+    var(--agent-composer-scroll-fade),
+    transparent
+  );
+}
+
+.agent-composer-editor-root[data-fade-top="true"]::before,
+.agent-composer-editor-root[data-fade-bottom="true"]::after {
+  opacity: 1;
+}
+
+.agent-composer-editor p {
+  margin: 0;
+}
+
+/* Placeholder painted by @tiptap/extension-placeholder on the empty first
+ * paragraph. */
+.agent-composer-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
   color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* The inline category tag ("Bug report" / "Feedback" / "Feature request").
+ * One per message; styled per category from system oklch tokens. Shares the
+ * pill recipe of .agent-safety-badge so it reads as the same family. */
+.agent-category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  /* Sits on the text baseline rather than the line box, so it lines up with
+   * the words it flows beside. */
+  vertical-align: baseline;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+  /* Per-category color, defaulting to the brand pill. */
+  background: color-mix(
+    in oklch,
+    var(--category-tint, var(--brand)) 14%,
+    transparent
+  );
+  color: var(--category-ink, var(--warm-strong));
+}
+
+.agent-category-chip-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+}
+
+.agent-category-chip[data-category="bug"] {
+  --category-tint: var(--destructive);
+  --category-ink: var(--destructive);
+}
+
+.agent-category-chip[data-category="feedback"] {
+  --category-tint: var(--brand);
+  --category-ink: var(--warm-strong);
+}
+
+.agent-category-chip[data-category="feature"] {
+  --category-tint: var(--success);
+  --category-ink: var(--success);
+}
+
+/* Selected (clicked) — ProseMirror tags the atom with .ProseMirror-selectednode.
+ * A soft category-tinted ring signals that a backspace will remove it. */
+.agent-category-chip.ProseMirror-selectednode {
+  outline: 2px solid
+    color-mix(in oklch, var(--category-tint, var(--brand)) 45%, transparent);
+  outline-offset: 1px;
+}
+
+/* "/" suggestion palette + "+" popover share the floating-menu look. */
+.agent-category-menu-host {
+  position: fixed;
+  z-index: 60;
+}
+
+.agent-category-menu,
+.agent-attach-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 232px;
+  padding: var(--sp-1);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  border: 1px solid var(--popover-border);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-category-menu-empty {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-category-menu button,
+.agent-attach-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-category-menu button[data-active],
+.agent-category-menu button:hover,
+.agent-attach-menu button:hover {
+  background: var(--surface-subtle);
+}
+
+.agent-attach-menu-divider {
+  height: 1px;
+  margin: var(--sp-1) var(--sp-2);
+  background: var(--border-subtle);
+}
+
+.agent-category-menu-label,
+.agent-attach-menu-label {
+  font-size: var(--fs-md);
+  line-height: 1.3;
+}
+
+/* Leading glyph, tinted per category (default muted for "Attach files", which
+ * carries no category). Same oklch tints as the chip. */
+.agent-category-menu-icon,
+.agent-attach-menu-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-category-menu-icon[data-category="bug"],
+.agent-attach-menu-icon[data-category="bug"] {
+  color: var(--destructive);
+}
+
+.agent-category-menu-icon[data-category="feedback"],
+.agent-attach-menu-icon[data-category="feedback"] {
+  color: var(--warm-strong);
+}
+
+.agent-category-menu-icon[data-category="feature"],
+.agent-attach-menu-icon[data-category="feature"] {
+  color: var(--success);
+}
+
+/* Opens upward, just above the toolbar where the "+" trigger sits (the box
+ * clips its overflow, so this is a sibling of the box, anchored to the form).
+ * Measuring from the form's bottom keeps it above the toolbar in both the
+ * docked and hero composers, and steady when a notice grows the form upward. */
+.agent-attach-menu {
+  position: absolute;
+  left: var(--sp-3);
+  bottom: calc(var(--control-lg) + var(--sp-2));
+  z-index: 40;
 }
 
 /* Mic is the resting affordance — a light ghost button (matches our other ghost
@@ -3449,7 +3659,7 @@ input:focus-visible,
 
 /* Big-box at rest: same two-row anatomy as the docked composer, just a
  * taller field so it reads as "start here". */
-.agent-composer[data-hero="true"] textarea {
+.agent-composer[data-hero="true"] .agent-composer-editor {
   min-height: 76px;
 }
 
@@ -4235,6 +4445,27 @@ input:focus-visible,
 
 .sidebar-identity-menu button > svg {
   color: var(--muted-foreground);
+}
+
+/* Report shortcuts carry their category color (same oklch tints as the chip
+ * and the composer "+" popover); the icon is nested in this span so the
+ * muted-svg rule above doesn't override the tint. */
+.sidebar-report-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.sidebar-report-icon[data-category="bug"] {
+  color: var(--destructive);
+}
+
+.sidebar-report-icon[data-category="feedback"] {
+  color: var(--warm-strong);
+}
+
+.sidebar-report-icon[data-category="feature"] {
+  color: var(--success);
 }
 
 /* Settings nav — replaces the main sidebar list while the settings page is

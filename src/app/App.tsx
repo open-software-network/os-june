@@ -26,6 +26,7 @@ import {
 } from "../components/agent/AgentWorkspace";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
+import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { RoutinesView } from "../components/routines/RoutinesView";
@@ -1426,19 +1427,20 @@ export function App() {
     }
   }
 
-  // "Report an issue": the fresh-chat handshake in issue-report mode. The
-  // workspace prefills the bug report template instead of auto-submitting,
-  // and files the submitted report (plus June's diagnosis) to the June team.
-  function handleReportIssue() {
+  // "Report an issue": the fresh-chat handshake with a bug chip seeded into
+  // the composer instead of auto-submitting, so the user types their report
+  // after the tag. The submitted report (plus June's diagnosis) is filed to
+  // the June team.
+  function handleReportIssue(category: ReportCategory = "bug") {
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    markAgentNewSessionPending(undefined, { kind: "issue-report" });
+    markAgentNewSessionPending(undefined, { category });
     setActiveAgentSession(undefined);
     setActiveView("agent");
     window.setTimeout(() => {
       window.dispatchEvent(
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
-          detail: { kind: "issue-report" },
+          detail: { category },
         }),
       );
     }, 0);
