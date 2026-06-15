@@ -1234,6 +1234,22 @@ export function App() {
     [state.selectedFolderId],
   );
 
+  // Mirrors the sidebar's "New session" button so the agent sessions list
+  // can start a fresh chat with the same pending-session handshake. Memoized
+  // so the ⌘N keydown listener below subscribes once instead of every render.
+  const handleNewAgentSession = useCallback(() => {
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending();
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+      );
+    }, 0);
+  }, []);
+
   useEffect(() => {
     if (
       appBlocked ||
@@ -1408,21 +1424,6 @@ export function App() {
     } catch (err) {
       setError(messageFromError(err));
     }
-  }
-
-  // Mirrors the sidebar's "New session" button so the agent sessions list
-  // can start a fresh chat with the same pending-session handshake.
-  function handleNewAgentSession() {
-    pendingSessionProjectRef.current = null;
-    setAgentOrigin(undefined);
-    markAgentNewSessionPending();
-    setActiveAgentSession(undefined);
-    setActiveView("agent");
-    window.setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-      );
-    }, 0);
   }
 
   // "Report an issue": the fresh-chat handshake in issue-report mode. The

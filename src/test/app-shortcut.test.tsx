@@ -271,25 +271,33 @@ describe("App shortcuts", () => {
     ).toBeInTheDocument();
   });
 
-  it("creates a loose note with Ctrl-N on Windows", async () => {
+  it("starts a session with Ctrl-N and creates a note with Ctrl-Shift-N on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
+    const onNewSession = vi.fn();
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
     try {
       render(<App />);
 
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
+      // The Cmd key does nothing on Windows — Ctrl is the primary modifier.
       fireEvent.keyDown(window, { key: "n", metaKey: true });
+      expect(onNewSession).not.toHaveBeenCalled();
       expect(mocks.createNote).not.toHaveBeenCalled();
 
       fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+      await waitFor(() => expect(onNewSession).toHaveBeenCalled());
+      expect(mocks.createNote).not.toHaveBeenCalled();
 
+      fireEvent.keyDown(window, { key: "n", ctrlKey: true, shiftKey: true });
       await waitFor(() =>
         expect(mocks.createNote).toHaveBeenCalledWith(undefined),
       );
     } finally {
+      window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
       restoreNavigator();
     }
   });
