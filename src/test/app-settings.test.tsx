@@ -861,6 +861,11 @@ describe("AppSettings", () => {
           name: "Capture system audio for notes",
         }),
       ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: "Start test",
+        }),
+      ).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
       expect(

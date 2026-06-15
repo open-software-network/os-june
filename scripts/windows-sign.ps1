@@ -49,11 +49,19 @@ function Find-SignTool {
 }
 
 $target = Resolve-RequiredFile $TargetPath "TargetPath"
-$certificatePath = Resolve-RequiredFile $env:WINDOWS_CERTIFICATE_PATH "WINDOWS_CERTIFICATE_PATH"
+$certificatePathValue = $env:WINDOWS_CERTIFICATE_PATH
 $certificatePassword = $env:WINDOWS_CERTIFICATE_PASSWORD
-if ([string]::IsNullOrWhiteSpace($certificatePassword)) {
-  Fail "WINDOWS_CERTIFICATE_PASSWORD is required."
+if ([string]::IsNullOrWhiteSpace($certificatePathValue) -and [string]::IsNullOrWhiteSpace($certificatePassword)) {
+  Write-Host "[windows-sign] WINDOWS_CERTIFICATE_PATH and WINDOWS_CERTIFICATE_PASSWORD are not set; skipping Authenticode signing."
+  exit 0
 }
+if ([string]::IsNullOrWhiteSpace($certificatePathValue)) {
+  Fail "WINDOWS_CERTIFICATE_PATH is required when Windows signing is configured."
+}
+if ([string]::IsNullOrWhiteSpace($certificatePassword)) {
+  Fail "WINDOWS_CERTIFICATE_PASSWORD is required when Windows signing is configured."
+}
+$certificatePath = Resolve-RequiredFile $certificatePathValue "WINDOWS_CERTIFICATE_PATH"
 
 $timestampUrl = $env:WINDOWS_SIGNING_TIMESTAMP_URL
 if ([string]::IsNullOrWhiteSpace($timestampUrl)) {

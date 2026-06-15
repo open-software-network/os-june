@@ -1075,23 +1075,25 @@ export function AppSettings({
                   </div>
                 </div>
 
-                <MicTestControl
-                  state={micTestState}
-                  level={micTestLevel}
-                  elapsedMs={micTestElapsedMs}
-                  sampleSrc={micTestSampleSrc}
-                  error={micTestError}
-                  playing={micTestPlaying}
-                  durationSeconds={MIC_TEST_DURATION_SECONDS}
-                  onStart={() => void startMicTest()}
-                  onStartOver={() => void startOverMicTest()}
-                  onPlaybackError={() => {
-                    setMicTestError(
-                      "Microphone test recorded, but playback is unavailable.",
-                    );
-                  }}
-                  onPlayingChange={setMicTestPlaying}
-                />
+                {macLikePlatform ? (
+                  <MicTestControl
+                    state={micTestState}
+                    level={micTestLevel}
+                    elapsedMs={micTestElapsedMs}
+                    sampleSrc={micTestSampleSrc}
+                    error={micTestError}
+                    playing={micTestPlaying}
+                    durationSeconds={MIC_TEST_DURATION_SECONDS}
+                    onStart={() => void startMicTest()}
+                    onStartOver={() => void startOverMicTest()}
+                    onPlaybackError={() => {
+                      setMicTestError(
+                        "Microphone test recorded, but playback is unavailable.",
+                      );
+                    }}
+                    onPlayingChange={setMicTestPlaying}
+                  />
+                ) : null}
 
                 {systemUnavailable ? null : (
                   <div className="settings-row">

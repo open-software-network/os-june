@@ -195,6 +195,8 @@ Windows builds use the base Tauri config plus
 targets an NSIS installer and excludes the macOS helper app resources. Install
 the normal Tauri Windows prerequisites, including Rust, Node.js, pnpm, WebView2,
 and the Microsoft C++ build tools.
+Local Windows builds skip Authenticode signing unless
+`WINDOWS_CERTIFICATE_PATH` and `WINDOWS_CERTIFICATE_PASSWORD` are set.
 
 The managed Hermes runtime fallback on Windows uses PowerShell and requires
 Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher. The app
