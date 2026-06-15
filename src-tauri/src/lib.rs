@@ -249,6 +249,7 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
                 true,
                 Some("CmdOrCtrl+,"),
             )?,
+            &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::services(handle, None)?,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::hide(handle, None)?,

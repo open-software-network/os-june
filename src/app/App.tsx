@@ -190,6 +190,8 @@ export function App() {
     markAgentNewSessionPending();
     return "agent";
   });
+  const activeViewRef = useRef<SidebarView>(activeView);
+  activeViewRef.current = activeView;
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
   const [pendingAgentReply, setPendingAgentReply] =
@@ -239,11 +241,12 @@ export function App() {
     useState<SidebarView>("notes");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const openSettings = useCallback(() => {
-    if (activeView !== "settings") {
-      setSettingsReturnView(activeView);
+    const returnView = activeViewRef.current;
+    if (returnView !== "settings") {
+      setSettingsReturnView(returnView);
     }
     setActiveView("settings");
-  }, [activeView]);
+  }, []);
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
