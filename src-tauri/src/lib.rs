@@ -6,6 +6,7 @@ pub mod db;
 pub mod dictation;
 pub mod domain;
 pub mod hermes_bridge;
+pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
@@ -19,6 +20,8 @@ use tauri::Manager;
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
+const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
+const OPEN_SETTINGS_EVENT: &str = "scribe://open-settings";
 
 pub fn run() {
     providers::load_local_env();
@@ -56,6 +59,12 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
+                return;
+            }
+            if event.id().as_ref() == OPEN_SETTINGS_MENU_ID {
+                #[cfg(target_os = "macos")]
+                show_main_window(app);
+                let _ = app.emit(OPEN_SETTINGS_EVENT, ());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -225,19 +234,26 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         &[
             &PredefinedMenuItem::about(handle, None, Some(about_metadata))?,
-            &PredefinedMenuItem::separator(handle)?,
             &MenuItem::with_id(
                 handle,
                 CHECK_FOR_UPDATES_MENU_ID,
-                "Check for updates…",
+                "Check for Updates",
                 true,
-                Some("CmdOrCtrl+Shift+U"),
+                None::<&str>,
             )?,
             &PredefinedMenuItem::separator(handle)?,
+            &MenuItem::with_id(
+                handle,
+                OPEN_SETTINGS_MENU_ID,
+                "Settings...",
+                true,
+                Some("CmdOrCtrl+,"),
+            )?,
             &PredefinedMenuItem::services(handle, None)?,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::hide(handle, None)?,
             &PredefinedMenuItem::hide_others(handle, None)?,
+            &PredefinedMenuItem::show_all(handle, None)?,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::quit(handle, None)?,
         ],
@@ -295,6 +311,7 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
     app.set_menu(menu)?;
+    macos_menu_icons::install_settings_symbol_on_app_menu();
     Ok(())
 }
 

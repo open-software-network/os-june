@@ -1550,16 +1550,16 @@ function SidebarIdentity({
       </button>
       {menuOpen ? (
         <div className="sidebar-identity-menu" role="menu">
-          <button type="button" role="menuitem" onClick={onOpenSettings}>
-            <IconSettingsGear4 size={14} />
-            Settings
-          </button>
           {onReportIssue ? (
             <button type="button" role="menuitem" onClick={onReportIssue}>
               <IconBug size={14} />
               Report an issue
             </button>
           ) : null}
+          <button type="button" role="menuitem" onClick={onOpenSettings}>
+            <IconSettingsGear4 size={14} />
+            Settings
+          </button>
           {account.signedIn && onSignOut ? (
             <>
               <div className="context-menu-separator" role="separator" />

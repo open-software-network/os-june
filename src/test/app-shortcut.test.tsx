@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -12,6 +13,7 @@ const HERO_GREETING = new RegExp(
 
 const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
+  listeners: new Map<string, (event: { payload?: unknown }) => void>(),
   getCurrentWindow: vi.fn(),
   bootstrapApp: vi.fn(),
   createNote: vi.fn(),
@@ -180,6 +182,16 @@ describe("App shortcuts", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.listeners.clear();
+    mocks.listen.mockImplementation(
+      async (
+        event: string,
+        handler: (event: { payload?: unknown }) => void,
+      ) => {
+        mocks.listeners.set(event, handler);
+        return () => mocks.listeners.delete(event);
+      },
+    );
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,
@@ -199,6 +211,20 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),
     );
+  });
+
+  it("opens settings from the native app menu event", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
+    );
+
+    mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+
+    expect(
+      await screen.findByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
   });
 
   it("returns to the note after opening its folder from the note header", async () => {

@@ -97,6 +97,7 @@ import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
   AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
+  OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
   emitAgentMenuBarState,
 } from "../lib/menu-bar";
@@ -237,6 +238,12 @@ export function App() {
   const [settingsReturnView, setSettingsReturnView] =
     useState<SidebarView>("notes");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const openSettings = useCallback(() => {
+    if (activeView !== "settings") {
+      setSettingsReturnView(activeView);
+    }
+    setActiveView("settings");
+  }, [activeView]);
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
@@ -549,6 +556,19 @@ export function App() {
       unlisten?.();
     };
   }, [runUpdateCheck]);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen(OPEN_SETTINGS_EVENT, openSettings).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [openSettings]);
 
   useEffect(() => {
     function openAgentWorkspace(session?: HermesSessionInfo) {
@@ -1804,10 +1824,8 @@ export function App() {
         settingsTab={settingsTab}
         onSettingsTabChange={setSettingsTab}
         onChangeView={(view) => {
-          if (view === "settings" && activeView !== "settings") {
-            setSettingsReturnView(activeView);
-          }
-          setActiveView(view);
+          if (view === "settings") openSettings();
+          else setActiveView(view);
           setAgentOrigin(undefined);
           if (view !== "agent") {
             setActiveAgentSession(undefined);
