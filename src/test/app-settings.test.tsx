@@ -130,6 +130,31 @@ const signedInAccount = {
   balance: { usdMillis: 1200 },
 };
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 describe("AppSettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -147,16 +172,14 @@ describe("AppSettings", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-1",
+        generationModel: "kimi-k2-6",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
       selectedModel:
-        mode === "transcription"
-          ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5-1",
+        mode === "transcription" ? "nvidia/parakeet-tdt-0.6b-v3" : "kimi-k2-6",
       models:
         mode === "transcription"
           ? [
@@ -199,6 +222,21 @@ describe("AppSettings", () => {
               },
             ]
           : [
+              {
+                provider: "venice",
+                id: "kimi-k2-6",
+                name: "Kimi K2.6",
+                modelType: "text",
+                description:
+                  "Open-weights model built for long tool-driven tasks.",
+                privacy: "private",
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 850,
+                outputCreditsPerMillionTokens: 4660,
+                contextTokens: 256000,
+                traits: [],
+                capabilities: ["supportsFunctionCalling"],
+              },
               {
                 provider: "venice",
                 id: "zai-org-glm-5-1",
@@ -258,7 +296,7 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-1",
+      generationModel: mode === "generation" ? modelId : "kimi-k2-6",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
@@ -744,6 +782,101 @@ describe("AppSettings", () => {
     expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
   });
 
+  it("only lists microphone permissions on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    const onEnableMicrophone = vi.fn();
+    const onEnableAccessibility = vi.fn();
+    const onEnableSystemAudio = vi.fn();
+
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: false,
+            checkedAt: "2026-06-08T12:00:00Z",
+            sources: [
+              {
+                source: "microphone",
+                required: true,
+                ready: false,
+                permissionState: "denied",
+                deviceAvailable: false,
+                captureAvailable: false,
+                recoveryAction: "openMicrophoneSettings",
+              },
+              {
+                source: "system",
+                required: true,
+                ready: false,
+                permissionState: "denied",
+                deviceAvailable: true,
+                captureAvailable: false,
+                recoveryAction: "openSystemAudioSettings",
+              },
+            ],
+          }}
+          checkingSourceReadiness={false}
+          microphonePermissionStatus="denied"
+          accessibilityPermissionStatus="missing"
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableMicrophone={onEnableMicrophone}
+          onEnableAccessibility={onEnableAccessibility}
+          onEnableSystemAudio={onEnableSystemAudio}
+        />,
+      );
+
+      expect(
+        screen.getByText("Access used for recording audio."),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Microphone")).toBeInTheDocument();
+      expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
+      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+
+      const microphoneRow = screen
+        .getByText("Microphone")
+        .closest(".settings-row");
+      expect(microphoneRow).not.toBeNull();
+      await userEvent.click(
+        within(microphoneRow as HTMLElement).getByRole("button", {
+          name: "Manage Microphone permission",
+        }),
+      );
+
+      expect(onEnableMicrophone).toHaveBeenCalledTimes(1);
+      expect(onEnableAccessibility).not.toHaveBeenCalled();
+      expect(onEnableSystemAudio).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
+      expect(
+        screen.queryByRole("switch", {
+          name: "Capture system audio for notes",
+        }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: "Start test",
+        }),
+      ).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
+      expect(
+        screen.getByText("Dictation shortcuts unavailable"),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
   it("records push-to-talk and toggle dictation shortcuts in settings", async () => {
     const user = userEvent.setup();
     render(
@@ -1170,6 +1303,62 @@ describe("AppSettings", () => {
     }
   });
 
+  it("accepts local model IDs for transcription and text selection", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Change transcription model",
+      }),
+    );
+    let dialog = await screen.findByRole("dialog", {
+      name: "Transcription model",
+    });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Local ASR model ID" }),
+      "local-whisper",
+    );
+    await user.click(within(dialog).getByRole("button", { name: /Use/i }));
+
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "transcription",
+      "local-whisper",
+    );
+    expect(await screen.findByText("local-whisper")).toBeInTheDocument();
+    expect(screen.getAllByText("Custom model").length).toBeGreaterThan(0);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Change text model",
+      }),
+    );
+    dialog = await screen.findByRole("dialog", { name: "Text model" });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Local text model ID" }),
+      "ollama/qwen3:30b",
+    );
+    await user.click(within(dialog).getByRole("button", { name: /Use/i }));
+
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "ollama/qwen3:30b",
+    );
+    expect(await screen.findByText("ollama/qwen3:30b")).toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(
@@ -1393,7 +1582,7 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Agent" }));
     const hudSwitch = await screen.findByRole("switch", {
-      name: "Show agent HUD",
+      name: "Show sessions HUD",
     });
 
     expect(hudSwitch).toHaveAttribute("aria-checked", "true");

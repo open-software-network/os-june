@@ -616,21 +616,17 @@ pub fn setup(app: &mut tauri::App) {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let settings = app
-            .state::<DictationSettingsState>()
-            .settings
-            .lock()
-            .map(|settings| settings.clone())
-            .unwrap_or_default();
-        let event = hotkey_ready_event(&settings);
-
-        app.manage(HotkeyStatus {
-            event: Mutex::new(event.clone()),
-        });
-        let _ = app.emit("dictation-event", event.to_string());
-    }
+    let settings = app
+        .state::<DictationSettingsState>()
+        .settings
+        .lock()
+        .map(|settings| settings.clone())
+        .unwrap_or_default();
+    let event = initial_hotkey_event(&settings);
+    app.manage(HotkeyStatus {
+        event: Mutex::new(event.clone()),
+    });
+    let _ = app.emit("dictation-event", event.to_string());
 }
 
 #[tauri::command]
@@ -707,6 +703,19 @@ pub fn set_dictation_shortcut(
 }
 
 #[tauri::command]
+#[cfg(not(target_os = "macos"))]
+pub fn set_dictation_shortcut(
+    kind: DictationShortcutKind,
+    shortcut: DictationShortcutInput,
+) -> Result<DictationSettings, AppError> {
+    let _ = (kind, shortcut);
+    Err(AppError::new(
+        "dictation_shortcut_unsupported",
+        "Dictation shortcuts are only supported on macOS.",
+    ))
+}
+
+#[tauri::command]
 pub fn set_dictation_microphone(
     state: State<'_, DictationSettingsState>,
     helper_state: State<'_, HelperState>,
@@ -716,6 +725,16 @@ pub fn set_dictation_microphone(
     let settings = update_settings(&state, |settings| {
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
+    #[cfg(not(target_os = "macos"))]
+    if helper_state
+        .process
+        .lock()
+        .map(|process| process.is_none())
+        .unwrap_or(true)
+    {
+        return Ok(settings);
+    }
+
     apply_microphone_setting(&helper_state, &settings.microphone)?;
     Ok(settings)
 }
@@ -743,9 +762,23 @@ pub fn set_dictation_language(
 
 #[tauri::command]
 pub fn dictation_helper_command(
+    app: AppHandle,
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
+    #[cfg(target_os = "macos")]
+    let _ = &app;
+
+    #[cfg(not(target_os = "macos"))]
+    if state
+        .process
+        .lock()
+        .map(|process| process.is_none())
+        .unwrap_or(true)
+    {
+        return handle_missing_helper_command(&app, &command);
+    }
+
     send_helper_command(&state, command)
 }
 
@@ -1334,6 +1367,58 @@ fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Resul
         .stdin
         .flush()
         .map_err(|error| AppError::new("dictation_helper_write_failed", error.to_string()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_missing_helper_command(
+    app: &AppHandle,
+    command: &serde_json::Value,
+) -> Result<(), AppError> {
+    match command.get("type").and_then(serde_json::Value::as_str) {
+        Some(
+            "get_permission_status"
+            | "request_microphone_permission"
+            | "request_accessibility_permission",
+        ) => {
+            emit_dictation_event_value(app, non_macos_permission_status_event());
+            Ok(())
+        }
+        Some("list_microphones") => {
+            emit_dictation_event_value(
+                app,
+                serde_json::json!({
+                    "type": "microphone_devices",
+                    "payload": {
+                        "devices": [],
+                        "selectedID": "",
+                    },
+                }),
+            );
+            Ok(())
+        }
+        Some(
+            "cancel_shortcut_capture"
+            | "start_shortcut_capture"
+            | "set_microphone"
+            | "discard_mic_test",
+        ) => Ok(()),
+        _ => Err(AppError::new(
+            "dictation_helper_unavailable",
+            "Dictation recording is only supported on macOS.",
+        )),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn non_macos_permission_status_event() -> serde_json::Value {
+    let (microphone, _) = crate::audio::capture::microphone_permission_state();
+    serde_json::json!({
+        "type": "permission_status",
+        "payload": {
+            "microphone": microphone,
+            "accessibility": "granted",
+        },
+    })
 }
 
 fn apply_microphone_setting(
@@ -2751,6 +2836,22 @@ fn hotkey_ready_event(settings: &DictationSettings) -> serde_json::Value {
             "pushToTalkShortcut": settings.push_to_talk_shortcut.label,
             "toggleShortcut": settings.toggle_shortcut.label,
             "shortcuts": shortcuts,
+        },
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn initial_hotkey_event(settings: &DictationSettings) -> serde_json::Value {
+    hotkey_ready_event(settings)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
+    serde_json::json!({
+        "type": "hotkey_trigger_unavailable",
+        "payload": {
+            "reason": "unsupported",
+            "message": "Dictation shortcuts are only supported on macOS.",
         },
     })
 }

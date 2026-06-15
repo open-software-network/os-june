@@ -155,7 +155,10 @@ import {
   pricingLabel,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { messageFromError } from "../../lib/errors";
+import {
+  isHermesSessionsStartupRequestError,
+  messageFromError,
+} from "../../lib/errors";
 import {
   categoryPrompt,
   displayedUserMessageText,
@@ -204,6 +207,11 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "waitingForUser",
 ]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
+const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
+const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
+  AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[
+    AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1
+  ] ?? 2000;
 
 // What the user reads instead of the gateway's "session busy" rejection. No
 // action in the pill — the composer's send slot already shows stop while
@@ -493,10 +501,10 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
     key: "health-check",
     icon: <IconHeartBeat size={18} />,
-    title: "Check my Mac's health",
+    title: "Check my computer's health",
     description: "Disk, memory, and login items that need attention.",
     prompt:
-      "Give my Mac a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
+      "Give my computer a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
     action: "run",
   },
   {
@@ -504,7 +512,8 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     icon: <IconMagnifyingGlass size={18} />,
     title: "Find a file",
     description: "Describe what you remember; June tracks it down.",
-    prompt: "Find <a file I half-remember> on my Mac and tell me where it is.",
+    prompt:
+      "Find <a file I half-remember> on my computer and tell me where it is.",
     action: "prefill",
   },
   {
@@ -818,6 +827,7 @@ export function AgentWorkspace({
   // items above only hold the mount seed (the clicked session, or nothing),
   // and broadcasting that would wipe the sidebar's already-loaded list.
   const [hermesSessionsHydrated, setHermesSessionsHydrated] = useState(false);
+  const hermesSessionsHydratedRef = useRef(false);
   // Mounting without an explicit target restores the last open conversation,
   // so app restarts and dev reloads land the user back in the session they
   // were working in instead of bouncing them to the newest one. A pending
@@ -1357,63 +1367,80 @@ export function AgentWorkspace({
     }
   }, []);
 
-  const loadHermesSessions = useCallback(async () => {
-    if (!bridge.running) return;
-    setHermesSessionsLoading(true);
-    try {
-      const sessions = applySessionTitleOverrides(await listHermesSessions());
-      setHermesSessionsHydrated(true);
-      const pendingMessages = pendingHermesMessagesRef.current;
-      const selectedSessionId = selectedHermesSessionIdRef.current;
-      const workingSessions = workingSessionIdsRef.current;
-      const waitingSessions = waitingSessionIdsRef.current;
-      setHermesSessionItems((current) =>
-        mergeActiveHermesSessions(sessions, current, {
-          selectedSessionId,
-          workingSessionIds: workingSessions,
-          waitingSessionIds: waitingSessions,
-          pendingMessages,
-        }),
-      );
-      setSelectedHermesSessionId((current) => {
-        if (newSessionModeRef.current) {
-          selectedHermesSessionIdRef.current = undefined;
-          return undefined;
-        }
+  const loadHermesSessions = useCallback(
+    async (options: { suppressStartupRequestError?: boolean } = {}) => {
+      if (!bridge.running) return "skipped";
+      let keepLoading = false;
+      setHermesSessionsLoading(true);
+      try {
+        const sessions = applySessionTitleOverrides(await listHermesSessions());
+        hermesSessionsHydratedRef.current = true;
+        setHermesSessionsHydrated(true);
+        const pendingMessages = pendingHermesMessagesRef.current;
+        const selectedSessionId = selectedHermesSessionIdRef.current;
+        const workingSessions = workingSessionIdsRef.current;
+        const waitingSessions = waitingSessionIdsRef.current;
+        setHermesSessionItems((current) =>
+          mergeActiveHermesSessions(sessions, current, {
+            selectedSessionId,
+            workingSessionIds: workingSessions,
+            waitingSessionIds: waitingSessions,
+            pendingMessages,
+          }),
+        );
+        setSelectedHermesSessionId((current) => {
+          if (newSessionModeRef.current) {
+            selectedHermesSessionIdRef.current = undefined;
+            return undefined;
+          }
+          if (
+            current &&
+            (sessions.some((session) => session.id === current) ||
+              shouldRetainHermesSessionId(current, {
+                selectedSessionId: current,
+                workingSessionIds: workingSessions,
+                waitingSessionIds: waitingSessions,
+                pendingMessages,
+              }))
+          ) {
+            selectedHermesSessionIdRef.current = current;
+            return current;
+          }
+          const taskSession = selectedTask?.hermesSessionId;
+          if (
+            taskSession &&
+            sessions.some((session) => session.id === taskSession)
+          ) {
+            selectedHermesSessionIdRef.current = taskSession;
+            return taskSession;
+          }
+          const nextSessionId = sessions[0]?.id;
+          selectedHermesSessionIdRef.current = nextSessionId;
+          return nextSessionId;
+        });
+        // Deliberately no setError(null) here: this runs from background polls,
+        // so a success would wipe an unrelated banner (e.g. a failed send)
+        // moments after it appeared. The banner is dismissable instead.
+        return "loaded";
+      } catch (err) {
         if (
-          current &&
-          (sessions.some((session) => session.id === current) ||
-            shouldRetainHermesSessionId(current, {
-              selectedSessionId: current,
-              workingSessionIds: workingSessions,
-              waitingSessionIds: waitingSessions,
-              pendingMessages,
-            }))
+          options.suppressStartupRequestError &&
+          !hermesSessionsHydratedRef.current &&
+          isHermesSessionsStartupRequestError(err)
         ) {
-          selectedHermesSessionIdRef.current = current;
-          return current;
+          keepLoading = true;
+          return "transient-startup-error";
         }
-        const taskSession = selectedTask?.hermesSessionId;
-        if (
-          taskSession &&
-          sessions.some((session) => session.id === taskSession)
-        ) {
-          selectedHermesSessionIdRef.current = taskSession;
-          return taskSession;
+        setError(messageFromError(err));
+        return "failed";
+      } finally {
+        if (!keepLoading) {
+          setHermesSessionsLoading(false);
         }
-        const nextSessionId = sessions[0]?.id;
-        selectedHermesSessionIdRef.current = nextSessionId;
-        return nextSessionId;
-      });
-      // Deliberately no setError(null) here: this runs from background polls,
-      // so a success would wipe an unrelated banner (e.g. a failed send)
-      // moments after it appeared. The banner is dismissable instead.
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setHermesSessionsLoading(false);
-    }
-  }, [bridge.running, selectedTask?.hermesSessionId]);
+      }
+    },
+    [bridge.running, selectedTask?.hermesSessionId],
+  );
 
   useEffect(() => {
     void loadTasks();
@@ -1436,7 +1463,11 @@ export function AgentWorkspace({
         setGenerationModels(modelsResponse.models);
         setGenerationModel(
           selectedModelId
-            ? selectedModelOption(modelsResponse.models, selectedModelId)
+            ? selectedModelOption(
+                modelsResponse.models,
+                selectedModelId,
+                "generation",
+              )
             : undefined,
         );
       }
@@ -1495,7 +1526,29 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!bridge.running) return;
-    void loadHermesSessions();
+    let cancelled = false;
+    let retryTimeout: number | undefined;
+
+    function load(attempt: number) {
+      void loadHermesSessions({ suppressStartupRequestError: true }).then(
+        (result) => {
+          if (cancelled || result !== "transient-startup-error") return;
+          const retryDelay =
+            AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[attempt] ??
+            AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS;
+          retryTimeout = window.setTimeout(() => load(attempt + 1), retryDelay);
+        },
+      );
+    }
+
+    load(0);
+    return () => {
+      cancelled = true;
+      if (retryTimeout != null) {
+        window.clearTimeout(retryTimeout);
+      }
+      setHermesSessionsLoading(false);
+    };
   }, [bridge.running, loadHermesSessions]);
 
   useEffect(() => {
@@ -2292,7 +2345,9 @@ export function AgentWorkspace({
         session_id: runtimeSessionId,
         text: content,
       });
-      await loadHermesSessions();
+      await loadHermesSessions({
+        suppressStartupRequestError: !hermesSessionsHydratedRef.current,
+      });
     } catch (err) {
       // A queued report must not outlive its failed prompt; submit() re-arms
       // issue-report mode so the retry files it again.
@@ -3245,6 +3300,8 @@ export function AgentWorkspace({
         selectedTask.toolEvents.length > 0 ||
         taskHistoryLoadedIdsRef.current.has(selectedTask.id)
       : false;
+  const startupSessionHydrationPending =
+    hermesSessionsLoading && !hermesSessionsHydrated;
 
   useEffect(() => {
     // The conversation scrolls in .agent-scroll, which sits below the sticky
@@ -3643,7 +3700,11 @@ export function AgentWorkspace({
           <ComposerModelPopover
             flyout={composerModelFlyout}
             model={generationModel}
-            options={modelOptions(generationModels, generationModel?.id ?? "")}
+            options={modelOptions(
+              generationModels,
+              generationModel?.id ?? "",
+              "generation",
+            )}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
@@ -3885,7 +3946,7 @@ export function AgentWorkspace({
   return (
     <section
       className="agent-workspace"
-      aria-label="Agent"
+      aria-label="Session"
       data-artifact-panel={artifactPanel ? "open" : undefined}
       data-hero={heroMode ? "true" : undefined}
     >
@@ -3976,7 +4037,7 @@ export function AgentWorkspace({
                 ))}
               </div>
               <p className="agent-hero-footnote">
-                {bridgeStarting
+                {bridgeStarting || startupSessionHydrationPending
                   ? "Getting June ready…"
                   : heroPrivacyFootnote(
                       generationModel,
@@ -4744,7 +4805,7 @@ function AgentSessionBar({
             ))
           ) : (
             <li>
-              <span className="detail-breadcrumb-label">Agent</span>
+              <span className="detail-breadcrumb-label">Session</span>
             </li>
           )}
           {title !== undefined ? (

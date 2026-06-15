@@ -17,16 +17,16 @@ const AGENT_MENU_BAR_STATE_EVENT: &str = "scribe:menu-bar:agent-state";
 const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "scribe:menu-bar:new-agent-session";
 const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "scribe:menu-bar:open-agent-session";
 const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT: &str = "scribe:menu-bar:set-agent-hud";
+const AGENT_MENU_BAR_OPEN_SETTINGS_EVENT: &str = "scribe://open-settings";
 
 const MENU_SHOW_ID: &str = "agent_menu_bar_show";
+const MENU_SETTINGS_ID: &str = "agent_menu_bar_settings";
 const MENU_NEW_SESSION_ID: &str = "agent_menu_bar_new_session";
 const MENU_SHOW_AGENT_HUD_ID: &str = "agent_menu_bar_show_agent_hud";
 const MENU_HIDE_AGENT_HUD_ID: &str = "agent_menu_bar_hide_agent_hud";
 const MENU_QUIT_ID: &str = "agent_menu_bar_quit";
 const MENU_STATUS_ID: &str = "agent_menu_bar_status";
 const MENU_LAST_STATUS_ID: &str = "agent_menu_bar_last_status";
-const MENU_RECENT_SESSIONS_ID: &str = "agent_menu_bar_recent_sessions";
-const MENU_EMPTY_SESSIONS_ID: &str = "agent_menu_bar_empty_sessions";
 const MENU_SESSION_ID_PREFIX: &str = "agent_menu_bar_session:";
 
 #[derive(Clone, Debug, Deserialize)]
@@ -134,6 +134,11 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         show_main_window(app);
         return;
     }
+    if id == MENU_SETTINGS_ID {
+        show_main_window(app);
+        let _ = app.emit(AGENT_MENU_BAR_OPEN_SETTINGS_EVENT, ());
+        return;
+    }
     if id == MENU_NEW_SESSION_ID {
         show_main_window(app);
         let _ = app.emit(AGENT_MENU_BAR_NEW_SESSION_EVENT, ());
@@ -165,10 +170,12 @@ where
     let menu = Menu::new(manager)?;
 
     let show_item = MenuItem::with_id(manager, MENU_SHOW_ID, "Open June", true, None::<&str>)?;
+    let settings_item =
+        MenuItem::with_id(manager, MENU_SETTINGS_ID, "Settings...", true, None::<&str>)?;
     let new_session_item = MenuItem::with_id(
         manager,
         MENU_NEW_SESSION_ID,
-        "New Agent Session...",
+        "New session...",
         true,
         None::<&str>,
     )?;
@@ -181,7 +188,6 @@ where
     )?;
 
     menu.append(&show_item)?;
-    menu.append(&new_session_item)?;
     let agent_hud_item = MenuItem::with_id(
         manager,
         if state.agent_hud_enabled {
@@ -190,9 +196,9 @@ where
             MENU_SHOW_AGENT_HUD_ID
         },
         if state.agent_hud_enabled {
-            "Hide agent HUD"
+            "Hide sessions HUD"
         } else {
-            "Show agent HUD"
+            "Show sessions HUD"
         },
         true,
         None::<&str>,
@@ -200,6 +206,7 @@ where
     menu.append(&agent_hud_item)?;
     menu.append(&PredefinedMenuItem::separator(manager)?)?;
     menu.append(&status_item)?;
+    menu.append(&new_session_item)?;
 
     if let Some(last_status) = state.last_status.as_ref() {
         let last_status_item = MenuItem::with_id(
@@ -212,39 +219,19 @@ where
         menu.append(&last_status_item)?;
     }
 
-    menu.append(&PredefinedMenuItem::separator(manager)?)?;
-
-    let recent_label = MenuItem::with_id(
-        manager,
-        MENU_RECENT_SESSIONS_ID,
-        "Recent Agent Sessions",
-        false,
-        None::<&str>,
-    )?;
-    menu.append(&recent_label)?;
-
-    if state.sessions.is_empty() {
-        let empty_item = MenuItem::with_id(
+    for session in &state.sessions {
+        let session_item = MenuItem::with_id(
             manager,
-            MENU_EMPTY_SESSIONS_ID,
-            "No sessions yet",
-            false,
+            format!("{MENU_SESSION_ID_PREFIX}{}", session.id),
+            escape_menu_text(session_label(session)),
+            true,
             None::<&str>,
         )?;
-        menu.append(&empty_item)?;
-    } else {
-        for session in &state.sessions {
-            let session_item = MenuItem::with_id(
-                manager,
-                format!("{MENU_SESSION_ID_PREFIX}{}", session.id),
-                escape_menu_text(session_label(session)),
-                true,
-                None::<&str>,
-            )?;
-            menu.append(&session_item)?;
-        }
+        menu.append(&session_item)?;
     }
 
+    menu.append(&PredefinedMenuItem::separator(manager)?)?;
+    menu.append(&settings_item)?;
     menu.append(&PredefinedMenuItem::separator(manager)?)?;
 
     let quit_item = MenuItem::with_id(manager, MENU_QUIT_ID, "Quit June", true, None::<&str>)?;
@@ -297,7 +284,7 @@ fn status_label(state: &AgentMenuBarState) -> String {
             pluralize(state.active_count, "session", "sessions")
         );
     }
-    "No active agent sessions".to_string()
+    "No active sessions".to_string()
 }
 
 fn last_status_label(last_status: &AgentMenuBarLastStatus) -> String {

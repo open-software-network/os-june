@@ -26,6 +26,7 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
+import { isMacLikePlatform } from "../../lib/platform";
 import {
   NoteFailureBanner,
   userFacingFailureMessage,
@@ -166,6 +167,7 @@ export function NoteEditor({
     systemSource?.permissionState === "denied" ||
     systemSource?.permissionState === "restricted";
   const systemUnsupported = systemSource?.permissionState === "unsupported";
+  const showRecordingOptions = isMacLikePlatform();
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.
   const micDenied = microphoneBlocked;
@@ -432,10 +434,13 @@ export function NoteEditor({
               className="record-shell"
               data-state={shellState}
               data-options-open={
-                !recordingForNote && !processingLock && optionsOpen
+                !recordingForNote &&
+                !processingLock &&
+                showRecordingOptions &&
+                optionsOpen
               }
             >
-              {!recordingForNote && !processingLock ? (
+              {!recordingForNote && !processingLock && showRecordingOptions ? (
                 <div
                   className="record-options-panel"
                   data-open={optionsOpen}
@@ -545,16 +550,18 @@ export function NoteEditor({
                         >
                           <IconMicrophone size={20} />
                         </button>
-                        <button
-                          type="button"
-                          className="record-options-trigger"
-                          aria-label="Recording options"
-                          aria-expanded={optionsOpen}
-                          data-rotated={optionsOpen}
-                          onClick={() => setOptionsOpen((value) => !value)}
-                        >
-                          <IconChevronBottom size={16} />
-                        </button>
+                        {showRecordingOptions ? (
+                          <button
+                            type="button"
+                            className="record-options-trigger"
+                            aria-label="Recording options"
+                            aria-expanded={optionsOpen}
+                            data-rotated={optionsOpen}
+                            onClick={() => setOptionsOpen((value) => !value)}
+                          >
+                            <IconChevronBottom size={16} />
+                          </button>
+                        ) : null}
                       </div>
                     </motion.div>
                   )}

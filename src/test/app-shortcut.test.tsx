@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
+import { OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -10,8 +12,34 @@ const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
 );
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
+  listeners: new Map<string, (event: { payload?: unknown }) => void>(),
   getCurrentWindow: vi.fn(),
   bootstrapApp: vi.fn(),
   createNote: vi.fn(),
@@ -180,13 +208,41 @@ describe("App shortcuts", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.listeners.clear();
+    mocks.listen.mockImplementation(
+      async (
+        event: string,
+        handler: (event: { payload?: unknown }) => void,
+      ) => {
+        mocks.listeners.set(event, handler);
+        return () => mocks.listeners.delete(event);
+      },
+    );
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,
     }));
   });
 
-  it("creates a loose note with Command-N but ignores bare n", async () => {
+  it("starts a new session with Command-N", async () => {
+    const onNewSession = vi.fn();
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+
+    try {
+      render(<App />);
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+      fireEvent.keyDown(window, { key: "n", metaKey: true });
+
+      await waitFor(() => expect(onNewSession).toHaveBeenCalled());
+      expect(mocks.createNote).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+    }
+  });
+
+  it("creates a loose note with Command-Shift-N but ignores bare n", async () => {
     render(<App />);
 
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
@@ -194,11 +250,56 @@ describe("App shortcuts", () => {
     fireEvent.keyDown(window, { key: "n" });
     expect(mocks.createNote).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(window, { key: "n", metaKey: true });
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
 
     await waitFor(() =>
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),
     );
+  });
+
+  it("opens settings from the native app menu event", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true),
+    );
+
+    mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+
+    expect(
+      await screen.findByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
+  });
+
+  it("starts a session with Ctrl-N and creates a note with Ctrl-Shift-N on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    const onNewSession = vi.fn();
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+    try {
+      render(<App />);
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+      // The Cmd key does nothing on Windows — Ctrl is the primary modifier.
+      fireEvent.keyDown(window, { key: "n", metaKey: true });
+      expect(onNewSession).not.toHaveBeenCalled();
+      expect(mocks.createNote).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+      await waitFor(() => expect(onNewSession).toHaveBeenCalled());
+      expect(mocks.createNote).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(window, { key: "n", ctrlKey: true, shiftKey: true });
+      await waitFor(() =>
+        expect(mocks.createNote).toHaveBeenCalledWith(undefined),
+      );
+    } finally {
+      window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+      restoreNavigator();
+    }
   });
 
   it("returns to the note after opening its folder from the note header", async () => {
@@ -272,6 +373,42 @@ describe("App shortcuts", () => {
       await screen.findByRole("heading", { name: HERO_GREETING }),
     ).toBeInTheDocument();
     expect(mocks.createNote).not.toHaveBeenCalled();
+  });
+
+  it("uses Windows sign-in copy and opens meeting notes after sign-in", async () => {
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: false,
+      configured: true,
+    });
+
+    try {
+      render(<App />);
+
+      expect(
+        await screen.findByText(
+          "Record conversations and turn them into notes with your OpenSoftware account.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/dictate with/)).not.toBeInTheDocument();
+
+      await user.click(
+        screen.getByRole("button", { name: "Continue with OpenSoftware" }),
+      );
+
+      expect(
+        await screen.findByRole("button", { name: "New note" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: HERO_GREETING }),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("does not flash the sign-in gate while account status is loading", async () => {

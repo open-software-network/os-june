@@ -1775,11 +1775,32 @@ async fn resolve_hermes_command(
 
 fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
     let resource_dir = app.path().resource_dir().ok()?;
-    let candidates = [
-        resource_dir.join("native/hermes/hermes-agent/venv/bin/hermes"),
-        resource_dir.join("native/hermes/bin/hermes"),
-    ];
+    let candidates = bundled_hermes_command_candidates(&resource_dir);
     candidates.into_iter().find(|path| path.exists())
+}
+
+fn bundled_hermes_command_candidates(resource_dir: &Path) -> Vec<PathBuf> {
+    let hermes_root = resource_dir.join("native").join("hermes");
+    if cfg!(target_os = "windows") {
+        vec![
+            hermes_root
+                .join("hermes-agent")
+                .join("venv")
+                .join("Scripts")
+                .join("hermes.exe"),
+            hermes_root.join("bin").join("hermes.exe"),
+            hermes_root.join("hermes.exe"),
+        ]
+    } else {
+        vec![
+            hermes_root
+                .join("hermes-agent")
+                .join("venv")
+                .join("bin")
+                .join("hermes"),
+            hermes_root.join("bin").join("hermes"),
+        ]
+    }
 }
 
 fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
@@ -1791,9 +1812,11 @@ fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
 }
 
 fn managed_hermes_command(app: &AppHandle) -> Result<PathBuf, AppError> {
-    Ok(managed_hermes_runtime_dir(app)?
-        .join("hermes-agent")
-        .join("venv/bin/hermes"))
+    Ok(hermes_venv_command(
+        &managed_hermes_runtime_dir(app)?
+            .join("hermes-agent")
+            .join("venv"),
+    ))
 }
 
 fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
@@ -1805,13 +1828,54 @@ fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
 }
 
 fn user_local_hermes_command() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    [
-        PathBuf::from(&home).join(".hermes/hermes-agent/venv/bin/hermes"),
-        PathBuf::from(&home).join(".local/bin/hermes"),
-    ]
-    .into_iter()
-    .find(|path| path.exists())
+    let mut candidates = Vec::new();
+    for home in home_dir_candidates() {
+        candidates.push(hermes_venv_command(
+            &home.join(".hermes").join("hermes-agent").join("venv"),
+        ));
+        candidates.push(if cfg!(target_os = "windows") {
+            home.join(".local").join("bin").join("hermes.exe")
+        } else {
+            home.join(".local").join("bin").join("hermes")
+        });
+    }
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        venv_dir.join("Scripts").join("hermes.exe")
+    } else {
+        venv_dir.join("bin").join("hermes")
+    }
+}
+
+fn home_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for name in ["HOME", "USERPROFILE"] {
+        if let Some(value) = std::env::var_os(name) {
+            if !value.is_empty() {
+                let path = PathBuf::from(value);
+                if !candidates.contains(&path) {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
+    match (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH")) {
+        (Some(drive), Some(path)) if !drive.is_empty() && !path.is_empty() => {
+            let candidate = PathBuf::from(format!(
+                "{}{}",
+                drive.to_string_lossy(),
+                path.to_string_lossy()
+            ));
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+        _ => {}
+    }
+    candidates
 }
 
 fn hermes_runtime_available_for_auto_start(app: &AppHandle) -> bool {
@@ -1825,6 +1889,22 @@ fn hermes_runtime_available_for_auto_start(app: &AppHandle) -> bool {
 }
 
 async fn install_managed_hermes_runtime(
+    app: &AppHandle,
+    hermes_home: &Path,
+) -> Result<(), AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        return install_managed_hermes_runtime_windows(app, hermes_home).await;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        install_managed_hermes_runtime_unix(app, hermes_home).await
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn install_managed_hermes_runtime_unix(
     app: &AppHandle,
     hermes_home: &Path,
 ) -> Result<(), AppError> {
@@ -1902,7 +1982,101 @@ async fn install_managed_hermes_runtime(
         ));
     }
 
-    if !install_dir.join("venv/bin/hermes").exists() {
+    if !hermes_venv_command(&install_dir.join("venv")).exists() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "Hermes setup completed but the runtime command was not created. Install log: {}.",
+                install_log.display()
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn install_managed_hermes_runtime_windows(
+    app: &AppHandle,
+    hermes_home: &Path,
+) -> Result<(), AppError> {
+    let runtime_dir = managed_hermes_runtime_dir(app)?;
+    let install_dir = runtime_dir.join("hermes-agent");
+    fs::create_dir_all(&runtime_dir)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if install_dir.exists() && !managed_hermes_runtime_current(app)? {
+        fs::remove_dir_all(&install_dir)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+    let install_log = runtime_dir.join("install.log");
+
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&install_log)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let log_file_for_stderr = log_file
+        .try_clone()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+
+    let status = {
+        let runtime_dir = runtime_dir.clone();
+        let install_dir = install_dir.clone();
+        let hermes_home = hermes_home.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    WINDOWS_MANAGED_HERMES_INSTALL_SCRIPT,
+                ])
+                .env("SCRIBE_HERMES_RUNTIME_DIR", &runtime_dir)
+                .env("SCRIBE_HERMES_INSTALL_DIR", &install_dir)
+                .env("SCRIBE_HERMES_HOME", &hermes_home)
+                .env("SCRIBE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env(
+                    "SCRIBE_HERMES_SOURCE_TARBALL_URL",
+                    HERMES_SOURCE_TARBALL_URL,
+                )
+                .env(
+                    "SCRIBE_HERMES_SOURCE_TARBALL_SHA256",
+                    HERMES_SOURCE_TARBALL_SHA256,
+                )
+                .env("HERMES_HOME", &hermes_home)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log_file))
+                .stderr(Stdio::from(log_file_for_stderr))
+                .status()
+        })
+        .await
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
+        .map_err(|error| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                format!(
+                    "Could not run the Windows Hermes runtime installer. Install log: {}. {error}",
+                    install_log.display()
+                ),
+            )
+        })?
+    };
+
+    if !status.success() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "Could not set up the Scribe-managed Hermes runtime. Install log: {}.",
+                install_log.display()
+            ),
+        ));
+    }
+
+    if !hermes_venv_command(&install_dir.join("venv")).exists() {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             format!(
@@ -1984,6 +2158,157 @@ cat > "$runtime_dir/runtime.json" <<EOF
 {"source":"NousResearch/hermes-agent","commit":"$install_commit","installDir":"$install_dir"}
 EOF
 "#;
+
+#[cfg(target_os = "windows")]
+const WINDOWS_MANAGED_HERMES_INSTALL_SCRIPT: &str = r##"
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$runtimeDir = $env:SCRIBE_HERMES_RUNTIME_DIR
+$installDir = $env:SCRIBE_HERMES_INSTALL_DIR
+$hermesHome = $env:SCRIBE_HERMES_HOME
+$installCommit = $env:SCRIBE_HERMES_INSTALL_COMMIT
+$sourceTarballUrl = $env:SCRIBE_HERMES_SOURCE_TARBALL_URL
+$sourceTarballSha256 = ($env:SCRIBE_HERMES_SOURCE_TARBALL_SHA256).ToLowerInvariant()
+
+if ([string]::IsNullOrWhiteSpace($runtimeDir) -or
+    [string]::IsNullOrWhiteSpace($installDir) -or
+    [string]::IsNullOrWhiteSpace($hermesHome)) {
+  throw "Hermes installer paths were not provided."
+}
+
+New-Item -ItemType Directory -Force -Path $runtimeDir, $hermesHome | Out-Null
+
+function Invoke-Native {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [Parameter(Mandatory = $true)][string[]]$Arguments
+  )
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FilePath exited with code $LASTEXITCODE"
+  }
+}
+
+function Resolve-Python {
+  $candidates = @(
+    @{ Exe = "py"; Args = @("-3.11") },
+    @{ Exe = "py"; Args = @("-3.12") },
+    @{ Exe = "py"; Args = @("-3.13") },
+    @{ Exe = "python"; Args = @() },
+    @{ Exe = "python3"; Args = @() }
+  )
+  foreach ($candidate in $candidates) {
+    try {
+      $args = @($candidate.Args + @(
+        "-c",
+        "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)"
+      ))
+      & $candidate.Exe @args
+      if ($LASTEXITCODE -eq 0) {
+        return $candidate
+      }
+    } catch {
+    }
+  }
+  throw "Python 3.11, 3.12, or 3.13 is required to install the managed Hermes runtime on Windows."
+}
+
+if (!(Test-Path (Join-Path $installDir "pyproject.toml"))) {
+  $tmpDir = Join-Path $runtimeDir ("download-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+  try {
+    $archive = Join-Path $tmpDir "hermes-agent.tar.gz"
+    Invoke-WebRequest -Uri $sourceTarballUrl -OutFile $archive
+    $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+    if ($actualSha256 -ne $sourceTarballSha256) {
+      throw "Hermes source archive checksum mismatch. Expected $sourceTarballSha256, got $actualSha256."
+    }
+    Invoke-Native "tar" @("-xzf", $archive, "-C", $tmpDir)
+    $unpacked = Get-ChildItem -Path $tmpDir -Directory |
+      Where-Object { $_.Name -like "hermes-agent-*" } |
+      Select-Object -First 1
+    if ($null -eq $unpacked) {
+      throw "Hermes source archive did not contain a hermes-agent directory."
+    }
+    if (Test-Path $installDir) {
+      Remove-Item -Recurse -Force -Path $installDir
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
+    Move-Item -Path $unpacked.FullName -Destination $installDir
+  } finally {
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path $tmpDir
+  }
+}
+
+$python = Resolve-Python
+$venvDir = Join-Path $installDir "venv"
+if (Test-Path $venvDir) {
+  Remove-Item -Recurse -Force -Path $venvDir
+}
+Invoke-Native $python.Exe @($python.Args + @("-m", "venv", $venvDir))
+$venvPython = Join-Path $venvDir "Scripts\python.exe"
+if (!(Test-Path $venvPython)) {
+  throw "Python virtual environment was not created at $venvDir."
+}
+
+Set-Location $installDir
+Invoke-Native $venvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+Invoke-Native $venvPython @("-m", "pip", "install", "-e", ".[all]")
+
+$homeDirs = @("cron", "sessions", "logs", "pairing", "hooks", "image_cache", "audio_cache", "memories", "skills")
+foreach ($dir in $homeDirs) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $hermesHome $dir) | Out-Null
+}
+
+$envFile = Join-Path $hermesHome ".env"
+if (!(Test-Path $envFile)) {
+  $exampleEnv = Join-Path $installDir ".env.example"
+  if (Test-Path $exampleEnv) {
+    Copy-Item -Path $exampleEnv -Destination $envFile
+  } else {
+    New-Item -ItemType File -Path $envFile | Out-Null
+  }
+}
+
+$configFile = Join-Path $hermesHome "config.yaml"
+if (!(Test-Path $configFile)) {
+  $exampleConfig = Join-Path $installDir "cli-config.yaml.example"
+  if (Test-Path $exampleConfig) {
+    Copy-Item -Path $exampleConfig -Destination $configFile
+  }
+}
+
+$soulFile = Join-Path $hermesHome "SOUL.md"
+if (!(Test-Path $soulFile)) {
+  [System.IO.File]::WriteAllText($soulFile, "# Hermes Agent Persona`n", (New-Object System.Text.UTF8Encoding $false))
+}
+
+$skillsSync = Join-Path $installDir "tools\skills_sync.py"
+if (Test-Path $skillsSync) {
+  try {
+    Invoke-Native $venvPython @($skillsSync)
+  } catch {
+    $sourceSkills = Join-Path $installDir "skills"
+    $targetSkills = Join-Path $hermesHome "skills"
+    if (Test-Path $sourceSkills) {
+      Copy-Item -Path (Join-Path $sourceSkills "*") -Destination $targetSkills -Recurse -Force
+    }
+  }
+}
+
+$hermesExe = Join-Path $venvDir "Scripts\hermes.exe"
+if (!(Test-Path $hermesExe)) {
+  throw "Hermes executable was not created at $hermesExe."
+}
+
+$metadata = [ordered]@{
+  source = "NousResearch/hermes-agent"
+  commit = $installCommit
+  installDir = $installDir
+} | ConvertTo-Json -Compress
+[System.IO.File]::WriteAllText((Join-Path $runtimeDir "runtime.json"), $metadata, (New-Object System.Text.UTF8Encoding $false))
+"##;
 
 fn apply_isolated_hermes_env(
     cmd: &mut Command,
@@ -3013,6 +3338,43 @@ mod tests {
         let request: StartHermesBridgeRequest =
             serde_json::from_str(r#"{"fullMode":false}"#).expect("sandboxed request");
         assert_eq!(request.full_mode, Some(false));
+    }
+
+    #[test]
+    fn hermes_venv_command_uses_the_target_entrypoint() {
+        let command = hermes_venv_command(Path::new("venv"));
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                command,
+                PathBuf::from("venv").join("Scripts").join("hermes.exe")
+            );
+        } else {
+            assert_eq!(command, PathBuf::from("venv").join("bin").join("hermes"));
+        }
+    }
+
+    #[test]
+    fn bundled_command_candidates_include_target_specific_launchers() {
+        let candidates = bundled_hermes_command_candidates(Path::new("resources"));
+
+        if cfg!(target_os = "windows") {
+            assert!(candidates.contains(
+                &PathBuf::from("resources")
+                    .join("native")
+                    .join("hermes")
+                    .join("bin")
+                    .join("hermes.exe")
+            ));
+        } else {
+            assert!(candidates.contains(
+                &PathBuf::from("resources")
+                    .join("native")
+                    .join("hermes")
+                    .join("bin")
+                    .join("hermes")
+            ));
+        }
     }
 
     #[test]

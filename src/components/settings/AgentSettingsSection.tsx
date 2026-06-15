@@ -278,10 +278,10 @@ export function AgentSettingsSection() {
         <div className="settings-rows">
           <div className="settings-row">
             <div className="settings-row-info">
-              <h3 className="settings-row-title">Agent HUD</h3>
+              <h3 className="settings-row-title">Sessions HUD</h3>
               <p className="settings-row-description">
                 Show a small pill at the top right of your screen with live
-                agent session status.
+                session status.
               </p>
             </div>
             <div className="settings-row-control">
@@ -290,7 +290,7 @@ export function AgentSettingsSection() {
                 onCheckedChange={(enabled) =>
                   void handleAgentHudEnabledChange(enabled)
                 }
-                aria-label="Show agent HUD"
+                aria-label="Show sessions HUD"
               />
             </div>
           </div>

@@ -17,6 +17,7 @@ import {
 } from "react";
 import type { NoteListItemDto } from "../../lib/tauri";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
+import { primaryShiftShortcutLabel } from "../../lib/platform";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 
@@ -76,6 +77,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
     // moment the selection drops to zero, keep the bar mounted with data-exit,
     // and unmount when its animation finishes.
     const [exit, setExit] = useState<null | "slide" | "fade">(null);
+    const createNoteShortcut = primaryShiftShortcutLabel("N");
     // The cause of the *next* empty transition, latched by the call sites.
     // Toggling a row can't know it's the last box until the set settles, so
     // unchecking defaults to fade unless a dismiss intent was latched first.
@@ -222,7 +224,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
             <IconPlusMedium size={13} />
             New note
             <kbd className="primary-action-kbd" aria-hidden>
-              ⌘N
+              {createNoteShortcut}
             </kbd>
           </button>
         </header>

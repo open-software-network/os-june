@@ -46,6 +46,31 @@ const notes: NoteListItemDto[] = [
   },
 ];
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 function baseProps() {
   return {
     folders,
@@ -114,7 +139,7 @@ describe("Sidebar primary navigation", () => {
       />,
     );
 
-    expect(screen.getByText("⌘ K")).toBeInTheDocument();
+    expect(screen.getByText("⌘K")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "k", metaKey: true });
 
@@ -134,6 +159,38 @@ describe("Sidebar primary navigation", () => {
     fireEvent.keyDown(search, { key: "Escape" });
 
     expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
+  });
+
+  it("shows and accepts the Windows command palette shortcut", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(
+        <Sidebar
+          notes={notes}
+          activeView="notes"
+          onChangeView={vi.fn()}
+          onSelectNote={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onRemoveNoteFromFolder={vi.fn()}
+          onNewAgentSession={vi.fn()}
+          onSelectAgentSession={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByText("Ctrl K")).toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+
+      const palette = screen.getByRole("dialog", { name: "Search" });
+      const search = within(palette).getByRole("searchbox", { name: "Search" });
+      await waitFor(() => expect(search).toHaveFocus());
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("opens the command palette when clicking the sidebar search", async () => {

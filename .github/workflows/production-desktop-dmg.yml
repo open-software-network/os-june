@@ -69,7 +69,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -256,7 +256,7 @@ jobs:
           # `notes` as plain text, so GitHub's auto-generated markdown would show
           # raw (## headings, @-mentions). Keep notes = the plain releaseBody.
           generateReleaseNotes: false
-          args: --bundles app,dmg --target aarch64-apple-darwin
+          args: --bundles app,dmg --target universal-apple-darwin
           # v0.6.x input name (was uploadUpdaterJson/uploadUpdaterSignatures,
           # which this version ignores). Generates + uploads latest.json; the
           # .sig updater signatures are uploaded alongside it automatically.
@@ -269,7 +269,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           dmgs=(
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.dmg
           )
           if [ "${#dmgs[@]}" -ne 1 ]; then
@@ -282,9 +282,11 @@ jobs:
             fi
             exit 1
           fi
-          stable_dmg="$RUNNER_TEMP/June_aarch64.dmg"
+          stable_dmg="$RUNNER_TEMP/June_universal.dmg"
+          legacy_dmg="$RUNNER_TEMP/June_aarch64.dmg"
           cp "${dmgs[0]}" "$stable_dmg"
-          gh release upload "v$VERSION" "$stable_dmg" \
+          cp "${dmgs[0]}" "$legacy_dmg"
+          gh release upload "v$VERSION" "$stable_dmg" "$legacy_dmg" \
             --repo open-software-network/os-june-releases \
             --clobber
 
@@ -336,7 +338,7 @@ jobs:
                   },
                   {
                     "type": "mrkdwn",
-                    "text": "*Download:*\n<https://github.com/open-software-network/os-june-releases/releases/latest/download/June_aarch64.dmg|macOS DMG (Apple Silicon)>"
+                    "text": "*Download:*\n<https://github.com/open-software-network/os-june-releases/releases/latest/download/June_universal.dmg|macOS DMG (Apple Silicon and Intel)>"
                   }
                 ]
               },
@@ -373,5 +375,6 @@ jobs:
             echo "- Version: \`$VERSION\`"
             echo "- Release repo: \`open-software-network/os-june-releases\`"
             echo "- Update manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
-            echo "- Marketing download: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_aarch64.dmg\`"
+            echo "- Marketing download: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_universal.dmg\`"
+            echo "- Legacy Apple Silicon alias: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/June_aarch64.dmg\`"
           } >> "$GITHUB_STEP_SUMMARY"

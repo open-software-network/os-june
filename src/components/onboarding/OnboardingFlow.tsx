@@ -1,9 +1,10 @@
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   onboardingResumeStep,
   setOnboardingResumeStep,
 } from "../../lib/onboarding";
+import { isMacLikePlatform } from "../../lib/platform";
 import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { isSubscriptionActive } from "../../lib/trial-checkout";
@@ -46,12 +47,13 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const STEPS: StepId[] = [
+const MAC_STEPS: StepId[] = [
   "sign-in",
   "permissions",
   "trial",
   "dictation-practice",
 ];
+const NON_MAC_STEPS: StepId[] = ["sign-in", "permissions", "trial"];
 
 type Props = {
   account: AccountStatus;
@@ -60,10 +62,10 @@ type Props = {
   onComplete: () => void;
 };
 
-function initialStepIndex(): number {
+function initialStepIndex(steps: StepId[]): number {
   const saved = onboardingResumeStep();
   if (!saved) return 0;
-  const index = STEPS.indexOf(saved as StepId);
+  const index = steps.indexOf(saved as StepId);
   return index === -1 ? 0 : index;
 }
 
@@ -73,13 +75,18 @@ export function OnboardingFlow({
   onRefreshAccount,
   onComplete,
 }: Props) {
+  const steps = useMemo(
+    () => (isMacLikePlatform() ? MAC_STEPS : NON_MAC_STEPS),
+    [],
+  );
+  const supportsDictationPractice = steps.includes("dictation-practice");
   const [stepIndex, setStepIndex] = useState(() => {
-    const initial = initialStepIndex();
-    return account.signedIn && STEPS[initial] === "sign-in" ? 1 : initial;
+    const initial = initialStepIndex(steps);
+    return account.signedIn && steps[initial] === "sign-in" ? 1 : initial;
   });
   const [shortcutLabel, setShortcutLabel] = useState("fn");
 
-  const stepId = STEPS[stepIndex];
+  const stepId = steps[stepIndex];
 
   // Everything past sign-in needs an account; a resume point past it with a
   // signed-out account (keychain cleared, signed out elsewhere) would strand
@@ -116,6 +123,7 @@ export function OnboardingFlow({
   // wizard run, not per practice-step mount, so a key rebound on the
   // practice screen survives stepping back and forward.
   useEffect(() => {
+    if (!supportsDictationPractice) return;
     dictationSettings()
       .then(({ settings }) => {
         const current = settings.pushToTalkShortcut;
@@ -132,10 +140,14 @@ export function OnboardingFlow({
         );
       })
       .catch(() => undefined);
-  }, []);
+  }, [supportsDictationPractice]);
 
   function goNext() {
-    setStepIndex((index) => Math.min(index + 1, STEPS.length - 1));
+    if (stepIndex >= steps.length - 1) {
+      onComplete();
+      return;
+    }
+    setStepIndex((index) => Math.min(index + 1, steps.length - 1));
   }
 
   function goBack() {
@@ -143,7 +155,7 @@ export function OnboardingFlow({
       let next = Math.max(index - 1, firstReachableStepIndex);
       // The trial step auto-skips forward for subscribed users; stepping
       // back onto it would just bounce, so hop over it instead.
-      if (STEPS[next] === "trial" && isSubscriptionActive(account)) {
+      if (steps[next] === "trial" && isSubscriptionActive(account)) {
         next = Math.max(next - 1, firstReachableStepIndex);
       }
       return next;
@@ -166,9 +178,9 @@ export function OnboardingFlow({
         ) : null}
         <nav
           className="onboarding-progress"
-          aria-label={`Setup progress: step ${stepIndex + 1} of ${STEPS.length}`}
+          aria-label={`Setup progress: step ${stepIndex + 1} of ${steps.length}`}
         >
-          {STEPS.map((id, index) => (
+          {steps.map((id, index) => (
             <span
               key={id}
               className="onboarding-progress-seg"

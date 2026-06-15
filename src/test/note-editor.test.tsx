@@ -56,6 +56,31 @@ const recovery: RecoverableRecordingDto = {
   bytesFound: 4096,
 };
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 describe("NoteEditor", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -415,6 +440,57 @@ describe("NoteEditor", () => {
     expect(
       screen.queryByRole("status", { name: "Recording consent reminder" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("hides system audio recording options on Windows", () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(
+        <NoteEditor
+          {...props}
+          note={note()}
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: false,
+            checkedAt: now,
+            sources: [
+              {
+                source: "microphone",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+              {
+                source: "system",
+                required: true,
+                ready: false,
+                permissionState: "unsupported",
+                deviceAvailable: false,
+                captureAvailable: false,
+              },
+            ],
+          }}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "Record" })).toBeEnabled();
+      expect(
+        screen.queryByRole("button", { name: "Recording options" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Capture system audio"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("System audio requires macOS 14.2 or later."),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("surfaces a dismissible consent reminder after the recorder settles", async () => {

@@ -2300,9 +2300,11 @@ version = "3.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
 dependencies = [
+ "byteorder",
  "log",
  "security-framework 2.11.1",
  "security-framework 3.7.0",
+ "windows-sys 0.60.2",
  "zeroize",
 ]
 
@@ -3018,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "os-scribe"
-version = "0.0.12"
+version = "0.0.14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3028,6 +3030,7 @@ dependencies = [
  "hound",
  "keyring",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "rand 0.8.6",
  "reqwest 0.12.28",

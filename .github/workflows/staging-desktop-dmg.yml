@@ -35,6 +35,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -104,13 +106,15 @@ jobs:
           OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
           SCRIBE_API_URL: ${{ secrets.STAGING_SCRIBE_API_URL }}
-        run: pnpm tauri:build:signed-dmg
+        run: pnpm tauri:build:signed-dmg --target universal-apple-darwin
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: os-scribe-staging-dmg-${{ github.sha }}
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Summary
@@ -118,7 +122,7 @@ jobs:
           {
             echo "### Staging macOS DMG"
             echo "This artifact is built against the staging OS Accounts and Scribe API environment."
-            for dmg in src-tauri/target/release/bundle/dmg/*.dmg; do
+            for dmg in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/dmg/*.dmg; do
               [ -e "$dmg" ] || continue
               echo "- \`$dmg\`"
             done

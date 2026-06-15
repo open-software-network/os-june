@@ -195,18 +195,18 @@ describe("AgentWorkspace", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-1",
+        generationModel: "kimi-k2-6",
       },
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5-1",
+      selectedModel: "kimi-k2-6",
       models: [
         {
           provider: "venice",
-          id: "zai-org-glm-5-1",
-          name: "GLM 5.1",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
           modelType: "text",
           privacy: "private",
           traits: [],
@@ -296,6 +296,111 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("keeps retrying startup session loads until the API is ready", async () => {
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    const startupError = new Error(
+      "error sending request for url (http://127.0.0.1:65144/api/sessions?limit=100&offset=0&archived=exclude&min_messages=1&order=recent)",
+    );
+    mocks.listHermesSessions
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockResolvedValueOnce([existingSession]);
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Getting June ready…")).toBeInTheDocument();
+      expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+
+      for (const [delay, callCount] of [
+        [250, 2],
+        [500, 3],
+        [1000, 4],
+        [2000, 5],
+        [2000, 6],
+      ] as const) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delay);
+        });
+        expect(mocks.listHermesSessions).toHaveBeenCalledTimes(callCount);
+        expect(screen.queryByText(/June is still starting/i)).toBeNull();
+        expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+      }
+
+      expect(screen.getByText("Existing session")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the session loading state when a new session starts during startup retries", async () => {
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    const startupError = new Error(
+      "error sending request for url (http://127.0.0.1:65144/api/sessions?limit=100&offset=0&archived=exclude&min_messages=1&order=recent)",
+    );
+    mocks.listHermesSessions
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockResolvedValueOnce([
+        {
+          id: "session-2",
+          title: "Spin up a project brief",
+          preview: "spin up a project brief",
+          last_active: "2026-06-05T12:00:00Z",
+        },
+      ]);
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Getting June ready…")).toBeInTheDocument();
+
+      // Start a new session mid-retry. The composer is now a TipTap
+      // contenteditable whose async input handling deadlocks against fake
+      // timers, so drive the new-session path directly (the same code the
+      // composer submit runs) with the prompt — deterministic and timer-free.
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+            detail: { prompt: "spin up a project brief" },
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "spin up a project brief",
+      });
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("spin up a project brief")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(3);
+      expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never announces the restored session as selected while a New Session is pending", async () => {
@@ -533,14 +638,14 @@ describe("AgentWorkspace", () => {
 
     // The session composer carries the same model trigger as the hero.
     await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
     );
 
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
     expect(
-      within(dialog).getByRole("option", { name: /GLM 5.1/ }),
+      within(dialog).getByRole("option", { name: /Kimi K2.6/ }),
     ).toBeInTheDocument();
   });
 
@@ -550,8 +655,8 @@ describe("AgentWorkspace", () => {
     const catalog = [
       {
         provider: "venice",
-        id: "zai-org-glm-5-1",
-        name: "GLM 5.1",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
         modelType: "text",
         privacy: "private",
         traits: [],
@@ -559,8 +664,8 @@ describe("AgentWorkspace", () => {
       },
       {
         provider: "venice",
-        id: "kimi-k2",
-        name: "Kimi K2",
+        id: "anonymous-only",
+        name: "Anonymous Only",
         modelType: "text",
         privacy: "anonymous",
         traits: [],
@@ -570,7 +675,7 @@ describe("AgentWorkspace", () => {
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5-1",
+      selectedModel: "kimi-k2-6",
       models: catalog,
     });
     mocks.setVeniceModel.mockResolvedValue(undefined);
@@ -579,7 +684,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
@@ -590,16 +695,16 @@ describe("AgentWorkspace", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "kimi-k2",
+        generationModel: "anonymous-only",
       },
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "kimi-k2",
+      selectedModel: "anonymous-only",
       models: catalog,
     });
-    // The popover opens on the suggested picks (GLM 5.1 is curated); the
+    // The popover opens on the suggested picks (Kimi K2.6 is curated); the
     // switch target only exists in the full catalog behind All models.
     await user.click(
       within(dialog).getByRole("button", { name: "All models" }),
@@ -607,18 +712,20 @@ describe("AgentWorkspace", () => {
     const panel = await screen.findByRole("group", {
       name: "All text models",
     });
-    await user.click(within(panel).getByRole("option", { name: /Kimi K2/ }));
+    await user.click(
+      within(panel).getByRole("option", { name: /Anonymous Only/ }),
+    );
 
     await waitFor(() =>
       expect(mocks.setVeniceModel).toHaveBeenCalledWith(
         "generation",
-        "kimi-k2",
+        "anonymous-only",
       ),
     );
     // The composer trigger reflects the new model and the session bar badge
     // its privacy mode.
     expect(
-      await screen.findByRole("button", { name: "Model: Kimi K2" }),
+      await screen.findByRole("button", { name: "Model: Anonymous Only" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
@@ -2463,12 +2570,12 @@ describe("AgentWorkspace", () => {
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "zai-org-glm-5-1",
+      selectedModel: "kimi-k2-6",
       models: [
         {
           provider: "venice",
-          id: "zai-org-glm-5-1",
-          name: "GLM 5.1",
+          id: "kimi-k2-6",
+          name: "Kimi K2.6",
           modelType: "text",
           privacy: "private",
           traits: [],
@@ -2476,10 +2583,10 @@ describe("AgentWorkspace", () => {
         },
         {
           provider: "venice",
-          id: "kimi-k2",
-          name: "Kimi K2",
+          id: "zai-org-glm-5-1",
+          name: "GLM 5.1",
           modelType: "text",
-          privacy: "anonymous",
+          privacy: "private",
           traits: [],
           capabilities: ["functionCalling"],
         },
@@ -2498,7 +2605,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     await user.click(
-      await screen.findByRole("button", { name: "Model: GLM 5.1" }),
+      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
@@ -2513,7 +2620,7 @@ describe("AgentWorkspace", () => {
       within(panel).getByRole("textbox", { name: "Search models" }),
     ).toBeInTheDocument();
     expect(
-      within(panel).getByRole("option", { name: /Kimi K2/ }),
+      within(panel).getByRole("option", { name: /GLM 5.1/ }),
     ).toBeInTheDocument();
     expect(
       within(panel).queryByRole("option", { name: /Tool-less model/ }),

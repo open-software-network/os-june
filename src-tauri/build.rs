@@ -24,7 +24,8 @@ fn main() {
 /// compile time, so the `../.tauri-hermes/hermes` mapping must exist for ANY
 /// cargo invocation (`cargo test`, rust-analyzer, dev builds) — not just for
 /// `tauri build`. Release CI populates the real runtime via
-/// scripts/bundle-hermes-runtime.sh before compiling; everywhere else this
+/// scripts/bundle-hermes-runtime.sh or scripts/bundle-hermes-runtime-windows.ps1
+/// before compiling; everywhere else this
 /// placeholder keeps the build green and the app falls back to the managed
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
 ///
@@ -45,7 +46,9 @@ fn ensure_bundled_hermes_dir() {
         return;
     };
     if hermes_dir.exists() {
-        if !hermes_dir.join("bin").join("hermes").exists() {
+        if !hermes_dir.join("bin").join("hermes").exists()
+            && !hermes_dir.join("bin").join("hermes.exe").exists()
+        {
             // Placeholder (or partial) dir: nothing to validate.
             return;
         }
@@ -76,7 +79,7 @@ fn ensure_bundled_hermes_dir() {
         return;
     }
     let note = "No bundled Hermes runtime in this build. The app installs the managed \
-runtime on first launch instead. Release CI runs scripts/bundle-hermes-runtime.sh to \
+runtime on first launch instead. Release CI runs the platform Hermes bundler to \
 ship the runtime inside the app.\n";
     if let Err(error) = std::fs::write(hermes_dir.join("PLACEHOLDER.md"), note) {
         println!("cargo:warning=could not write hermes placeholder: {error}");
@@ -148,38 +151,24 @@ fn build_system_audio_helper() {
     std::fs::create_dir_all(&macos_dir).expect("system audio helper app dir should be created");
     let executable = macos_dir.join("june-system-audio-recorder");
 
-    let source_modified = std::fs::metadata(&source)
-        .and_then(|metadata| metadata.modified())
-        .ok();
-    let executable_current = executable.exists()
-        && source_modified
-            .and_then(|source_modified| {
-                std::fs::metadata(&executable)
-                    .and_then(|metadata| metadata.modified())
-                    .ok()
-                    .map(|executable_modified| executable_modified >= source_modified)
-            })
-            .unwrap_or(false);
+    let executable_current = swift_helper_executable_current(&source, &executable);
     let mut should_sign = false;
     if !executable_current {
-        let mut command = std::process::Command::new("swiftc");
-        configure_swift_command(&mut command, &manifest_dir, &system_audio_min_macos_version);
-        let status = command
-            .arg("-framework")
-            .arg("Foundation")
-            .arg("-framework")
-            .arg("AppKit")
-            .arg("-framework")
-            .arg("AVFoundation")
-            .arg("-framework")
-            .arg("CoreAudio")
-            .arg("-framework")
-            .arg("AudioToolbox")
-            .arg(&source)
-            .arg("-o")
-            .arg(&executable)
-            .status();
-        if !matches!(status, Ok(status) if status.success()) {
+        let built = build_universal_swift_executable(
+            "system audio helper",
+            &manifest_dir,
+            &source,
+            &executable,
+            &system_audio_min_macos_version,
+            &[
+                "Foundation",
+                "AppKit",
+                "AVFoundation",
+                "CoreAudio",
+                "AudioToolbox",
+            ],
+        );
+        if !built {
             println!("cargo:warning=system audio helper could not be built; dual-source mode will report unavailable");
             return;
         }
@@ -273,44 +262,25 @@ fn build_dictation_helper() {
         .expect("dictation helper resources dir should be created");
     let executable = macos_dir.join("june-dictation-helper");
 
-    let source_modified = std::fs::metadata(&source)
-        .and_then(|metadata| metadata.modified())
-        .ok();
-    let executable_current = executable.exists()
-        && source_modified
-            .and_then(|source_modified| {
-                std::fs::metadata(&executable)
-                    .and_then(|metadata| metadata.modified())
-                    .ok()
-                    .map(|executable_modified| executable_modified >= source_modified)
-            })
-            .unwrap_or(false);
+    let executable_current = swift_helper_executable_current(&source, &executable);
     let mut should_sign = false;
     if !executable_current {
-        let mut command = std::process::Command::new("swiftc");
-        configure_swift_command(
-            &mut command,
+        let built = build_universal_swift_executable(
+            "dictation helper",
             &manifest_dir,
+            &source,
+            &executable,
             DICTATION_HELPER_MIN_MACOS_VERSION,
+            &[
+                "Foundation",
+                "AppKit",
+                "AVFoundation",
+                "Carbon",
+                "CoreMedia",
+                "CoreGraphics",
+            ],
         );
-        let status = command
-            .arg("-framework")
-            .arg("Foundation")
-            .arg("-framework")
-            .arg("AppKit")
-            .arg("-framework")
-            .arg("AVFoundation")
-            .arg("-framework")
-            .arg("Carbon")
-            .arg("-framework")
-            .arg("CoreMedia")
-            .arg("-framework")
-            .arg("CoreGraphics")
-            .arg(&source)
-            .arg("-o")
-            .arg(&executable)
-            .status();
-        if !matches!(status, Ok(status) if status.success()) {
+        if !built {
             println!("cargo:warning=dictation helper could not be built; dictation will report unavailable");
             return;
         }
@@ -392,6 +362,105 @@ fn build_dictation_helper() {
     }
 }
 
+fn swift_helper_executable_current(source: &std::path::Path, executable: &std::path::Path) -> bool {
+    if !executable.exists() {
+        return false;
+    }
+
+    let source_modified = std::fs::metadata(source)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let executable_fresh = source_modified
+        .and_then(|source_modified| {
+            std::fs::metadata(executable)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .map(|executable_modified| executable_modified >= source_modified)
+        })
+        .unwrap_or(false);
+    executable_fresh && executable_has_arches(executable, &["arm64", "x86_64"])
+}
+
+fn executable_has_arches(executable: &std::path::Path, required_arches: &[&str]) -> bool {
+    let output = std::process::Command::new("lipo")
+        .arg("-archs")
+        .arg(executable)
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    required_arches
+        .iter()
+        .all(|required| stdout.split_whitespace().any(|arch| arch == *required))
+}
+
+fn build_universal_swift_executable(
+    helper_name: &str,
+    manifest_dir: &std::path::Path,
+    source: &std::path::Path,
+    executable: &std::path::Path,
+    macos_version: &str,
+    frameworks: &[&str],
+) -> bool {
+    let Some(executable_name) = executable.file_name().and_then(|name| name.to_str()) else {
+        println!("cargo:warning={helper_name} executable path has no file name");
+        return false;
+    };
+    let slice_dir = manifest_dir
+        .join("target")
+        .join("swift-helper-slices")
+        .join(format!("{executable_name}-{}", std::process::id()));
+    if let Err(error) = std::fs::create_dir_all(&slice_dir) {
+        println!("cargo:warning={helper_name} slice dir could not be created: {error}");
+        return false;
+    }
+
+    let mut slices = Vec::new();
+    for swift_arch in ["arm64", "x86_64"] {
+        let slice = slice_dir.join(format!("{executable_name}-{swift_arch}"));
+        let mut command = std::process::Command::new("swiftc");
+        configure_swift_command(&mut command, manifest_dir, swift_arch, macos_version);
+        for framework in frameworks {
+            command.arg("-framework").arg(framework);
+        }
+        let status = command.arg(source).arg("-o").arg(&slice).status();
+        if !matches!(status, Ok(status) if status.success()) {
+            println!("cargo:warning={helper_name} {swift_arch} slice could not be built");
+            let _ = std::fs::remove_dir_all(&slice_dir);
+            return false;
+        }
+        slices.push(slice);
+    }
+
+    let universal = slice_dir.join(format!("{executable_name}-universal"));
+    let mut lipo = std::process::Command::new("lipo");
+    lipo.arg("-create").arg("-output").arg(&universal);
+    for slice in &slices {
+        lipo.arg(slice);
+    }
+    let status = lipo.status();
+    if !matches!(status, Ok(status) if status.success()) {
+        println!("cargo:warning={helper_name} universal binary could not be created");
+        let _ = std::fs::remove_dir_all(&slice_dir);
+        return false;
+    }
+
+    if let Ok(permissions) = std::fs::metadata(&slices[0]).map(|metadata| metadata.permissions()) {
+        let _ = std::fs::set_permissions(&universal, permissions);
+    }
+    if let Err(error) = std::fs::rename(&universal, executable) {
+        println!("cargo:warning={helper_name} universal binary could not be installed: {error}");
+        let _ = std::fs::remove_dir_all(&slice_dir);
+        return false;
+    }
+    let _ = std::fs::remove_dir_all(&slice_dir);
+    true
+}
+
 fn has_signing_identity() -> bool {
     std::env::var("APPLE_SIGNING_IDENTITY")
         .ok()
@@ -427,20 +496,13 @@ fn sign_helper_app(manifest_dir: &std::path::Path, app_dir: &std::path::Path) {
 fn configure_swift_command(
     command: &mut std::process::Command,
     manifest_dir: &std::path::Path,
+    swift_arch: &str,
     macos_version: &str,
 ) {
-    if let Some(target) = swift_target(macos_version) {
-        command.arg("-target").arg(target);
-    }
+    command
+        .arg("-target")
+        .arg(format!("{swift_arch}-apple-macosx{macos_version}"));
     let module_cache = manifest_dir.join("target").join("swift-module-cache");
     std::fs::create_dir_all(&module_cache).expect("swift module cache dir should be created");
     command.arg("-module-cache-path").arg(module_cache);
-}
-
-fn swift_target(macos_version: &str) -> Option<String> {
-    match std::env::var("HOST").ok()?.as_str() {
-        "aarch64-apple-darwin" => Some(format!("arm64-apple-macosx{macos_version}")),
-        "x86_64-apple-darwin" => Some(format!("x86_64-apple-macosx{macos_version}")),
-        _ => None,
-    }
 }

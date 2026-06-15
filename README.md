@@ -25,6 +25,11 @@ pnpm install
 pnpm tauri:dev
 ```
 
+`pnpm tauri:dev` starts Vite and a local Scribe API when their ports are free.
+If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the dev script
+reuses the existing service. Set `VITE_PORT` or `SCRIBE_API_PORT` to use a
+different port.
+
 To replay first-run onboarding, clear the saved onboarding checkpoint, and log
 out of OS Accounts without wiping the rest of your local app data:
 
@@ -42,8 +47,8 @@ cp .env.example .env
 # edit SCRIBE_API_URL and OS Accounts client settings when needed
 ```
 
-Run the local Scribe API separately when pointing the desktop app at
-`http://127.0.0.1:8080`:
+To run the local Scribe API yourself instead of letting `pnpm tauri:dev` start
+it, use:
 
 ```sh
 cp scribe-api/.env.example scribe-api/.env
@@ -108,7 +113,10 @@ The `Microphone only` mode is the default. The `Microphone + system audio` mode 
 
 Dictation uses a separate macOS helper built into `.tauri-helper/June Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
 
-Local `pnpm tauri:build` output is ad-hoc signed unless a signing identity is configured. To build a downloadable, Developer ID-signed and notarized DMG, set the signing environment and run:
+Local `pnpm tauri:build` output is platform-specific: app and DMG bundles on
+macOS, and an NSIS installer on Windows. macOS output is ad-hoc signed unless a
+signing identity is configured. To build a downloadable, Developer ID-signed
+and notarized DMG, set the signing environment and run:
 
 ```sh
 pnpm tauri:build:signed-dmg
@@ -125,7 +133,7 @@ APPLE_API_KEY=
 APPLE_API_KEY_PATH=/path/to/AuthKey_KEYID.p8
 ```
 
-For GitHub Actions, the current automated DMG workflow is staging-only. Configure repository secrets with the certificate values plus App Store Connect API key values:
+For GitHub Actions, configure repository secrets with the certificate values plus App Store Connect API key values:
 
 - `APPLE_CERTIFICATE`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -134,7 +142,7 @@ For GitHub Actions, the current automated DMG workflow is staging-only. Configur
 - `APPLE_API_KEY`
 - `APPLE_API_KEY_P8`
 
-Also configure the staging app environment secrets. These are intentionally staging-prefixed because there is no production DMG build environment yet:
+Also configure the staging app environment secrets:
 
 - `STAGING_OS_ACCOUNTS_URL`
 - `STAGING_OS_ACCOUNTS_API_URL`
@@ -164,7 +172,7 @@ for June. Provider keys such as OpenAI, Venice, and the OS Accounts App API
 key remain server-side in Scribe API/Phala env; they do not belong in the desktop
 DMG workflow.
 
-The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. The `production-desktop-dmg` workflow is manual-only. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
+The `staging-desktop-dmg` workflow and production release workflow can be triggered manually with `workflow_dispatch`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
 
 ```sh
 codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app"
@@ -179,6 +187,37 @@ tccutil reset Microphone co.opensoftware.scribe
 ```
 
 System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for June or the June audio capture helper, then restart the app.
+
+## Windows Development
+
+Windows builds use the base Tauri config plus
+[`src-tauri/tauri.windows.conf.json`](src-tauri/tauri.windows.conf.json), which
+targets an NSIS installer and excludes the macOS helper app resources. Install
+the normal Tauri Windows prerequisites, including Rust, Node.js, pnpm, WebView2,
+and the Microsoft C++ build tools.
+Local Windows builds skip Authenticode signing unless
+`WINDOWS_CERTIFICATE_PATH` and `WINDOWS_CERTIFICATE_PASSWORD` are set.
+
+Production Windows builds bundle the pinned Hermes runtime under
+`native/hermes`, so a clean install can start the agent without Python,
+GitHub downloads, or a first-run runtime install. Development builds can still
+fall back to the managed Hermes runtime installer, which uses PowerShell and
+requires Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher.
+macOS-only dictation, system-audio capture, and Seatbelt sandbox features report
+unavailable or run without that OS sandbox on Windows.
+
+Production Windows distribution is handled by the manual
+`production-desktop-windows` workflow after the production macOS release creates
+the target version in `open-software-network/os-june-releases`. The Windows
+workflow signs the app executable and NSIS installer with Authenticode, embeds
+production OS Accounts and Scribe API fallback config, uploads
+`June_x64-setup.exe`, and merges `windows-x86_64` into the Tauri updater
+`latest.json`. See [docs/release-windows.md](docs/release-windows.md).
+
+The production Windows installer starts signed-in users on meeting notes and
+does not present dictation as a first-run promise. Agent and routines workflows
+use the bundled Hermes runtime on production Windows builds but still run
+without the macOS Seatbelt write-jail.
 
 ## Verification
 

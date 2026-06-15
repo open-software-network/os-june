@@ -1,3 +1,6 @@
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
+import { IconArrowRight } from "central-icons/IconArrowRight";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -9,7 +12,7 @@ import {
   useState,
 } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { AccountGate } from "../components/account/AccountGate";
+import { AccountGate, JuneMark } from "../components/account/AccountGate";
 import { TrialGate } from "../components/account/TrialGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
@@ -41,7 +44,6 @@ import {
 } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
-import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -77,6 +79,7 @@ import {
   playRecordingSound,
   preloadRecordingSounds,
 } from "../lib/recording-sounds";
+import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
@@ -96,6 +99,7 @@ import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
   AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
+  OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
   emitAgentMenuBarState,
 } from "../lib/menu-bar";
@@ -136,7 +140,7 @@ import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
 import {
   checkForScribeUpdate,
-  installScribeUpdate,
+  prepareScribeUpdate,
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "./update-decision";
@@ -180,14 +184,16 @@ export function App() {
     "none",
   );
   const [bootstrapped, setBootstrapped] = useState(false);
-  // The app launches on a fresh agent session. The handshake is armed during
-  // state init — before AgentWorkspace's first mount consumes it — so the
-  // workspace opens on the hero instead of restoring the last open
-  // conversation.
+  // macOS launches on a fresh agent session. The Windows installer does not
+  // bundle Hermes yet, so Windows starts on meeting notes instead of promising
+  // a turnkey agent runtime.
   const [activeView, setActiveView] = useState<SidebarView>(() => {
+    if (!isMacLikePlatform()) return "notes";
     markAgentNewSessionPending();
     return "agent";
   });
+  const activeViewRef = useRef<SidebarView>(activeView);
+  activeViewRef.current = activeView;
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
   const [pendingAgentReply, setPendingAgentReply] =
@@ -236,6 +242,13 @@ export function App() {
   const [settingsReturnView, setSettingsReturnView] =
     useState<SidebarView>("notes");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const openSettings = useCallback(() => {
+    const returnView = activeViewRef.current;
+    if (returnView !== "settings") {
+      setSettingsReturnView(returnView);
+    }
+    setActiveView("settings");
+  }, []);
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
@@ -256,10 +269,11 @@ export function App() {
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
-  const [pendingUpdate, setPendingUpdate] =
+  const [readyUpdate, setReadyUpdate] =
     useState<UpdatePromptPayload<ScribeUpdate> | null>(null);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
-  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [preparingUpdate, setPreparingUpdate] = useState(false);
+  const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] =
     useState<UpdateInstallProgress | null>(null);
   const systemGranted = !!sourceReadiness?.sources.find(
@@ -416,32 +430,110 @@ export function App() {
     return attachScrollThumbFade(el);
   }, [noteDetailScrollerActive, selectedNoteId]);
 
-  // installingUpdate is read through a ref so runUpdateCheck keeps a stable
-  // identity across installs. Otherwise the launch effect and the manual-check
-  // listener below would tear down and re-fire every time installingUpdate
-  // toggles — re-triggering an unwanted launch-time check after an install.
-  const installingUpdateRef = useRef(false);
+  // Update state is read through refs so runUpdateCheck keeps a stable identity.
+  // Otherwise the launch effect and the manual-check listener below would tear
+  // down and re-fire every time a download or relaunch toggles state.
+  const preparingUpdateRef = useRef(false);
+  const readyUpdateRef = useRef<UpdatePromptPayload<ScribeUpdate> | null>(null);
+  const relaunchingUpdateRef = useRef(false);
+  const updateProgressHiddenRef = useRef(false);
   useEffect(() => {
-    installingUpdateRef.current = installingUpdate;
-  }, [installingUpdate]);
+    preparingUpdateRef.current = preparingUpdate;
+  }, [preparingUpdate]);
+  useEffect(() => {
+    readyUpdateRef.current = readyUpdate;
+  }, [readyUpdate]);
+  useEffect(() => {
+    relaunchingUpdateRef.current = relaunchingUpdate;
+  }, [relaunchingUpdate]);
 
-  const runUpdateCheck = useCallback((mode: "launch" | "manual") => {
-    if (installingUpdateRef.current) return;
-    setUpdateStatus(mode === "manual" ? "Checking for updates..." : null);
-    void checkForScribeUpdate(
-      {
-        check: checkScribeUpdate,
-        prompt: (payload) => {
-          setUpdateStatus(null);
-          setUpdateProgress(null);
-          setPendingUpdate(payload);
+  const prepareUpdate = useCallback(
+    (payload: UpdatePromptPayload<ScribeUpdate>, mode: "launch" | "manual") => {
+      if (
+        preparingUpdateRef.current ||
+        readyUpdateRef.current ||
+        relaunchingUpdateRef.current
+      ) {
+        return;
+      }
+
+      preparingUpdateRef.current = true;
+      updateProgressHiddenRef.current = false;
+      setPreparingUpdate(true);
+      setReadyUpdate(null);
+      setUpdateProgress(null);
+      setUpdateStatus(mode === "manual" ? "Downloading update..." : null);
+
+      void prepareScribeUpdate({
+        update: payload.update,
+        reportProgress: (progress) => {
+          setUpdateProgress(progress);
+          if (mode === "manual" && !updateProgressHiddenRef.current) {
+            setUpdateStatus(
+              progress.state === "installing"
+                ? "Preparing update..."
+                : "Downloading update...",
+            );
+          }
         },
-        reportNoUpdate: () => setUpdateStatus("June is up to date."),
-        reportFailure: (message) =>
-          setUpdateStatus(`Update check failed: ${message}`),
-      },
-      mode,
-    );
+        reportReady: (ready) => {
+          preparingUpdateRef.current = false;
+          readyUpdateRef.current = ready;
+          updateProgressHiddenRef.current = false;
+          setPreparingUpdate(false);
+          setReadyUpdate(ready);
+          setUpdateProgress(null);
+          setUpdateStatus(null);
+        },
+        reportFailure: (message) => {
+          preparingUpdateRef.current = false;
+          updateProgressHiddenRef.current = false;
+          setPreparingUpdate(false);
+          setUpdateProgress(null);
+          setUpdateStatus(`Update failed: ${message}`);
+        },
+      });
+    },
+    [],
+  );
+
+  const runUpdateCheck = useCallback(
+    (mode: "launch" | "manual") => {
+      if (readyUpdateRef.current || relaunchingUpdateRef.current) return;
+      if (preparingUpdateRef.current) {
+        if (mode === "manual") {
+          updateProgressHiddenRef.current = false;
+          setUpdateStatus("Downloading update...");
+        }
+        return;
+      }
+      setUpdateStatus(mode === "manual" ? "Checking for updates..." : null);
+      void checkForScribeUpdate(
+        {
+          check: checkScribeUpdate,
+          prompt: (payload) => {
+            prepareUpdate(payload, mode);
+          },
+          reportNoUpdate: () => setUpdateStatus("June is up to date."),
+          reportFailure: (message) =>
+            setUpdateStatus(`Update check failed: ${message}`),
+        },
+        mode,
+      );
+    },
+    [prepareUpdate],
+  );
+
+  const handleRelaunchUpdate = useCallback(() => {
+    if (!readyUpdateRef.current || relaunchingUpdateRef.current) return;
+    relaunchingUpdateRef.current = true;
+    setRelaunchingUpdate(true);
+    setUpdateStatus(null);
+    void relaunchScribe().catch((error) => {
+      relaunchingUpdateRef.current = false;
+      setRelaunchingUpdate(false);
+      setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`);
+    });
   }, []);
 
   // Launch check: silent by design — a "no update" result shows nothing so it
@@ -469,6 +561,19 @@ export function App() {
       unlisten?.();
     };
   }, [runUpdateCheck]);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen(OPEN_SETTINGS_EVENT, openSettings).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [openSettings]);
 
   useEffect(() => {
     function openAgentWorkspace(session?: HermesSessionInfo) {
@@ -1130,6 +1235,22 @@ export function App() {
     [state.selectedFolderId],
   );
 
+  // Mirrors the sidebar's "New session" button so the agent sessions list
+  // can start a fresh chat with the same pending-session handshake. Memoized
+  // so the ⌘N keydown listener below subscribes once instead of every render.
+  const handleNewAgentSession = useCallback(() => {
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending();
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
+      );
+    }, 0);
+  }, []);
+
   useEffect(() => {
     if (
       appBlocked ||
@@ -1152,15 +1273,21 @@ export function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (!isCreateNoteShortcut(event)) return;
       if (document.querySelector('[role="dialog"]')) return;
-      event.preventDefault();
-      void handleCreateNote(null);
+      if (isNewSessionShortcut(event)) {
+        event.preventDefault();
+        handleNewAgentSession();
+        return;
+      }
+      if (isCreateNoteShortcut(event)) {
+        event.preventDefault();
+        void handleCreateNote(null);
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleCreateNote]);
+  }, [handleCreateNote, handleNewAgentSession]);
 
   function handleSelectFolder(folderId?: string) {
     setFolderReturnTarget(undefined);
@@ -1298,21 +1425,6 @@ export function App() {
     } catch (err) {
       setError(messageFromError(err));
     }
-  }
-
-  // Mirrors the sidebar's "New session" button so the agent sessions list
-  // can start a fresh chat with the same pending-session handshake.
-  function handleNewAgentSession() {
-    pendingSessionProjectRef.current = null;
-    setAgentOrigin(undefined);
-    markAgentNewSessionPending();
-    setActiveAgentSession(undefined);
-    setActiveView("agent");
-    window.setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
-      );
-    }, 0);
   }
 
   // "Report an issue": the fresh-chat handshake with a bug chip seeded into
@@ -1725,10 +1837,8 @@ export function App() {
         settingsTab={settingsTab}
         onSettingsTabChange={setSettingsTab}
         onChangeView={(view) => {
-          if (view === "settings" && activeView !== "settings") {
-            setSettingsReturnView(activeView);
-          }
-          setActiveView(view);
+          if (view === "settings") openSettings();
+          else setActiveView(view);
           setAgentOrigin(undefined);
           if (view !== "agent") {
             setActiveAgentSession(undefined);
@@ -1905,11 +2015,11 @@ export function App() {
                           ],
                         }
                       : {
-                          backLabel: "Back to agents",
+                          backLabel: "Back to sessions",
                           onBack: handleReturnToAgentsList,
                           crumbs: [
                             {
-                              label: "Agents",
+                              label: "Sessions",
                               onClick: handleReturnToAgentsList,
                             },
                           ],
@@ -2204,32 +2314,18 @@ export function App() {
         }
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
-      <UpdateDialog
-        payload={pendingUpdate}
+      <UpdateHub
+        readyUpdate={readyUpdate}
         status={updateStatus}
-        installing={installingUpdate}
+        preparing={preparingUpdate}
+        relaunching={relaunchingUpdate}
         progress={updateProgress}
-        onClose={() => {
-          if (installingUpdate) return;
-          setPendingUpdate(null);
+        onDismissStatus={() => {
+          if (preparingUpdate) updateProgressHiddenRef.current = true;
           setUpdateStatus(null);
-          setUpdateProgress(null);
+          if (!preparingUpdate) setUpdateProgress(null);
         }}
-        onInstall={() => {
-          if (!pendingUpdate || installingUpdate) return;
-          setInstallingUpdate(true);
-          setUpdateStatus(null);
-          void installScribeUpdate({
-            update: pendingUpdate.update,
-            relaunch: relaunchScribe,
-            reportProgress: setUpdateProgress,
-            reportFailure: (message) => {
-              setInstallingUpdate(false);
-              setUpdateProgress(null);
-              setUpdateStatus(`Update failed: ${message}`);
-            },
-          });
-        }}
+        onRelaunch={handleRelaunchUpdate}
       />
     </main>
   );
@@ -2256,102 +2352,162 @@ function updateMenuBarSessionStatus(
   }
 }
 
-function UpdateDialog({
+function UpdateHub({
+  readyUpdate,
+  status,
+  preparing,
+  relaunching,
+  progress,
+  onDismissStatus,
+  onRelaunch,
+}: {
+  readyUpdate: UpdatePromptPayload<ScribeUpdate> | null;
+  status: string | null;
+  preparing: boolean;
+  relaunching: boolean;
+  progress: UpdateInstallProgress | null;
+  onDismissStatus: () => void;
+  onRelaunch: () => void;
+}) {
+  if (readyUpdate) {
+    return (
+      <UpdateRelaunchCard
+        payload={readyUpdate}
+        status={status}
+        relaunching={relaunching}
+        onRelaunch={onRelaunch}
+      />
+    );
+  }
+
+  if (!status) return null;
+  return (
+    <UpdateStatusCard
+      status={status}
+      preparing={preparing}
+      progress={progress}
+      onDismiss={onDismissStatus}
+    />
+  );
+}
+
+function UpdateRelaunchCard({
   payload,
   status,
-  installing,
-  progress,
-  onClose,
-  onInstall,
+  relaunching,
+  onRelaunch,
 }: {
-  payload: UpdatePromptPayload<ScribeUpdate> | null;
+  payload: UpdatePromptPayload<ScribeUpdate>;
   status: string | null;
-  installing: boolean;
-  progress: UpdateInstallProgress | null;
-  onClose: () => void;
-  onInstall: () => void;
+  relaunching: boolean;
+  onRelaunch: () => void;
 }) {
-  const percent =
-    progress?.contentLength && progress.contentLength > 0
-      ? Math.min(
-          100,
-          Math.round(
-            ((progress.downloadedBytes ?? 0) / progress.contentLength) * 100,
-          ),
-        )
-      : undefined;
+  const meta = status ?? updateVersionLabel(payload.version);
+  const failed = status?.toLowerCase().includes("failed") ?? false;
 
   return (
-    <Dialog
-      open={!!payload || !!status}
-      onClose={onClose}
-      title={payload ? `June ${payload.version}` : "Software update"}
-      description={
-        payload
-          ? "A new version is available."
-          : (status ?? "Checking for updates...")
-      }
-      width={460}
-      disableBackdropClose={installing}
-      footer={
-        payload ? (
-          <>
-            <button
-              type="button"
-              className="primary-action"
-              disabled={installing}
-              onClick={onClose}
-            >
-              Later
-            </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={installing}
-              onClick={onInstall}
-            >
-              {installing ? "Installing..." : "Install & relaunch"}
-            </button>
-          </>
-        ) : (
-          <button type="button" className="primary-action" onClick={onClose}>
-            Close
-          </button>
-        )
-      }
+    <aside
+      className="update-popover"
+      role={failed ? "alert" : "status"}
+      aria-live="polite"
     >
-      {payload ? (
-        <div className="update-dialog-body">
-          {payload.notes ? (
-            <div className="update-release-notes">{payload.notes}</div>
-          ) : (
-            <p className="dialog-field-hint">No release notes were provided.</p>
-          )}
-          {progress ? (
-            <div className="update-progress" aria-live="polite">
-              <div className="update-progress-row">
-                <span>
-                  {progress.state === "installing"
-                    ? "Installing update..."
-                    : "Downloading update..."}
-                </span>
-                {percent !== undefined ? <span>{percent}%</span> : null}
-              </div>
-              <div className="update-progress-track">
-                <div
-                  className="update-progress-fill"
-                  style={{ width: `${percent ?? 0}%` }}
-                />
-              </div>
-            </div>
-          ) : null}
-          {status ? <p className="dialog-field-hint">{status}</p> : null}
-        </div>
-      ) : (
-        <div />
-      )}
-    </Dialog>
+      <button
+        type="button"
+        className="update-relaunch-card"
+        disabled={relaunching}
+        aria-label={`Relaunch to update to June ${payload.version}`}
+        onClick={onRelaunch}
+      >
+        <span className="update-relaunch-mark" aria-hidden>
+          <JuneMark />
+        </span>
+        <span className="update-relaunch-copy">
+          <span className="update-relaunch-title">
+            {relaunching ? "Relaunching..." : "Relaunch to update"}
+          </span>
+          <span className={status ? "update-relaunch-status" : undefined}>
+            {meta}
+          </span>
+        </span>
+        <IconArrowRight
+          className="update-relaunch-arrow"
+          size={18}
+          aria-hidden
+        />
+      </button>
+    </aside>
   );
+}
+
+function UpdateStatusCard({
+  status,
+  preparing,
+  progress,
+  onDismiss,
+}: {
+  status: string;
+  preparing: boolean;
+  progress: UpdateInstallProgress | null;
+  onDismiss: () => void;
+}) {
+  const percent = updateProgressPercent(progress);
+  const progressWidth =
+    progress?.state === "installing" && percent === undefined
+      ? "100%"
+      : `${percent ?? 0}%`;
+  const failed = status.toLowerCase().includes("failed");
+
+  return (
+    <aside
+      className="update-popover update-status-card"
+      role={failed ? "alert" : "status"}
+      aria-live="polite"
+    >
+      <div className="update-status-row">
+        <span className="update-status-icon" aria-hidden>
+          <IconArrowInbox size={15} />
+        </span>
+        <span className="update-status-text">{status}</span>
+        <button
+          type="button"
+          className="update-status-close"
+          aria-label={
+            preparing ? "Hide update progress" : "Dismiss update status"
+          }
+          onClick={onDismiss}
+        >
+          <IconCrossSmall size={12} aria-hidden />
+        </button>
+      </div>
+      {progress ? (
+        <div className="update-progress" aria-hidden>
+          <div className="update-progress-track">
+            <div
+              className="update-progress-fill"
+              style={{ width: progressWidth }}
+            />
+          </div>
+          {percent !== undefined ? (
+            <span className="update-progress-percent">{percent}%</span>
+          ) : null}
+        </div>
+      ) : null}
+    </aside>
+  );
+}
+
+function updateProgressPercent(progress: UpdateInstallProgress | null) {
+  if (!progress?.contentLength || progress.contentLength <= 0) return undefined;
+  return Math.min(
+    100,
+    Math.round(
+      ((progress.downloadedBytes ?? 0) / progress.contentLength) * 100,
+    ),
+  );
+}
+
+function updateVersionLabel(version: string) {
+  return version.startsWith("v") ? version : `v${version}`;
 }
 
 // Sidebar toggle icon. One static panel with a single divider that animates:
@@ -2413,13 +2569,22 @@ export function isAccessibilityBlocked(state?: string) {
   return state !== undefined && state !== "granted";
 }
 
+function isNewSessionShortcut(event: KeyboardEvent) {
+  return event.key.toLowerCase() === "n" && isPrimaryShortcut(event);
+}
+
 function isCreateNoteShortcut(event: KeyboardEvent) {
+  // Primary modifier + Shift + N. isPrimaryShortcut rejects Shift, so check
+  // the primary modifier with Shift masked off, then require Shift on top.
   return (
     event.key.toLowerCase() === "n" &&
-    event.metaKey &&
-    !event.ctrlKey &&
-    !event.altKey &&
-    !event.shiftKey
+    event.shiftKey &&
+    isPrimaryShortcut({
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: false,
+    })
   );
 }
 

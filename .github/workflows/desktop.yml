@@ -1,6 +1,7 @@
 name: desktop
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - ".github/workflows/desktop.yml"
@@ -69,13 +70,16 @@ jobs:
   # Decides whether the macOS Rust job has anything to test. macOS minutes
   # bill at 10x Linux, and most changes here are frontend-only — `cargo test`
   # reads nothing outside src-tauri/, so a pure frontend diff doesn't need a
-  # macOS runner. Unknown diff bases (force pushes, branch creation) fail
+  # macOS runner. The Windows bundle job has a broader packaged-app diff scope
+  # because it verifies the built frontend, Tauri config, and installer shape
+  # on a native Windows host. Unknown diff bases (force pushes, branch creation) fail
   # open to "changed" so the suite can never be skipped by accident.
   changes:
     name: Changed paths
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
+      desktop_bundle: ${{ steps.diff.outputs.desktop_bundle }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,12 +93,19 @@ jobs:
           if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]] \
             || ! git cat-file -e "$BASE" 2>/dev/null; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --name-only "$BASE" HEAD -- src-tauri/ .github/workflows/desktop.yml | grep -q .; then
+          changed_files="$(git diff --name-only "$BASE" HEAD)"
+          if printf '%s\n' "$changed_files" | grep -Eq '^(src-tauri/|\.github/workflows/desktop\.yml$)'; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
+            echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
           fi
 
   rust:
@@ -129,6 +140,104 @@ jobs:
 
       - name: Cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  windows-rust:
+    name: Tauri Windows build
+    needs: changes
+    if: needs.changes.outputs.desktop_bundle == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Windows packaging tools
+        shell: pwsh
+        run: |
+          choco install nsis 7zip -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: tauri-cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: tauri-cargo-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            tauri-cargo-target-${{ runner.os }}-
+
+      - name: Bundle Hermes runtime
+        shell: pwsh
+        run: ./scripts/bundle-hermes-runtime-windows.ps1
+
+      - name: Tauri Windows bundle
+        run: node scripts/tauri-build.mjs --debug --no-sign
+
+      - name: Verify Windows bundle
+        shell: pwsh
+        run: |
+          $exe = Get-Item "src-tauri/target/debug/os-scribe.exe" -ErrorAction Stop
+          if ($exe.Length -le 0) {
+            throw "Windows app executable is empty."
+          }
+
+          $setup = Get-ChildItem "src-tauri/target/debug/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if ($null -eq $setup) {
+            throw "NSIS setup.exe was not produced."
+          }
+          if ($setup.Length -le 0) {
+            throw "NSIS setup.exe is empty."
+          }
+
+          $sevenZip = "${env:ProgramFiles}\7-Zip\7z.exe"
+          if (!(Test-Path $sevenZip)) {
+            throw "7-Zip was not installed at $sevenZip."
+          }
+          $listing = & $sevenZip l $setup.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect NSIS installer payload."
+          }
+          if (($listing | Measure-Object).Count -le 0) {
+            throw "NSIS installer payload listing is empty."
+          }
+          $listingText = ($listing -join "`n").Replace("\", "/")
+          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml")) {
+            if ($listingText -notmatch [regex]::Escape($expected)) {
+              throw "NSIS installer payload does not include bundled Hermes file $expected."
+            }
+          }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: june-windows-debug-nsis
+          path: src-tauri/target/debug/bundle/nsis/*-setup.exe
 
 # Coverage reruns of these suites live in coverage.yml (manual-only). They
 # duplicated this workflow's jobs on a macOS runner for every push and PR
