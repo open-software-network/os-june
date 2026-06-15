@@ -147,16 +147,14 @@ describe("AppSettings", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-1",
+        generationModel: "kimi-k2-6",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
       selectedModel:
-        mode === "transcription"
-          ? "nvidia/parakeet-tdt-0.6b-v3"
-          : "zai-org-glm-5-1",
+        mode === "transcription" ? "nvidia/parakeet-tdt-0.6b-v3" : "kimi-k2-6",
       models:
         mode === "transcription"
           ? [
@@ -199,6 +197,21 @@ describe("AppSettings", () => {
               },
             ]
           : [
+              {
+                provider: "venice",
+                id: "kimi-k2-6",
+                name: "Kimi K2.6",
+                modelType: "text",
+                description:
+                  "Open-weights model built for long tool-driven tasks.",
+                privacy: "private",
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 850,
+                outputCreditsPerMillionTokens: 4660,
+                contextTokens: 256000,
+                traits: [],
+                capabilities: ["supportsFunctionCalling"],
+              },
               {
                 provider: "venice",
                 id: "zai-org-glm-5-1",
@@ -258,7 +271,7 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-1",
+      generationModel: mode === "generation" ? modelId : "kimi-k2-6",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
