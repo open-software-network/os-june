@@ -495,10 +495,10 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
     key: "health-check",
     icon: <IconHeartBeat size={18} />,
-    title: "Check my Mac's health",
+    title: "Check my computer's health",
     description: "Disk, memory, and login items that need attention.",
     prompt:
-      "Give my Mac a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
+      "Give my computer a quick health check: free disk space, memory pressure, login items, and anything else worth flagging. Summarize what looks fine and what needs attention.",
     action: "run",
   },
   {
@@ -506,7 +506,8 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     icon: <IconMagnifyingGlass size={18} />,
     title: "Find a file",
     description: "Describe what you remember; June tracks it down.",
-    prompt: "Find <a file I half-remember> on my Mac and tell me where it is.",
+    prompt:
+      "Find <a file I half-remember> on my computer and tell me where it is.",
     action: "prefill",
   },
   {
@@ -2945,8 +2946,8 @@ export function AgentWorkspace({
     dispatchAgentSessionStatus({
       sessionId,
       title:
-        hermesSessionItems.find((session) => session.id === sessionId)
-          ?.title ?? "Agent session",
+        hermesSessionItems.find((session) => session.id === sessionId)?.title ??
+        "Agent session",
       status: "cancelled",
       summary: "Stopped.",
       ...activityCounts,
@@ -4011,7 +4012,10 @@ export function AgentWorkspace({
               <p className="agent-hero-footnote">
                 {bridgeStarting || startupSessionHydrationPending
                   ? "Getting June ready…"
-                  : heroPrivacyFootnote(generationModel, generationPrivacyBadge)}
+                  : heroPrivacyFootnote(
+                      generationModel,
+                      generationPrivacyBadge,
+                    )}
               </p>
             </div>
           ) : null}

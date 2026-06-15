@@ -25,6 +25,11 @@ pnpm install
 pnpm tauri:dev
 ```
 
+`pnpm tauri:dev` starts Vite and a local Scribe API when their ports are free.
+If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the dev script
+reuses the existing service. Set `VITE_PORT` or `SCRIBE_API_PORT` to use a
+different port.
+
 To replay first-run onboarding, clear the saved onboarding checkpoint, and log
 out of OS Accounts without wiping the rest of your local app data:
 
@@ -42,8 +47,8 @@ cp .env.example .env
 # edit SCRIBE_API_URL and OS Accounts client settings when needed
 ```
 
-Run the local Scribe API separately when pointing the desktop app at
-`http://127.0.0.1:8080`:
+To run the local Scribe API yourself instead of letting `pnpm tauri:dev` start
+it, use:
 
 ```sh
 cp scribe-api/.env.example scribe-api/.env
@@ -108,7 +113,10 @@ The `Microphone only` mode is the default. The `Microphone + system audio` mode 
 
 Dictation uses a separate macOS helper built into `.tauri-helper/June Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
 
-Local `pnpm tauri:build` output is ad-hoc signed unless a signing identity is configured. To build a downloadable, Developer ID-signed and notarized DMG, set the signing environment and run:
+Local `pnpm tauri:build` output is platform-specific: app and DMG bundles on
+macOS, and an NSIS installer on Windows. macOS output is ad-hoc signed unless a
+signing identity is configured. To build a downloadable, Developer ID-signed
+and notarized DMG, set the signing environment and run:
 
 ```sh
 pnpm tauri:build:signed-dmg
@@ -179,6 +187,20 @@ tccutil reset Microphone co.opensoftware.scribe
 ```
 
 System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for June or the June audio capture helper, then restart the app.
+
+## Windows Development
+
+Windows builds use the base Tauri config plus
+[`src-tauri/tauri.windows.conf.json`](src-tauri/tauri.windows.conf.json), which
+targets an NSIS installer and excludes the macOS helper app resources. Install
+the normal Tauri Windows prerequisites, including Rust, Node.js, pnpm, WebView2,
+and the Microsoft C++ build tools.
+
+The managed Hermes runtime fallback on Windows uses PowerShell and requires
+Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher. The app
+runs the generated `venv\Scripts\hermes.exe` command. macOS-only dictation,
+system-audio capture, and Seatbelt sandbox features report unavailable or run
+without that OS sandbox on Windows.
 
 ## Verification
 

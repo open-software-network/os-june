@@ -1247,8 +1247,8 @@ fn random_b64url(bytes: usize) -> String {
 }
 
 pub(crate) fn open_in_browser(url: &str) -> Result<(), AppError> {
-    let mut child = std::process::Command::new("open")
-        .arg(url)
+    let mut command = browser_open_command(url);
+    let mut child = command
         .spawn()
         .map_err(|e| AppError::new("browser_open_failed", e.to_string()))?;
     // Reap the short-lived `open` process off-thread so it doesn't linger as
@@ -1257,4 +1257,25 @@ pub(crate) fn open_in_browser(url: &str) -> Result<(), AppError> {
         let _ = child.wait();
     });
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn browser_open_command(url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("open");
+    command.arg(url);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn browser_open_command(url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("explorer.exe");
+    command.arg(url);
+    command
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn browser_open_command(url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url);
+    command
 }

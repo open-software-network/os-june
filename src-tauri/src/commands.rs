@@ -595,12 +595,28 @@ pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Resul
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = request;
-        Err(AppError::new(
-            "settings_open_unsupported",
-            "Privacy settings shortcuts are only supported on macOS.",
-        ))
+        open_non_macos_privacy_settings(request)
     }
+}
+
+#[cfg(target_os = "windows")]
+fn open_non_macos_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
+    match request.pane.as_str() {
+        "microphone" => crate::os_accounts::open_in_browser("ms-settings:privacy-microphone"),
+        _ => Err(AppError::new(
+            "settings_open_unsupported",
+            "This privacy settings shortcut is only supported on macOS.",
+        )),
+    }
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn open_non_macos_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
+    let _ = request;
+    Err(AppError::new(
+        "settings_open_unsupported",
+        "Privacy settings shortcuts are only supported on macOS.",
+    ))
 }
 
 #[tauri::command]

@@ -97,10 +97,22 @@ pub fn microphone_permission_state() -> (String, Option<String>) {
     if host.default_input_device().is_some() {
         ("granted".to_string(), None)
     } else {
-        (
-            "denied".to_string(),
-            Some("Enable microphone access in macOS Privacy & Security settings.".to_string()),
-        )
+        ("denied".to_string(), Some(microphone_permission_hint()))
+    }
+}
+
+fn microphone_permission_hint() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "Enable microphone access in macOS Privacy & Security settings.".to_string()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Enable microphone access in Windows privacy settings.".to_string()
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        "Enable microphone access in your system privacy settings.".to_string()
     }
 }
 

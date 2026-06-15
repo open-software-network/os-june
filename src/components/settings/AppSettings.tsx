@@ -663,7 +663,7 @@ export function AppSettings({
     ? "Input device used for dictation."
     : defaultMicrophone?.name
       ? `Auto-detect uses ${defaultMicrophone.name}.`
-      : "Auto-detect uses the current macOS input.";
+      : "Auto-detect uses the current system input.";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
     ...microphones,
