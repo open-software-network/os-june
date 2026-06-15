@@ -298,6 +298,109 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("keeps retrying startup session loads until the API is ready", async () => {
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    const startupError = new Error(
+      "error sending request for url (http://127.0.0.1:65144/api/sessions?limit=100&offset=0&archived=exclude&min_messages=1&order=recent)",
+    );
+    mocks.listHermesSessions
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockResolvedValueOnce([existingSession]);
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Getting June ready…")).toBeInTheDocument();
+      expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+
+      for (const [delay, callCount] of [
+        [250, 2],
+        [500, 3],
+        [1000, 4],
+        [2000, 5],
+        [2000, 6],
+      ] as const) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delay);
+        });
+        expect(mocks.listHermesSessions).toHaveBeenCalledTimes(callCount);
+        expect(screen.queryByText(/June is still starting/i)).toBeNull();
+        expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+      }
+
+      expect(screen.getByText("Existing session")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the session loading state when a new session starts during startup retries", async () => {
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    const startupError = new Error(
+      "error sending request for url (http://127.0.0.1:65144/api/sessions?limit=100&offset=0&archived=exclude&min_messages=1&order=recent)",
+    );
+    mocks.listHermesSessions
+      .mockRejectedValueOnce(startupError)
+      .mockRejectedValueOnce(startupError)
+      .mockResolvedValueOnce([
+        {
+          id: "session-2",
+          title: "Spin up a project brief",
+          preview: "spin up a project brief",
+          last_active: "2026-06-05T12:00:00Z",
+        },
+      ]);
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Getting June ready…")).toBeInTheDocument();
+
+      const composer = screen.getByPlaceholderText("Describe a task for June…");
+      await act(async () => {
+        fireEvent.change(composer, {
+          target: { value: "spin up a project brief" },
+        });
+      });
+      await act(async () => {
+        fireEvent.submit(composer.closest("form") as HTMLFormElement);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "spin up a project brief",
+      });
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("spin up a project brief")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      expect(mocks.listHermesSessions).toHaveBeenCalledTimes(3);
+      expect(screen.queryByText(/error sending request for url/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never announces the restored session as selected while a New Session is pending", async () => {
     // Regression: "New session" from inside a project arms the pending marker
     // and remounts the workspace. Initializing from the last-open restore used

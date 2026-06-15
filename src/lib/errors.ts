@@ -7,6 +7,12 @@ export function messageFromError(err: unknown) {
   return String(err);
 }
 
+export function isHermesSessionsStartupRequestError(err: unknown) {
+  return /error sending request for url \(http:\/\/127\.0\.0\.1:\d+\/api\/sessions(?:\?|[)/])/i.test(
+    messageFromError(err),
+  );
+}
+
 /** Whether an error message means the user's balance ran out. String match is
  * intentional and a known weakness — billing failures reach us as plain text
  * from several layers (Tauri commands, the Hermes runtime's provider errors),
