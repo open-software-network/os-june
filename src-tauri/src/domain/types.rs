@@ -586,6 +586,10 @@ pub struct SuggestAgentSessionTitleResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitIssueReportRequest {
+    /// Which kind of report this is ("bug" | "feedback" | "feature"), used for
+    /// triage on the server. Optional so older callers keep deserializing.
+    #[serde(default)]
+    pub category: Option<String>,
     pub description: String,
     #[serde(default)]
     pub agent_diagnosis: Option<String>,

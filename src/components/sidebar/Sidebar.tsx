@@ -4,7 +4,6 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBrain2 } from "central-icons/IconBrain2";
-import { IconBug } from "central-icons/IconBug";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
@@ -37,6 +36,8 @@ import {
   markAgentNewSessionPending,
   type AgentSessionsChangedDetail,
 } from "../agent/AgentWorkspace";
+import { CategoryIcon } from "../agent/composer/CategoryIcon";
+import type { ReportCategory } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -86,7 +87,7 @@ type SidebarProps = {
   // Notes when not wired, e.g. unit tests).
   onExitSettings?: () => void;
   onSignOut?: () => void;
-  onReportIssue?: () => void;
+  onReportIssue?: (category: ReportCategory) => void;
   onSelectNote: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
@@ -1050,9 +1051,9 @@ export function Sidebar({
           }}
           onReportIssue={
             onReportIssue
-              ? () => {
+              ? (category) => {
                   setIdentityMenuOpen(false);
-                  onReportIssue();
+                  onReportIssue(category);
                 }
               : undefined
           }
@@ -1497,6 +1498,14 @@ function isSearchShortcut(event: KeyboardEvent) {
 
 // The user's name is the settings entry point: clicking it opens a small
 // popover whose actions open the settings page or sign out.
+// The report shortcuts in the account menu: the same set as the composer's
+// "+" popover, minus attaching a file. Action-phrased to read as menu verbs.
+const REPORT_MENU_ITEMS: { category: ReportCategory; label: string }[] = [
+  { category: "bug", label: "Report a bug" },
+  { category: "feedback", label: "Send feedback" },
+  { category: "feature", label: "Request a feature" },
+];
+
 function SidebarIdentity({
   account,
   menuOpen,
@@ -1511,7 +1520,7 @@ function SidebarIdentity({
   onToggleMenu: () => void;
   onCloseMenu: () => void;
   onOpenSettings: () => void;
-  onReportIssue?: () => void;
+  onReportIssue?: (category: ReportCategory) => void;
   onSignOut?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1554,12 +1563,24 @@ function SidebarIdentity({
             <IconSettingsGear4 size={14} />
             Settings
           </button>
-          {onReportIssue ? (
-            <button type="button" role="menuitem" onClick={onReportIssue}>
-              <IconBug size={14} />
-              Report an issue
-            </button>
-          ) : null}
+          {onReportIssue
+            ? REPORT_MENU_ITEMS.map((item) => (
+                <button
+                  key={item.category}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => onReportIssue(item.category)}
+                >
+                  <span
+                    className="sidebar-report-icon"
+                    data-category={item.category}
+                  >
+                    <CategoryIcon category={item.category} size={14} />
+                  </span>
+                  {item.label}
+                </button>
+              ))
+            : null}
           {account.signedIn && onSignOut ? (
             <>
               <div className="context-menu-separator" role="separator" />

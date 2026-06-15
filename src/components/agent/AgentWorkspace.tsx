@@ -31,12 +31,7 @@ import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
-import { IconFileChart } from "central-icons/IconFileChart";
-import { IconFileJpg } from "central-icons/IconFileJpg";
-import { IconFilePdf } from "central-icons/IconFilePdf";
-import { IconFilePng } from "central-icons/IconFilePng";
 import { IconFileText } from "central-icons/IconFileText";
-import { IconFileZip } from "central-icons/IconFileZip";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconHistory } from "central-icons/IconHistory";
@@ -162,9 +157,20 @@ import {
 } from "../settings/ModelPickerDialog";
 import { messageFromError } from "../../lib/errors";
 import {
+  categoryPrompt,
   displayedUserMessageText,
-  issueReportPrompt,
 } from "../../lib/issue-report-prompt";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+} from "./composer/ComposerEditor";
+import { CategoryIcon } from "./composer/CategoryIcon";
+import { FileTypeIcon, fileTypeIconComponent } from "./FileTypeIcon";
+import {
+  isReportCategory,
+  REPORT_CATEGORIES,
+  type ReportCategory,
+} from "./composer/reportCategory";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -613,25 +619,15 @@ export type { AgentSessionsChangedDetail };
 
 export type AgentNewSessionDetail = {
   prompt?: string;
-  /** "issue-report" opens the new session with the bug report template
-   * prefilled instead of auto-submitting the prompt. */
-  kind?: "issue-report";
+  /** Seeds the composer with a category chip (and skips auto-submit) so the
+   * user lands ready to type a tagged report instead of an ordinary message. */
+  category?: ReportCategory;
 };
-
-// Prefilled into the composer when a new session opens in issue-report mode.
-// The user edits it freely; whatever they send becomes the report description.
-export const ISSUE_REPORT_TEMPLATE = `I want to report an issue with June.
-
-What happened:
-
-What I expected:
-
-Extra details (when it started, steps to reproduce, attach a screenshot if you have one):
-`;
 
 /** Frames the user's bug report for June: investigate and write a diagnosis
  * for the team instead of treating it as a normal request for help. */
 type PendingIssueReport = {
+  category: ReportCategory;
   description: string;
   attachmentNames: string[];
   /** Workspace paths captured at submit, so the files can be uploaded with
@@ -765,6 +761,13 @@ export function AgentWorkspace({
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
+  // The message's single category tag, mirrored from the composer's chip. Null
+  // when the message carries no tag. Drives the report wrapper and (server
+  // side) the no-charge waiver.
+  const [category, setCategory] = useState<ReportCategory | null>(null);
+  // Live mirror of `draft` for closures (the hero-chip interval) that must read
+  // the current value without re-subscribing.
+  const draftRef = useRef("");
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
@@ -796,6 +799,10 @@ export function AgentWorkspace({
   const sandboxMenuRef = useRef<HTMLDivElement | null>(null);
   const sandboxFirstItemRef = useRef<HTMLButtonElement | null>(null);
   const sandboxMenuWasOpenRef = useRef(false);
+  // The "+" popover: attach files, or tag the message as a report.
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => {
@@ -981,10 +988,6 @@ export function AgentWorkspace({
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(newSessionMode);
-  // Armed while the composer is prefilled with the issue-report template in
-  // new-session mode; consumed by submit() to wrap the prompt and queue the
-  // report delivery.
-  const issueReportDraftRef = useRef(false);
   // sessionId -> the report captured at submit time, delivered to the June
   // team once the agent's diagnostic turn reaches a terminal event.
   const pendingIssueReportsRef = useRef<Map<string, PendingIssueReport>>(
@@ -1001,8 +1004,11 @@ export function AgentWorkspace({
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  // A category to seed into the composer chip once the editor is ready, set by
+  // startNewTask for the sidebar/settings report entry points.
+  const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
 
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
@@ -1225,6 +1231,30 @@ export function AgentWorkspace({
       window.removeEventListener("keydown", onKey);
     };
   }, [sandboxMenuOpen]);
+
+  // The "+" popover closes on a click outside it or Esc, same as the sandbox
+  // picker above.
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    function onPointer(event: MouseEvent) {
+      const target = event.target as Node;
+      if (attachMenuRef.current?.contains(target)) return;
+      if (attachTriggerRef.current?.contains(target)) return;
+      setAttachMenuOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAttachMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [attachMenuOpen]);
 
   useEffect(() => {
     if (!composerModelOpen) return;
@@ -1471,7 +1501,6 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!initialSessionId) return;
     newSessionModeRef.current = false;
-    issueReportDraftRef.current = false;
     setNewSessionMode(false);
     setActivePanel("chat");
     selectedHermesSessionIdRef.current = initialSessionId;
@@ -1732,82 +1761,6 @@ export function AgentWorkspace({
     return () => window.clearInterval(interval);
   }, [bridge.running, workingSessionIds]);
 
-  // Auto-grow the composer with its content (capped), since WKWebView has no
-  // CSS field-sizing. Recomputing on `draft` also collapses it back after a
-  // submit clears the value. Runs pre-paint (layout effect) so the FLIP
-  // measurements below straddle the reflow without a visible jump.
-  useLayoutEffect(() => {
-    const el = composerRef.current;
-    const box = composerBoxRef.current;
-    if (!el || !box) return;
-    // FLIP "first": where things sit before this growth step reflows them.
-    // On rapid typing a previous step's 160ms animation may still be in
-    // flight, so these reads are mid-animation values — where the element
-    // visually is right now. Cancel the stale animations afterwards so the
-    // "last" measurement below is pure layout: the delta between the two then
-    // starts the new glide exactly where the old one left off, instead of
-    // double-applying a residual offset (jitter).
-    const prevBoxHeight = box.offsetHeight;
-    const prevRect = el.getBoundingClientRect();
-    if (typeof el.getAnimations === "function") {
-      for (const animation of el.getAnimations()) animation.cancel();
-      for (const animation of box.getAnimations()) animation.cancel();
-    }
-    el.style.height = "auto";
-    const contentHeight = el.scrollHeight;
-    el.style.height = `${Math.min(contentHeight, 200)}px`;
-    // Scrollable only once growth is capped. Below the cap the field always
-    // fits its content, but the measurement above passes through a transient
-    // overflowing state (height:auto), and with overflow-y:auto that makes
-    // the overlay scrollbar flash on every line growth.
-    el.style.overflowY = contentHeight > 200 ? "auto" : "hidden";
-    const nextBoxHeight = box.offsetHeight;
-    if (nextBoxHeight === prevBoxHeight) return;
-    if (
-      typeof box.animate !== "function" ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      return;
-    }
-    // The height is already applied above; only the glide is conditional. On a
-    // hero transition the composer changes shape (hero is full-width/taller),
-    // but we don't want to grow-animate that: entering the hero or swapping it
-    // for an existing chat should be instant, and on thread-start the hero→dock
-    // FLIP below owns the box animation — running both leaves two height
-    // animations fighting over the same box. prevHeroModeRef holds the prior
-    // render's heroMode (the FLIP effect updates it, and runs after this one).
-    if (prevHeroModeRef.current !== heroMode) return;
-    // Animate the box open/closed. Its content is bottom-anchored
-    // (justify-content: flex-end) and clipped (overflow: hidden), so the
-    // toolbar stays pinned to the bottom edge while the top edge glides up to
-    // reveal the new line.
-    const grow = {
-      duration: 160,
-      easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
-    };
-    box.animate(
-      [{ height: `${prevBoxHeight}px` }, { height: `${nextBoxHeight}px` }],
-      grow,
-    );
-    // Glide the textarea from its old spot, bottom-left anchored so the line
-    // being typed stays put while space opens above it.
-    const nextRect = el.getBoundingClientRect();
-    const dx = prevRect.left - nextRect.left;
-    const dy = prevRect.bottom - nextRect.bottom;
-    if (dx || dy) {
-      el.animate(
-        [
-          { transform: `translate(${dx}px, ${dy}px)` },
-          { transform: "translate(0, 0)" },
-        ],
-        grow,
-      );
-    }
-    // heroMode is a dependency because the hero textarea is taller at rest:
-    // leaving the hero must re-measure and clear the stale inline height, or
-    // the docked composer keeps the hero's 76px field.
-  }, [draft, attachments.length, heroMode]);
-
   useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -1848,7 +1801,7 @@ export function AgentWorkspace({
   // lands on the empty page — just start typing, no detour to the sidebar.
   useEffect(() => {
     if (newSessionMode && activePanel === "chat") {
-      composerRef.current?.focus();
+      composerEditorRef.current?.focus();
     }
   }, [newSessionMode, activePanel]);
 
@@ -1865,16 +1818,15 @@ export function AgentWorkspace({
     setBusyNotice(null);
   }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
-    // Consumed up front so a successful send can't double-file; re-armed in
-    // the catch so a failed send still submits as a report on retry.
-    const issueReport =
-      newSessionModeRef.current && issueReportDraftRef.current;
-    issueReportDraftRef.current = false;
+    // The composer's category chip makes this a report: wrap the prompt to
+    // frame it for the team and queue the delivery. Captured before the
+    // composer clears so a failed send can restore the chip on retry.
+    const reportCategory = category;
     const content = promptWithAttachments(message, attachments);
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
@@ -1882,16 +1834,19 @@ export function AgentWorkspace({
     // conversation takes over.
     if (heroMode) setHeroLeaving(true);
     setSubmitting(true);
+    composerEditorRef.current?.clear();
     setDraft("");
+    setCategory(null);
     setAttachments([]);
     setIssueReportNotice(null);
     try {
       await submitHermesSession(
-        issueReport ? issueReportPrompt(content) : content,
+        reportCategory ? categoryPrompt(reportCategory, content) : content,
         undefined,
-        issueReport
+        reportCategory
           ? {
               issueReport: {
+                category: reportCategory,
                 // An attachments-only send has no typed text, but the server
                 // requires a description; the report must not bounce there.
                 description:
@@ -1909,11 +1864,12 @@ export function AgentWorkspace({
       setError(null);
       setBusyNotice(null);
     } catch (err) {
-      issueReportDraftRef.current = issueReport;
-      // Restore the composer so a failed send doesn't eat the message or its
-      // attachments — but only where the user hasn't typed or attached
-      // something new during the in-flight send.
-      setDraft((current) => (current.trim() ? current : message));
+      // Restore the composer so a failed send doesn't eat the message, its
+      // category chip, or its attachments — but only where the user hasn't
+      // typed or attached something new during the in-flight send.
+      if (composerEditorRef.current?.isEmpty() ?? true) {
+        composerEditorRef.current?.setContent(message, reportCategory);
+      }
       setAttachments((current) => (current.length ? current : attachments));
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
@@ -1937,17 +1893,16 @@ export function AgentWorkspace({
     if (submitting || importingFiles) {
       // Another submission is in flight; keep the reply in the composer
       // instead of dropping it silently.
-      setDraft(message);
+      composerEditorRef.current?.setContent(message);
       return;
     }
     const targetSession = reply.session;
     setActivePanel("chat");
     setSelectedTaskId(undefined);
-    setDraft("");
+    composerEditorRef.current?.clear();
     setAttachments([]);
     if (targetSession?.id) {
       newSessionModeRef.current = false;
-      issueReportDraftRef.current = false;
       setNewSessionMode(false);
       selectedHermesSessionIdRef.current = targetSession.id;
       setSelectedHermesSessionId(targetSession.id);
@@ -1965,7 +1920,9 @@ export function AgentWorkspace({
     } catch (err) {
       // Same merge-restore as submit(): don't clobber a draft the user
       // started typing while the reply was in flight.
-      setDraft((current) => (current.trim() ? current : message));
+      if (composerEditorRef.current?.isEmpty() ?? true) {
+        composerEditorRef.current?.setContent(message);
+      }
       if (isSessionBusyError(err)) {
         // Same as submit(): a 4009 proves the gateway is healthy, so a stale
         // connection banner must not outlive it.
@@ -2061,7 +2018,7 @@ export function AgentWorkspace({
   // the same command the hotkey path sends. The helper records, shows the HUD,
   // and pastes the transcription into the focused field (the composer).
   async function startDictation() {
-    composerRef.current?.focus();
+    composerEditorRef.current?.focus();
     try {
       await dictationHelperCommand({
         type: "toggle_listening",
@@ -2117,6 +2074,7 @@ export function AgentWorkspace({
     }
     try {
       await submitIssueReport({
+        category: report.category,
         description: report.description,
         agentDiagnosis,
         attachmentNames: report.attachmentNames,
@@ -2751,10 +2709,11 @@ export function AgentWorkspace({
 
   async function startNewTask(request?: AgentNewSessionDetail) {
     clearPendingNewSessionRequest();
-    const issueReport = request?.kind === "issue-report";
-    // Issue reports never auto-submit: the template lands in the composer for
-    // the user to fill in, whatever prompt the request carried.
-    const initialPrompt = issueReport ? "" : (request?.prompt?.trim() ?? "");
+    const seedCategory = request?.category ?? null;
+    // A seeded report never auto-submits: the category chip lands in the
+    // composer for the user to type their report after, whatever prompt the
+    // request carried.
+    const initialPrompt = seedCategory ? "" : (request?.prompt?.trim() ?? "");
     // The pending-marker mount path and the AGENT_NEW_SESSION_EVENT dispatch
     // can deliver the same request twice (App marks the marker, then fires
     // the event in a setTimeout for already-mounted workspaces). Submitting
@@ -2772,13 +2731,22 @@ export function AgentWorkspace({
       lastAutoSubmittedRef.current = { prompt: initialPrompt, at: Date.now() };
     }
     newSessionModeRef.current = true;
-    issueReportDraftRef.current = issueReport;
     setNewSessionMode(true);
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     selectedHermesSessionIdRef.current = undefined;
     setSelectedHermesSessionId(undefined);
-    setDraft(issueReport ? ISSUE_REPORT_TEMPLATE : initialPrompt);
+    // Seed the composer: a category chip for a report, the prompt otherwise.
+    // The editor may not be mounted yet on a cold open, so stash the category
+    // for ComposerEditor's onReady to pick up and also try to apply now.
+    pendingSeedCategoryRef.current = seedCategory;
+    if (seedCategory) {
+      seedComposerCategory();
+    } else if (initialPrompt) {
+      composerEditorRef.current?.setContent(initialPrompt);
+    } else {
+      clearComposerDraft();
+    }
     if (!initialPrompt) return;
     dispatchAgentSessionStatus({
       prompt: initialPrompt,
@@ -2789,10 +2757,10 @@ export function AgentWorkspace({
     setSubmitting(true);
     try {
       await submitHermesSession(initialPrompt);
-      setDraft("");
+      composerEditorRef.current?.clear();
       setError(null);
     } catch (err) {
-      setDraft(initialPrompt);
+      composerEditorRef.current?.setContent(initialPrompt);
       setError(messageFromError(err));
       dispatchAgentSessionStatus({
         prompt: initialPrompt,
@@ -2803,6 +2771,29 @@ export function AgentWorkspace({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function clearComposerDraft() {
+    draftRef.current = "";
+    setDraft("");
+    setCategory(null);
+    composerEditorRef.current?.clear();
+  }
+
+  /** Applies any pending seed category to the composer chip once the editor is
+   * available. Called from startNewTask (best-effort, the editor may not be
+   * mounted yet) and again from ComposerEditor's onReady. */
+  function seedComposerCategory() {
+    const seed = pendingSeedCategoryRef.current;
+    if (!seed) return;
+    const editor = composerEditorRef.current;
+    // Not mounted yet (cold open) — leave it pending for onReady to apply.
+    if (!editor) return;
+    pendingSeedCategoryRef.current = null;
+    window.setTimeout(() => {
+      if (pendingSeedCategoryRef.current) return;
+      editor.setContent("", seed);
+    }, 0);
   }
 
   // Run shortcuts fire the session directly — the prompt never touches the
@@ -2824,7 +2815,9 @@ export function AgentWorkspace({
     } catch (err) {
       // Bring the hero back and park the prompt in the composer so the user
       // can see what would have run and retry it.
-      setDraft((current) => (current.trim() ? current : prompt));
+      if (composerEditorRef.current?.isEmpty() ?? true) {
+        composerEditorRef.current?.setContent(prompt);
+      }
       setError(messageFromError(err));
       dispatchAgentSessionStatus({
         prompt,
@@ -2843,23 +2836,12 @@ export function AgentWorkspace({
       void launchShortcutSession(shortcut.prompt);
       return;
     }
-    setDraft(shortcut.prompt);
+    composerEditorRef.current?.setContent(shortcut.prompt);
     if (shortcut.action === "attach") {
       void pickAttachments();
       return;
     }
-    // Focus after React has flushed the draft into the textarea, selecting
-    // the <placeholder> so typing replaces it in place.
-    requestAnimationFrame(() => {
-      const el = composerRef.current;
-      if (!el) return;
-      el.focus();
-      const start = shortcut.prompt.indexOf("<");
-      const end = shortcut.prompt.indexOf(">");
-      if (start >= 0 && end > start) {
-        el.setSelectionRange(start, end + 1);
-      }
-    });
+    composerEditorRef.current?.focus();
   }
 
   async function cancelTask(taskId: string) {
@@ -2891,8 +2873,8 @@ export function AgentWorkspace({
     dispatchAgentSessionStatus({
       sessionId,
       title:
-        hermesSessionItems.find((session) => session.id === sessionId)
-          ?.title ?? "Agent session",
+        hermesSessionItems.find((session) => session.id === sessionId)?.title ??
+        "Agent session",
       status: "cancelled",
       summary: "Stopped.",
       ...activityCounts,
@@ -3320,7 +3302,7 @@ export function AgentWorkspace({
     let swapTimeout: number | undefined;
     const interval = window.setInterval(() => {
       if (document.hidden || heroChipsHoverRef.current) return;
-      if (composerRef.current?.value.trim()) return;
+      if (draftRef.current.trim()) return;
       setHeroChipPhase("out");
       swapTimeout = window.setTimeout(() => {
         setHeroDeckStart(
@@ -3480,7 +3462,7 @@ export function AgentWorkspace({
                       aria-hidden="true"
                     />
                   ) : (
-                    <IconFileText size={14} />
+                    <FileTypeIcon name={attachment.name} size={14} />
                   )}
                   <span className="agent-attachment-name">
                     {attachment.name}
@@ -3496,10 +3478,8 @@ export function AgentWorkspace({
               ))}
             </div>
           ) : null}
-          <textarea
-            ref={composerRef}
-            value={draft}
-            onChange={(event) => setDraft(event.currentTarget.value)}
+          <ComposerEditor
+            ref={composerEditorRef}
             placeholder={
               importingFiles
                 ? "Attaching file…"
@@ -3507,25 +3487,25 @@ export function AgentWorkspace({
                   ? "Describe a task for June…"
                   : "Send a message"
             }
-            rows={1}
-            onKeyDown={(event) => {
-              // Ignore the Enter that commits an IME composition
-              // (Japanese/Chinese/Korean input) — only a real Enter
-              // press should send the message.
-              if (event.nativeEvent.isComposing) return;
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
+            onChange={(text, nextCategory) => {
+              draftRef.current = text;
+              setDraft(text);
+              setCategory(nextCategory);
             }}
+            onSubmit={() => void submit()}
+            onReady={seedComposerCategory}
           />
           <div className="agent-composer-toolbar">
             <button
               type="button"
+              ref={attachTriggerRef}
               className="agent-composer-attach"
-              aria-label="Attach files"
-              title="Attach files"
-              onClick={() => void pickAttachments()}
+              aria-label="Attach files or tag this message"
+              title="Attach or tag"
+              aria-haspopup="menu"
+              aria-expanded={attachMenuOpen}
+              data-open={attachMenuOpen || undefined}
+              onClick={() => setAttachMenuOpen((open) => !open)}
             >
               <IconPlusMedium size={18} />
             </button>
@@ -3612,6 +3592,53 @@ export function AgentWorkspace({
             </div>
           </div>
         </div>
+        {attachMenuOpen ? (
+          // Sibling of the box (which clips its overflow for the grow glide),
+          // anchored above the "+" trigger by CSS.
+          <div
+            ref={attachMenuRef}
+            className="agent-attach-menu"
+            role="menu"
+            aria-label="Attach or tag this message"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setAttachMenuOpen(false);
+                void pickAttachments();
+              }}
+            >
+              <span className="agent-attach-menu-icon">
+                <IconFileText size={16} aria-hidden />
+              </span>
+              <span className="agent-attach-menu-label">Attach files</span>
+            </button>
+            <div className="agent-attach-menu-divider" role="separator" />
+            {REPORT_CATEGORIES.map((reportCategory) => (
+              <button
+                key={reportCategory.key}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAttachMenuOpen(false);
+                  composerEditorRef.current?.insertCategory(reportCategory.key);
+                  composerEditorRef.current?.focus();
+                }}
+              >
+                <span
+                  className="agent-attach-menu-icon"
+                  data-category={reportCategory.key}
+                >
+                  <CategoryIcon category={reportCategory.key} size={16} />
+                </span>
+                <span className="agent-attach-menu-label">
+                  {reportCategory.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {composerModelOpen ? (
           <ComposerModelPopover
             flyout={composerModelFlyout}
@@ -3951,7 +3978,10 @@ export function AgentWorkspace({
               <p className="agent-hero-footnote">
                 {bridgeStarting
                   ? "Getting June ready…"
-                  : heroPrivacyFootnote(generationModel, generationPrivacyBadge)}
+                  : heroPrivacyFootnote(
+                      generationModel,
+                      generationPrivacyBadge,
+                    )}
               </p>
             </div>
           ) : null}
@@ -5197,7 +5227,11 @@ function FilesystemEntryRow({
         style={{ "--agent-file-depth": level } as CSSProperties}
       >
         <span className="agent-files-entry-icon" aria-hidden="true">
-          {isDirectory ? <IconFolder1 size={14} /> : <IconFileText size={14} />}
+          {isDirectory ? (
+            <IconFolder1 size={14} />
+          ) : (
+            <FileTypeIcon name={entry.name} size={14} />
+          )}
         </span>
         <span className="agent-files-entry-name">{entry.name}</span>
         <span className="agent-files-entry-meta">
@@ -6452,22 +6486,6 @@ function AgentArtifactList({
   );
 }
 
-// File-type glyphs come straight from the icon set — no hand-drawn fallbacks.
-// Anything we don't have a dedicated glyph for reads as a generic text file.
-const ARTIFACT_ICONS: Record<string, typeof IconFileText> = {
-  pdf: IconFilePdf,
-  png: IconFilePng,
-  jpg: IconFileJpg,
-  jpeg: IconFileJpg,
-  zip: IconFileZip,
-  csv: IconFileChart,
-};
-
-function artifactIcon(path: string): typeof IconFileText {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return ARTIFACT_ICONS[ext] ?? IconFileText;
-}
-
 function AgentArtifactCard({
   artifact,
   onDownload,
@@ -6477,11 +6495,11 @@ function AgentArtifactCard({
   onDownload?: (artifact: AgentArtifact) => void;
   onOpen?: (artifact: AgentArtifact) => void;
 }) {
-  const FileTypeIcon = artifactIcon(artifact.path);
+  const ArtifactIcon = fileTypeIconComponent(artifact.path);
   const summary = (
     <>
       <span className="agent-artifact-icon">
-        <FileTypeIcon size={18} />
+        <ArtifactIcon size={18} />
       </span>
       <div className="agent-artifact-meta">
         <span className="agent-artifact-name">{artifact.name}</span>
@@ -6898,7 +6916,7 @@ function AgentArtifactPanel({
               {visibleArtifacts.length ? (
                 <ul className="agent-artifact-panel-list">
                   {visibleArtifacts.map((item) => {
-                    const FileTypeIcon = artifactIcon(item.path);
+                    const ArtifactIcon = fileTypeIconComponent(item.path);
                     return (
                       <li key={item.path}>
                         <button
@@ -6907,7 +6925,7 @@ function AgentArtifactPanel({
                           onClick={() => onOpen(item)}
                         >
                           <span className="agent-artifact-icon">
-                            <FileTypeIcon size={18} />
+                            <ArtifactIcon size={18} />
                           </span>
                           <span className="agent-artifact-row-name">
                             {item.name}
@@ -7827,13 +7845,13 @@ function writeLastOpenSessionId(sessionId: string) {
 
 export function markAgentNewSessionPending(
   prompt?: string,
-  options?: { kind?: "issue-report" },
+  options?: { category?: ReportCategory },
 ) {
   try {
     const payload = JSON.stringify({
       createdAt: Date.now(),
       prompt: prompt?.trim() || undefined,
-      kind: options?.kind,
+      category: options?.category,
     });
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, payload);
   } catch {
@@ -7877,7 +7895,7 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       const parsed = JSON.parse(value) as {
         createdAt?: number;
         prompt?: string;
-        kind?: string;
+        category?: string;
       };
       if (
         typeof parsed.createdAt !== "number" ||
@@ -7887,8 +7905,8 @@ function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       }
       return {
         ...(typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {}),
-        ...(parsed.kind === "issue-report"
-          ? { kind: "issue-report" as const }
+        ...(isReportCategory(parsed.category)
+          ? { category: parsed.category }
           : {}),
       };
     } catch {

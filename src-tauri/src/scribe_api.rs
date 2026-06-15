@@ -553,6 +553,14 @@ pub async fn submit_issue_report(
         .text("description", description.to_string())
         .text("appVersion", app_version.to_string())
         .text("platform", std::env::consts::OS);
+    if let Some(category) = request
+        .category
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("category", category.to_string());
+    }
     if let Some(session_id) = request
         .session_id
         .as_deref()

@@ -56,6 +56,7 @@ import {
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
+import type { ReportCategory } from "../agent/composer/reportCategory";
 import {
   getStoredTheme,
   setStoredTheme,
@@ -207,8 +208,8 @@ type AppSettingsProps = {
   // own nav — the standalone path exercised by app-settings tests.
   activeTab?: SettingsTab;
   onTabChange?: (tab: SettingsTab) => void;
-  // Opens a new agent session prefilled with the bug report template.
-  onReportIssue?: () => void;
+  // Opens a new agent session seeded with a report category chip.
+  onReportIssue?: (category: ReportCategory) => void;
 };
 
 export function AppSettings({
@@ -1222,7 +1223,7 @@ export function AppSettings({
                       <button
                         type="button"
                         className="btn btn-secondary"
-                        onClick={onReportIssue}
+                        onClick={() => onReportIssue("bug")}
                       >
                         Report an issue
                       </button>
