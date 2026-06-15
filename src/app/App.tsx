@@ -550,8 +550,18 @@ export function App() {
         nav.view === "meetings" ? nav.originFolderId : undefined,
       );
       setOriginAllNotes(nav.view === "meetings" ? !!nav.originAllNotes : false);
+      // The "back to <note>" breadcrumb target isn't part of a tab's snapshot,
+      // so clear it on every restore — otherwise it leaks from the tab that set
+      // it into whatever tab we switch to.
+      setFolderReturnTarget(undefined);
       if (nav.view === "folders") {
         dispatch({ type: "folderSelected", folderId: nav.folderId });
+      }
+      // Mirror openSettings: a settings tab (e.g. cmd-clicked open) needs a
+      // return view recorded so exiting Settings lands where it came from.
+      if (nav.view === "settings") {
+        const returnView = activeViewRef.current;
+        if (returnView !== "settings") setSettingsReturnView(returnView);
       }
       if (nav.view === "agent") {
         const session = nav.agentSessionId

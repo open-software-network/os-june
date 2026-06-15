@@ -226,9 +226,9 @@ export function TabBar({
           <button
             type="button"
             className="tab-overflow"
-            aria-label={`Show ${hidden.length} more ${
-              hidden.length === 1 ? "tab" : "tabs"
-            }`}
+            // The popover is a full switcher listing every open tab (the badge
+            // counts how many are currently off-strip), so the label says so.
+            aria-label={`Show all ${tabs.length} tabs`}
             aria-expanded={overflowOpen}
             onClick={(event) => {
               event.stopPropagation();
