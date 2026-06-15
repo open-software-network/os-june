@@ -1,0 +1,109 @@
+# Releasing June for Windows
+
+June ships Windows builds as an NSIS installer. The production Windows release
+workflow builds from `main`, signs the app executable and installer with
+Authenticode, signs updater artifacts with the Tauri updater key, and attaches
+Windows assets to the existing `open-software-network/os-june-releases` release.
+
+## Windows support
+
+The Windows installer supports the app shell, OS Accounts sign-in, microphone
+recording, note generation, folders, and settings backed by the production Scribe
+API. Global dictation shortcuts, dictation paste, macOS system-audio capture, and
+Seatbelt sandbox features are macOS-only.
+
+Hermes agent UI is present in the shared app, but the production Windows
+installer does not bundle the Hermes runtime yet. On Windows, June opens to
+meeting notes after sign-in and the first-run copy avoids promising a turnkey
+agent. Agent and routines workflows remain preview on Windows unless a compatible
+Hermes runtime can be installed through the managed fallback, which requires
+PowerShell plus Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher.
+
+## One-time prerequisites
+
+Create or confirm these before cutting the first Windows release:
+
+- Public GitHub repo: `open-software-network/os-june-releases`.
+- Release GitHub App installed on `os-june` and `os-june-releases` with
+  `contents:write`, exposed as `RELEASE_APP_ID` and
+  `RELEASE_APP_PRIVATE_KEY`.
+- Authenticode signing certificate exported as a password-protected PFX. Store
+  the base64-encoded PFX in `WINDOWS_CERTIFICATE` and its password in
+  `WINDOWS_CERTIFICATE_PASSWORD`.
+- Optional `WINDOWS_SIGNING_TIMESTAMP_URL` if the default
+  `http://timestamp.digicert.com` should be overridden.
+- Optional `WINDOWS_SIGNTOOL_PATH` if the runner cannot discover
+  `signtool.exe` from `PATH` or the Windows SDK.
+- Updater signing secrets: `TAURI_SIGNING_PRIVATE_KEY` and, when the key is
+  password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+- Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
+  `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
+  `PRODUCTION_SCRIBE_API_URL`.
+
+Keep the Authenticode certificate separate from the Tauri updater key. The
+certificate establishes the Windows publisher signature. The updater key signs
+the update artifact that Tauri verifies before installation.
+
+## Cutting a production Windows release
+
+Run the macOS production release first:
+
+```text
+GitHub Actions -> production-desktop-release -> Run workflow -> version X.Y.Z
+```
+
+That workflow owns the semver bump, `main` push, release creation, macOS assets,
+and initial `latest.json`.
+
+After it succeeds, run:
+
+```text
+GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
+```
+
+The Windows workflow performs the release steps in order:
+
+1. Checks out `main`.
+2. Validates required Windows signing, updater, release, and production runtime
+   secrets.
+3. Verifies `package.json`, `src-tauri/tauri.conf.json`, and
+   `src-tauri/Cargo.toml` already match the requested version.
+4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
+   `open-software-network/os-june-releases`.
+5. Runs `pnpm lint` and `pnpm test`.
+6. Builds the Windows NSIS installer with production OS Accounts and Scribe API
+   configuration embedded as fallback runtime config.
+7. Signs the app executable and NSIS installer through
+   `scripts/windows-sign.ps1`.
+8. Verifies Authenticode status for the executable and installer, checks the
+   updater signature file exists, and inspects the NSIS payload.
+9. Uploads the NSIS output as a workflow artifact.
+10. Uploads Windows release assets and merges `windows-x86_64` into
+    `latest.json` without removing macOS updater entries.
+
+## Validation
+
+After the workflow publishes assets, download `June_x64-setup.exe` from
+`open-software-network/os-june-releases`, copy it to a clean Windows 11 VM, and
+run:
+
+```powershell
+$installer = "$env:USERPROFILE\Downloads\June_x64-setup.exe"
+Get-AuthenticodeSignature $installer | Format-List
+Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+Start-Process "$env:LOCALAPPDATA\June\June.exe"
+```
+
+Confirm the signature status is `Valid`, the publisher is Open Software Network,
+the app launches as June, the sign-in copy mentions recording and notes without
+dictation, and the signed-in app opens to meeting notes. Record from the
+microphone and generate a note against production Scribe API before linking the
+installer publicly.
+
+For updater validation after a second Windows release, install an older
+updater-capable Windows build, run **June -> Check for updates...**, confirm the
+prompt shows the new version, install, and verify the app exits for the Windows
+installer handoff and relaunches cleanly on the new version.
+
+If Authenticode validation, updater signature validation, sign-in, recording, or
+update installation fails, do not promote the Windows installer.

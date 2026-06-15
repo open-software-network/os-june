@@ -9,8 +9,9 @@ import { OsMark } from "../../account/AccountGate";
 import { Spinner } from "../../ui/Spinner";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
-// What June is, in three rows: the agent is the product, dictation and
-// meeting notes are how you talk to it, and private is why it's safe to.
+// macOS can introduce the full agent, dictation, and notes surface because the
+// release bundle includes the runtime and helpers. Windows narrows the welcome
+// promise below until its Hermes and dictation support is turnkey.
 const JUNE_POINTS = [
   {
     icon: IconSparkle,
@@ -31,7 +32,11 @@ const JUNE_POINTS = [
 ];
 
 const WINDOWS_JUNE_POINTS = [
-  JUNE_POINTS[0],
+  {
+    icon: IconSparkle,
+    title: "Desktop notes for your work",
+    detail: "Keep meeting notes and projects together in one app.",
+  },
   {
     icon: IconMicrophone,
     title: "Meeting notes from your mic",

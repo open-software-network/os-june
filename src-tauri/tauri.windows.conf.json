@@ -1,7 +1,22 @@
 {
   "bundle": {
+    "publisher": "Open Software Network",
     "targets": ["nsis"],
     "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "signCommand": {
+        "cmd": "powershell.exe",
+        "args": [
+          "-NoLogo",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "$script = if (Test-Path 'scripts/windows-sign.ps1') { 'scripts/windows-sign.ps1' } elseif (Test-Path '../scripts/windows-sign.ps1') { '../scripts/windows-sign.ps1' } else { throw 'scripts/windows-sign.ps1 not found.' }; & $script $args[0]",
+          "%1"
+        ]
+      },
       "nsis": {
         "installerIcon": "icons/icon.ico"
       }

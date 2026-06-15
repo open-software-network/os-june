@@ -429,6 +429,9 @@ describe("OnboardingFlow", () => {
 
       await screen.findByRole("heading", { name: "Welcome to June" });
       expect(
+        screen.getByText("Desktop notes for your work"),
+      ).toBeInTheDocument();
+      expect(
         screen.getByText("Meeting notes from your mic"),
       ).toBeInTheDocument();
       expect(
@@ -441,6 +444,9 @@ describe("OnboardingFlow", () => {
       ).not.toBeInTheDocument();
       expect(
         screen.queryByText(/Dictate into any app/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("An agent on your computer"),
       ).not.toBeInTheDocument();
     } finally {
       restoreNavigator();

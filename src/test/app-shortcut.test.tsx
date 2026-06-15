@@ -348,6 +348,42 @@ describe("App shortcuts", () => {
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
+  it("uses Windows sign-in copy and opens meeting notes after sign-in", async () => {
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: false,
+      configured: true,
+    });
+
+    try {
+      render(<App />);
+
+      expect(
+        await screen.findByText(
+          "Record conversations and turn them into notes with your OpenSoftware account.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/dictate with/)).not.toBeInTheDocument();
+
+      await user.click(
+        screen.getByRole("button", { name: "Continue with OpenSoftware" }),
+      );
+
+      expect(
+        await screen.findByRole("button", { name: "New note" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: HERO_GREETING }),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
   it("does not flash the sign-in gate while account status is loading", async () => {
     let resolveStatus: ((status: AccountStatus) => void) | undefined;
     mocks.osAccountsStatus.mockReturnValue(

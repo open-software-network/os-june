@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { isMacLikePlatform } from "../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
@@ -12,6 +13,9 @@ type Props = {
 export function AccountGate({ account, loading, onAccountChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
+  const subtitle = isMacLikePlatform()
+    ? "Record conversations, turn them into notes, and dictate with your OpenSoftware account."
+    : "Record conversations and turn them into notes with your OpenSoftware account.";
 
   const cancelInFlight = useCallback(async () => {
     try {
@@ -52,10 +56,7 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
           <JuneMark />
         </span>
         <h1 className="welcome-title">Welcome to June</h1>
-        <p className="welcome-subtitle">
-          Record conversations, turn them into notes, and dictate with your
-          OpenSoftware account.
-        </p>
+        <p className="welcome-subtitle">{subtitle}</p>
 
         {account.configured ? (
           <div className="welcome-providers">

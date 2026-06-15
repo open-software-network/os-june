@@ -133,7 +133,7 @@ APPLE_API_KEY=
 APPLE_API_KEY_PATH=/path/to/AuthKey_KEYID.p8
 ```
 
-For GitHub Actions, the current automated DMG workflow is staging-only. Configure repository secrets with the certificate values plus App Store Connect API key values:
+For GitHub Actions, configure repository secrets with the certificate values plus App Store Connect API key values:
 
 - `APPLE_CERTIFICATE`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -142,7 +142,7 @@ For GitHub Actions, the current automated DMG workflow is staging-only. Configur
 - `APPLE_API_KEY`
 - `APPLE_API_KEY_P8`
 
-Also configure the staging app environment secrets. These are intentionally staging-prefixed because there is no production DMG build environment yet:
+Also configure the staging app environment secrets:
 
 - `STAGING_OS_ACCOUNTS_URL`
 - `STAGING_OS_ACCOUNTS_API_URL`
@@ -172,7 +172,7 @@ for June. Provider keys such as OpenAI, Venice, and the OS Accounts App API
 key remain server-side in Scribe API/Phala env; they do not belong in the desktop
 DMG workflow.
 
-The `staging-desktop-dmg` workflow can be triggered manually with `workflow_dispatch` and also runs on relevant pushes to `main`. The `production-desktop-dmg` workflow is manual-only. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
+The `staging-desktop-dmg` workflow and production release workflow can be triggered manually with `workflow_dispatch`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
 
 ```sh
 codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app"
@@ -201,6 +201,19 @@ Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher. The app
 runs the generated `venv\Scripts\hermes.exe` command. macOS-only dictation,
 system-audio capture, and Seatbelt sandbox features report unavailable or run
 without that OS sandbox on Windows.
+
+Production Windows distribution is handled by the manual
+`production-desktop-windows` workflow after the production macOS release creates
+the target version in `open-software-network/os-june-releases`. The Windows
+workflow signs the app executable and NSIS installer with Authenticode, embeds
+production OS Accounts and Scribe API fallback config, uploads
+`June_x64-setup.exe`, and merges `windows-x86_64` into the Tauri updater
+`latest.json`. See [docs/release-windows.md](docs/release-windows.md).
+
+The production Windows installer starts signed-in users on meeting notes and
+does not present dictation or the Hermes agent as first-run promises. Agent and
+routines workflows remain preview on Windows until the release bundle includes a
+turnkey Windows Hermes runtime.
 
 ## Verification
 
