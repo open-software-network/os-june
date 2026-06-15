@@ -192,6 +192,10 @@ jobs:
           restore-keys: |
             tauri-cargo-target-${{ runner.os }}-
 
+      - name: Bundle Hermes runtime
+        shell: pwsh
+        run: ./scripts/bundle-hermes-runtime-windows.ps1
+
       - name: Tauri Windows bundle
         run: node scripts/tauri-build.mjs --debug --no-sign
 
@@ -221,6 +225,12 @@ jobs:
           }
           if (($listing | Measure-Object).Count -le 0) {
             throw "NSIS installer payload listing is empty."
+          }
+          $listingText = ($listing -join "`n").Replace("\", "/")
+          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml")) {
+            if ($listingText -notmatch [regex]::Escape($expected)) {
+              throw "NSIS installer payload does not include bundled Hermes file $expected."
+            }
           }
 
       - name: Upload Windows installer

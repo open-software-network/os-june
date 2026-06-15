@@ -172,6 +172,30 @@ jobs:
           pnpm lint
           pnpm test
 
+      - name: Bundle Hermes runtime into app resources
+        shell: pwsh
+        run: ./scripts/bundle-hermes-runtime-windows.ps1
+
+      - name: Sign bundled Hermes runtime
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+        run: |
+          $binaries = Get-ChildItem ".tauri-hermes/hermes" -Recurse -File |
+            Where-Object { $_.Extension -in @(".exe", ".dll", ".pyd") }
+          if (($binaries | Measure-Object).Count -eq 0) {
+            throw "Bundled Hermes runtime contains no Windows binaries to sign."
+          }
+
+          foreach ($binary in $binaries) {
+            ./scripts/windows-sign.ps1 $binary.FullName
+            $signature = Get-AuthenticodeSignature -FilePath $binary.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "Bundled Hermes binary signature is $($signature.Status) for $($binary.FullName). $($signature.StatusMessage)"
+            }
+          }
+
       - name: Build production Windows installer
         env:
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
@@ -217,10 +241,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Could not inspect NSIS installer payload."
           }
-          $listingText = $listing -join "`n"
+          $listingText = ($listing -join "`n").Replace("\", "/")
           foreach ($expected in @("os-scribe.exe", "WebView2Loader.dll")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
               throw "NSIS installer payload does not include $expected."
+            }
+          }
+          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml")) {
+            if ($listingText -notmatch [regex]::Escape($expected)) {
+              throw "NSIS installer payload does not include bundled Hermes file $expected."
             }
           }
 

@@ -198,11 +198,13 @@ and the Microsoft C++ build tools.
 Local Windows builds skip Authenticode signing unless
 `WINDOWS_CERTIFICATE_PATH` and `WINDOWS_CERTIFICATE_PASSWORD` are set.
 
-The managed Hermes runtime fallback on Windows uses PowerShell and requires
-Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher. The app
-runs the generated `venv\Scripts\hermes.exe` command. macOS-only dictation,
-system-audio capture, and Seatbelt sandbox features report unavailable or run
-without that OS sandbox on Windows.
+Production Windows builds bundle the pinned Hermes runtime under
+`native/hermes`, so a clean install can start the agent without Python,
+GitHub downloads, or a first-run runtime install. Development builds can still
+fall back to the managed Hermes runtime installer, which uses PowerShell and
+requires Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher.
+macOS-only dictation, system-audio capture, and Seatbelt sandbox features report
+unavailable or run without that OS sandbox on Windows.
 
 Production Windows distribution is handled by the manual
 `production-desktop-windows` workflow after the production macOS release creates
@@ -213,9 +215,9 @@ production OS Accounts and Scribe API fallback config, uploads
 `latest.json`. See [docs/release-windows.md](docs/release-windows.md).
 
 The production Windows installer starts signed-in users on meeting notes and
-does not present dictation or the Hermes agent as first-run promises. Agent and
-routines workflows remain preview on Windows until the release bundle includes a
-turnkey Windows Hermes runtime.
+does not present dictation as a first-run promise. Agent and routines workflows
+use the bundled Hermes runtime on production Windows builds but still run
+without the macOS Seatbelt write-jail.
 
 ## Verification
 

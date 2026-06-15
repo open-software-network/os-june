@@ -12,12 +12,10 @@ recording, note generation, folders, and settings backed by the production Scrib
 API. Global dictation shortcuts, dictation paste, macOS system-audio capture, and
 Seatbelt sandbox features are macOS-only.
 
-Hermes agent UI is present in the shared app, but the production Windows
-installer does not bundle the Hermes runtime yet. On Windows, June opens to
-meeting notes after sign-in and the first-run copy avoids promising a turnkey
-agent. Agent and routines workflows remain preview on Windows unless a compatible
-Hermes runtime can be installed through the managed fallback, which requires
-PowerShell plus Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher.
+Production Windows builds bundle the pinned Hermes runtime under `native/hermes`,
+so June can start the agent on a clean machine without Python, GitHub downloads,
+or a first-run runtime install. Agent and routines workflows still run without
+the macOS Seatbelt write-jail until Windows has its own isolation layer.
 
 ## One-time prerequisites
 
@@ -71,14 +69,20 @@ The Windows workflow performs the release steps in order:
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
 5. Runs `pnpm lint` and `pnpm test`.
-6. Builds the Windows NSIS installer with production OS Accounts and Scribe API
+6. Builds the bundled Hermes runtime with
+   `scripts/bundle-hermes-runtime-windows.ps1`: the pinned hermes-agent
+   checkout, a relocatable CPython, Python deps, prebuilt dashboard UI, and a
+   relocatable `bin/hermes.exe` launcher.
+7. Authenticode-signs the bundled Hermes `.exe`, `.dll`, and `.pyd` binaries.
+8. Builds the Windows NSIS installer with production OS Accounts and Scribe API
    configuration embedded as fallback runtime config.
-7. Signs the app executable and NSIS installer through
+9. Signs the app executable and NSIS installer through
    `scripts/windows-sign.ps1`.
-8. Verifies Authenticode status for the executable and installer, checks the
-   updater signature file exists, and inspects the NSIS payload.
-9. Uploads the NSIS output as a workflow artifact.
-10. Uploads Windows release assets and merges `windows-x86_64` into
+10. Verifies Authenticode status for the executable and installer, checks the
+    updater signature file exists, and inspects the NSIS payload, including the
+    bundled Hermes launcher and Python runtime.
+11. Uploads the NSIS output as a workflow artifact.
+12. Uploads Windows release assets and merges `windows-x86_64` into
     `latest.json` without removing macOS updater entries.
 
 ## Validation
@@ -96,9 +100,9 @@ Start-Process "$env:LOCALAPPDATA\June\June.exe"
 
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
 the app launches as June, the sign-in copy mentions recording and notes without
-dictation, and the signed-in app opens to meeting notes. Record from the
-microphone and generate a note against production Scribe API before linking the
-installer publicly.
+dictation, and the bundled agent starts on a clean VM with no Python installed.
+Record from the microphone and generate a note against production Scribe API
+before linking the installer publicly.
 
 For updater validation after a second Windows release, install an older
 updater-capable Windows build, run **June -> Check for updates...**, confirm the
