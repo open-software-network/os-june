@@ -2891,12 +2891,16 @@ export function AgentWorkspace({
       void launchShortcutSession(shortcut.prompt);
       return;
     }
-    composerEditorRef.current?.setContent(shortcut.prompt);
     if (shortcut.action === "attach") {
+      composerEditorRef.current?.setContent(shortcut.prompt);
       void pickAttachments();
       return;
     }
-    composerEditorRef.current?.focus();
+    // Prefill and select the "<placeholder>" token so typing replaces it in
+    // place (setContent focuses the editor as part of selecting the range).
+    composerEditorRef.current?.setContent(shortcut.prompt, null, {
+      selectPlaceholder: true,
+    });
   }
 
   async function cancelTask(taskId: string) {

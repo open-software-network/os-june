@@ -8,7 +8,10 @@ import {
   categoryFromDoc,
   insertReportCategory,
 } from "../components/agent/composer/categoryChip";
-import { serializePlainText } from "../components/agent/composer/ComposerEditor";
+import {
+  placeholderSelection,
+  serializePlainText,
+} from "../components/agent/composer/ComposerEditor";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 let editor: Editor | null = null;
@@ -54,5 +57,23 @@ describe("category chip insertion", () => {
     // ...and still just the single trailing space (not the doubled "  " the
     // orphaned separator used to leave behind).
     expect(serializePlainText(editor.state.doc)).toBe(" ");
+  });
+});
+
+describe("run-shortcut placeholder selection", () => {
+  it("maps the <placeholder> token to its document range", () => {
+    // "Research <topic>" — the doc range must span "<topic>" inclusive so a run
+    // shortcut highlights it for the user to overtype.
+    const prompt = "Research <topic>";
+    const range = placeholderSelection(prompt);
+    expect(range).toEqual({ from: 10, to: 17 });
+    // The selected slice (positions shifted back by the paragraph boundary) is
+    // exactly the placeholder token.
+    expect(prompt.slice(range!.from - 1, range!.to - 1)).toBe("<topic>");
+  });
+
+  it("returns null when there is no placeholder to select", () => {
+    expect(placeholderSelection("Summarize my notes")).toBeNull();
+    expect(placeholderSelection("a > b but no opener")).toBeNull();
   });
 });

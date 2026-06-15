@@ -17,8 +17,13 @@ export type ComposerEditorHandle = {
   clear: () => void;
   /** Replaces the whole document with plain text plus an optional leading
    * category chip. Used to prefill (run shortcuts, HUD replies) and to restore
-   * the composer after a failed send. */
-  setContent: (text: string, category?: ReportCategory | null) => void;
+   * the composer after a failed send. With `selectPlaceholder`, the first
+   * `<placeholder>` token is selected so the user can overtype it in place. */
+  setContent: (
+    text: string,
+    category?: ReportCategory | null,
+    options?: { selectPlaceholder?: boolean },
+  ) => void;
   /** Inserts or swaps the message's single category tag at the caret. */
   insertCategory: (category: ReportCategory) => void;
   isEmpty: () => boolean;
@@ -51,6 +56,19 @@ function focusEnd(editor: Editor | null) {
   if (!editor || editor.isDestroyed) return;
   editor.commands.setTextSelection(editor.state.doc.content.size);
   editor.view.focus();
+}
+
+/** Maps the first `<placeholder>` token in a prefilled single-paragraph prompt
+ * to its ProseMirror selection range, so a run shortcut can highlight it. The
+ * paragraph's opening boundary occupies position 0, so a string index `i` maps
+ * to document position `i + 1`; the range spans `<` through `>` inclusive. */
+export function placeholderSelection(
+  text: string,
+): { from: number; to: number } | null {
+  const start = text.indexOf("<");
+  const end = text.indexOf(">");
+  if (start < 0 || end <= start) return null;
+  return { from: start + 1, to: end + 2 };
 }
 
 function buildDoc(text: string, category?: ReportCategory | null) {
@@ -196,12 +214,23 @@ export const ComposerEditor = forwardRef<
     () => ({
       focus: () => focusEnd(editor),
       clear: () => editor?.commands.clearContent(true),
-      setContent: (text, category) => {
+      setContent: (text, category, options) => {
         if (!editor) return;
         editor.commands.setContent(buildDoc(text, category), {
           emitUpdate: true,
         });
-        focusEnd(editor);
+        // A run shortcut prefills a "<placeholder>" token; select it (rather
+        // than parking the caret at the end) so typing overtypes it in place.
+        const range =
+          options?.selectPlaceholder && !category
+            ? placeholderSelection(text)
+            : null;
+        if (range) {
+          editor.commands.setTextSelection(range);
+          editor.view.focus();
+        } else {
+          focusEnd(editor);
+        }
       },
       insertCategory: (category) => {
         if (editor) insertReportCategory(editor, category);
