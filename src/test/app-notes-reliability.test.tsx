@@ -40,7 +40,10 @@ const mocks = vi.hoisted(() => ({
   retryProcessing: vi.fn(),
   recoverRecording: vi.fn(),
   dictationHelperCommand: vi.fn(),
+  dictationSettings: vi.fn(),
   listDictationHistory: vi.fn(),
+  listDictionaryEntries: vi.fn(),
+  deleteDictationHistoryItem: vi.fn(),
   osAccountsStatus: vi.fn(),
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
@@ -90,7 +93,10 @@ vi.mock("../lib/tauri", () => ({
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,
   dictationHelperCommand: mocks.dictationHelperCommand,
+  dictationSettings: mocks.dictationSettings,
   listDictationHistory: mocks.listDictationHistory,
+  listDictionaryEntries: mocks.listDictionaryEntries,
+  deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   osAccountsStatus: mocks.osAccountsStatus,
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
@@ -201,10 +207,42 @@ describe("notes recording reliability", () => {
       bytesWritten: 2048,
     });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
+    mocks.dictationSettings.mockResolvedValue({
+      settings: {
+        pushToTalkShortcut: {
+          code: "KeyD",
+          label: "Ctrl+Opt+D",
+          pressCount: 1,
+          modifiers: {
+            command: false,
+            control: true,
+            option: true,
+            shift: false,
+            function: false,
+          },
+        },
+        toggleShortcut: {
+          code: "KeyT",
+          label: "Ctrl+Opt+T",
+          pressCount: 1,
+          modifiers: {
+            command: false,
+            control: true,
+            option: true,
+            shift: false,
+            function: false,
+          },
+        },
+        microphone: {},
+        style: "standard",
+      },
+    });
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
       retentionDays: 7,
     });
+    mocks.listDictionaryEntries.mockResolvedValue([]);
+    mocks.deleteDictationHistoryItem.mockResolvedValue(undefined);
     mocks.osAccountsStatus.mockResolvedValue(account);
     mocks.osAccountsLogin.mockResolvedValue(account);
     mocks.osAccountsLogout.mockResolvedValue(undefined);
@@ -297,7 +335,7 @@ describe("notes recording reliability", () => {
     );
   });
 
-  it("surfaces retry failures instead of dead-ending silently", async () => {
+  it("keeps retry failures scoped to the failed note", async () => {
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2"
         ? second
@@ -316,11 +354,11 @@ describe("notes recording reliability", () => {
           },
     );
     mocks.retryProcessing.mockRejectedValue({
-      code: "audio_artifact_missing",
-      message: "No saved audio is available for retry.",
+      code: "scribe_api_response_invalid",
+      message: "The processing service returned an invalid response.",
     });
 
-    render(<App />);
+    const { container } = render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     // The app launches on the agent view; open the note from the Meetings
@@ -336,12 +374,20 @@ describe("notes recording reliability", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("No saved audio is available for retry."),
+        screen.getByText(
+          /The processing service returned an invalid response\./,
+        ),
       ).toBeInTheDocument(),
     );
+    expect(container.querySelector(".note-failure-banner")).not.toBeNull();
+    expect(container.querySelector(".error-banner")).toBeNull();
     // The banner releases its busy gate so the user can try again.
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /Retry/ })).toBeEnabled(),
     );
+
+    await userEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    expect(container.querySelector(".note-failure-banner")).toBeNull();
+    expect(container.querySelector(".error-banner")).toBeNull();
   });
 });

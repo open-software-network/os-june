@@ -1667,6 +1667,7 @@ export function App() {
     // button stays available — you can stack another take while this one
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
+    const recordingNoteId = recordingNoteIdRef.current;
     dispatch({ type: "recordingStatusCleared" });
     recordingNoteIdRef.current = undefined;
     playRecordingSound("stop");
@@ -1674,7 +1675,7 @@ export function App() {
     // The selected note isn't necessarily that note — the user may have
     // browsed elsewhere while recording — and stamping the wrong note as
     // transcribing would lock its record button and shimmer forever.
-    if (selectedNote && selectedNote.id === recordingNoteIdRef.current) {
+    if (selectedNote && selectedNote.id === recordingNoteId) {
       dispatch({
         type: "noteProcessingUpdated",
         note: { ...selectedNote, processingStatus: "transcribing" },
@@ -2225,9 +2226,16 @@ export function App() {
                         const note = await retryProcessing(selectedNote.id);
                         dispatch({ type: "noteProcessingUpdated", note });
                       } catch (err) {
-                        // Surface the failure (the banner only releases its
-                        // busy gate on rejection — it expects us to report).
-                        setError(messageFromError(err));
+                        const message = messageFromError(err);
+                        dispatch({
+                          type: "noteProcessingUpdated",
+                          note: {
+                            ...selectedNote,
+                            processingStatus: "failed",
+                            lastError: message,
+                          },
+                        });
+                        setError(null);
                         throw err;
                       }
                     }}
