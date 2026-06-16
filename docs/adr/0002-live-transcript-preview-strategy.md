@@ -187,8 +187,8 @@ Implemented Phase 1 behavior:
 - Preview workers transcribe 8 second microphone chunks as `preview=true`
   Scribe API requests.
 - The API validates the model and audio, enforces a server-side preview duration
-  cap, authorizes a wallet hold, and returns a zero-credit receipt without
-  settling a wallet charge.
+  cap, authorizes a wallet hold, and settles it with a zero-credit charge before
+  returning the preview receipt.
 - React stores preview events outside `NoteDto`, renders them only in the
   Transcription tab, and clears them when recording stops.
 

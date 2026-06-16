@@ -113,7 +113,7 @@ impl NoteTranscribeService {
                 ),
             });
         }
-        authorize_or_deny(AuthorizeParams {
+        let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
             user_id: params.user_id.clone(),
             action: ActionSlug::NoteTranscribe,
@@ -126,9 +126,13 @@ impl NoteTranscribeService {
             model = %params.model_id.0,
             seconds,
             estimate_credits = estimate.0,
-            "note_transcribe: preview request authorized and not charged"
+            "note_transcribe: preview request authorized"
         );
-        let transcript = self
+        let idempotency_key = format!(
+            "note_transcribe_preview:{}:{}",
+            params.user_id.0, params.note_id
+        );
+        let transcript_result = self
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
@@ -137,10 +141,23 @@ impl NoteTranscribeService {
                 language: params.language,
                 model: params.model_id.clone(),
             })
-            .await?;
+            .await
+            .map_err(ServiceError::from);
+        let receipt = charge(ChargeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            action_token: authorization.action_token,
+            credits: Credits(0),
+            idempotency_key,
+        })
+        .await?;
+        let transcript = transcript_result?;
+        tracing::info!(
+            note_id = %params.note_id,
+            "note_transcribe: preview hold settled with zero credits"
+        );
         Ok(NoteTranscribeOutput {
             transcript,
-            receipt: uncharged_receipt(),
+            receipt,
         })
     }
 
@@ -209,13 +226,6 @@ impl NoteTranscribeService {
             transcript,
             receipt,
         })
-    }
-}
-
-fn uncharged_receipt() -> Receipt {
-    Receipt {
-        credits_charged: Credits(0),
-        idempotent_replay: false,
     }
 }
 

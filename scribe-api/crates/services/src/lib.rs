@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_authorizes_dispatches_asr_without_wallet_charge() {
+    async fn note_transcribe_preview_authorizes_dispatches_asr_and_settles_zero_credits() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let transcriber = Arc::new(RecordingTranscriber::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
@@ -447,12 +447,20 @@ mod tests {
         assert_eq!(output.receipt.credits_charged.0, 0);
         assert_eq!(
             os_accounts.events(),
-            vec![RecordedCall::Authorize {
-                user_id: "usr_123".to_string(),
-                action: "note_transcribe".to_string(),
-                estimate: 1024,
-                hold_ttl: 60,
-            }]
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 0,
+                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
+                        .to_string(),
+                },
+            ]
         );
         assert_eq!(transcriber.call_count(), 1);
         assert_eq!(
@@ -460,6 +468,57 @@ mod tests {
             Some("Previous words".to_string())
         );
         assert_eq!(transcriber.last_language(), Some("en".to_string()));
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_settles_zero_credits_when_asr_fails() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FailingTranscriber),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-session-1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 0,
+                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
+                        .to_string(),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -819,6 +878,18 @@ mod tests {
                 language: Some("en".to_string()),
                 provider: "test".to_string(),
             })
+        }
+    }
+
+    struct FailingTranscriber;
+
+    #[async_trait]
+    impl Transcriber for FailingTranscriber {
+        async fn transcribe(
+            &self,
+            _request: TranscriptionRequest,
+        ) -> Result<Transcript, DomainError> {
+            Err(DomainError::UpstreamProvider)
         }
     }
 
