@@ -36,6 +36,7 @@ pub struct TranscriptionRequest {
     pub context: Option<String>,
     pub language: Option<String>,
     pub operation_id: Option<String>,
+    pub preview: bool,
 }
 
 impl TranscriptionRequest {
@@ -219,6 +220,9 @@ pub async fn transcribe_saved_audio(
         .text("title", title_or_placeholder(&request.title))
         .text("model", crate::providers::transcription_model())
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
+    if request.preview {
+        form = form.text("preview", "true");
+    }
     if let Some(context) = request
         .context
         .as_deref()

@@ -843,6 +843,7 @@ async fn transcribe_prepared_audio(
             context: request.base_context,
             language: request_language,
             operation_id: Some(request.operation_id),
+            preview: false,
         })
         .await;
     }
@@ -863,6 +864,7 @@ async fn transcribe_prepared_audio(
             context,
             language: request_language.clone(),
             operation_id: Some(format!("{}-chunk-{index}", request.operation_id)),
+            preview: false,
         })
         .await?;
         if language.is_none() {

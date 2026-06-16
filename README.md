@@ -203,6 +203,11 @@ Useful validation docs:
 - [specs/002-system-audio-source-mode/quickstart.md](specs/002-system-audio-source-mode/quickstart.md)
 - [specs/003-conversation-turns/quickstart.md](specs/003-conversation-turns/quickstart.md)
 
+Architecture and product notes:
+
+- [docs/adr/0001-auto-updates-via-tauri-updater.md](docs/adr/0001-auto-updates-via-tauri-updater.md)
+- [docs/adr/0002-live-transcript-preview-strategy.md](docs/adr/0002-live-transcript-preview-strategy.md)
+
 ## Release notes
 
 Production desktop releases are cut from GitHub Actions. macOS produces signed

@@ -1,6 +1,9 @@
 use crate::{
     app_paths::AppPaths,
-    audio::system_macos::SystemAudioCapture,
+    audio::{
+        live_preview::{start_live_transcript_preview, LivePreviewController, LivePreviewSink},
+        system_macos::SystemAudioCapture,
+    },
     domain::types::{
         AppError, AudioLevelDto, RecordingSessionDto, RecordingSource, RecordingSourceMode,
         RecordingState, RecordingStatusDto, SourceState, SourceStatusDto,
@@ -74,6 +77,7 @@ struct ActiveRecording {
     paused_flag: Arc<AtomicBool>,
     writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     stats: Arc<Mutex<CaptureStats>>,
+    live_preview: Option<LivePreviewController>,
     _stream: cpal::Stream,
 }
 
@@ -117,6 +121,7 @@ fn microphone_permission_hint() -> String {
 }
 
 pub fn start_capture(
+    app: tauri::AppHandle,
     paths: &AppPaths,
     note_id: String,
     source_mode: RecordingSourceMode,
@@ -174,6 +179,20 @@ pub fn start_capture(
     let writer_for_callback = Arc::clone(&writer);
     let stats_for_callback = Arc::clone(&stats);
     let paused_for_callback = Arc::clone(&paused_flag);
+    let live_preview = if crate::scribe_api::configured() && crate::os_accounts::cached_signed_in()
+    {
+        Some(start_live_transcript_preview(
+            app,
+            note_id.clone(),
+            session_id.clone(),
+            source_mode,
+            sample_rate,
+            channels,
+        ))
+    } else {
+        None
+    };
+    let preview_for_callback = live_preview.as_ref().map(LivePreviewController::sink);
     let err_fn = |error| eprintln!("audio stream error: {error}");
 
     let stream = match config.sample_format() {
@@ -185,6 +204,7 @@ pub fn start_capture(
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,
+                    preview_for_callback.as_ref(),
                 )
             },
             err_fn,
@@ -198,6 +218,7 @@ pub fn start_capture(
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,
+                    preview_for_callback.as_ref(),
                 )
             },
             err_fn,
@@ -212,6 +233,7 @@ pub fn start_capture(
                     &writer_for_callback,
                     &stats_for_callback,
                     &paused_for_callback,
+                    preview_for_callback.as_ref(),
                 )
             },
             err_fn,
@@ -290,6 +312,7 @@ pub fn start_capture(
         paused_flag,
         writer,
         stats,
+        live_preview,
         _stream: stream,
     });
 
@@ -411,10 +434,14 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
         system_final_path,
         writer,
         paused_flag,
+        live_preview,
         _stream,
         ..
     } = recording;
     paused_flag.store(true, Ordering::Release);
+    if let Some(live_preview) = live_preview {
+        live_preview.cancel();
+    }
     drop(_stream);
     let microphone_finalized = (|| -> Result<(), AppError> {
         if let Some(writer) = writer
@@ -463,6 +490,7 @@ fn write_input_data<I>(
     writer: &Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     stats: &Arc<Mutex<CaptureStats>>,
     paused: &Arc<AtomicBool>,
+    preview: Option<&LivePreviewSink>,
 ) where
     I: Iterator<Item = f32>,
 {
@@ -478,22 +506,34 @@ fn write_input_data<I>(
     let Ok(mut stats) = stats.lock() else {
         return;
     };
-    let mut callback_peak = 0.0_f32;
-    for sample in data {
-        let clamped = sample.clamp(-1.0, 1.0);
-        let normalized = clamped.abs();
-        callback_peak = callback_peak.max(normalized);
-        stats.peak = stats.peak.max(normalized);
-        stats.sum_square += (normalized as f64).powi(2);
-        stats.samples += 1;
-        stats.bytes_written += 2;
-        let _ = writer.write_sample((clamped * i16::MAX as f32) as i16);
-    }
-    if callback_peak > 0.0 {
-        if stats.recent_peaks.len() == 24 {
-            stats.recent_peaks.pop_front();
+    let mut preview_samples = preview.map(|_| Vec::new());
+    {
+        let mut callback_peak = 0.0_f32;
+        for sample in data {
+            let clamped = sample.clamp(-1.0, 1.0);
+            let pcm_sample = (clamped * i16::MAX as f32) as i16;
+            let normalized = clamped.abs();
+            callback_peak = callback_peak.max(normalized);
+            stats.peak = stats.peak.max(normalized);
+            stats.sum_square += (normalized as f64).powi(2);
+            stats.samples += 1;
+            stats.bytes_written += 2;
+            let _ = writer.write_sample(pcm_sample);
+            if let Some(samples) = preview_samples.as_mut() {
+                samples.push(pcm_sample);
+            }
         }
-        stats.recent_peaks.push_back(callback_peak);
+        if callback_peak > 0.0 {
+            if stats.recent_peaks.len() == 24 {
+                stats.recent_peaks.pop_front();
+            }
+            stats.recent_peaks.push_back(callback_peak);
+        }
+    }
+    drop(stats);
+    drop(writer_guard);
+    if let (Some(preview), Some(samples)) = (preview, preview_samples) {
+        preview.try_send(samples);
     }
 }
 

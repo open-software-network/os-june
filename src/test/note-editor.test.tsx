@@ -162,6 +162,42 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
   });
 
+  it("shows live transcript preview turns while recording", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({ activeTab: "transcription" })}
+        recordingStatus={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 8000,
+          level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+          silenceWarning: false,
+          bytesWritten: 4096,
+        }}
+        liveTranscript={[
+          {
+            noteId: "note-1",
+            sessionId: "session-1",
+            sourceMode: "microphoneOnly",
+            source: "microphone",
+            segmentId: "microphone-0",
+            startMs: 0,
+            endMs: 8000,
+            text: "Preview words from the live recording",
+            language: "en",
+            stability: "final",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("Preview words from the live recording"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+  });
+
   it("shows transcript progress while retrying over existing turns", () => {
     render(
       <NoteEditor

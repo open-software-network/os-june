@@ -113,6 +113,7 @@ fn build_router(
         duration_probe: duration_probe.clone(),
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_note_transcribe_secs,
         flat_estimate_credits,
+        preview_max_audio_seconds: config.os_accounts.note_transcribe_preview_max_audio_secs,
     }));
     let note_generate = Arc::new(NoteGenerateService::new(NoteGenerateServiceDeps {
         pricing: pricing.clone(),

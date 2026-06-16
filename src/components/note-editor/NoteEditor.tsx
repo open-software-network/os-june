@@ -14,6 +14,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
+  LiveTranscriptEventDto,
   NoteDto,
   RecordingSourceMode,
   RecordingSourceReadinessDto,
@@ -38,6 +39,7 @@ type NoteEditorProps = {
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
   recordingDisabled?: boolean;
+  liveTranscript?: LiveTranscriptEventDto[];
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
   recovery?: RecoverableRecordingDto;
@@ -79,6 +81,11 @@ function sourceKey(source?: string): "microphone" | "system" {
 
 type SourceFilter = "all" | "microphone" | "system";
 
+type RenderedTranscriptTurn = TranscriptDto & {
+  preview?: boolean;
+  stability?: LiveTranscriptEventDto["stability"];
+};
+
 const SOURCE_FILTERS = [
   { value: "all", label: "All" },
   { value: "microphone", label: "Microphone" },
@@ -105,6 +112,7 @@ export function NoteEditor({
   folders,
   recordingStatus,
   recordingDisabled = false,
+  liveTranscript = [],
   sourceMode,
   sourceReadiness,
   recovery,
@@ -131,6 +139,18 @@ export function NoteEditor({
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = orderedVisibleSourceTranscripts(note);
+  const liveTranscriptTurns = useMemo(
+    () => liveTranscript.map(liveTranscriptEventToTurn),
+    [liveTranscript],
+  );
+  const transcriptTurns = useMemo(
+    () =>
+      [...sourceTranscripts, ...liveTranscriptTurns]
+        .map((turn, index) => ({ turn, index }))
+        .sort(compareSourceTranscriptOrder)
+        .map(({ turn }) => turn),
+    [sourceTranscripts, liveTranscriptTurns],
+  );
   const recordingForNote = recordingStatus;
   const recordingActive = Boolean(recordingForNote);
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -148,19 +168,19 @@ export function NoteEditor({
   const hasBothSources = useMemo(() => {
     let mic = false;
     let system = false;
-    for (const turn of sourceTranscripts) {
+    for (const turn of transcriptTurns) {
       if (sourceKey(turn.source) === "system") system = true;
       else mic = true;
       if (mic && system) return true;
     }
     return false;
-  }, [sourceTranscripts]);
+  }, [transcriptTurns]);
   const visibleTurns = useMemo(() => {
-    if (!hasBothSources || sourceFilter === "all") return sourceTranscripts;
-    return sourceTranscripts.filter(
+    if (!hasBothSources || sourceFilter === "all") return transcriptTurns;
+    return transcriptTurns.filter(
       (turn) => sourceKey(turn.source) === sourceFilter,
     );
-  }, [sourceTranscripts, hasBothSources, sourceFilter]);
+  }, [transcriptTurns, hasBothSources, sourceFilter]);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemSource = sourceReadiness?.sources.find(
     (source) => source.source === "system",
@@ -235,9 +255,11 @@ export function NoteEditor({
   // stays disabled via processingLock so nothing can re-trigger.
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
-  const transcriptText = transcriptToText(note);
+  const transcriptText = transcriptToText(note, liveTranscriptTurns);
   const showTranscriptProcessing =
     processingLock && transcriptText.trim().length > 0;
+  const showLivePreviewWaiting =
+    recordingActive && liveTranscriptTurns.length === 0;
   // Processing runs in the background and is queued per note, so a recording
   // that's still transcribing/generating no longer blocks starting another —
   // you can stack messages and they process in order. The record button only
@@ -316,7 +338,7 @@ export function NoteEditor({
                 />
               </div>
             ) : null}
-            {showTranscriptProcessing ? (
+            {showTranscriptProcessing || showLivePreviewWaiting ? (
               <div
                 className="transcript-processing"
                 role="status"
@@ -324,14 +346,20 @@ export function NoteEditor({
               >
                 <DotSpinner className="transcript-processing-spinner" />
                 <span className="transcript-processing-label">
-                  {processingText ?? "Processing audio..."}
+                  {showLivePreviewWaiting
+                    ? "Listening for transcript preview..."
+                    : (processingText ?? "Processing audio...")}
                 </span>
               </div>
             ) : null}
             {visibleTurns.length ? (
               <div className="source-transcripts">
                 {visibleTurns.map((transcript) => (
-                  <TranscriptTurn key={transcript.id} transcript={transcript} />
+                  <TranscriptTurn
+                    key={transcript.id}
+                    transcript={transcript}
+                    preview={transcript.preview}
+                  />
                 ))}
               </div>
             ) : note.transcript?.text ? (
@@ -339,10 +367,13 @@ export function NoteEditor({
             ) : (
               <div className="transcript-empty">
                 <p>
-                  {processingText ??
-                    (note.processingStatus === "failed"
-                      ? "No transcript was produced."
-                      : (note.lastError ?? "No transcript is available yet."))}
+                  {recordingActive
+                    ? "Transcript preview will appear here while you record."
+                    : (processingText ??
+                      (note.processingStatus === "failed"
+                        ? "No transcript was produced."
+                        : (note.lastError ??
+                          "No transcript is available yet.")))}
                 </p>
               </div>
             )}
@@ -566,10 +597,14 @@ export function NoteEditor({
                           type="button"
                           className="record-button"
                           aria-label={
-                            recordingDisabled ? "Recording in progress" : "Record"
+                            recordingDisabled
+                              ? "Recording in progress"
+                              : "Record"
                           }
                           title={
-                            recordingDisabled ? "Recording in progress" : "Record"
+                            recordingDisabled
+                              ? "Recording in progress"
+                              : "Record"
                           }
                           disabled={recordButtonDisabled}
                           onClick={onStartRecording}
@@ -766,7 +801,7 @@ function processingMessage(status: NoteDto["processingStatus"]): string | null {
   }
 }
 
-function turnsToText(turns: TranscriptDto[]): string {
+function turnsToText(turns: RenderedTranscriptTurn[]): string {
   return turns
     .filter((turn) => turn.text.trim())
     .map((turn) => {
@@ -778,16 +813,25 @@ function turnsToText(turns: TranscriptDto[]): string {
     .join("\n\n");
 }
 
-function transcriptToText(note: NoteDto): string {
-  if (note.sourceTranscripts?.length) {
-    return turnsToText(orderedVisibleSourceTranscripts(note));
+function transcriptToText(
+  note: NoteDto,
+  liveTurns: RenderedTranscriptTurn[] = [],
+): string {
+  const sourceTurns = orderedVisibleSourceTranscripts(note);
+  if (sourceTurns.length || liveTurns.length) {
+    return turnsToText(
+      [...sourceTurns, ...liveTurns]
+        .map((turn, index) => ({ turn, index }))
+        .sort(compareSourceTranscriptOrder)
+        .map(({ turn }) => turn),
+    );
   }
   return note.transcript?.text ?? "";
 }
 
 function orderedVisibleSourceTranscripts(
   note: NoteDto,
-): NonNullable<NoteDto["sourceTranscripts"]> {
+): RenderedTranscriptTurn[] {
   return (note.sourceTranscripts ?? [])
     .filter((turn) => {
       if (turn.text.trim()) return true;
@@ -798,9 +842,27 @@ function orderedVisibleSourceTranscripts(
     .map(({ turn }) => turn);
 }
 
+function liveTranscriptEventToTurn(
+  event: LiveTranscriptEventDto,
+): RenderedTranscriptTurn {
+  return {
+    id: `live-${event.sessionId}-${event.source}-${event.segmentId}`,
+    text: event.text,
+    sourceMode: event.sourceMode,
+    source: event.source,
+    startMs: event.startMs,
+    endMs: event.endMs,
+    turnIndex: undefined,
+    language: event.language,
+    status: "running",
+    preview: true,
+    stability: event.stability,
+  };
+}
+
 function compareSourceTranscriptOrder(
-  left: { turn: TranscriptDto; index: number },
-  right: { turn: TranscriptDto; index: number },
+  left: { turn: RenderedTranscriptTurn; index: number },
+  right: { turn: RenderedTranscriptTurn; index: number },
 ) {
   const turnIndexOrder = compareOptionalNumber(
     left.turn.turnIndex,
@@ -830,7 +892,13 @@ function compareOptionalNumber(left?: number, right?: number) {
 /** A single conversation turn in the Transcription tab. Mirrors the dictation
  * history row language: a source glyph, a light meta line, and the transcript
  * text — copy reveals on hover, long turns clamp to a "Show more" toggle. */
-function TranscriptTurn({ transcript }: { transcript: TranscriptDto }) {
+function TranscriptTurn({
+  transcript,
+  preview = false,
+}: {
+  transcript: RenderedTranscriptTurn;
+  preview?: boolean;
+}) {
   const textRef = useRef<HTMLParagraphElement>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -896,6 +964,9 @@ function TranscriptTurn({ transcript }: { transcript: TranscriptDto }) {
             {sourceLabel(transcript.source)}
           </span>
           {turnTime ? <time>{turnTime}</time> : null}
+          {preview ? (
+            <span className="transcript-turn-preview">Live preview</span>
+          ) : null}
         </div>
         {hasText ? (
           <p

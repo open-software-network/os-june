@@ -49,6 +49,7 @@ authorize_hold_ttl_note_transcribe_secs = 60
 authorize_hold_ttl_note_generate_secs = 300
 authorize_hold_ttl_dictate_transcribe_secs = 30
 authorize_hold_ttl_dictate_cleanup_secs = 30
+note_transcribe_preview_max_audio_secs = 30
 flat_estimate_credits = 250
 
 [upstreams.openai]

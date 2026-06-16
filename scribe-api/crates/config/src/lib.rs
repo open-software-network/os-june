@@ -155,6 +155,10 @@ pub struct OsAccountsConfig {
     pub authorize_hold_ttl_note_generate_secs: u64,
     pub authorize_hold_ttl_dictate_transcribe_secs: u64,
     pub authorize_hold_ttl_dictate_cleanup_secs: u64,
+    /// Maximum audio duration accepted by no-charge live preview requests.
+    /// Desktop chunks are shorter; this server cap prevents arbitrary-length
+    /// preview transcription if a client replays the public endpoint.
+    pub note_transcribe_preview_max_audio_secs: u64,
     /// Skip per-request estimation entirely and authorize this many credits
     /// for every metered action. Trades a bigger Hold (and thus a tighter
     /// max concurrency per user) for not needing to probe audio duration or
@@ -190,6 +194,10 @@ impl Debug for OsAccountsConfig {
             .field(
                 "authorize_hold_ttl_dictate_cleanup_secs",
                 &self.authorize_hold_ttl_dictate_cleanup_secs,
+            )
+            .field(
+                "note_transcribe_preview_max_audio_secs",
+                &self.note_transcribe_preview_max_audio_secs,
             )
             .field("flat_estimate_credits", &self.flat_estimate_credits)
             .finish()
@@ -454,6 +462,7 @@ impl Default for AppConfig {
                 authorize_hold_ttl_note_generate_secs: 300,
                 authorize_hold_ttl_dictate_transcribe_secs: 30,
                 authorize_hold_ttl_dictate_cleanup_secs: 30,
+                note_transcribe_preview_max_audio_secs: 30,
                 flat_estimate_credits: 250,
             },
             upstreams: UpstreamsConfig {
@@ -513,6 +522,10 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         "os_accounts.app_api_key",
         &config.os_accounts.app_api_key,
         "osk_REPLACE_ME",
+    )?;
+    validate_positive_config(
+        "os_accounts.note_transcribe_preview_max_audio_secs",
+        config.os_accounts.note_transcribe_preview_max_audio_secs,
     )?;
 
     let uses_openai = config
@@ -604,6 +617,16 @@ fn validate_required_secret(
         return Err(ConfigError::InvalidRequired {
             field,
             reason: "placeholder value must be replaced",
+        });
+    }
+    Ok(())
+}
+
+fn validate_positive_config(field: &'static str, value: u64) -> Result<(), ConfigError> {
+    if value == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field,
+            reason: "must be > 0",
         });
     }
     Ok(())
@@ -710,6 +733,16 @@ mod tests {
             pricing,
             ..valid_config()
         };
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_preview_audio_cap() {
+        let mut config = valid_config();
+        config.os_accounts.note_transcribe_preview_max_audio_secs = 0;
 
         let result = validate(&config);
 

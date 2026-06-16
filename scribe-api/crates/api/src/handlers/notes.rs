@@ -45,6 +45,10 @@ pub(crate) async fn transcribe(
         language.as_deref(),
         validation::MAX_LANGUAGE_CHARS,
     )?;
+    // This client field is not an authorization decision. It only requests
+    // live-preview semantics; NoteTranscribeService still probes duration,
+    // enforces the preview cap, and authorizes with OS Accounts before ASR.
+    let preview = parse_preview_flag(form.optional_text("preview").as_deref());
     let note_id = form.required_text("noteId")?;
     validation::validate_text_len("note_id", &note_id, validation::MAX_ID_CHARS)?;
     let filename = form
@@ -60,6 +64,7 @@ pub(crate) async fn transcribe(
             context,
             language,
             model_id: ModelId(model_id),
+            preview,
         })
         .await?;
     Ok(Json(ApiResponse::ok(TranscribeResponse::from(output))))
@@ -223,9 +228,13 @@ fn require_priced_model_kind(
     }
 }
 
+fn parse_preview_flag(value: Option<&str>) -> bool {
+    value.is_some_and(|value| matches!(value, "true" | "1"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::require_priced_model_kind;
+    use super::{parse_preview_flag, require_priced_model_kind};
     use crate::ApiError;
     use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
     use scribe_domain::ModelKind;
@@ -305,5 +314,14 @@ mod tests {
             error,
             ApiError::Unprocessable { message, .. } if message == "model_not_priced"
         ));
+    }
+
+    #[test]
+    fn parse_preview_flag_accepts_only_wire_true_values() {
+        assert!(parse_preview_flag(Some("true")));
+        assert!(parse_preview_flag(Some("1")));
+        assert!(!parse_preview_flag(None));
+        assert!(!parse_preview_flag(Some("false")));
+        assert!(!parse_preview_flag(Some("yes")));
     }
 }
