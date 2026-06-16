@@ -2453,7 +2453,7 @@ fn skip_soft_filler_suffix(text: &str, mut index: usize) -> usize {
 }
 
 fn normalize_after_filler_removal(text: &str, removed_filler: bool) -> String {
-    let mut normalized = collapse_ascii_whitespace(text.trim());
+    let mut normalized = collapse_dictation_whitespace(text);
     if removed_filler {
         normalized = normalized
             .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ':' | ';'))
@@ -2463,21 +2463,33 @@ fn normalize_after_filler_removal(text: &str, removed_filler: bool) -> String {
     normalized
 }
 
-fn collapse_ascii_whitespace(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut previous_was_whitespace = false;
-    for ch in text.chars() {
-        if ch.is_whitespace() {
-            if !previous_was_whitespace && !output.is_empty() {
-                output.push(' ');
-            }
-            previous_was_whitespace = true;
-        } else {
-            output.push(ch);
-            previous_was_whitespace = false;
-        }
+/// Collapse runs of horizontal whitespace to a single space, but preserve line
+/// breaks (and a single blank line between paragraphs). The cleanup prompt now
+/// emits paragraph-grouped, line-broken text, and spoken "new line" formatting
+/// becomes real breaks — flattening all whitespace would paste/store those as
+/// one flat line.
+fn collapse_dictation_whitespace(text: &str) -> String {
+    let mut lines: Vec<String> = text
+        .split('\n')
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    while lines.first().is_some_and(String::is_empty) {
+        lines.remove(0);
     }
-    output.trim().to_string()
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let mut collapsed: Vec<String> = Vec::with_capacity(lines.len());
+    let mut previous_blank = false;
+    for line in lines {
+        let blank = line.is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        previous_blank = blank;
+        collapsed.push(line);
+    }
+    collapsed.join("\n")
 }
 
 fn contains_meaningful_dictation_word(text: &str) -> bool {
@@ -2486,6 +2498,12 @@ fn contains_meaningful_dictation_word(text: &str) -> bool {
         let Some(ch) = text[index..].chars().next() else {
             break;
         };
+        // Digits are meaningful on their own — an OTP, extension, or amount
+        // dictated after a hesitation ("um 123456") must still paste, not
+        // discard as if it were filler-only.
+        if ch.is_ascii_digit() {
+            return true;
+        }
         if !ch.is_ascii_alphabetic() {
             index += ch.len_utf8();
             continue;
@@ -3808,6 +3826,40 @@ mod tests {
         assert_eq!(
             clean_dictation_fillers("camelCase, uh, value.", DictationStyle::Standard),
             "camelCase value."
+        );
+    }
+
+    #[test]
+    fn numeric_dictation_after_filler_is_kept() {
+        // "um 123456" must paste the number, not discard as filler-only.
+        assert_eq!(
+            clean_dictation_fillers("um 123456", DictationStyle::Standard),
+            "123456"
+        );
+        assert_eq!(
+            clean_dictation_fillers("Call, uh, 5551234.", DictationStyle::Standard),
+            "Call 5551234."
+        );
+    }
+
+    #[test]
+    fn line_breaks_and_paragraphs_are_preserved() {
+        // Cleanup-prompt paragraph grouping and spoken "new line" must survive.
+        assert_eq!(
+            clean_dictation_fillers("First line.\nSecond line.", DictationStyle::Standard),
+            "First line.\nSecond line."
+        );
+        assert_eq!(
+            clean_dictation_fillers(
+                "Paragraph one.\n\nParagraph two.",
+                DictationStyle::Standard
+            ),
+            "Paragraph one.\n\nParagraph two."
+        );
+        // Horizontal whitespace still collapses within a line.
+        assert_eq!(
+            clean_dictation_fillers("Too    many   spaces.", DictationStyle::Standard),
+            "Too many spaces."
         );
     }
 
