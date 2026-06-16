@@ -48,7 +48,6 @@ const IDLE_TICK: Duration = Duration::from_millis(220);
 const PILL_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 32.0);
 /// Upright the pill carries less (4 bars instead of 7), so it runs shorter.
 /// Must agree with `.mhud[data-orient="vertical"]` in meeting-hud.css.
-#[cfg(target_os = "macos")]
 const VERTICAL_PILL_LENGTH: f64 = 62.0;
 /// The window is a fixed square the length of the pill (tauri.conf.json), so a
 /// quarter turn always fits without resizing the native frame — the transparent

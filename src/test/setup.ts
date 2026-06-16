@@ -90,10 +90,25 @@ if (!HTMLElement.prototype.getBoundingClientRect) {
   HTMLElement.prototype.getBoundingClientRect = () => new DOMRect();
 }
 
+function setNavigatorPlatform(platform: string, userAgent: string) {
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+}
+
 // Existing App tests exercise the signed-in main shell; pre-complete the
 // first-run onboarding so the wizard doesn't gate them. Onboarding tests
 // opt back in by clearing localStorage.
 beforeEach(() => {
+  setNavigatorPlatform(
+    "MacIntel",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
+  );
   markOnboardingComplete();
 });
 

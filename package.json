@@ -1,6 +1,6 @@
 {
   "name": "os-scribe",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1",
     "tauri": "tauri",
     "tauri:dev": "node scripts/tauri-dev.mjs",
-    "tauri:build": "tauri build --bundles app,dmg",
+    "tauri:build": "node scripts/tauri-build.mjs",
     "tauri:build:signed-dmg": "./scripts/build-signed-dmg.sh",
     "build": "tsc && vite build",
     "test": "vitest run",
@@ -21,7 +21,7 @@
     "test:scribe-api:coverage": "cargo llvm-cov --manifest-path scribe-api/Cargo.toml --workspace --all-features --html --output-dir scribe-api/target/llvm-cov/html",
     "version:bump": "node scripts/bump-version.mjs",
     "lint": "tsc --noEmit",
-    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"src-tauri/tauri.conf.json\" \"package.json\" \"tsconfig.json\" \"vite.config.ts\" \"index.html\" \"README.md\""
+    "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"src-tauri/tauri*.conf.json\" \"package.json\" \"tsconfig.json\" \"vite.config.ts\" \"index.html\" \"README.md\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
@@ -30,9 +30,12 @@
     "@tauri-apps/plugin-notification": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "@tiptap/extension-mention": "3.23.5",
     "@tiptap/extension-placeholder": "^3.23.5",
+    "@tiptap/pm": "3.23.5",
     "@tiptap/react": "^3.23.5",
     "@tiptap/starter-kit": "^3.23.5",
+    "@tiptap/suggestion": "3.23.5",
     "border-beam": "^1.2.0",
     "central-icons": "npm:@central-icons-react/round-outlined-radius-3-stroke-2@1.1.233",
     "central-icons-filled": "npm:@central-icons-react/round-filled-radius-3-stroke-2@1.1.241",

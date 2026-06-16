@@ -35,7 +35,7 @@ export function dispatchProviderModelSettingsChanged(
 }
 
 export const E2EE_MODEL_DESCRIPTION =
-  "Private model with end-to-end encryption. Your prompt is encrypted on your Mac and only decrypted inside a hardware-secured enclave (TEE); the response is encrypted before it leaves the enclave. No prompt data is ever readable by the model provider or its infrastructure.";
+  "Private model with end-to-end encryption. Your prompt is encrypted on your device and only decrypted inside a hardware-secured enclave (TEE); the response is encrypted before it leaves the enclave. No prompt data is ever readable by the model provider or its infrastructure.";
 export const PRIVATE_MODEL_DESCRIPTION =
   "Private model with zero data retention. No prompt data is stored, shared with a third party, or trained on.";
 export const ANONYMOUS_MODEL_DESCRIPTION =

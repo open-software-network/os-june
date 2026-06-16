@@ -8,6 +8,7 @@ import {
   dictationHelperCommand,
   openPrivacySettings,
 } from "../../../lib/tauri";
+import { isMacLikePlatform } from "../../../lib/platform";
 import { StepActions, StepCard } from "../StepChrome";
 import {
   isAccessibilityGranted,
@@ -37,7 +38,11 @@ function PermissionRow({
   onAllow?: () => void;
 }) {
   return (
-    <li className="onboarding-perm" data-granted={granted} data-probing={probing}>
+    <li
+      className="onboarding-perm"
+      data-granted={granted}
+      data-probing={probing}
+    >
       <span className="onboarding-perm-icon" aria-hidden>
         {granted ? <IconCheckmark1Small size={15} /> : icon}
       </span>
@@ -82,6 +87,7 @@ export function PermissionsStep({
   // explains itself and stays out of the Continue gate.
   const systemAudioUnsupported = systemAudioStatus === "unsupported";
   const showPermissionRows = statuses.checked || showUnknownStatuses;
+  const macLikePlatform = isMacLikePlatform();
 
   // Fire the native TCC prompt as soon as the screen shows — the user just
   // read why we're asking, so the dialog lands in context. No-op when
@@ -123,7 +129,11 @@ export function PermissionsStep({
   return (
     <StepCard
       title="Let June listen and type"
-      subtitle="Dictation and meeting notes need three macOS permissions."
+      subtitle={
+        macLikePlatform
+          ? "Dictation and meeting notes need three macOS permissions."
+          : "Dictation and meeting notes need microphone access."
+      }
       wide
     >
       <ul
@@ -151,45 +161,52 @@ export function PermissionsStep({
               : undefined
           }
         />
-        <PermissionRow
-          icon={<IconTextIndicator size={15} />}
-          granted={showPermissionRows && accessibilityGranted}
-          title="Accessibility"
-          detail="Types your words at your cursor, in any app."
-          onAllow={showPermissionRows ? openAccessibilitySettings : undefined}
-        />
-        <PermissionRow
-          icon={<IconVolumeFull size={15} />}
-          granted={showPermissionRows && systemAudioGranted}
-          probing={showPermissionRows && systemAudioStatus === "probing"}
-          title="System audio"
-          detail={
-            systemAudioDenied
-              ? "Turned off in System Settings. Flip the toggle and June will notice."
-              : systemAudioUnsupported
-                ? "Needs macOS 14.2 or later."
-                : systemAudioStatus === "probing"
-                  ? "Waiting for macOS. Approve the prompt when it appears."
-                  : "Hears your calls and meetings, only while you record."
-          }
-          onAllow={
-            showPermissionRows
-              ? systemAudioDenied
-                ? () => void openPrivacySettings("systemAudio")
-                : systemAudioStatus === "unknown"
-                  ? onAllowSystemAudio
+        {macLikePlatform ? (
+          <>
+            <PermissionRow
+              icon={<IconTextIndicator size={15} />}
+              granted={showPermissionRows && accessibilityGranted}
+              title="Accessibility"
+              detail="Types your words at your cursor, in any app."
+              onAllow={
+                showPermissionRows ? openAccessibilitySettings : undefined
+              }
+            />
+            <PermissionRow
+              icon={<IconVolumeFull size={15} />}
+              granted={showPermissionRows && systemAudioGranted}
+              probing={showPermissionRows && systemAudioStatus === "probing"}
+              title="System audio"
+              detail={
+                systemAudioDenied
+                  ? "Turned off in System Settings. Flip the toggle and June will notice."
+                  : systemAudioUnsupported
+                    ? "Needs macOS 14.2 or later."
+                    : systemAudioStatus === "probing"
+                      ? "Waiting for macOS. Approve the prompt when it appears."
+                      : "Hears your calls and meetings, only while you record."
+              }
+              onAllow={
+                showPermissionRows
+                  ? systemAudioDenied
+                    ? () => void openPrivacySettings("systemAudio")
+                    : systemAudioStatus === "unknown"
+                      ? onAllowSystemAudio
+                      : undefined
                   : undefined
-              : undefined
-          }
-        />
+              }
+            />
+          </>
+        ) : null}
       </ul>
       <StepActions
         onContinue={onContinue}
         continueDisabled={
           !showPermissionRows ||
           !micGranted ||
-          !accessibilityGranted ||
-          !(systemAudioGranted || systemAudioUnsupported)
+          (macLikePlatform &&
+            (!accessibilityGranted ||
+              !(systemAudioGranted || systemAudioUnsupported)))
         }
         onSkip={onContinue}
       />

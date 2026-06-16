@@ -92,7 +92,9 @@ describe("folders UI", () => {
       screen.getByRole("button", { name: "Meeting notes" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Agent" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Sessions" }),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     await user.click(screen.getByRole("button", { name: "New session" }));

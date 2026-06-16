@@ -14,9 +14,7 @@ pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
 
-use tauri::Emitter;
-#[cfg(target_os = "macos")]
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";

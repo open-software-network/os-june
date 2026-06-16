@@ -12,6 +12,31 @@ const mocks = vi.hoisted(() => ({
   writeText: vi.fn(),
 }));
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 vi.mock("../lib/tauri", () => ({
   listDictationHistory: mocks.listDictationHistory,
   deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
@@ -98,6 +123,34 @@ describe("DictationHistoryView", () => {
     await waitFor(() =>
       expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "),
     );
+  });
+
+  it("does not advertise shortcut dictation on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      mocks.listDictationHistory.mockResolvedValue({
+        retentionDays: 7,
+        items: [],
+      });
+
+      render(<DictationHistoryView />);
+
+      expect(
+        await screen.findByText("Dictation is only supported on macOS"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Meeting notes still work with microphone recording on this device.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText("Dictation shortcuts")).toBeNull();
+      expect(screen.queryByText("Start dictating anywhere")).toBeNull();
+    } finally {
+      restoreNavigator();
+    }
   });
 
   function manyItems(count: number) {

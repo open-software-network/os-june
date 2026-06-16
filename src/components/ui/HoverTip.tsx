@@ -8,7 +8,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-const TIP_WIDTH = 300;
+const DEFAULT_TIP_WIDTH = 300;
 const TIP_GAP = 6;
 const VIEWPORT_MARGIN = 8;
 // Flip above the anchor when less than this remains below — enough for the
@@ -28,6 +28,14 @@ type TipPosition = {
 type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
   /** Callout body shown on hover/focus of the wrapped content. */
   tip: ReactNode;
+  /** Card width in px. Defaults to the wide explainer width; pass a small
+   * value for compact shortcut-style tips. */
+  width?: number;
+  /** Tightens padding and centers content for a small one-line tip. */
+  compact?: boolean;
+  /** Hover-intent delay (ms) before the tip opens. Defaults to the shared
+   * hover-intent debounce; pass a larger value for a more deliberate tooltip. */
+  delay?: number;
   children: ReactNode;
 };
 
@@ -38,7 +46,14 @@ type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
  * containers or dialog cards; scrolling anywhere dismisses it rather than
  * letting it drift off its anchor.
  */
-export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
+export function HoverTip({
+  tip,
+  width = DEFAULT_TIP_WIDTH,
+  compact = false,
+  delay = HOVER_INTENT_MS,
+  children,
+  ...spanProps
+}: HoverTipProps) {
   const {
     "aria-describedby": ariaDescribedBy,
     onBlur,
@@ -66,8 +81,8 @@ export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
     const rect = anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
     const left = Math.min(
-      Math.max(rect.left + rect.width / 2 - TIP_WIDTH / 2, VIEWPORT_MARGIN),
-      window.innerWidth - TIP_WIDTH - VIEWPORT_MARGIN,
+      Math.max(rect.left + rect.width / 2 - width / 2, VIEWPORT_MARGIN),
+      window.innerWidth - width - VIEWPORT_MARGIN,
     );
     const side =
       window.innerHeight - rect.bottom < MIN_SPACE_BELOW ? "top" : "bottom";
@@ -80,7 +95,7 @@ export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
 
   function showAfterHoverIntent() {
     cancelHoverIntent();
-    hoverTimerRef.current = window.setTimeout(show, HOVER_INTENT_MS);
+    hoverTimerRef.current = window.setTimeout(show, delay);
   }
 
   function hide() {
@@ -130,13 +145,13 @@ export function HoverTip({ tip, children, ...spanProps }: HoverTipProps) {
         ? createPortal(
             <span
               id={tooltipId}
-              className="hover-tip"
+              className={compact ? "hover-tip hover-tip-compact" : "hover-tip"}
               role="tooltip"
               data-side={position.side}
               style={{
                 top: position.top,
                 left: position.left,
-                width: TIP_WIDTH,
+                width,
               }}
             >
               {tip}

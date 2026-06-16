@@ -1,5 +1,8 @@
 # Lessons
 
+- When a custom chrome layer sits above the base titlebar drag layer, empty
+  space in that layer must forward pointerdown to the explicit native
+  `startDragging()` path while child controls guard themselves by target.
 - When a user says a spinner/name change happened elsewhere, honor the latest component name from main while preserving the intended behavior. In this session, the spinner behavior belongs in the trailing agent-session state slot, but the component is `DotSpinner`.
 - During drag-preview UI states, avoid `display` toggles for reversible pointer gestures. Hide collapsed preview with visibility/pointer-events so reopening can render immediately while related fixed panels stay mounted.
 - For tiny native HUDs, verify both the final steady state and the first visible frames after a hidden or interrupted show. A correct final size can still hitch if the native window animates from a stale frame while visible; fresh shows should be pre-sized while hidden, with animation reserved for visible state-to-state morphs.

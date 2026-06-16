@@ -130,6 +130,31 @@ const signedInAccount = {
   balance: { usdMillis: 1200 },
 };
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) {
+      Object.defineProperty(navigator, "platform", ownPlatform);
+    } else {
+      Reflect.deleteProperty(navigator, "platform");
+    }
+    if (ownUserAgent) {
+      Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    } else {
+      Reflect.deleteProperty(navigator, "userAgent");
+    }
+  };
+}
+
 describe("AppSettings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -755,6 +780,101 @@ describe("AppSettings", () => {
     expect(onEnableMicrophone).toHaveBeenCalledTimes(1);
     expect(onEnableAccessibility).toHaveBeenCalledTimes(1);
     expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it("only lists microphone permissions on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    const onEnableMicrophone = vi.fn();
+    const onEnableAccessibility = vi.fn();
+    const onEnableSystemAudio = vi.fn();
+
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: false,
+            checkedAt: "2026-06-08T12:00:00Z",
+            sources: [
+              {
+                source: "microphone",
+                required: true,
+                ready: false,
+                permissionState: "denied",
+                deviceAvailable: false,
+                captureAvailable: false,
+                recoveryAction: "openMicrophoneSettings",
+              },
+              {
+                source: "system",
+                required: true,
+                ready: false,
+                permissionState: "denied",
+                deviceAvailable: true,
+                captureAvailable: false,
+                recoveryAction: "openSystemAudioSettings",
+              },
+            ],
+          }}
+          checkingSourceReadiness={false}
+          microphonePermissionStatus="denied"
+          accessibilityPermissionStatus="missing"
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableMicrophone={onEnableMicrophone}
+          onEnableAccessibility={onEnableAccessibility}
+          onEnableSystemAudio={onEnableSystemAudio}
+        />,
+      );
+
+      expect(
+        screen.getByText("Access used for recording audio."),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Microphone")).toBeInTheDocument();
+      expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
+      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+
+      const microphoneRow = screen
+        .getByText("Microphone")
+        .closest(".settings-row");
+      expect(microphoneRow).not.toBeNull();
+      await userEvent.click(
+        within(microphoneRow as HTMLElement).getByRole("button", {
+          name: "Manage Microphone permission",
+        }),
+      );
+
+      expect(onEnableMicrophone).toHaveBeenCalledTimes(1);
+      expect(onEnableAccessibility).not.toHaveBeenCalled();
+      expect(onEnableSystemAudio).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
+      expect(
+        screen.queryByRole("switch", {
+          name: "Capture system audio for notes",
+        }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: "Start test",
+        }),
+      ).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
+      expect(
+        screen.getByText("Dictation shortcuts unavailable"),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("records push-to-talk and toggle dictation shortcuts in settings", async () => {
@@ -1462,7 +1582,7 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Agent" }));
     const hudSwitch = await screen.findByRole("switch", {
-      name: "Show agent HUD",
+      name: "Show sessions HUD",
     });
 
     expect(hudSwitch).toHaveAttribute("aria-checked", "true");

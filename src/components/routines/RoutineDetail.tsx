@@ -3,7 +3,7 @@ import { IconCalendarRepeat } from "central-icons/IconCalendarRepeat";
 import { IconPlay } from "central-icons/IconPlay";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { IconPause as IconPauseFilled } from "central-icons-filled/IconPause";
+import { IconPause } from "central-icons/IconPause";
 import {
   useEffect,
   useLayoutEffect,
@@ -26,6 +26,7 @@ import type { HermesSessionInfo } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import { Switch } from "../ui/Switch";
+import { userFacingFailureMessage } from "../note-editor/NoteFailureBanner";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
 import { formatRunTime, RoutineRunList } from "./RoutineRunList";
@@ -154,7 +155,9 @@ export function RoutineDetail({
 
   const failure =
     routine.last_status === "error"
-      ? routine.last_error || routine.last_delivery_error
+      ? userFacingFailureMessage(
+          routine.last_error || routine.last_delivery_error || undefined,
+        )
       : null;
 
   return (
@@ -263,7 +266,7 @@ export function RoutineDetail({
           ) : null}
           {paused ? (
             <span className="routine-meta-pill" aria-label="Paused">
-              <IconPauseFilled size={12} aria-hidden />
+              <IconPause size={12} aria-hidden />
               Paused
             </span>
           ) : null}

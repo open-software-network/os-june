@@ -93,6 +93,12 @@
   --titlebar-controls-gap: var(--sp-4);
   --titlebar-controls-nudge: 2px;
 
+  /* The tab strip rides in the titlebar row itself (right of the traffic
+   * lights + sidebar trigger), so it adds no height — the card keeps its
+   * original top. --card-top is where the card and the fixed boxes that must
+   * align with it (the resize handles, the agent files panel) begin. */
+  --card-top: calc(var(--titlebar-h) + var(--sp-2));
+
   /* Centered content column. Shared by every primary view (notes, folders,
    * dictation, the editor) so they line up, and steps up on larger displays
    * so the column doesn't feel marooned in whitespace on big monitors. */

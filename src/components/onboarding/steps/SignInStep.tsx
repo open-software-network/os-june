@@ -2,18 +2,20 @@ import { useCallback, useEffect, useState } from "react";
 import { IconLock } from "central-icons/IconLock";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
+import { isMacLikePlatform } from "../../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { Spinner } from "../../ui/Spinner";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
-// What June is, in three rows: the agent is the product, dictation and
-// meeting notes are how you talk to it, and private is why it's safe to.
+// macOS can introduce the full agent, dictation, and notes surface because the
+// release bundle includes the runtime and helpers. Windows narrows the welcome
+// promise below until its Hermes and dictation support is turnkey.
 const JUNE_POINTS = [
   {
     icon: IconSparkle,
-    title: "An agent on your Mac",
+    title: "An agent on your computer",
     detail: "Hand June real work. It runs the session and comes back done.",
   },
   {
@@ -25,8 +27,22 @@ const JUNE_POINTS = [
     icon: IconLock,
     title: "Private by default",
     detail:
-      "Prompts leave your Mac only for inference, on zero-retention models by default.",
+      "Prompts leave your device only for inference, on zero-retention models by default.",
   },
+];
+
+const WINDOWS_JUNE_POINTS = [
+  {
+    icon: IconSparkle,
+    title: "Desktop notes for your work",
+    detail: "Keep meeting notes and projects together in one app.",
+  },
+  {
+    icon: IconMicrophone,
+    title: "Meeting notes from your mic",
+    detail: "Record meetings from your microphone and turn them into notes.",
+  },
+  JUNE_POINTS[2],
 ];
 
 /**
@@ -46,6 +62,7 @@ export function SignInStep({
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
+  const points = isMacLikePlatform() ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
 
   const cancelInFlight = useCallback(async () => {
     try {
@@ -88,7 +105,7 @@ export function SignInStep({
       wide
     >
       <ul className="onboarding-points">
-        {JUNE_POINTS.map(({ icon: Icon, title, detail }) => (
+        {points.map(({ icon: Icon, title, detail }) => (
           <li key={title}>
             <span className="onboarding-point-icon" aria-hidden>
               <Icon size={15} />

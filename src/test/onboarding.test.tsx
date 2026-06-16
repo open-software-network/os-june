@@ -13,10 +13,7 @@ import {
   setOnboardingResumeStep,
   subscribeToOnboardingComplete,
 } from "../lib/onboarding";
-import type {
-  AccountStatus,
-  RecordingSourceReadinessDto,
-} from "../lib/tauri";
+import type { AccountStatus, RecordingSourceReadinessDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -188,6 +185,41 @@ describe("OnboardingFlow", () => {
         payload: { microphone: "granted", accessibility: "granted" },
       }),
     });
+  }
+
+  function stubNavigatorPlatform(platform: string, userAgent: string) {
+    const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+    const ownUserAgent = Object.getOwnPropertyDescriptor(
+      navigator,
+      "userAgent",
+    );
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      get: () => platform,
+    });
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      get: () => userAgent,
+    });
+    return () => {
+      if (ownPlatform) {
+        Object.defineProperty(navigator, "platform", ownPlatform);
+      } else {
+        Reflect.deleteProperty(navigator, "platform");
+      }
+      if (ownUserAgent) {
+        Object.defineProperty(navigator, "userAgent", ownUserAgent);
+      } else {
+        Reflect.deleteProperty(navigator, "userAgent");
+      }
+    };
+  }
+
+  function stubMacNavigatorPlatform() {
+    return stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
+    );
   }
 
   it("walks the full flow for a subscribed user", async () => {
@@ -385,6 +417,40 @@ describe("OnboardingFlow", () => {
 
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
+  });
+
+  it("shows Windows-accurate welcome copy", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
+
+      await screen.findByRole("heading", { name: "Welcome to June" });
+      expect(
+        screen.getByText("Desktop notes for your work"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Meeting notes from your mic"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Record meetings from your microphone and turn them into notes.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Talk instead of type"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/Dictate into any app/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("An agent on your computer"),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("starts the trial checkout in one click and advances when the subscription lands", async () => {
@@ -710,47 +776,94 @@ describe("OnboardingFlow", () => {
     );
   });
 
-  it("probes system audio when the permissions screen shows", async () => {
+  it("only requires microphone access on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      const onComplete = await renderFlow();
+
+      expect(
+        screen.getByText("Dictation and meeting notes need microphone access."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
+      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+
+      emitDictationEvent?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+      await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+      expect(
+        screen.queryByRole("heading", { name: "Talk to June" }),
+      ).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("probes system audio when the macOS permissions screen shows", async () => {
     // The probe is what surfaces the system-audio TCC prompt on a fresh
     // install; it must fire here, in context, not after onboarding.
-    await renderFlow();
-    await waitFor(() =>
-      expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
-        "microphonePlusSystem",
-      ),
-    );
+    const restoreNavigator = stubMacNavigatorPlatform();
+    try {
+      await renderFlow();
+      await waitFor(() =>
+        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
+          "microphonePlusSystem",
+        ),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("keeps continue locked and falls back to settings when system audio is denied", async () => {
     const user = userEvent.setup();
+    const restoreNavigator = stubMacNavigatorPlatform();
     mocks.checkRecordingSourceReadiness.mockResolvedValue(
       systemAudioReadiness(false),
     );
-    await renderFlow();
-    grantPermissions();
+    try {
+      await renderFlow();
+      grantPermissions();
 
-    await screen.findByText(
-      "Turned off in System Settings. Flip the toggle and June will notice.",
-    );
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+      await screen.findByText(
+        "Turned off in System Settings. Flip the toggle and June will notice.",
+      );
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
 
-    await user.click(
-      screen.getByRole("button", { name: "Allow system audio access" }),
-    );
-    expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+      await user.click(
+        screen.getByRole("button", { name: "Allow system audio access" }),
+      );
+      expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
 
-    // The user flips the toggle and comes back; the focus re-probe picks
-    // up the grant.
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(
-      systemAudioReadiness(true),
-    );
-    window.dispatchEvent(new Event("focus"));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+      // The user flips the toggle and comes back; the focus re-probe picks
+      // up the grant.
+      mocks.checkRecordingSourceReadiness.mockResolvedValue(
+        systemAudioReadiness(true),
+      );
+      window.dispatchEvent(new Event("focus"));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("does not block continue when system audio is unsupported", async () => {
+    const restoreNavigator = stubMacNavigatorPlatform();
     const readiness = systemAudioReadiness(false);
     const sysIdx = readiness.sources.findIndex((s) => s.source === "system");
     readiness.sources[sysIdx] = {
@@ -758,13 +871,17 @@ describe("OnboardingFlow", () => {
       permissionState: "unsupported",
     };
     mocks.checkRecordingSourceReadiness.mockResolvedValue(readiness);
-    await renderFlow();
-    grantPermissions();
+    try {
+      await renderFlow();
+      grantPermissions();
 
-    await screen.findByText("Needs macOS 14.2 or later.");
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
-    );
+      await screen.findByText("Needs macOS 14.2 or later.");
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 });
 

@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "June",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "identifier": "co.opensoftware.scribe",
   "build": {
-    "beforeDevCommand": "./scripts/tauri-before-dev.sh",
+    "beforeDevCommand": "node ./scripts/tauri-before-dev.mjs",
     "beforeBuildCommand": "pnpm run build",
     "devUrl": "http://127.0.0.1:1421",
     "frontendDist": "../dist"
@@ -125,22 +125,8 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "targets": [
-      "app",
-      "dmg"
-    ],
     "resources": {
-      "../.tauri-helper/June.app": "native/bin/June.app",
-      "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",
       "../.tauri-hermes/hermes": "native/hermes"
-    },
-    "macOS": {
-      "bundleName": "June",
-      "entitlements": "Entitlements.plist",
-      "exceptionDomain": "",
-      "frameworks": [],
-      "infoPlist": "Info.plist",
-      "minimumSystemVersion": "14.0"
     }
   }
 }

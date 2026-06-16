@@ -1,10 +1,10 @@
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconZap } from "central-icons/IconZap";
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBrain2 } from "central-icons/IconBrain2";
-import { IconBug } from "central-icons/IconBug";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
@@ -37,6 +37,8 @@ import {
   markAgentNewSessionPending,
   type AgentSessionsChangedDetail,
 } from "../agent/AgentWorkspace";
+import { CategoryIcon } from "../agent/composer/CategoryIcon";
+import type { ReportCategory } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -51,6 +53,7 @@ import {
 import { messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
+import { isPrimaryShortcut, primaryShortcutLabel } from "../../lib/platform";
 import type {
   AccountStatus,
   HermesSessionInfo,
@@ -86,7 +89,7 @@ type SidebarProps = {
   // Notes when not wired, e.g. unit tests).
   onExitSettings?: () => void;
   onSignOut?: () => void;
-  onReportIssue?: () => void;
+  onReportIssue?: (category: ReportCategory) => void;
   onSelectNote: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
@@ -202,7 +205,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
     title: "AI",
     items: [
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
-      { id: "agent", label: "Agent", icon: <IconBubble3 size={16} /> },
+      { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
     ],
   },
   {
@@ -239,6 +242,8 @@ export function Sidebar({
   const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
+  const searchShortcut = primaryShortcutLabel("K");
+  const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>(
     [],
@@ -372,7 +377,7 @@ export function Sidebar({
         return {
           id: `agent:${session.id}`,
           label: title,
-          meta: "Agent",
+          meta: "Session",
           icon: <IconBubble3 size={15} />,
           searchText: normalizeCommandQuery(
             `${title} ${session.preview ?? ""} agent session`,
@@ -859,7 +864,7 @@ export function Sidebar({
               readOnly
             />
             <span className="sidebar-search-kbd" aria-hidden="true">
-              ⌘ K
+              {searchShortcut}
             </span>
           </label>
 
@@ -875,6 +880,9 @@ export function Sidebar({
                 <IconPlusMedium size={15} />
               </span>
               <span className="sidebar-nav-label">New session</span>
+              <kbd className="sidebar-nav-shortcut" aria-hidden="true">
+                {newSessionShortcut}
+              </kbd>
             </button>
             <button
               type="button"
@@ -972,7 +980,7 @@ export function Sidebar({
 
           <section
             className="sidebar-section sidebar-agent-section"
-            aria-label="Agent sessions"
+            aria-label="Sessions"
             data-active={
               activeView === "agent" || activeView === "agent-sessions"
             }
@@ -983,7 +991,7 @@ export function Sidebar({
                 className="section-title-label section-title-open"
                 onClick={() => onChangeView("agent-sessions")}
               >
-                Agent
+                Sessions
               </button>
               {/* Same destination as the header — the hover affordance just
                * makes the "this opens a list" behavior legible. */}
@@ -1050,9 +1058,9 @@ export function Sidebar({
           }}
           onReportIssue={
             onReportIssue
-              ? () => {
+              ? (category) => {
                   setIdentityMenuOpen(false);
-                  onReportIssue();
+                  onReportIssue(category);
                 }
               : undefined
           }
@@ -1486,17 +1494,19 @@ function normalizeCommandQuery(value: string) {
 }
 
 function isSearchShortcut(event: KeyboardEvent) {
-  return (
-    event.key.toLowerCase() === "k" &&
-    event.metaKey &&
-    !event.ctrlKey &&
-    !event.altKey &&
-    !event.shiftKey
-  );
+  return event.key.toLowerCase() === "k" && isPrimaryShortcut(event);
 }
 
 // The user's name is the settings entry point: clicking it opens a small
 // popover whose actions open the settings page or sign out.
+// The report shortcuts in the account menu: the same set as the composer's
+// "+" popover, minus attaching a file. Action-phrased to read as menu verbs.
+const REPORT_MENU_ITEMS: { category: ReportCategory; label: string }[] = [
+  { category: "bug", label: "Report a bug" },
+  { category: "feedback", label: "Send feedback" },
+  { category: "feature", label: "Request a feature" },
+];
+
 function SidebarIdentity({
   account,
   menuOpen,
@@ -1511,7 +1521,7 @@ function SidebarIdentity({
   onToggleMenu: () => void;
   onCloseMenu: () => void;
   onOpenSettings: () => void;
-  onReportIssue?: () => void;
+  onReportIssue?: (category: ReportCategory) => void;
   onSignOut?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1550,16 +1560,28 @@ function SidebarIdentity({
       </button>
       {menuOpen ? (
         <div className="sidebar-identity-menu" role="menu">
-          {onReportIssue ? (
-            <button type="button" role="menuitem" onClick={onReportIssue}>
-              <IconBug size={14} />
-              Report an issue
-            </button>
-          ) : null}
           <button type="button" role="menuitem" onClick={onOpenSettings}>
             <IconSettingsGear4 size={14} />
             Settings
           </button>
+          {onReportIssue
+            ? REPORT_MENU_ITEMS.map((item) => (
+                <button
+                  key={item.category}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => onReportIssue(item.category)}
+                >
+                  <span
+                    className="sidebar-report-icon"
+                    data-category={item.category}
+                  >
+                    <CategoryIcon category={item.category} size={14} />
+                  </span>
+                  {item.label}
+                </button>
+              ))
+            : null}
           {account.signedIn && onSignOut ? (
             <>
               <div className="context-menu-separator" role="separator" />

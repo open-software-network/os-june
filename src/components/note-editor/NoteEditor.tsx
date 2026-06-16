@@ -1,6 +1,6 @@
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
-import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
@@ -26,6 +26,7 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
+import { isMacLikePlatform } from "../../lib/platform";
 import {
   NoteFailureBanner,
   userFacingFailureMessage,
@@ -166,6 +167,7 @@ export function NoteEditor({
     systemSource?.permissionState === "denied" ||
     systemSource?.permissionState === "restricted";
   const systemUnsupported = systemSource?.permissionState === "unsupported";
+  const showRecordingOptions = isMacLikePlatform();
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.
   const micDenied = microphoneBlocked;
@@ -432,10 +434,13 @@ export function NoteEditor({
               className="record-shell"
               data-state={shellState}
               data-options-open={
-                !recordingForNote && !processingLock && optionsOpen
+                !recordingForNote &&
+                !processingLock &&
+                showRecordingOptions &&
+                optionsOpen
               }
             >
-              {!recordingForNote && !processingLock ? (
+              {!recordingForNote && !processingLock && showRecordingOptions ? (
                 <div
                   className="record-options-panel"
                   data-open={optionsOpen}
@@ -545,16 +550,18 @@ export function NoteEditor({
                         >
                           <IconMicrophone size={20} />
                         </button>
-                        <button
-                          type="button"
-                          className="record-options-trigger"
-                          aria-label="Recording options"
-                          aria-expanded={optionsOpen}
-                          data-rotated={optionsOpen}
-                          onClick={() => setOptionsOpen((value) => !value)}
-                        >
-                          <IconChevronBottom size={16} />
-                        </button>
+                        {showRecordingOptions ? (
+                          <button
+                            type="button"
+                            className="record-options-trigger"
+                            aria-label="Recording options"
+                            aria-expanded={optionsOpen}
+                            data-rotated={optionsOpen}
+                            onClick={() => setOptionsOpen((value) => !value)}
+                          >
+                            <IconChevronBottom size={16} />
+                          </button>
+                        ) : null}
                       </div>
                     </motion.div>
                   )}
@@ -632,8 +639,8 @@ function FolderChip({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <IconFolder1 size={14} />
-        {currentFolder?.name ?? "Folder"}
+        <IconProjects size={14} />
+        {currentFolder?.name ?? "Project"}
       </button>
       {currentFolder && onNavigateToFolder ? (
         <button
@@ -656,7 +663,7 @@ function FolderChip({
             <input
               ref={searchRef}
               type="search"
-              placeholder="Search or create folder"
+              placeholder="Search or create project"
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -702,7 +709,7 @@ function FolderChip({
                       isAssigned ? onRemove(folder.id) : onAssign(folder.id)
                     }
                   >
-                    <IconFolder1 size={14} />
+                    <IconProjects size={14} />
                     <span className="move-to-folder-item-name">
                       {folder.name}
                     </span>
@@ -713,7 +720,7 @@ function FolderChip({
                 );
               })
             ) : trimmed.length === 0 ? (
-              <p className="move-to-folder-empty">No folders yet.</p>
+              <p className="move-to-folder-empty">No projects yet.</p>
             ) : null}
           </div>
         </div>

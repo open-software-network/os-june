@@ -33,6 +33,7 @@ import {
 } from "../../lib/tauri";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
+import { isMacLikePlatform } from "../../lib/platform";
 
 const NO_DICTATIONS: DictationHistoryItemDto[] = [];
 
@@ -90,6 +91,7 @@ export function DictationHistoryView({
   const [hintDismissed, setHintDismissed] = useState(readHintDismissed);
   const [pendingDelete, setPendingDelete] =
     useState<DictationHistoryItemDto | null>(null);
+  const dictationAvailable = isMacLikePlatform();
 
   const loadHistory = useCallback(async () => {
     try {
@@ -209,7 +211,7 @@ export function DictationHistoryView({
         </div>
         {/* Shortcuts live in the header whenever there's history; newcomers
             get them in the empty state instead. */}
-        {items.length > 0 ? (
+        {items.length > 0 && dictationAvailable ? (
           <ShortcutLegend
             className="dictation-shortcuts"
             pushToTalk={pushToTalk}
@@ -250,16 +252,28 @@ export function DictationHistoryView({
         </div>
       ) : items.length === 0 ? (
         <EmptyState
-          label="Start dictating"
+          label={
+            dictationAvailable ? "Start dictating" : "Dictation unavailable"
+          }
           icon={<IconMicrophoneSparkleFilled size={28} />}
-          title="Start dictating anywhere"
-          description="Place your cursor in any app, hold the shortcut, and speak. Your words are transcribed and pasted right where you’re typing."
+          title={
+            dictationAvailable
+              ? "Start dictating anywhere"
+              : "Dictation is only supported on macOS"
+          }
+          description={
+            dictationAvailable
+              ? "Place your cursor in any app, hold the shortcut, and speak. Your words are transcribed and pasted right where you're typing."
+              : "Meeting notes still work with microphone recording on this device."
+          }
           footer={
-            <ShortcutLegend
-              className="shortcut-legend-inline"
-              pushToTalk={pushToTalk}
-              toggle={toggle}
-            />
+            dictationAvailable ? (
+              <ShortcutLegend
+                className="shortcut-legend-inline"
+                pushToTalk={pushToTalk}
+                toggle={toggle}
+              />
+            ) : null
           }
         />
       ) : groups.length === 0 ? (

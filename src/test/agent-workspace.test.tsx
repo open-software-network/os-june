@@ -370,14 +370,16 @@ describe("AgentWorkspace", () => {
       expect(mocks.listHermesSessions).toHaveBeenCalledTimes(1);
       expect(screen.getByText("Getting June ready…")).toBeInTheDocument();
 
-      const composer = screen.getByPlaceholderText("Describe a task for June…");
+      // Start a new session mid-retry. The composer is now a TipTap
+      // contenteditable whose async input handling deadlocks against fake
+      // timers, so drive the new-session path directly (the same code the
+      // composer submit runs) with the prompt — deterministic and timer-free.
       await act(async () => {
-        fireEvent.change(composer, {
-          target: { value: "spin up a project brief" },
-        });
-      });
-      await act(async () => {
-        fireEvent.submit(composer.closest("form") as HTMLFormElement);
+        window.dispatchEvent(
+          new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+            detail: { prompt: "spin up a project brief" },
+          }),
+        );
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -437,20 +439,17 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("prefills the issue report template without submitting", async () => {
+  it("seeds a bug report chip without submitting", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), kind: "issue-report" }),
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
 
     render(<AgentWorkspace />);
 
-    const composer = (await screen.findByPlaceholderText(
-      "Describe a task for June…",
-    )) as HTMLTextAreaElement;
-    await waitFor(() =>
-      expect(composer.value).toContain("I want to report an issue with June."),
-    );
+    // The composer opens tagged with a Bug report chip instead of
+    // auto-submitting; the user types their report after it.
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
       "session.create",
       expect.anything(),
@@ -464,19 +463,15 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), kind: "issue-report" }),
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
     mocks.submitIssueReport.mockResolvedValue({ received: true });
 
     render(<AgentWorkspace />);
 
-    const composer = (await screen.findByPlaceholderText(
-      "Describe a task for June…",
-    )) as HTMLTextAreaElement;
-    await waitFor(() =>
-      expect(composer.value).toContain("I want to report an issue with June."),
-    );
-    await user.clear(composer);
+    // Wait for the Bug report chip to seed, then type the report after it.
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    const composer = await screen.findByRole("textbox");
     await user.type(composer, "The recorder crashes after long meetings");
     const form = document.querySelector(".agent-composer");
     expect(form).not.toBeNull();
@@ -533,6 +528,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
         description: "The recorder crashes after long meetings",
         agentDiagnosis: "The screenshot shows the recorder stuck on saving.",
         attachmentNames: ["screenshot.png"],
@@ -1127,6 +1123,31 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
     expect(screen.queryByText("Existing session")).toBeNull();
+  });
+
+  it("clears an existing draft when starting a blank new session", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "stale draft");
+    expect(screen.getByRole("textbox")).toHaveTextContent("stale draft");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+    expect(
+      screen.getByRole("button", { name: "Start session" }),
+    ).toBeDisabled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: "stale draft" }),
+    );
   });
 
   it("submits a pending New Session prompt as a fresh Hermes session", async () => {
@@ -2187,10 +2208,7 @@ describe("AgentWorkspace", () => {
     expect(
       document.querySelector(".agent-attachment-chip img"),
     ).toHaveAttribute("src", "data:image/png;base64,preview");
-    await user.type(
-      screen.getByPlaceholderText("Send a message"),
-      "what is in this image?",
-    );
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
     const sendButton = screen.getByRole("button", { name: "Send message" });
     await waitFor(() => expect(sendButton).not.toBeDisabled());
     await user.click(sendButton);
@@ -2497,10 +2515,7 @@ describe("AgentWorkspace", () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
 
-    await user.type(
-      await screen.findByPlaceholderText("Describe a task for June…"),
-      "first task",
-    );
+    await user.type(await screen.findByRole("textbox"), "first task");
     await user.click(screen.getByRole("button", { name: "Start session" }));
 
     // Mid-flight: still the hero, but tearing down.
@@ -2534,10 +2549,10 @@ describe("AgentWorkspace", () => {
         await screen.findByRole("button", { name: /Research a topic/ }),
       );
 
-      const composer = screen.getByPlaceholderText(
-        "Describe a task for June…",
-      ) as HTMLTextAreaElement;
-      await waitFor(() => expect(composer.value).toContain("Research <topic>"));
+      const composer = screen.getByRole("textbox");
+      await waitFor(() =>
+        expect(composer.textContent ?? "").toContain("Research <topic>"),
+      );
       expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
         "prompt.submit",
         expect.anything(),
@@ -2626,10 +2641,7 @@ describe("AgentWorkspace", () => {
 
     // Submitting without the opt-in must not touch the runtime's mode — the
     // running sandboxed bridge is reused as-is.
-    await user.type(
-      screen.getByPlaceholderText("Describe a task for June…"),
-      "first task",
-    );
+    await user.type(screen.getByRole("textbox"), "first task");
     await user.click(screen.getByRole("button", { name: "Start session" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith(
@@ -2664,10 +2676,7 @@ describe("AgentWorkspace", () => {
       screen.getByRole("button", { name: "Unrestricted" }),
     ).toBeInTheDocument();
 
-    await user.type(
-      screen.getByPlaceholderText("Describe a task for June…"),
-      "risky task",
-    );
+    await user.type(screen.getByRole("textbox"), "risky task");
     await user.click(screen.getByRole("button", { name: "Start session" }));
 
     await waitFor(() =>
@@ -2764,7 +2773,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.type(screen.getByRole("textbox"), "hello");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     // The send brings up the sandboxed process for this session — the
@@ -2796,7 +2805,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("Send a message"), "continue");
+    await user.type(screen.getByRole("textbox"), "continue");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
@@ -2831,7 +2840,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
     // Follow-up to the unrestricted session rides its own gateway.
-    await user.type(screen.getByPlaceholderText("Send a message"), "continue");
+    await user.type(screen.getByRole("textbox"), "continue");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith(
@@ -2883,7 +2892,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
-    const composer = screen.getByPlaceholderText("Send a message");
+    const composer = screen.getByRole("textbox");
     await user.type(composer, "are the subagents using my CLI?");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -2901,7 +2910,7 @@ describe("AgentWorkspace", () => {
     // lingers in the transcript (it would render below later persisted
     // messages as a send the agent ignored), and the draft comes back.
     expect(document.querySelector(".agent-user-turn")).toBeNull();
-    expect(composer).toHaveValue("are the subagents using my CLI?");
+    expect(composer).toHaveTextContent("are the subagents using my CLI?");
     // The previous turn is still running, so the live listener stays attached.
     expect(mocks.gatewayEventHandlers.size).toBe(1);
   });
@@ -2921,7 +2930,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.type(screen.getByRole("textbox"), "hello");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(

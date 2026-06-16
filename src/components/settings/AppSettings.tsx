@@ -56,11 +56,13 @@ import {
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
+import type { ReportCategory } from "../agent/composer/reportCategory";
 import {
   getStoredTheme,
   setStoredTheme,
   type ThemePreference,
 } from "../../lib/theme";
+import { isMacLikePlatform } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
@@ -207,8 +209,8 @@ type AppSettingsProps = {
   // own nav — the standalone path exercised by app-settings tests.
   activeTab?: SettingsTab;
   onTabChange?: (tab: SettingsTab) => void;
-  // Opens a new agent session prefilled with the bug report template.
-  onReportIssue?: () => void;
+  // Opens a new agent session seeded with a report category chip.
+  onReportIssue?: (category: ReportCategory) => void;
 };
 
 export function AppSettings({
@@ -268,6 +270,7 @@ export function AppSettings({
   const [micTestPlaying, setMicTestPlaying] = useState(false);
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
   const activeTab = controlled ? controlledTab : internalTab;
+  const macLikePlatform = isMacLikePlatform();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -286,7 +289,7 @@ export function AppSettings({
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
-  const systemUnsupported = systemState === "unsupported";
+  const systemUnavailable = !macLikePlatform || systemState === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
@@ -663,7 +666,7 @@ export function AppSettings({
     ? "Input device used for dictation."
     : defaultMicrophone?.name
       ? `Auto-detect uses ${defaultMicrophone.name}.`
-      : "Auto-detect uses the current macOS input.";
+      : "Auto-detect uses the current system input.";
   const microphoneOptions = [
     { id: undefined, name: "Auto-detect" },
     ...microphones,
@@ -862,48 +865,66 @@ export function AppSettings({
             </h2>
             <div className="settings-card">
               <div className="settings-rows">
-                <ShortcutRow
-                  title="Push to talk"
-                  description="Hold this shortcut to dictate, then release to paste."
-                  shortcut={settings.pushToTalkShortcut}
-                  defaultShortcut={DEFAULT_SHORTCUTS.push_to_talk}
-                  capturing={capturingShortcut === "push_to_talk"}
-                  disabled={
-                    !!capturingShortcut && capturingShortcut !== "push_to_talk"
-                  }
-                  error={
-                    capturingShortcut === "push_to_talk"
-                      ? shortcutError
-                      : undefined
-                  }
-                  onChange={() => void startShortcutCapture("push_to_talk")}
-                  onReset={() =>
-                    void saveShortcut(
-                      "push_to_talk",
-                      DEFAULT_SHORTCUTS.push_to_talk,
-                    )
-                  }
-                  onCancel={() => void cancelShortcutCapture()}
-                />
+                {macLikePlatform ? (
+                  <>
+                    <ShortcutRow
+                      title="Push to talk"
+                      description="Hold this shortcut to dictate, then release to paste."
+                      shortcut={settings.pushToTalkShortcut}
+                      defaultShortcut={DEFAULT_SHORTCUTS.push_to_talk}
+                      capturing={capturingShortcut === "push_to_talk"}
+                      disabled={
+                        !!capturingShortcut &&
+                        capturingShortcut !== "push_to_talk"
+                      }
+                      error={
+                        capturingShortcut === "push_to_talk"
+                          ? shortcutError
+                          : undefined
+                      }
+                      onChange={() => void startShortcutCapture("push_to_talk")}
+                      onReset={() =>
+                        void saveShortcut(
+                          "push_to_talk",
+                          DEFAULT_SHORTCUTS.push_to_talk,
+                        )
+                      }
+                      onCancel={() => void cancelShortcutCapture()}
+                    />
 
-                <ShortcutRow
-                  title="Toggle dictation"
-                  description="Press this shortcut to start or stop dictation."
-                  shortcut={settings.toggleShortcut}
-                  defaultShortcut={DEFAULT_SHORTCUTS.toggle}
-                  capturing={capturingShortcut === "toggle"}
-                  disabled={
-                    !!capturingShortcut && capturingShortcut !== "toggle"
-                  }
-                  error={
-                    capturingShortcut === "toggle" ? shortcutError : undefined
-                  }
-                  onChange={() => void startShortcutCapture("toggle")}
-                  onReset={() =>
-                    void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)
-                  }
-                  onCancel={() => void cancelShortcutCapture()}
-                />
+                    <ShortcutRow
+                      title="Toggle dictation"
+                      description="Press this shortcut to start or stop dictation."
+                      shortcut={settings.toggleShortcut}
+                      defaultShortcut={DEFAULT_SHORTCUTS.toggle}
+                      capturing={capturingShortcut === "toggle"}
+                      disabled={
+                        !!capturingShortcut && capturingShortcut !== "toggle"
+                      }
+                      error={
+                        capturingShortcut === "toggle"
+                          ? shortcutError
+                          : undefined
+                      }
+                      onChange={() => void startShortcutCapture("toggle")}
+                      onReset={() =>
+                        void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)
+                      }
+                      onCancel={() => void cancelShortcutCapture()}
+                    />
+                  </>
+                ) : (
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">
+                        Dictation shortcuts unavailable
+                      </h3>
+                      <p className="settings-row-description">
+                        Global dictation shortcuts are only supported on macOS.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -1055,25 +1076,27 @@ export function AppSettings({
                   </div>
                 </div>
 
-                <MicTestControl
-                  state={micTestState}
-                  level={micTestLevel}
-                  elapsedMs={micTestElapsedMs}
-                  sampleSrc={micTestSampleSrc}
-                  error={micTestError}
-                  playing={micTestPlaying}
-                  durationSeconds={MIC_TEST_DURATION_SECONDS}
-                  onStart={() => void startMicTest()}
-                  onStartOver={() => void startOverMicTest()}
-                  onPlaybackError={() => {
-                    setMicTestError(
-                      "Microphone test recorded, but playback is unavailable.",
-                    );
-                  }}
-                  onPlayingChange={setMicTestPlaying}
-                />
+                {macLikePlatform ? (
+                  <MicTestControl
+                    state={micTestState}
+                    level={micTestLevel}
+                    elapsedMs={micTestElapsedMs}
+                    sampleSrc={micTestSampleSrc}
+                    error={micTestError}
+                    playing={micTestPlaying}
+                    durationSeconds={MIC_TEST_DURATION_SECONDS}
+                    onStart={() => void startMicTest()}
+                    onStartOver={() => void startOverMicTest()}
+                    onPlaybackError={() => {
+                      setMicTestError(
+                        "Microphone test recorded, but playback is unavailable.",
+                      );
+                    }}
+                    onPlayingChange={setMicTestPlaying}
+                  />
+                ) : null}
 
-                {systemUnsupported ? null : (
+                {systemUnavailable ? null : (
                   <div className="settings-row">
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">System audio</h3>
@@ -1226,7 +1249,7 @@ export function AppSettings({
                       <button
                         type="button"
                         className="btn btn-secondary"
-                        onClick={onReportIssue}
+                        onClick={() => onReportIssue("bug")}
                       >
                         Report an issue
                       </button>
@@ -1295,14 +1318,16 @@ function PermissionsSettingsSection({
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
 }) {
+  const macLikePlatform = isMacLikePlatform();
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
       <h2 id="permissions-heading" className="settings-group-heading">
         System permissions
       </h2>
       <p className="settings-group-description">
-        macOS access used for recording audio, pasting dictation, and capturing
-        system sound.
+        {macLikePlatform
+          ? "macOS access used for recording audio, pasting dictation, and capturing system sound."
+          : "Access used for recording audio."}
       </p>
       <div className="settings-card">
         <div className="settings-rows">
@@ -1316,19 +1341,23 @@ function PermissionsSettingsSection({
             onManage={onEnableMicrophone}
           />
 
-          <PermissionRow
-            title="Accessibility"
-            description="Paste dictated text into the active app."
-            status={permissionStatus(accessibilityPermissionStatus)}
-            onManage={onEnableAccessibility}
-          />
+          {macLikePlatform ? (
+            <>
+              <PermissionRow
+                title="Accessibility"
+                description="Paste dictated text into the active app."
+                status={permissionStatus(accessibilityPermissionStatus)}
+                onManage={onEnableAccessibility}
+              />
 
-          <PermissionRow
-            title="System audio"
-            description="Record audio from other apps when system audio is enabled."
-            status={sourcePermissionStatus(systemReadiness)}
-            onManage={onEnableSystemAudio}
-          />
+              <PermissionRow
+                title="System audio"
+                description="Record audio from other apps when system audio is enabled."
+                status={sourcePermissionStatus(systemReadiness)}
+                onManage={onEnableSystemAudio}
+              />
+            </>
+          ) : null}
         </div>
       </div>
     </section>
