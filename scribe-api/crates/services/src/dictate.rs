@@ -69,18 +69,20 @@ impl DictateService {
             action: ActionSlug::DictateTranscribe,
             estimate,
             hold_ttl_seconds: self.transcribe_hold_ttl_seconds,
-        })
-        .await?;
-        let transcript = self
-            .transcriber
-            .transcribe(TranscriptionRequest {
-                audio: params.audio,
-                format: AudioFormat::from_filename(&params.filename),
-                context: params.context,
-                language: params.language,
-                model: params.model_id.clone(),
-            })
-            .await?;
+        });
+        let transcript = async {
+            self.transcriber
+                .transcribe(TranscriptionRequest {
+                    audio: params.audio,
+                    format: AudioFormat::from_filename(&params.filename),
+                    context: params.context,
+                    language: params.language,
+                    model: params.model_id.clone(),
+                })
+                .await
+                .map_err(ServiceError::from)
+        };
+        let (authorization, transcript) = tokio::try_join!(authorization, transcript)?;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "dictate_transcribe:{}:{}:{}",

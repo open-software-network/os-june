@@ -42,7 +42,10 @@ mod tests {
     };
     use std::{
         collections::BTreeMap,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -198,6 +201,53 @@ mod tests {
         assert_eq!(
             wait_for_charge_idempotency_key(&os_accounts).await,
             Some("dictate_transcribe:usr_123:session_1:utt_2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn dictate_transcribe_starts_asr_while_authorizing() {
+        let authorization_completed = Arc::new(AtomicBool::new(false));
+        let asr_started_before_authorization_completed = Arc::new(AtomicBool::new(false));
+        let os_accounts = Arc::new(SlowAuthorizeOsAccounts {
+            authorization_completed: authorization_completed.clone(),
+        });
+        let service = DictateService::new(DictateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts,
+            transcriber: Arc::new(AuthorizationOverlapTranscriber {
+                authorization_completed,
+                asr_started_before_authorization_completed:
+                    asr_started_before_authorization_completed.clone(),
+            }),
+            cleaner: Arc::new(FixedCleaner),
+            duration_probe: Arc::new(FixedDurationProbe),
+            transcribe_hold_ttl_seconds: 30,
+            cleanup_hold_ttl_seconds: 30,
+            flat_estimate_credits: 1024,
+        });
+
+        service
+            .transcribe(DictateTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                session_id: "session_1".to_string(),
+                utterance_id: "utt_2".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "dictation.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+            })
+            .await
+            .expect("transcribe succeeds");
+
+        assert!(
+            asr_started_before_authorization_completed.load(Ordering::SeqCst),
+            "dictation ASR should not wait for billing authorization to finish"
         );
     }
 
@@ -623,6 +673,57 @@ mod tests {
             &self,
             _request: TranscriptionRequest,
         ) -> Result<Transcript, DomainError> {
+            Ok(Transcript {
+                text: "Transcript".to_string(),
+                language: Some("en".to_string()),
+                provider: "test".to_string(),
+            })
+        }
+    }
+
+    struct SlowAuthorizeOsAccounts {
+        authorization_completed: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl OsAccountsClient for SlowAuthorizeOsAccounts {
+        async fn authorize(
+            &self,
+            _request: AuthorizeRequest,
+        ) -> Result<Authorization, DomainError> {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            self.authorization_completed.store(true, Ordering::SeqCst);
+            Ok(Authorization {
+                allowed: true,
+                action_token: Some("agt_test".to_string()),
+                cap_credits: None,
+                reason: None,
+            })
+        }
+
+        async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError> {
+            Ok(Receipt {
+                credits_charged: request.credits,
+                idempotent_replay: false,
+            })
+        }
+    }
+
+    struct AuthorizationOverlapTranscriber {
+        authorization_completed: Arc<AtomicBool>,
+        asr_started_before_authorization_completed: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Transcriber for AuthorizationOverlapTranscriber {
+        async fn transcribe(
+            &self,
+            _request: TranscriptionRequest,
+        ) -> Result<Transcript, DomainError> {
+            if !self.authorization_completed.load(Ordering::SeqCst) {
+                self.asr_started_before_authorization_completed
+                    .store(true, Ordering::SeqCst);
+            }
             Ok(Transcript {
                 text: "Transcript".to_string(),
                 language: Some("en".to_string()),
