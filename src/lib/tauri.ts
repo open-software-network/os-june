@@ -221,6 +221,7 @@ export type SourceWarningDto = {
 
 export type RecordingStatusDto = {
   sessionId: string;
+  noteId?: string;
   sourceMode?: RecordingSourceMode;
   state: RecordingState;
   elapsedMs: number;
@@ -229,6 +230,13 @@ export type RecordingStatusDto = {
   bytesWritten: number;
   sources?: SourceStatusDto[];
   warnings?: SourceWarningDto[];
+};
+
+export type RecordingPresenceBoundsDto = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export type RecordingSessionDto = {
@@ -1120,6 +1128,15 @@ export async function resumeRecording(sessionId: string) {
 export async function getRecordingStatus(sessionId: string) {
   return invoke<RecordingStatusDto>("get_recording_status", {
     request: { sessionId },
+  });
+}
+
+export async function setRecordingPresenceBounds(
+  bounds: RecordingPresenceBoundsDto | null,
+  ownerId: string,
+) {
+  return invoke<void>("set_recording_presence_bounds", {
+    request: { bounds, ownerId },
   });
 }
 

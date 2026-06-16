@@ -1,6 +1,6 @@
 use os_scribe_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
-    domain::types::RecordingSourceMode,
+    domain::types::{ProcessingStatus, RecordingSourceMode},
 };
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -616,6 +616,38 @@ async fn get_note_returns_transcript_and_audio_metadata() {
         "Raw transcript text"
     );
     assert!(loaded.source_transcripts.is_empty());
+}
+
+#[tokio::test]
+async fn discarded_recording_no_longer_exposes_retryable_audio() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let session_id = "session-1";
+    repos
+        .create_recording_session(
+            &note.id,
+            session_id,
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/partial.wav",
+            "/tmp/final.wav",
+            None,
+        )
+        .await
+        .expect("session");
+    repos
+        .create_audio_artifact(&note.id, session_id, "/tmp/final.wav", 1200, 2048, "abc")
+        .await
+        .expect("artifact");
+
+    let discarded = repos
+        .mark_recording_discarded(session_id, &note.id)
+        .await
+        .expect("discarded note");
+
+    assert_eq!(discarded.processing_status, ProcessingStatus::Failed);
+    assert_eq!(discarded.last_error.as_deref(), Some("Recording discarded"));
+    assert!(discarded.audio.is_none());
+    assert!(discarded.audio_sources.is_empty());
 }
 
 #[tokio::test]

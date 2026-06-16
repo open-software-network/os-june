@@ -163,7 +163,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
-  generationModel: "kimi-k2-6",
+  generationModel: "zai-org-glm-5-2",
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;

@@ -37,6 +37,7 @@ type NoteEditorProps = {
   note: NoteDto;
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
+  recordingDisabled?: boolean;
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
   recovery?: RecoverableRecordingDto;
@@ -103,6 +104,7 @@ export function NoteEditor({
   note,
   folders,
   recordingStatus,
+  recordingDisabled = false,
   sourceMode,
   sourceReadiness,
   recovery,
@@ -223,6 +225,8 @@ export function NoteEditor({
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating" ||
     note.processingStatus === "validating";
+  const recordButtonDisabled = recordingDisabled;
+  const recordOptionsDisabled = processingLock || recordingDisabled;
   const showProcessingSkeleton =
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating";
@@ -231,6 +235,9 @@ export function NoteEditor({
   // stays disabled via processingLock so nothing can re-trigger.
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
+  const transcriptText = transcriptToText(note);
+  const showTranscriptProcessing =
+    processingLock && transcriptText.trim().length > 0;
   // Processing runs in the background and is queued per note, so a recording
   // that's still transcribing/generating no longer blocks starting another —
   // you can stack messages and they process in order. The record button only
@@ -289,7 +296,7 @@ export function NoteEditor({
         ) : null}
         {activeTab === "transcription" ? (
           <div className="transcript-view">
-            {transcriptToText(note) ? (
+            {transcriptText ? (
               <div className="transcript-toolbar">
                 {hasBothSources ? (
                   <SegmentedControl
@@ -304,9 +311,21 @@ export function NoteEditor({
                   text={
                     visibleTurns.length
                       ? turnsToText(visibleTurns)
-                      : transcriptToText(note)
+                      : transcriptText
                   }
                 />
+              </div>
+            ) : null}
+            {showTranscriptProcessing ? (
+              <div
+                className="transcript-processing"
+                role="status"
+                aria-live="polite"
+              >
+                <DotSpinner className="transcript-processing-spinner" />
+                <span className="transcript-processing-label">
+                  {processingText ?? "Processing audio..."}
+                </span>
               </div>
             ) : null}
             {visibleTurns.length ? (
@@ -435,12 +454,14 @@ export function NoteEditor({
               data-state={shellState}
               data-options-open={
                 !recordingForNote &&
-                !processingLock &&
+                !recordOptionsDisabled &&
                 showRecordingOptions &&
                 optionsOpen
               }
             >
-              {!recordingForNote && !processingLock && showRecordingOptions ? (
+              {!recordingForNote &&
+              !recordOptionsDisabled &&
+              showRecordingOptions ? (
                 <div
                   className="record-options-panel"
                   data-open={optionsOpen}
@@ -544,13 +565,18 @@ export function NoteEditor({
                         <button
                           type="button"
                           className="record-button"
-                          aria-label="Record"
-                          title="Record"
+                          aria-label={
+                            recordingDisabled ? "Recording in progress" : "Record"
+                          }
+                          title={
+                            recordingDisabled ? "Recording in progress" : "Record"
+                          }
+                          disabled={recordButtonDisabled}
                           onClick={onStartRecording}
                         >
                           <IconMicrophone size={20} />
                         </button>
-                        {showRecordingOptions ? (
+                        {showRecordingOptions && !recordOptionsDisabled ? (
                           <button
                             type="button"
                             className="record-options-trigger"

@@ -2,10 +2,10 @@
 
 /*
  * Meeting recording HUD — a small frosted presence indicator (sibling to the
- * dictation HUD, hud.css). When the main window is closed/minimized mid-meeting
- * this floats as the June mark + live waveform: a calm "still recording"
- * signal. Click it to bring Scribe back to the meeting; drag to move. No
- * controls — all recording controls live in-app, one click away.
+ * dictation HUD, hud.css). When June is backgrounded, minimized, or hidden
+ * mid-meeting this floats as the June mark + live waveform: a calm "still
+ * recording" signal. Click it to bring June back to the meeting; drag to move.
+ * No controls — all recording controls live in-app, one click away.
  *
  * The window is a fixed square that fits the pill in both orientations: the
  * frosted surface is a native NSVisualEffectView framed to the pill behind the
@@ -36,7 +36,9 @@
    * separate window and locally redefines the tokens it needs. The brand
    * terracotta (--brand in tokens.css), lifted for legibility on dark glass. */
   --attention: oklch(0.74 0.13 42);
-  --attention-bright: oklch(0.88 0.09 55);
+  /* The shimmer highlight. Warmer, brighter, and high-chroma so the tiny
+   * masked glyph has enough contrast to read without washing out to white. */
+  --attention-bright: oklch(0.91 0.2 72);
 
   color: var(--foreground);
   background: transparent;
@@ -156,21 +158,21 @@ body:active {
  * recording signal. */
 .mhud-mark::before {
   position: absolute;
-  inset: -1px auto -1px -65%;
-  width: 55%;
+  inset: -2px auto -2px -110%;
+  width: 115%;
   content: "";
   background: linear-gradient(
     100deg,
     transparent 0%,
-    color-mix(in oklch, var(--mark-shine) 20%, transparent) 30%,
-    var(--mark-shine) 50%,
-    color-mix(in oklch, var(--mark-shine) 20%, transparent) 70%,
+    color-mix(in oklch, var(--mark-shine) 32%, transparent) 24%,
+    var(--mark-shine) 46%,
+    var(--mark-shine) 56%,
+    color-mix(in oklch, var(--mark-shine) 32%, transparent) 78%,
     transparent 100%
   );
-  filter: blur(0.2px);
   transform: translate3d(0, 0, 0) skewX(-16deg);
   will-change: transform;
-  animation: mhud-shimmer 1150ms linear infinite;
+  animation: mhud-shimmer 1320ms linear infinite;
 }
 
 /* Paused: the mark dims and stops shimmering — static, like the dimmed bars
@@ -187,7 +189,7 @@ body:active {
  * agent-hud-shimmer in agent-hud.css). */
 @keyframes mhud-shimmer {
   to {
-    transform: translate3d(360%, 0, 0) skewX(-16deg);
+    transform: translate3d(230%, 0, 0) skewX(-16deg);
   }
 }
 

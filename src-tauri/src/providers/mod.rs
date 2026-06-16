@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager, State};
 pub const PROVIDER_OPENAI: &str = "openai";
 pub const PROVIDER_VENICE: &str = "venice";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
-pub const DEFAULT_GENERATION_MODEL: &str = "kimi-k2-6";
+pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 
 // Kept exported under the legacy names so existing callers compile until they
 // migrate to the names above.

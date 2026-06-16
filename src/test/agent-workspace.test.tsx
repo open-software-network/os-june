@@ -195,14 +195,23 @@ describe("AgentWorkspace", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "kimi-k2-6",
+        generationModel: "zai-org-glm-5-2",
       },
     });
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "kimi-k2-6",
+      selectedModel: "zai-org-glm-5-2",
       models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
         {
           provider: "venice",
           id: "kimi-k2-6",
@@ -638,14 +647,14 @@ describe("AgentWorkspace", () => {
 
     // The session composer carries the same model trigger as the hero.
     await user.click(
-      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
     );
 
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
     expect(
-      within(dialog).getByRole("option", { name: /Kimi K2.6/ }),
+      within(dialog).getByRole("option", { name: /GLM 5\.2/ }),
     ).toBeInTheDocument();
   });
 
@@ -653,6 +662,15 @@ describe("AgentWorkspace", () => {
     // Tool-capable catalog: the picker refuses tool-less models for the
     // agent, so the switch target must support function calling.
     const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
       {
         provider: "venice",
         id: "kimi-k2-6",
@@ -675,7 +693,7 @@ describe("AgentWorkspace", () => {
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "kimi-k2-6",
+      selectedModel: "zai-org-glm-5-2",
       models: catalog,
     });
     mocks.setVeniceModel.mockResolvedValue(undefined);
@@ -684,7 +702,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     await user.click(
-      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
@@ -704,7 +722,7 @@ describe("AgentWorkspace", () => {
       selectedModel: "anonymous-only",
       models: catalog,
     });
-    // The popover opens on the suggested picks (Kimi K2.6 is curated); the
+    // The popover opens on the suggested picks (GLM 5.2 is curated); the
     // switch target only exists in the full catalog behind All models.
     await user.click(
       within(dialog).getByRole("button", { name: "All models" }),
@@ -2570,8 +2588,17 @@ describe("AgentWorkspace", () => {
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
-      selectedModel: "kimi-k2-6",
+      selectedModel: "zai-org-glm-5-2",
       models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
         {
           provider: "venice",
           id: "kimi-k2-6",
@@ -2605,7 +2632,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     await user.click(
-      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",

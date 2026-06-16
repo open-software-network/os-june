@@ -1,6 +1,6 @@
 [package]
 name = "os-scribe"
-version = "0.0.14"
+version = "0.0.15"
 description = "June"
 authors = ["Open Software Network"]
 license = "Apache-2.0"

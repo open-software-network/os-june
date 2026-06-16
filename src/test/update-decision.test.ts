@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  UPDATE_CHECK_INTERVAL_MS,
   checkForScribeUpdate,
   installScribeUpdate,
   prepareScribeUpdate,
+  startPeriodicScribeUpdateChecks,
   type UpdaterUpdate,
 } from "../app/update-decision";
 
@@ -58,6 +60,24 @@ describe("checkForScribeUpdate", () => {
     expect(reportNoUpdate).not.toHaveBeenCalled();
   });
 
+  it("keeps periodic no-update checks silent", async () => {
+    const prompt = vi.fn();
+    const reportNoUpdate = vi.fn();
+
+    await checkForScribeUpdate(
+      {
+        check: async () => null,
+        prompt,
+        reportNoUpdate,
+        reportFailure: vi.fn(),
+      },
+      "periodic",
+    );
+
+    expect(prompt).not.toHaveBeenCalled();
+    expect(reportNoUpdate).not.toHaveBeenCalled();
+  });
+
   it("reports no update for a manual check", async () => {
     const reportNoUpdate = vi.fn();
 
@@ -92,6 +112,30 @@ describe("checkForScribeUpdate", () => {
 
     expect(prompt).not.toHaveBeenCalled();
     expect(reportFailure).toHaveBeenCalledWith("signature mismatch");
+  });
+});
+
+describe("startPeriodicScribeUpdateChecks", () => {
+  it("runs periodic checks until stopped", () => {
+    vi.useFakeTimers();
+    const runUpdateCheck = vi.fn();
+
+    try {
+      const stop = startPeriodicScribeUpdateChecks(runUpdateCheck);
+
+      vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS - 1);
+      expect(runUpdateCheck).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      expect(runUpdateCheck).toHaveBeenCalledWith("periodic");
+      expect(runUpdateCheck).toHaveBeenCalledTimes(1);
+
+      stop();
+      vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS);
+      expect(runUpdateCheck).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

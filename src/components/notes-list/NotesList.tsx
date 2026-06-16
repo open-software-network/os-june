@@ -25,6 +25,7 @@ const NO_NOTES: NoteListItemDto[] = [];
 
 type NotesListProps = {
   notes: NoteListItemDto[];
+  activeRecordingNoteId?: string;
   onSelectNote: (noteId: string) => void;
   onCreateNote: () => void;
   onOpenMoveDialog: (noteId: string) => void;
@@ -55,6 +56,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
   function NotesList(
     {
       notes: allNotes,
+      activeRecordingNoteId,
       onSelectNote,
       onCreateNote,
       onOpenMoveDialog,
@@ -274,6 +276,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
               <AllNoteRow
                 key={note.id}
                 note={note}
+                activeRecordingNoteId={activeRecordingNoteId}
                 menu={
                   openMenu?.noteId === note.id
                     ? { right: openMenu.right, top: openMenu.top }
@@ -379,6 +382,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(
 
 function AllNoteRow({
   note,
+  activeRecordingNoteId,
   menu,
   onSelect,
   checked,
@@ -389,6 +393,7 @@ function AllNoteRow({
   onDelete,
 }: {
   note: NoteListItemDto;
+  activeRecordingNoteId?: string;
   menu: MenuPosition | null;
   onSelect: () => void;
   checked: boolean;
@@ -399,7 +404,14 @@ function AllNoteRow({
   onDelete: () => void;
 }) {
   const title = note.title.trim() || "New note";
-  const preview = note.preview.trim() || statusLabel(note.processingStatus);
+  const liveRecording = note.id === activeRecordingNoteId;
+  const effectiveStatus =
+    note.processingStatus === "recording" && !liveRecording
+      ? "draft"
+      : note.processingStatus;
+  const preview =
+    note.preview.trim() ||
+    (liveRecording ? "Recording" : statusLabel(effectiveStatus));
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -438,7 +450,13 @@ function AllNoteRow({
           </span>
         </label>
         <button type="button" className="folder-note-main" onClick={onSelect}>
-          <MeetingRowContent title={title} preview={preview} />
+          <MeetingRowContent
+            title={title}
+            preview={preview}
+            status={effectiveStatus}
+            liveRecording={liveRecording}
+            showingStatus={!note.preview.trim()}
+          />
         </button>
         <span className="folder-note-time">
           {formatNoteTime(note.updatedAt)}
@@ -513,10 +531,25 @@ function AllNoteRow({
 function MeetingRowContent({
   title,
   preview,
+  status,
+  liveRecording,
+  showingStatus,
 }: {
   title: string;
   preview: string;
+  status?: NoteListItemDto["processingStatus"];
+  liveRecording?: boolean;
+  // The subtitle is the bare status label (no real preview yet), so it's worth
+  // animating as the live status rather than leaving it as static text.
+  showingStatus?: boolean;
 }) {
+  // The work-in-flight states: the status word shimmers to read as "running",
+  // the way the agent rows signal an active session.
+  const processing =
+    showingStatus &&
+    (status === "transcribing" ||
+      status === "generating" ||
+      status === "validating");
   return (
     <>
       <span className="folder-note-icon" aria-hidden>
@@ -524,7 +557,12 @@ function MeetingRowContent({
       </span>
       <span className="folder-note-body">
         <span className="folder-note-title">{title}</span>
-        <span className="folder-note-subtitle">{preview}</span>
+        <span className="folder-note-subtitle">
+          {liveRecording ? (
+            <span className="note-recording-dot" aria-hidden />
+          ) : null}
+          <span data-shimmer={processing ? "true" : undefined}>{preview}</span>
+        </span>
       </span>
     </>
   );

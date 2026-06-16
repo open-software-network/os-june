@@ -15,7 +15,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
         Arc, LazyLock, Mutex,
     },
 };
@@ -37,6 +37,7 @@ pub struct ProcessingTicket {
     note_id: String,
     lock: Arc<AsyncMutex<()>>,
     pending: Arc<AtomicI64>,
+    finished: AtomicBool,
 }
 
 impl ProcessingTicket {
@@ -49,6 +50,9 @@ impl ProcessingTicket {
     /// Mark this job done: drop it from the pending count and prune the note's
     /// queue entry once nothing else is waiting.
     pub fn finish(&self) {
+        if self.finished.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let mut map = QUEUES.lock().expect("processing queue mutex poisoned");
         let remaining = self.pending.fetch_sub(1, Ordering::SeqCst) - 1;
         if remaining <= 0 {
@@ -65,6 +69,12 @@ impl ProcessingTicket {
     }
 }
 
+impl Drop for ProcessingTicket {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 /// Register a processing job for `note_id`. Returns the ticket and the queue
 /// depth *including* this job (1 = runs immediately, 2 = one job ahead, …).
 pub fn enqueue(note_id: &str) -> (ProcessingTicket, i64) {
@@ -78,6 +88,7 @@ pub fn enqueue(note_id: &str) -> (ProcessingTicket, i64) {
         note_id: note_id.to_string(),
         lock: queue.lock.clone(),
         pending: queue.pending.clone(),
+        finished: AtomicBool::new(false),
     };
     (ticket, depth)
 }
@@ -131,6 +142,32 @@ mod tests {
         a.finish();
         b1.finish();
         b2.finish();
+    }
+
+    #[test]
+    fn dropped_ticket_releases_pending_job() {
+        {
+            let (_ticket, depth) = enqueue("note-drop");
+            assert_eq!(depth, 1);
+        }
+
+        let (next, depth) = enqueue("note-drop");
+        assert_eq!(depth, 1);
+        next.finish();
+    }
+
+    #[test]
+    fn finish_is_idempotent() {
+        let (first, _) = enqueue("note-idempotent");
+        let (second, _) = enqueue("note-idempotent");
+
+        first.finish();
+        first.finish();
+
+        let (third, depth) = enqueue("note-idempotent");
+        assert_eq!(depth, 2);
+        second.finish();
+        third.finish();
     }
 
     #[tokio::test]

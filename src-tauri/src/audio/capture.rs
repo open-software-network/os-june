@@ -252,6 +252,7 @@ pub fn start_capture(
 
     let status = RecordingStatusDto {
         session_id: session_id.clone(),
+        note_id: Some(note_id.clone()),
         source_mode,
         state: RecordingState::Recording,
         elapsed_ms: 0,
@@ -583,6 +584,7 @@ impl ActiveRecording {
         };
         RecordingStatusDto {
             session_id: self.session_id.clone(),
+            note_id: Some(self.note_id.clone()),
             source_mode: self.source_mode,
             state,
             elapsed_ms,

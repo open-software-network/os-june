@@ -3969,6 +3969,85 @@ input:focus-visible,
   min-width: 0;
 }
 
+.sidebar-recording-indicator {
+  --foreground: oklch(0.985 0.0015 84.59);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  width: 52px;
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: oklch(0.21 0.0015 84.59);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px oklch(1 0 0 / 8%);
+  color: var(--foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    opacity var(--t-fast) var(--ease-out);
+}
+
+.sidebar-recording-indicator:hover,
+.sidebar-recording-indicator:focus-visible {
+  background: oklch(0.29 0.0015 84.59);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px oklch(1 0 0 / 8%);
+  color: var(--foreground);
+}
+
+.sidebar-recording-indicator:active {
+  background: oklch(0.25 0.0015 84.59);
+}
+
+.sidebar-recording-dot {
+  --recording-pulse-rest: var(--brand);
+  --recording-pulse-peak: oklch(0.74 0.115 45);
+
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: var(--recording-pulse-rest);
+}
+
+.sidebar-recording-indicator[data-state="recording"] .sidebar-recording-dot {
+  animation: note-recording-breathe 1.6s var(--ease-in-out) infinite;
+}
+
+.sidebar-recording-indicator[data-state="paused"] .sidebar-recording-dot {
+  opacity: 0.42;
+}
+
+.sidebar-recording-indicator .waveform {
+  flex: 0 0 auto;
+  height: 14px;
+  gap: 2px;
+  padding: 0;
+}
+
+.sidebar-recording-indicator .waveform span {
+  width: 2px;
+  height: 14px;
+  opacity: 1;
+}
+
+.sidebar-recording-indicator .waveform span::before {
+  height: calc(1.4px + var(--level, 0) * 11px);
+  background: oklch(1 0 0);
+}
+
+.sidebar-recording-indicator[data-state="paused"] .waveform span {
+  opacity: 0.38;
+}
+
 /* Two wordmarks ship side by side; CSS picks the right one per theme. */
 .sidebar-brand-img {
   display: block;
@@ -4008,6 +4087,10 @@ input:focus-visible,
 }
 
 .sidebar[data-collapsed="true"] .sidebar-brand {
+  display: none;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-recording-indicator {
   display: none;
 }
 
@@ -5121,16 +5204,20 @@ input:focus-visible,
  * cut the active tab's shadow and right edge. Scrolls only in the extreme case
  * where even icon-width tabs overflow. */
 .tab-strip {
+  --tab-strip-shadow-pad: 4px;
+
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex: 1;
   min-width: 0;
-  padding: 4px;
+  padding: var(--tab-strip-shadow-pad);
+  padding-left: 0;
   /* No scroll: tabs that don't fit fold into the overflow popover instead.
-   * hidden (not auto) clips any transient overflow during a resize gracefully;
-   * the 4px padding keeps it from clipping the tab shadows. */
-  overflow: hidden;
+   * Clip transient resize spillover, but leave a tiny clip margin so the flush
+   * first pill can render its normal rounded corner and soft shadow. */
+  overflow: clip;
+  overflow-clip-margin: var(--tab-strip-shadow-pad);
 }
 
 /* Each tab takes up to a quarter of the bar by default (capped so it never gets
@@ -5901,6 +5988,45 @@ input:focus-visible,
 
 .transcript-copy[data-copied] {
   color: var(--warm-strong);
+}
+
+.transcript-processing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: var(--content-max);
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.transcript-processing-spinner {
+  flex: none;
+  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
+}
+
+.transcript-processing-label {
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: note-text-shimmer 2s linear infinite;
 }
 
 .transcript-view p {
@@ -6991,6 +7117,76 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   text-align: center;
+}
+
+/* Global recorder pill ---------------------------------------------------- */
+
+/* A floating "still recording" presence that rides over the content card while
+ * a recording is live but you've navigated off its note. Sits top-center,
+ * echoing the native HUD family (a dark glass object distinct from the light
+ * app chrome) and the Granola pattern. The dock spans the panel and centers the
+ * pill; it never eats clicks (pointer-events through), only the pill does. */
+.global-recorder-dock {
+  position: absolute;
+  top: var(--sp-3);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.global-recorder-pill {
+  --foreground: color-mix(in oklch, var(--foreground) 76%, transparent);
+
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 32px;
+  max-width: min(440px, calc(100% - var(--sp-6)));
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--card) 88%, transparent);
+  color: var(--foreground);
+  box-shadow: var(--shadow-md), var(--shadow-inset);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    opacity var(--t-fast) var(--ease-out);
+}
+
+.global-recorder-pill:hover {
+  background: var(--card);
+  box-shadow: var(--shadow-lg), var(--shadow-inset);
+  color: var(--foreground);
+}
+
+/* Compact the shared waveform down to the pill's scale (it ships at the 30px
+ * in-note size). The meter still drives --level per bar; only the box shrinks. */
+.global-recorder-pill .waveform {
+  height: 18px;
+  gap: 2.5px;
+  flex: 0 0 auto;
+}
+
+.global-recorder-pill .waveform span {
+  width: 2.5px;
+  height: 18px;
+}
+
+.global-recorder-pill .waveform span::before {
+  height: calc(2px + var(--level, 0) * 13px);
+  background: currentColor;
+}
+
+.global-recorder-pill[data-state="paused"] .waveform span {
+  opacity: 0.38;
 }
 
 /* Banners ----------------------------------------------------------- */
@@ -10673,11 +10869,77 @@ input:focus-visible,
 }
 
 .folder-note-subtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Recording: a calm terracotta dot leads the status line, the brand-mark color
+ * (same terracotta as the HUD), breathing softly to read as live without the
+ * harshness of a blink. */
+.note-recording-dot {
+  --recording-pulse-rest: var(--brand);
+  --recording-pulse-peak: oklch(0.74 0.115 45);
+
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--recording-pulse-rest);
+  animation: note-recording-breathe 1.6s var(--ease-in-out) infinite;
+}
+
+.folder-note-subtitle > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes note-recording-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    background-color: var(--recording-pulse-rest, var(--brand));
+  }
+  50% {
+    opacity: 0.92;
+    background-color: var(--recording-pulse-peak, var(--brand));
+  }
+}
+
+/* Transcribing / generating / validating: sweep a highlight across the status
+ * word so it reads as work-in-flight, the way the agent rows signal activity. */
+.folder-note-subtitle [data-shimmer="true"] {
+  background: linear-gradient(
+    100deg,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: note-status-shimmer 1.5s linear infinite;
+}
+
+@keyframes note-status-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-recording-dot,
+  .folder-note-subtitle [data-shimmer="true"] {
+    animation: none;
+  }
 }
 
 .folder-note-time {
@@ -11598,7 +11860,9 @@ input:focus-visible,
 
 .referral-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …) lets columns shrink below content width so a long invite
+   * link ellipsizes instead of forcing the panel wider (preserves #319). */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   min-height: 340px;
 }
 

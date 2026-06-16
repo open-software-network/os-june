@@ -2082,6 +2082,14 @@ impl Repositories {
             .bind(session_id)
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "UPDATE audio_artifacts
+             SET status = 'discarded', last_error = 'Discarded by user'
+             WHERE recording_session_id = ?",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
         self.set_note_status(
             note_id,
             ProcessingStatus::Failed,

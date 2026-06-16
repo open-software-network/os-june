@@ -89,9 +89,26 @@ model_type = "asr"
 display_name = "Parakeet TDT 0.6B v3"
 privacy = "private"
 
-# Fallback pricing for the default text model (kimi-k2-6); the live
-# Venice catalog overrides this on boot. Keep in sync with
+# Fallback pricing for the default and suggested text models; the live Venice
+# catalog overrides this on boot. Keep the GLM 5.2 entry in sync with
 # DEFAULT_GENERATION_MODEL in the Tauri providers module.
+[pricing."zai-org-glm-5-2"]
+unit = "tokens"
+input_credits_per_million_tokens = 1750
+output_credits_per_million_tokens = 5500
+provider = "venice"
+model_type = "text"
+display_name = "GLM 5.2"
+privacy = "private"
+context_tokens = 200000
+capabilities = [
+  "supportsFunctionCalling",
+  "supportsReasoning",
+  "supportsReasoningEffort",
+  "supportsResponseSchema",
+  "supportsWebSearch",
+]
+
 [pricing."kimi-k2-6"]
 unit = "tokens"
 input_credits_per_million_tokens = 850
@@ -100,6 +117,25 @@ provider = "venice"
 model_type = "text"
 display_name = "Kimi K2.6"
 privacy = "private"
+context_tokens = 256000
+capabilities = ["supportsFunctionCalling"]
+
+[pricing."zai-org-glm-5-1"]
+unit = "tokens"
+input_credits_per_million_tokens = 1750
+output_credits_per_million_tokens = 5500
+provider = "venice"
+model_type = "text"
+display_name = "GLM 5.1"
+privacy = "private"
+context_tokens = 200000
+capabilities = [
+  "supportsFunctionCalling",
+  "supportsReasoning",
+  "supportsReasoningEffort",
+  "supportsResponseSchema",
+  "supportsWebSearch",
+]
 
 [pricing."zai-org-glm-5"]
 unit = "tokens"
@@ -109,6 +145,8 @@ provider = "venice"
 model_type = "text"
 display_name = "GLM 5"
 privacy = "private"
+context_tokens = 198000
+capabilities = ["supportsFunctionCalling"]
 
 [pricing."nvidia-nemotron-3-nano-30b-a3b"]
 unit = "tokens"
