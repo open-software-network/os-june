@@ -2332,6 +2332,7 @@ export function App() {
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onNew={openNewChatTab}
+          onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
           {accessibilityBlocked ? <PermissionBanner /> : null}
