@@ -2232,7 +2232,20 @@ fn outcome_from_transcription_result(
 ) -> DictationTranscriptionOutcome {
     match result {
         Ok(mut transcript) => {
+            let had_speech_before_cleaning = !transcript.text.trim().is_empty();
             transcript.text = clean_dictation_fillers(&transcript.text, style);
+            if had_speech_before_cleaning && transcript.text.trim().is_empty() {
+                // Filler-only capture (e.g. "Um, uh."): the provider DID return
+                // speech that we stripped to nothing. Discard quietly with a
+                // silent no_speech event, regardless of the observed audio
+                // level — the audio-detected-but-no-text error is meant for
+                // genuine silence misheard as loud audio, not for fillers.
+                return DictationTranscriptionOutcome {
+                    helper_command: serde_json::json!({ "type": "discard_recording" }),
+                    event: Some(silent_no_speech_event()),
+                    transcript: None,
+                };
+            }
             outcome_from_clean_transcript(transcript, observed_audio_level)
         }
         Err(error) => {
@@ -2466,6 +2479,12 @@ fn contains_meaningful_dictation_word(text: &str) -> bool {
 }
 
 fn is_dictation_filler_word(word: &str) -> bool {
+    // An all-caps multi-letter token is almost certainly a dictated acronym
+    // (e.g. "ER"), not a hesitation — keep it. The capitalized hesitation form
+    // ("Er, no.") isn't all-caps, so it still strips.
+    if word.len() >= 2 && word.chars().all(|ch| ch.is_ascii_uppercase()) {
+        return false;
+    }
     matches!(
         word.to_ascii_lowercase().as_str(),
         "um" | "ums"
@@ -2492,6 +2511,10 @@ fn no_text_event_for_observed_audio(observed_audio_level: Option<f32>) -> serde_
     if probable_speech_detected(observed_audio_level) {
         return audio_detected_but_no_text_event(None, None, observed_audio_level);
     }
+    silent_no_speech_event()
+}
+
+fn silent_no_speech_event() -> serde_json::Value {
     serde_json::json!({
         "type": "error",
         "payload": { "code": "no_speech", "message": "No speech detected." },
@@ -3649,6 +3672,42 @@ mod tests {
         assert!(outcome.transcript.is_none());
         let event = outcome.event.expect("filler-only capture emits an event");
         assert!(is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn filler_only_transcription_stays_silent_even_with_detected_audio() {
+        // Speaking "um" registers real audio, but a filler-only capture must
+        // still discard quietly — never the visible audio-without-text error.
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Um, uh.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({ "type": "discard_recording" })
+        );
+        assert!(outcome.transcript.is_none());
+        let event = outcome.event.expect("filler-only capture emits an event");
+        assert!(is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn all_caps_acronym_is_not_treated_as_filler() {
+        assert_eq!(
+            clean_dictation_fillers("Send the patient to the ER.", DictationStyle::Standard),
+            "Send the patient to the ER."
+        );
+        // The capitalized hesitation form still strips.
+        assert_eq!(
+            clean_dictation_fillers("Er, no.", DictationStyle::Standard),
+            "No."
+        );
     }
 
     #[test]
