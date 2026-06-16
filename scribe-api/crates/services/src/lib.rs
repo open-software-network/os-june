@@ -391,6 +391,7 @@ mod tests {
             duration_probe: Arc::new(FailingDurationProbe),
             hold_ttl_seconds: 60,
             flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
         });
 
         let result = service
@@ -411,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_dispatches_asr_without_wallet_charge() {
+    async fn note_transcribe_preview_authorizes_dispatches_asr_without_wallet_charge() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let transcriber = Arc::new(RecordingTranscriber::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
@@ -426,6 +427,7 @@ mod tests {
             duration_probe: Arc::new(FixedDurationProbe),
             hold_ttl_seconds: 60,
             flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
         });
 
         let output = service
@@ -443,13 +445,107 @@ mod tests {
             .expect("preview transcription succeeds");
 
         assert_eq!(output.receipt.credits_charged.0, 0);
-        assert_eq!(os_accounts.events(), Vec::new());
+        assert_eq!(
+            os_accounts.events(),
+            vec![RecordedCall::Authorize {
+                user_id: "usr_123".to_string(),
+                action: "note_transcribe".to_string(),
+                estimate: 1024,
+                hold_ttl: 60,
+            }]
+        );
         assert_eq!(transcriber.call_count(), 1);
         assert_eq!(
             transcriber.last_context(),
             Some("Previous words".to_string())
         );
         assert_eq!(transcriber.last_language(), Some("en".to_string()));
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_denied_authorization_does_not_dispatch_asr() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            allow: false,
+            deny_reason: Some("insufficient_available_balance".to_string()),
+            ..RecordingOsAccounts::default()
+        });
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-session-1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+        assert_eq!(transcriber.call_count(), 0);
+        assert_eq!(
+            os_accounts.events(),
+            vec![RecordedCall::Authorize {
+                user_id: "usr_123".to_string(),
+                action: "note_transcribe".to_string(),
+                estimate: 1024,
+                hold_ttl: 60,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_rejects_audio_over_duration_cap() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 1,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-session-1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::InvalidInput { .. })));
+        assert_eq!(transcriber.call_count(), 0);
+        assert_eq!(os_accounts.events(), Vec::new());
     }
 
     #[tokio::test]

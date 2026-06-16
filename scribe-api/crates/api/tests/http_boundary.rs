@@ -354,6 +354,7 @@ fn test_state_with_sinks(
             duration_probe: duration_probe.clone(),
             hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
+            preview_max_audio_seconds: 30,
         })),
         note_generate: Arc::new(NoteGenerateService::new(NoteGenerateServiceDeps {
             pricing: pricing.clone(),

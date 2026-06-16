@@ -5,6 +5,7 @@ use crate::{
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -19,6 +20,7 @@ pub const LIVE_TRANSCRIPT_EVENT: &str = "live-transcript-event";
 
 const PREVIEW_BATCH_BUFFER: usize = 512;
 const PREVIEW_CHUNK_MS: i64 = 8_000;
+const PREVIEW_CONTEXT_TURNS: usize = 3;
 const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.012;
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +123,7 @@ async fn run_live_preview_worker(
         return;
     }
     let mut buffer: Vec<i16> = Vec::with_capacity(chunk_samples * 2);
+    let mut recent_preview_text = VecDeque::with_capacity(PREVIEW_CONTEXT_TURNS);
     let mut next_start_ms = 0_i64;
     let mut segment_index = 0_i64;
 
@@ -140,6 +143,7 @@ async fn run_live_preview_worker(
                 continue;
             }
             let segment_id = format!("microphone-{segment_index}");
+            let context = preview_context(&recent_preview_text);
             if let Some(event) = transcribe_preview_chunk(
                 &note_id,
                 &session_id,
@@ -150,12 +154,14 @@ async fn run_live_preview_worker(
                 sample_rate,
                 channels,
                 &samples,
+                context,
             )
             .await
             {
                 if cancelled.load(Ordering::Acquire) {
                     return;
                 }
+                remember_preview_text(&mut recent_preview_text, &event.text);
                 let _ = app.emit(LIVE_TRANSCRIPT_EVENT, event);
             }
             segment_index += 1;
@@ -173,9 +179,11 @@ async fn transcribe_preview_chunk(
     sample_rate: u32,
     channels: u16,
     samples: &[i16],
+    context: Option<String>,
 ) -> Option<LiveTranscriptEventDto> {
     let temp_path = preview_chunk_path(session_id, segment_id);
     if let Err(error) = write_preview_wav(&temp_path, sample_rate, channels, samples) {
+        let _ = std::fs::remove_file(&temp_path);
         eprintln!("live transcript preview failed to write chunk: {error}");
         return None;
     }
@@ -184,7 +192,7 @@ async fn transcribe_preview_chunk(
         provider: crate::providers::configured_transcription_provider(),
         audio_path: temp_path.clone(),
         title: "Live transcript preview".to_string(),
-        context: None,
+        context,
         language: crate::dictation::configured_transcription_language(),
         operation_id: Some(format!("live-preview-{session_id}-{segment_id}")),
         preview: true,
@@ -272,9 +280,41 @@ fn is_effectively_silent(samples: &[i16]) -> bool {
     rms < PREVIEW_SILENCE_RMS_FLOOR
 }
 
+fn preview_context(recent_preview_text: &VecDeque<String>) -> Option<String> {
+    let text = recent_preview_text
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Previous live transcript preview segments:\n{text}\n\nUse this only as context. Do not repeat it."
+        ))
+    }
+}
+
+fn remember_preview_text(recent_preview_text: &mut VecDeque<String>, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    recent_preview_text.push_back(text.to_string());
+    while recent_preview_text.len() > PREVIEW_CONTEXT_TURNS {
+        recent_preview_text.pop_front();
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{duration_ms, is_effectively_silent, samples_for_ms, LivePreviewSink};
+    use super::{
+        duration_ms, is_effectively_silent, preview_context, remember_preview_text, samples_for_ms,
+        LivePreviewSink,
+    };
+    use std::collections::VecDeque;
     use tokio::sync::mpsc;
 
     #[test]
@@ -297,5 +337,21 @@ mod tests {
 
         assert!(sink.try_send(vec![1]));
         assert!(!sink.try_send(vec![2]));
+    }
+
+    #[test]
+    fn preview_context_keeps_recent_nonempty_segments() {
+        let mut recent = VecDeque::new();
+
+        remember_preview_text(&mut recent, " first ");
+        remember_preview_text(&mut recent, "");
+        remember_preview_text(&mut recent, "second");
+        remember_preview_text(&mut recent, "third");
+        remember_preview_text(&mut recent, "fourth");
+
+        let context = preview_context(&recent).expect("context");
+        assert!(!context.contains("first"));
+        assert!(context.contains("second\nthird\nfourth"));
+        assert!(context.contains("Do not repeat it."));
     }
 }

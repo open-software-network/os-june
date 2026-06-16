@@ -19,6 +19,7 @@ pub struct NoteTranscribeServiceDeps {
     pub duration_probe: Arc<dyn AudioDurationProbe>,
     pub hold_ttl_seconds: u64,
     pub flat_estimate_credits: u64,
+    pub preview_max_audio_seconds: u64,
 }
 
 pub struct NoteTranscribeService {
@@ -28,6 +29,7 @@ pub struct NoteTranscribeService {
     duration_probe: Arc<dyn AudioDurationProbe>,
     hold_ttl_seconds: u64,
     flat_estimate_credits: u64,
+    preview_max_audio_seconds: u64,
 }
 
 impl NoteTranscribeService {
@@ -39,6 +41,7 @@ impl NoteTranscribeService {
             duration_probe: deps.duration_probe,
             hold_ttl_seconds: deps.hold_ttl_seconds,
             flat_estimate_credits: deps.flat_estimate_credits,
+            preview_max_audio_seconds: deps.preview_max_audio_seconds.max(1),
         }
     }
 
@@ -66,12 +69,33 @@ impl NoteTranscribeService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
+        // Flat-estimate mode: skip per-request estimation for the upfront
+        // authorize. The Hold is bigger than necessary; the actual charge
+        // below is what the user pays.
+        let estimate = Credits(self.flat_estimate_credits);
         if params.preview {
+            if seconds > self.preview_max_audio_seconds {
+                return Err(ServiceError::InvalidInput {
+                    reason: format!(
+                        "live transcript preview chunks must be {} seconds or shorter",
+                        self.preview_max_audio_seconds
+                    ),
+                });
+            }
+            let _authorization = authorize_or_deny(AuthorizeParams {
+                os_accounts: self.os_accounts.as_ref(),
+                user_id: params.user_id.clone(),
+                action: ActionSlug::NoteTranscribe,
+                estimate,
+                hold_ttl_seconds: self.hold_ttl_seconds,
+            })
+            .await?;
             tracing::info!(
                 note_id = %params.note_id,
                 model = %params.model_id.0,
                 seconds,
-                "note_transcribe: preview request is not charged"
+                estimate_credits = estimate.0,
+                "note_transcribe: preview request authorized and not charged"
             );
             let transcript = self
                 .transcriber
@@ -88,10 +112,6 @@ impl NoteTranscribeService {
                 receipt: uncharged_receipt(),
             });
         }
-        // Flat-estimate mode: skip per-request estimation for the upfront
-        // authorize. The Hold is bigger than necessary; the actual charge
-        // below is what the user pays.
-        let estimate = Credits(self.flat_estimate_credits);
         tracing::info!(
             note_id = %params.note_id,
             estimate_credits = estimate.0,

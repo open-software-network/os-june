@@ -186,8 +186,9 @@ Implemented Phase 1 behavior:
   writer remains the priority.
 - Preview workers transcribe 8 second microphone chunks as `preview=true`
   Scribe API requests.
-- The API validates the model and audio but returns a zero-credit receipt for
-  preview requests. It does not authorize a hold or settle a wallet charge.
+- The API validates the model and audio, enforces a server-side preview duration
+  cap, authorizes a wallet hold, and returns a zero-credit receipt without
+  settling a wallet charge.
 - React stores preview events outside `NoteDto`, renders them only in the
   Transcription tab, and clears them when recording stops.
 
