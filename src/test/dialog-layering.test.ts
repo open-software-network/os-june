@@ -17,6 +17,12 @@ describe("dialog layering", () => {
     );
   });
 
+  it("keeps modal dialogs above the sidebar toggle", () => {
+    expect(zIndexFor(".dialog-backdrop")).toBeGreaterThan(
+      zIndexFor(".chrome-sidebar-toggle"),
+    );
+  });
+
   it("keeps hover tips above dialogs", () => {
     expect(zIndexFor(".hover-tip")).toBeGreaterThan(
       zIndexFor(".dialog-backdrop"),

@@ -8282,7 +8282,7 @@ input:focus-visible,
 
 /* Hover callout card (HoverTip) — the Venice-style explainer behind privacy
  * pills. Body-portaled at a fixed position, so it must sit above dialogs
- * (backdrop is z-index 110). data-side="top" anchors the card's bottom edge
+ * (backdrop is z-index 112). data-side="top" anchors the card's bottom edge
  * to the coordinate instead of its top. */
 .hover-tip {
   position: fixed;
@@ -11735,7 +11735,7 @@ input:focus-visible,
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 110;
+  z-index: 112;
   display: grid;
   place-items: center;
   padding: var(--sp-8);
