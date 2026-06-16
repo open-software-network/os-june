@@ -1,3 +1,28 @@
+# Tabs Behind Dialog
+
+- [x] Inspect the screenshot and current tab/dialog layering.
+- [x] Locate the shared CSS stacking context for titlebar tabs and dialogs.
+- [x] Patch layering so modal dialogs render above the tab strip.
+- [x] Add focused regression coverage.
+- [x] Run targeted tests and practical build checks.
+
+## Notes
+
+The screenshot shows the titlebar tab strip painted above an open dialog
+backdrop. The fix should preserve the custom titlebar drag behavior while
+making modal dialog layers clear the titlebar surface.
+
+## Verification
+
+- `pnpm test -- src/test/dialog-layering.test.ts src/test/tab-bar.test.tsx`
+- `pnpm run lint`
+- `pnpm run build`
+- `pnpm test`
+- `curl -I http://127.0.0.1:1422/` against a temporary Vite server returned
+  `200 OK`
+
+## Previous Work
+
 # Microphone Source Label Note Leak
 
 - [x] Inspect the screenshot and identify whether the leak is generated note text or transcript display.
