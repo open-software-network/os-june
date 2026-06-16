@@ -226,14 +226,24 @@ describe("meeting start transcription event", () => {
           });
         });
       }
+      expect(mocks.createNote).toHaveBeenCalledWith(undefined);
       expect(mocks.startRecording).toHaveBeenCalledWith(
-        "note-1",
+        "note-2",
         "microphonePlusSystem",
       );
     });
   }
 
-  it("starts recording through the existing recorder flow", async () => {
+  it("creates a fresh note before recording from the meeting prompt", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    mocks.createNote.mockResolvedValue(fresh);
+    mocks.startRecording.mockResolvedValue(recording({ noteId: "note-2" }));
+
     render(<App />);
 
     await waitFor(() =>
@@ -243,9 +253,22 @@ describe("meeting start transcription event", () => {
 
     await fireMeetingStartUntilRecording();
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
+    expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
   });
 
   it("reopens the recording HUD to the note editor for the active recording", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    mocks.createNote.mockResolvedValue(fresh);
+    mocks.startRecording.mockResolvedValue(recording({ noteId: "note-2" }));
+    mocks.getNote.mockImplementation(async (id: string) =>
+      id === "note-2" ? fresh : note(),
+    );
+
     render(<App />);
 
     await waitFor(() =>
@@ -255,7 +278,7 @@ describe("meeting start transcription event", () => {
 
     await fireMeetingStartUntilRecording();
     expect(mocks.startRecording).toHaveBeenCalledOnce();
-    expect(screen.getByLabelText("Note title")).toHaveValue("First note");
+    expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
 
     await act(async () => {
       await mocks.listeners.get("meeting-hud-action")?.({
@@ -264,7 +287,7 @@ describe("meeting start transcription event", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Note title")).toHaveValue("First note"),
+      expect(screen.getByLabelText("Note title")).toHaveValue("New meeting"),
     );
   });
 

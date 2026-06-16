@@ -1,3 +1,46 @@
+# Microphone Source Label Note Leak
+
+- [x] Inspect the screenshot and identify whether the leak is generated note text or transcript display.
+- [x] Trace dual-source transcript assembly into note generation.
+- [x] Patch the generation prompt and provider output cleanup for source-label leakage.
+- [x] Run focused provider tests.
+- [x] Run practical backend verification.
+
+## Notes
+
+The screenshot shows `Microphone:` leaking into the Notes tab. Dual-source
+generation sends source-labeled transcript lines (`Microphone:` / `System:`)
+to the note generator, but the generation contract did not explicitly mark
+those labels as metadata. The provider now tells the model source labels are
+not spoken words and strips leading source labels from generated note lines as
+defense in depth.
+
+Codex review correctly pointed out that source-label cleanup must be scoped to
+dual-source labeled transcripts so single-source notes can preserve genuinely
+spoken text like `System: restart the service`. The request path now carries an
+explicit `transcriptSourceLabels` flag. Codex also caught that Markdown output
+could still leak labels behind list or heading markers, so the cleanup handles
+common Markdown prefixes before stripping source labels.
+
+Codex also caught a subtler dual-source case: the spoken content itself can
+begin with source-like words after the outer source label, for example
+`Microphone: System: restart the service`. Cleanup is now transcript-aware and
+only strips a generated source prefix when the stripped text matches the spoken
+content from the labeled transcript. That preserves a correct generated line
+like `System: restart the service` while still cleaning a leaked outer label
+like `Microphone: System: restart the service`.
+
+## Verification
+
+- `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers venice::tests --locked`
+- `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers --locked`
+- `cargo check --manifest-path src-tauri/Cargo.toml --locked`
+- `cargo clippy --manifest-path scribe-api/Cargo.toml --all-targets --all-features --locked -- -D warnings`
+- `cargo test --manifest-path scribe-api/Cargo.toml --all-targets --all-features --locked`
+- `cargo test --manifest-path src-tauri/Cargo.toml --test processing --locked`
+
+## Previous Work
+
 # Window Drag With Hidden Tabs
 
 - [x] Inspect the screenshot and existing titlebar drag implementation.

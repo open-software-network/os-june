@@ -563,6 +563,44 @@ describe("folders UI", () => {
     expect(onSelectNote).toHaveBeenCalledWith("note-2");
   });
 
+  it("shows the recording row state only for the active recording note", () => {
+    render(
+      <NotesList
+        notes={[
+          {
+            ...notes[0],
+            id: "stale-note",
+            title: "Stale take",
+            preview: "",
+            processingStatus: "recording",
+          },
+          {
+            ...notes[1],
+            id: "active-note",
+            title: "Active take",
+            preview: "",
+            processingStatus: "recording",
+          },
+        ]}
+        activeRecordingNoteId="active-note"
+        onSelectNote={vi.fn()}
+        onCreateNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveNotes={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onDeleteNotes={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /Active take Recording/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Stale take Draft/ }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Recording")).toHaveLength(1);
+  });
+
   it("keeps only one meeting actions menu open", async () => {
     const user = userEvent.setup();
     render(

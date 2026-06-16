@@ -360,6 +360,8 @@ pub struct RecordingSessionDto {
 #[serde(rename_all = "camelCase")]
 pub struct RecordingStatusDto {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
     pub source_mode: RecordingSourceMode,
     pub state: RecordingState,
     pub elapsed_ms: i64,

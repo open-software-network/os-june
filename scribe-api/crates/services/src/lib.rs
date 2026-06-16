@@ -84,6 +84,7 @@ mod tests {
                 prompt_version: "v7".to_string(),
                 title: "Title".to_string(),
                 transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
                 manual_notes: None,
                 language: None,
                 existing_generated_note: None,
@@ -202,6 +203,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dictate_transcribe_denied_authorization_does_not_dispatch_asr() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            allow: false,
+            deny_reason: Some("insufficient_available_balance".to_string()),
+            ..RecordingOsAccounts::default()
+        });
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = DictateService::new(DictateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            cleaner: Arc::new(FixedCleaner),
+            duration_probe: Arc::new(FixedDurationProbe),
+            transcribe_hold_ttl_seconds: 30,
+            cleanup_hold_ttl_seconds: 30,
+            flat_estimate_credits: 1024,
+        });
+
+        let result = service
+            .transcribe(DictateTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                session_id: "session_1".to_string(),
+                utterance_id: "utt_2".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "dictation.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+        assert_eq!(transcriber.call_count(), 0);
+        assert_eq!(
+            os_accounts.events(),
+            vec![RecordedCall::Authorize {
+                user_id: "usr_123".to_string(),
+                action: "dictate_transcribe".to_string(),
+                estimate: 1024,
+                hold_ttl: 30,
+            }]
+        );
+    }
+
+    #[tokio::test]
     async fn note_generate_prompt_requests_topic_headings() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let generator = Arc::new(RecordingGenerator::default());
@@ -313,6 +364,7 @@ mod tests {
             prompt_version: "v7".to_string(),
             title: "Title".to_string(),
             transcript: "Transcript".to_string(),
+            transcript_source_labels: false,
             manual_notes: None,
             language: None,
             existing_generated_note: None,
@@ -635,9 +687,14 @@ mod tests {
     struct RecordingTranscriber {
         last_context: Mutex<Option<String>>,
         last_language: Mutex<Option<String>>,
+        calls: Mutex<u64>,
     }
 
     impl RecordingTranscriber {
+        fn call_count(&self) -> u64 {
+            self.calls.lock().map(|value| *value).unwrap_or_default()
+        }
+
         fn last_context(&self) -> Option<String> {
             self.last_context
                 .lock()
@@ -659,6 +716,9 @@ mod tests {
             &self,
             request: TranscriptionRequest,
         ) -> Result<Transcript, DomainError> {
+            if let Ok(mut calls) = self.calls.lock() {
+                *calls += 1;
+            }
             if let Ok(mut last_context) = self.last_context.lock() {
                 *last_context = request.context;
             }

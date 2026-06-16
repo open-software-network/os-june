@@ -23,3 +23,6 @@
 - For same-footprint HUD transitions, do not use the generic morph path. If
   the layout is deliberately size-compatible, snap the native size and swap
   content directly to avoid a perceptible flash.
+- Do not drive "live" recording affordances directly from persisted note
+  `processing_status`. A stale `recording` row can survive interruption; gate
+  live dots and labels from the active recording note/session instead.

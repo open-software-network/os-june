@@ -221,6 +221,7 @@ export type SourceWarningDto = {
 
 export type RecordingStatusDto = {
   sessionId: string;
+  noteId?: string;
   sourceMode?: RecordingSourceMode;
   state: RecordingState;
   elapsedMs: number;
@@ -229,6 +230,13 @@ export type RecordingStatusDto = {
   bytesWritten: number;
   sources?: SourceStatusDto[];
   warnings?: SourceWarningDto[];
+};
+
+export type RecordingPresenceBoundsDto = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export type RecordingSessionDto = {
@@ -1123,6 +1131,15 @@ export async function getRecordingStatus(sessionId: string) {
   });
 }
 
+export async function setRecordingPresenceBounds(
+  bounds: RecordingPresenceBoundsDto | null,
+  ownerId: string,
+) {
+  return invoke<void>("set_recording_presence_bounds", {
+    request: { bounds, ownerId },
+  });
+}
+
 export async function finishRecording(sessionId: string) {
   return invoke<FinishRecordingResponse>("finish_recording", {
     request: { sessionId },
@@ -1181,6 +1198,17 @@ export type AccountStatus = {
   portalUrl?: string;
 };
 
+export type ReferralSummary = {
+  code: string;
+  url: string;
+  referredCount: number;
+  pendingCount: number;
+  qualifiedCount: number;
+  earnedMonths: number;
+  appliedMonths: number;
+  availableMonths: number;
+};
+
 export async function osAccountsStatus() {
   return invoke<AccountStatus>("os_accounts_status");
 }
@@ -1205,6 +1233,10 @@ export async function osAccountsTopUp() {
  * target="_blank" anchors, so portal navigation must go through Rust. */
 export async function osAccountsOpenPortal() {
   return invoke<void>("os_accounts_open_portal");
+}
+
+export async function osAccountsReferralSummary() {
+  return invoke<ReferralSummary>("os_accounts_referral_summary");
 }
 
 export type TrialCheckoutResult = {

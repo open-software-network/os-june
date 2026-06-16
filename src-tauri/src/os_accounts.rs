@@ -116,6 +116,31 @@ struct SubscriptionWire {
     trial_period_days: Option<u32>,
 }
 
+#[derive(Deserialize)]
+struct ReferralSummaryWire {
+    code: String,
+    url: String,
+    referred_count: i64,
+    pending_count: i64,
+    qualified_count: i64,
+    earned_months: i64,
+    applied_months: i64,
+    available_months: i64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferralSummary {
+    pub code: String,
+    pub url: String,
+    pub referred_count: i64,
+    pub pending_count: i64,
+    pub qualified_count: i64,
+    pub earned_months: i64,
+    pub applied_months: i64,
+    pub available_months: i64,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUser {
@@ -176,6 +201,21 @@ impl From<MeWire> for AccountUser {
             email: w.email,
             display_name: w.display_name,
             avatar_url: w.avatar_url,
+        }
+    }
+}
+
+impl From<ReferralSummaryWire> for ReferralSummary {
+    fn from(w: ReferralSummaryWire) -> Self {
+        Self {
+            code: w.code,
+            url: w.url,
+            referred_count: w.referred_count,
+            pending_count: w.pending_count,
+            qualified_count: w.qualified_count,
+            earned_months: w.earned_months,
+            applied_months: w.applied_months,
+            available_months: w.available_months,
         }
     }
 }
@@ -437,6 +477,19 @@ pub fn os_accounts_open_portal() -> Result<(), AppError> {
         ));
     }
     open_in_browser(url)
+}
+
+#[tauri::command]
+pub async fn os_accounts_referral_summary() -> Result<ReferralSummary, AppError> {
+    let cfg = Config::load();
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    let summary: ReferralSummaryWire = authed_get(&cfg, "/referrals/me").await?;
+    Ok(summary.into())
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -1062,15 +1115,19 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
     let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), path);
     let mut access = access_token().await?;
     for attempt in 0..2 {
-        let resp: Envelope<T> = http_client()
+        let response = http_client()
             .get(&url)
             .bearer_auth(&access)
             .send()
             .await
-            .map_err(net_error)?
-            .json()
-            .await
             .map_err(net_error)?;
+        let status = response.status();
+        let body = response.text().await.map_err(net_error)?;
+        if body.trim().is_empty() {
+            return Err(empty_accounts_response(path, status));
+        }
+        let resp: Envelope<T> = serde_json::from_str(&body)
+            .map_err(|error| decode_accounts_response_error(path, error))?;
         if resp.success {
             return resp
                 .data
@@ -1086,6 +1143,32 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
         ));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+fn empty_accounts_response(path: &str, status: reqwest::StatusCode) -> AppError {
+    if path.starts_with("/referrals/") && status == reqwest::StatusCode::NOT_FOUND {
+        return AppError::new(
+            "referrals_unavailable",
+            "Referral links are not available on this OS Accounts deployment yet.",
+        );
+    }
+    AppError::new(
+        "empty_response",
+        format!("OS Accounts returned an empty response for {path} ({status})."),
+    )
+}
+
+fn decode_accounts_response_error(path: &str, error: serde_json::Error) -> AppError {
+    if path.starts_with("/referrals/") {
+        return AppError::new(
+            "referrals_unavailable",
+            "Referral links are not available on this OS Accounts deployment yet.",
+        );
+    }
+    AppError::new(
+        "network_error",
+        format!("OS Accounts returned an invalid response for {path}: {error}"),
+    )
 }
 
 async fn fetch_snapshot(

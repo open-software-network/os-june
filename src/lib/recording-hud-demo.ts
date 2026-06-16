@@ -10,7 +10,7 @@
 // - Main window devtools (Tauri dev app): events go out on the Tauri bus
 //   only, the same channels Rust pushes status and zone changes on. CAVEAT:
 //   in the real app the meeting-hud native window only shows when a recording
-//   is live AND the main window is hidden/minimized — Rust decides (see
+//   is live AND June is backgrounded/minimized/hidden — Rust decides (see
 //   src-tauri/src/meeting_hud.rs). So in-app these bus events only restyle
 //   the pill if Rust is already showing it; the standalone page is the
 //   primary sandbox for this driver. This driver never force-shows the window.
@@ -55,7 +55,7 @@ const HELP = [
   "Window rotation is Rust-side: on the standalone page only the CSS",
   "counter-turn is visible — the pill content rotates without the window",
   "turning. In the real app the native window only shows when a recording",
-  "is live and the main window is hidden (Rust-managed), so bus events here",
+  "is live and June is backgrounded/minimized/hidden (Rust-managed), so bus events here",
   "only restyle the pill if it is already on screen.",
 ].join("\n");
 

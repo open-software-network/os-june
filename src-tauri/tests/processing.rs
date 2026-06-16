@@ -90,6 +90,7 @@ async fn generation_rejects_empty_transcript() {
             title: "Empty".to_string(),
             existing_generated_note: None,
             transcript: "   ".to_string(),
+            transcript_source_labels: false,
             manual_notes: None,
             language: None,
         },

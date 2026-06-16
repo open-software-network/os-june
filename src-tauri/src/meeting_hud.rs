@@ -118,14 +118,21 @@ pub fn meeting_hud_latest_status(state: State<'_, MeetingHudState>) -> Option<Re
 /// navigates to the recording note.
 #[tauri::command]
 pub fn meeting_hud_reopen(app: AppHandle) {
+    let note_id = capture::current_status().and_then(|status| status.note_id);
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
         let _ = main.unminimize();
         let _ = main.set_focus();
+        let _ = app.emit_to(
+            "main",
+            "meeting-hud-action",
+            serde_json::json!({ "action": "reopen", "noteId": note_id }),
+        );
+        return;
     }
     let _ = app.emit(
         "meeting-hud-action",
-        serde_json::json!({ "action": "reopen" }),
+        serde_json::json!({ "action": "reopen", "noteId": note_id }),
     );
 }
 
@@ -136,15 +143,38 @@ fn is_live(state: RecordingState) -> bool {
     )
 }
 
-/// The HUD should take over whenever the main window can't show the in-app
-/// recorder bar — i.e. it's been hidden (close button → hide) or minimized.
+/// The HUD should take over when the main window is no longer a visible
+/// recording surface: it has been hidden (close button -> hide), minimized, or
+/// June is no longer the active app because another app took focus.
 fn main_window_dismissed(app: &AppHandle) -> bool {
     let Some(main) = app.get_webview_window("main") else {
         return false;
     };
     let hidden = !main.is_visible().unwrap_or(true);
     let minimized = main.is_minimized().unwrap_or(false);
-    hidden || minimized
+    hidden || minimized || app_inactive()
+}
+
+#[cfg(target_os = "macos")]
+fn app_inactive() -> bool {
+    use objc2::msg_send;
+
+    let Some(app_class) = AnyClass::get(c"NSApplication") else {
+        return false;
+    };
+    unsafe {
+        let app: *mut AnyObject = msg_send![app_class, sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let active: bool = msg_send![app, isActive];
+        !active
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn app_inactive() -> bool {
+    false
 }
 
 /// Per-thread drag-settle tracker for the orientation flip.

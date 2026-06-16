@@ -1,0 +1,3 @@
+interface:
+  display_name: "Repo Build PR"
+  short_description: "Implement /build prompts in worktrees, open PRs, and run the review loop."

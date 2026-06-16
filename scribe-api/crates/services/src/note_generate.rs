@@ -61,6 +61,7 @@ impl NoteGenerateService {
             .generate(GenerationRequest {
                 title: params.title,
                 transcript: params.transcript,
+                transcript_source_labels: params.transcript_source_labels,
                 manual_notes: params.manual_notes,
                 language: params.language,
                 existing_generated_note: params.existing_generated_note,
@@ -100,6 +101,7 @@ pub struct NoteGenerateParams {
     pub prompt_version: String,
     pub title: String,
     pub transcript: String,
+    pub transcript_source_labels: bool,
     pub manual_notes: Option<String>,
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,

@@ -162,6 +162,34 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
   });
 
+  it("shows transcript progress while retrying over existing turns", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          processingStatus: "transcribing",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "Previous system transcript",
+              source: "system",
+              startMs: 1000,
+              endMs: 2500,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Transcribing audio...",
+    );
+    expect(screen.getByText("Previous system transcript")).toBeInTheDocument();
+  });
+
   it("orders source transcript turns by persisted turn metadata", () => {
     const { container } = render(
       <NoteEditor
