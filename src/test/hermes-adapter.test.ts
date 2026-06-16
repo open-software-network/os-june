@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isRunningScheduledRunSession,
   isScheduledRunPreamble,
   isScheduledRunSession,
   listHermesSessions,
@@ -97,6 +98,14 @@ vi.mock("../lib/tauri", () => ({
   deleteHermesBridgeSession: vi.fn(),
 }));
 
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("Hermes adapter", () => {
   it("excludes message-less sessions from the default list query", async () => {
     // Sessions exist before their first message persists (routine runs,
@@ -136,6 +145,113 @@ describe("Hermes adapter", () => {
     expect(runs.map((run) => run.id)).toEqual([
       "cron_a1b2c3d4e5f6_20260611_090000",
     ]);
+  });
+
+  it("includes active scheduled runs from the session store", async () => {
+    mocks.hermesBridgeSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "cron_a1b2c3d4e5f6_20260611_090000",
+          source: "cron",
+          is_active: true,
+          preview: "Working on the morning digest.",
+          last_active: "2026-06-11T09:00:05Z",
+        },
+        {
+          id: "ordinary-session",
+          is_active: true,
+          preview: "A normal chat is still running.",
+        },
+      ],
+    });
+
+    const runs = await listScheduledRunSessions({ includeActive: true });
+
+    expect(mocks.hermesBridgeSessions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limit: 200,
+        minMessages: 0,
+      }),
+    );
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: "cron_a1b2c3d4e5f6_20260611_090000",
+      active: true,
+      source: "cron",
+      status: "running",
+      last_active: "2026-06-11T09:00:05Z",
+    });
+    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(
+      true,
+    );
+  });
+
+  it("marks recent zero-message scheduled runs as pending", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-11T09:01:00Z"));
+    mocks.hermesBridgeSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "cron_a1b2c3d4e5f6_20260611_090000",
+          source: "cron",
+          title: "",
+          preview: "",
+          message_count: 0,
+          last_active: "2026-06-11T09:00:00Z",
+        },
+        {
+          id: "cron_finished_20260611_085500",
+          source: "cron",
+          message_count: 0,
+          ended_at: "2026-06-11T08:55:05Z",
+          last_active: "2026-06-11T08:55:00Z",
+        },
+      ],
+    });
+
+    const runs = await listScheduledRunSessions({ includeActive: true });
+    const pending = runs.find((run) => run.id.includes("a1b2c3d4e5f6")) as
+      | HermesSessionInfo
+      | undefined;
+    const finished = runs.find((run) => run.id.includes("finished"));
+
+    expect(pending).toMatchObject({
+      id: "cron_a1b2c3d4e5f6_20260611_090000",
+      active: true,
+      status: "running",
+    });
+    expect(pending?.title).toBeUndefined();
+    expect(pending?.preview).toBeUndefined();
+    expect(isRunningScheduledRunSession(pending as HermesSessionInfo)).toBe(
+      true,
+    );
+    expect(isRunningScheduledRunSession(finished as HermesSessionInfo)).toBe(
+      false,
+    );
+  });
+
+  it("does not mark old zero-message scheduled runs as running", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-11T09:10:00Z"));
+    mocks.hermesBridgeSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "cron_a1b2c3d4e5f6_20260611_090000",
+          source: "cron",
+          title: "",
+          preview: "",
+          message_count: 0,
+          last_active: "2026-06-11T09:00:00Z",
+        },
+      ],
+    });
+
+    const runs = await listScheduledRunSessions({ includeActive: true });
+
+    expect(runs).toHaveLength(1);
+    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(
+      false,
+    );
   });
 
   it("normalizes raw gateway session lists and sorts by recent activity", () => {

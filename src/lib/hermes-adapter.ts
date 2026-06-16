@@ -70,13 +70,77 @@ export function scheduledRunJobId(sessionId: string) {
  * a recent window and filtering client-side. 200 covers weeks of mixed
  * activity; runs older than the window age out of the history view. */
 const SCHEDULED_RUN_FETCH_LIMIT = 200;
+const PENDING_SCHEDULED_RUN_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
+export type ScheduledRunListOptions = {
+  includeActive?: boolean;
+};
 
 /** Recent scheduled-routine runs, newest first. */
-export async function listScheduledRunSessions() {
-  const sessions = await listHermesSessions({
+export async function listScheduledRunSessions(
+  options: ScheduledRunListOptions = {},
+) {
+  const listOptions: HermesSessionListOptions = {
     limit: SCHEDULED_RUN_FETCH_LIMIT,
-  });
-  return sessions.filter(isScheduledRunSession);
+  };
+  if (options.includeActive) {
+    // Cron runs are persisted as sessions before their first message lands.
+    // The global session list hides zero-message rows, but routine history
+    // needs them so a just-started run appears immediately.
+    listOptions.minMessages = 0;
+  }
+  const sessions = await listHermesSessions(listOptions);
+  const runs = sessions.filter(isScheduledRunSession);
+  return options.includeActive ? runs.map(withScheduledRunActivity) : runs;
+}
+
+export function isRunningScheduledRunSession(session: HermesSessionInfo) {
+  return (
+    isScheduledRunSession(session) &&
+    (session.active === true || session.is_active === true)
+  );
+}
+
+function withScheduledRunActivity(
+  session: HermesSessionInfo,
+): HermesSessionInfo {
+  if (!isScheduledRunSession(session)) return session;
+  if (!isRunningScheduledRunSession(session) && !isRecentPendingRun(session)) {
+    return session;
+  }
+  return {
+    ...session,
+    active: true,
+    status: session.status?.trim() || "running",
+    title: hasScheduledRunContent(session) ? session.title : undefined,
+    preview: session.preview?.trim() || undefined,
+  };
+}
+
+function isRecentPendingRun(session: HermesSessionInfo) {
+  if (session.message_count !== 0 || hasSessionEnded(session)) return false;
+  const timestamp = Date.parse(sessionTimestamp(session));
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const ageMs = Date.now() - timestamp;
+  return ageMs >= -60_000 && ageMs <= PENDING_SCHEDULED_RUN_ACTIVE_WINDOW_MS;
+}
+
+function hasSessionEnded(session: HermesSessionInfo) {
+  return Boolean(
+    stringPresent(session.ended_at) ||
+    stringPresent(session.endedAt) ||
+    stringPresent(session.end_reason),
+  );
+}
+
+function hasScheduledRunContent(session: HermesSessionInfo) {
+  return (
+    Boolean(session.preview?.trim()) || session.title !== "Untitled session"
+  );
+}
+
+function stringPresent(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 /** A scheduled run's first message is the routine prompt wrapped in a machine

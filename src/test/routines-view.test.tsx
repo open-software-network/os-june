@@ -1,6 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import type { RoutineJob } from "../lib/hermes-routines";
 import type { HermesSessionInfo } from "../lib/tauri";
@@ -21,7 +21,10 @@ vi.mock("../lib/hermes-routines", async (importOriginal) => ({
 }));
 
 const adapterMocks = vi.hoisted(() => ({
-  listScheduledRunSessions: vi.fn<() => Promise<HermesSessionInfo[]>>(),
+  listScheduledRunSessions:
+    vi.fn<
+      (options?: { includeActive?: boolean }) => Promise<HermesSessionInfo[]>
+    >(),
 }));
 
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
@@ -88,6 +91,10 @@ beforeEach(() => {
   mocks.createRoutine.mockResolvedValue(job());
   mocks.updateRoutine.mockResolvedValue(job());
   adapterMocks.listScheduledRunSessions.mockResolvedValue([]);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("RoutinesView list", () => {
@@ -574,6 +581,77 @@ describe("RoutinesView run history", () => {
       within(history).getByRole("button", { name: /morning summary/i }),
     );
     expect(onOpenRun).toHaveBeenCalledWith(session);
+    expect(adapterMocks.listScheduledRunSessions).toHaveBeenCalledWith({
+      includeActive: true,
+    });
+  });
+
+  it("marks active routine runs in history", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      run({
+        active: true,
+        preview: "",
+        last_active: "2026-06-10T09:00:05Z",
+      }),
+    ]);
+    renderView();
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    expect(within(history).getByText("Morning summary")).toBeInTheDocument();
+    expect(within(history).getByText("Running")).toBeInTheDocument();
+    expect(within(history).getByText("Running now")).toBeInTheDocument();
+  });
+
+  it("refreshes run history while the routines view stays open", async () => {
+    vi.useFakeTimers();
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([run({ active: true, preview: "" })]);
+    renderView();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const history = screen.getByRole("region", { name: "Run history" });
+    expect(within(history).getByText(/No runs yet/)).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+
+    expect(screen.getByText("Running")).toBeInTheDocument();
+  });
+
+  it("ignores stale run history responses after a newer refresh", async () => {
+    vi.useFakeTimers();
+    mocks.listRoutines.mockResolvedValue([job()]);
+    let resolveFirstLoad: (runs: HermesSessionInfo[]) => void = () => {};
+    adapterMocks.listScheduledRunSessions
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirstLoad = resolve;
+        }),
+      )
+      .mockResolvedValueOnce([run({ active: true, preview: "" })]);
+    renderView();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Running")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirstLoad([]);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Running")).toBeInTheDocument();
   });
 
   it("labels a run by its session title once the routine is deleted", async () => {

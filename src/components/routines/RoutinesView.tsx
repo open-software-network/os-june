@@ -46,6 +46,7 @@ import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 
 const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: HermesSessionInfo[] = [];
+const RUN_HISTORY_REFRESH_MS = 10000;
 
 type RoutinesViewProps = {
   /** The chat-first creation path: hands off a composed agent prompt and the
@@ -85,6 +86,7 @@ export function RoutinesView({
   const [describeUnrestricted, setDescribeUnrestricted] = useState(false);
   const [allRuns, setRuns] = useState<HermesSessionInfo[]>([]);
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
+  const runLoadSequenceRef = useRef(0);
 
   // __emptyStates() preview (dev console): render the page as a fresh
   // install would see it, real data untouched underneath.
@@ -118,10 +120,15 @@ export function RoutinesView({
   // cron manager), so its failure must not take the routines list down with
   // it — it degrades to a quiet notice inside the section instead.
   const loadRuns = useCallback(async () => {
+    const sequence = runLoadSequenceRef.current + 1;
+    runLoadSequenceRef.current = sequence;
     try {
-      setRuns(await listScheduledRunSessions());
+      const nextRuns = await listScheduledRunSessions({ includeActive: true });
+      if (runLoadSequenceRef.current !== sequence) return;
+      setRuns(nextRuns);
       setRunsUnavailable(false);
     } catch {
+      if (runLoadSequenceRef.current !== sequence) return;
       setRunsUnavailable(true);
     }
   }, []);
@@ -134,6 +141,15 @@ export function RoutinesView({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (forcedEmpty) return;
+    const timer = window.setInterval(
+      () => void loadRuns(),
+      RUN_HISTORY_REFRESH_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [forcedEmpty, loadRuns]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();

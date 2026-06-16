@@ -478,6 +478,9 @@ export type HermesMessagingPlatformsResponse = {
 
 export type HermesSessionInfo = {
   id: string;
+  active?: boolean;
+  is_active?: boolean;
+  status?: string;
   source?: string;
   user_id?: string;
   model?: string;
