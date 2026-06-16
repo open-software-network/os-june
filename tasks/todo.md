@@ -1,3 +1,28 @@
+# Microphone Source Label Note Leak
+
+- [x] Inspect the screenshot and identify whether the leak is generated note text or transcript display.
+- [x] Trace dual-source transcript assembly into note generation.
+- [x] Patch the generation prompt and provider output cleanup for source-label leakage.
+- [x] Run focused provider tests.
+- [x] Run practical backend verification.
+
+## Notes
+
+The screenshot shows `Microphone:` leaking into the Notes tab. Dual-source
+generation sends source-labeled transcript lines (`Microphone:` / `System:`)
+to the note generator, but the generation contract did not explicitly mark
+those labels as metadata. The provider now tells the model source labels are
+not spoken words and strips leading source labels from generated note lines as
+defense in depth.
+
+## Verification
+
+- `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers venice::tests --locked`
+- `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers --locked`
+- `cargo check --manifest-path src-tauri/Cargo.toml --locked`
+
+## Previous Work
+
 # Window Drag With Hidden Tabs
 
 - [x] Inspect the screenshot and existing titlebar drag implementation.
