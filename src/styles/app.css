@@ -4450,25 +4450,14 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* Report shortcuts carry their category color (same oklch tints as the chip
- * and the composer "+" popover); the icon is nested in this span so the
- * muted-svg rule above doesn't override the tint. */
+/* Report shortcuts stay muted in this menu (the category tints live on the
+ * chips and the composer "+" popover); the icon is nested in this span so the
+ * muted-svg rule above still applies to it. */
 .sidebar-report-icon {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-}
-
-.sidebar-report-icon[data-category="bug"] {
-  color: var(--destructive);
-}
-
-.sidebar-report-icon[data-category="feedback"] {
-  color: var(--warm-strong);
-}
-
-.sidebar-report-icon[data-category="feature"] {
-  color: var(--success);
+  color: var(--muted-foreground);
 }
 
 /* Settings nav — replaces the main sidebar list while the settings page is
