@@ -329,6 +329,7 @@ pub async fn process_saved_audio(
         title,
         existing_generated_note,
         transcript: transcript.text,
+        transcript_source_labels: false,
         manual_notes,
         language: transcript.language,
     })
@@ -647,6 +648,7 @@ pub async fn process_saved_source_audio(
         title,
         existing_generated_note,
         transcript: labeled_transcript,
+        transcript_source_labels: true,
         manual_notes,
         language: None,
     })

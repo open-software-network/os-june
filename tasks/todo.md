@@ -15,12 +15,21 @@ those labels as metadata. The provider now tells the model source labels are
 not spoken words and strips leading source labels from generated note lines as
 defense in depth.
 
+Codex review correctly pointed out that source-label cleanup must be scoped to
+dual-source labeled transcripts so single-source notes can preserve genuinely
+spoken text like `System: restart the service`. The request path now carries an
+explicit `transcriptSourceLabels` flag. Codex also caught that Markdown output
+could still leak labels behind list or heading markers, so the cleanup handles
+common Markdown prefixes before stripping source labels.
+
 ## Verification
 
 - `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers venice::tests --locked`
 - `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers --locked`
 - `cargo check --manifest-path src-tauri/Cargo.toml --locked`
 - `cargo clippy --manifest-path scribe-api/Cargo.toml --all-targets --all-features --locked -- -D warnings`
+- `cargo test --manifest-path scribe-api/Cargo.toml --all-targets --all-features --locked`
+- `cargo test --manifest-path src-tauri/Cargo.toml --test processing --locked`
 
 ## Previous Work
 
