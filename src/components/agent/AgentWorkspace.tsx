@@ -1463,11 +1463,7 @@ export function AgentWorkspace({
         setGenerationModels(modelsResponse.models);
         setGenerationModel(
           selectedModelId
-            ? selectedModelOption(
-                modelsResponse.models,
-                selectedModelId,
-                "generation",
-              )
+            ? selectedModelOption(modelsResponse.models, selectedModelId)
             : undefined,
         );
       }
@@ -3704,11 +3700,7 @@ export function AgentWorkspace({
           <ComposerModelPopover
             flyout={composerModelFlyout}
             model={generationModel}
-            options={modelOptions(
-              generationModels,
-              generationModel?.id ?? "",
-              "generation",
-            )}
+            options={modelOptions(generationModels, generationModel?.id ?? "")}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}

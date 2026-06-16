@@ -249,6 +249,7 @@ impl Generator for VeniceGenerator {
                 request.existing_generated_note.as_deref(),
                 request.manual_notes.as_deref(),
                 transcript,
+                request.transcript_source_labels,
             )
         );
         let parsed = self
@@ -263,6 +264,13 @@ impl Generator for VeniceGenerator {
             .await?;
         let content = parsed
             .first_choice_text()
+            .map(|text| {
+                if request.transcript_source_labels {
+                    cleanup_generated_note_text(&text, transcript)
+                } else {
+                    text
+                }
+            })
             .filter(|text| !text.is_empty())
             .ok_or(DomainError::UpstreamProvider)?;
         Ok(GeneratedNote {
@@ -651,6 +659,7 @@ fn generation_source_text(
     existing_generated_note: Option<&str>,
     manual_notes: Option<&str>,
     transcript: &str,
+    transcript_source_labels: bool,
 ) -> String {
     let mut sections = Vec::new();
     if let Some(existing_generated_note) = existing_generated_note
@@ -669,14 +678,94 @@ fn generation_source_text(
             "<new_manual_notes_context>\n{manual_notes}\n</new_manual_notes_context>"
         ));
     }
+    if transcript_source_labels {
+        sections.push(
+            "<transcript_source_metadata>\nTranscript lines may begin with source labels such as Microphone: or System:. These labels identify the audio source only. They are not spoken words and must not appear in the generated note.\n</transcript_source_metadata>".to_string(),
+        );
+    }
     sections.push(format!(
         "<new_transcript>\n{}\n</new_transcript>",
         transcript.trim()
     ));
-    sections.push(
-        "<output_contract>\nReturn only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels. Do not add wrapper headings.\n</output_contract>".to_string(),
-    );
+    let output_contract = if transcript_source_labels {
+        "Return only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels or transcript source labels. Do not add wrapper headings."
+    } else {
+        "Return only the new note block for the new transcript. Do not repeat existing note content. Do not output manual note labels. Do not add wrapper headings."
+    };
+    sections.push(format!(
+        "<output_contract>\n{output_contract}\n</output_contract>"
+    ));
     sections.join("\n\n")
+}
+
+fn cleanup_generated_note_text(text: &str, labeled_transcript: &str) -> String {
+    let spoken_lines = labeled_transcript_spoken_lines(labeled_transcript);
+    text.lines()
+        .map(|line| strip_generated_source_label(line, &spoken_lines))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn strip_generated_source_label(line: &str, spoken_lines: &[String]) -> String {
+    let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+    let (markdown_marker, text) = markdown_line_marker(trimmed);
+    let Some(rest) = strip_source_label_prefix(text) else {
+        return line.to_string();
+    };
+    let stripped = rest.trim_start();
+    if spoken_lines
+        .iter()
+        .any(|spoken| spoken.eq_ignore_ascii_case(stripped))
+    {
+        format!("{indent}{markdown_marker}{stripped}")
+    } else {
+        line.to_string()
+    }
+}
+
+fn labeled_transcript_spoken_lines(labeled_transcript: &str) -> Vec<String> {
+    labeled_transcript
+        .lines()
+        .filter_map(|line| strip_source_label_prefix(line.trim_start()))
+        .map(|line| line.trim_start().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn markdown_line_marker(value: &str) -> (&str, &str) {
+    let bytes = value.as_bytes();
+    let heading_len = bytes.iter().take_while(|byte| **byte == b'#').count();
+    if (1..=6).contains(&heading_len) && bytes.get(heading_len) == Some(&b' ') {
+        return value.split_at(heading_len + 1);
+    }
+    if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+' | b'>') && bytes[1] == b' ' {
+        return value.split_at(2);
+    }
+    let digit_len = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digit_len > 0
+        && matches!(bytes.get(digit_len), Some(b'.' | b')'))
+        && bytes.get(digit_len + 1) == Some(&b' ')
+    {
+        return value.split_at(digit_len + 2);
+    }
+    ("", value)
+}
+
+fn strip_source_label_prefix(value: &str) -> Option<&str> {
+    let lower = value.to_ascii_lowercase();
+    for prefix in ["microphone:", "system:"] {
+        if lower.starts_with(prefix) {
+            return Some(&value[prefix.len()..]);
+        }
+    }
+    None
 }
 
 fn cleanup_source_text(text: &str, dictionary_context: Option<&str>, style: &str) -> String {
@@ -883,8 +972,8 @@ fn strip_scaffolding_tags(text: &str) -> String {
 mod tests {
     use super::{
         SAFETY_CONTEXT, VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse,
-        cleanup_source_text, inject_safety_context, strip_scaffolding_tags,
-        venice_priced_model_items,
+        cleanup_generated_note_text, cleanup_source_text, generation_source_text,
+        inject_safety_context, strip_scaffolding_tags, venice_priced_model_items,
     };
     use crate::http;
     use pretty_assertions::assert_eq;
@@ -928,6 +1017,7 @@ mod tests {
             .generate(GenerationRequest {
                 title: "Title".to_string(),
                 transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
                 manual_notes: None,
                 language: Some("en".to_string()),
                 existing_generated_note: None,
@@ -950,6 +1040,118 @@ mod tests {
                 5
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn generator_strips_leaked_source_labels_from_note_lines() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [
+                    { "message": { "content": "Microphone: Too big of a pill.\nTesting microphone placement." } }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5
+                }
+            })))
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Microphone: Too big of a pill.".to_string(),
+                transcript_source_labels: true,
+                manual_notes: None,
+                language: Some("en".to_string()),
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+            })
+            .await
+            .expect("generation should succeed");
+
+        assert_eq!(
+            generated.content,
+            "Too big of a pill.\nTesting microphone placement."
+        );
+    }
+
+    #[tokio::test]
+    async fn generator_preserves_spoken_source_words_for_single_source_notes() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [
+                    { "message": { "content": "System: restart the service." } }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5
+                }
+            })))
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "System: restart the service.".to_string(),
+                transcript_source_labels: false,
+                manual_notes: None,
+                language: Some("en".to_string()),
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+            })
+            .await
+            .expect("generation should succeed");
+
+        assert_eq!(generated.content, "System: restart the service.");
+    }
+
+    #[test]
+    fn generation_source_text_marks_source_labels_as_metadata() {
+        let message = generation_source_text(
+            None,
+            None,
+            "System: The deadline is Friday.\nMicrophone: I will follow up.",
+            true,
+        );
+
+        assert!(message.contains("<transcript_source_metadata>"));
+        assert!(message.contains("not spoken words"));
+        assert!(message.contains("must not appear in the generated note"));
+        assert!(message.contains("Do not output manual note labels or transcript source labels"));
+        assert!(message.contains("<new_transcript>"));
+        assert!(message.contains("Microphone: I will follow up."));
+    }
+
+    #[test]
+    fn generation_source_text_omits_source_metadata_without_labeled_transcripts() {
+        let message = generation_source_text(None, None, "System: restart the service.", false);
+
+        assert!(!message.contains("<transcript_source_metadata>"));
+        assert!(!message.contains("transcript source labels"));
+        assert!(message.contains("<new_transcript>"));
+        assert!(message.contains("System: restart the service."));
     }
 
     #[tokio::test]
@@ -983,6 +1185,7 @@ mod tests {
             .generate(GenerationRequest {
                 title: "Title".to_string(),
                 transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
                 manual_notes: None,
                 language: None,
                 existing_generated_note: None,
@@ -1018,6 +1221,7 @@ mod tests {
             .generate(GenerationRequest {
                 title: "Title".to_string(),
                 transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
                 manual_notes: None,
                 language: None,
                 existing_generated_note: None,
@@ -1139,6 +1343,7 @@ mod tests {
             .generate(GenerationRequest {
                 title: "Title".to_string(),
                 transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
                 manual_notes: None,
                 language: None,
                 existing_generated_note: None,
@@ -1229,6 +1434,43 @@ mod tests {
         assert_eq!(
             strip_scaffolding_tags("ship it 50/50 with the team"),
             "ship it 50/50 with the team"
+        );
+    }
+
+    #[test]
+    fn generated_note_cleanup_only_removes_leading_source_labels() {
+        let transcript = "Microphone: Too big.\nSystem: Friday.\nMicrophone: Follow up.\nSystem: Deadline.\nSystem: Restart.\nMicrophone: Quote.";
+        assert_eq!(
+            cleanup_generated_note_text("Microphone: Too big.\nSystem: Friday.", transcript),
+            "Too big.\nFriday."
+        );
+        assert_eq!(
+            cleanup_generated_note_text(
+                "- Microphone: Follow up.\n## System: Deadline.",
+                transcript
+            ),
+            "- Follow up.\n## Deadline."
+        );
+        assert_eq!(
+            cleanup_generated_note_text("1. System: Restart.\n> Microphone: Quote.", transcript),
+            "1. Restart.\n> Quote."
+        );
+        assert_eq!(
+            cleanup_generated_note_text("Testing microphone placement.", transcript),
+            "Testing microphone placement."
+        );
+    }
+
+    #[test]
+    fn generated_note_cleanup_preserves_spoken_source_like_prefixes() {
+        let transcript = "Microphone: System: restart the service.";
+        assert_eq!(
+            cleanup_generated_note_text("System: restart the service.", transcript),
+            "System: restart the service."
+        );
+        assert_eq!(
+            cleanup_generated_note_text("Microphone: System: restart the service.", transcript),
+            "System: restart the service."
         );
     }
 

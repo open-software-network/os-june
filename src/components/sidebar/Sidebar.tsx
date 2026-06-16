@@ -104,6 +104,7 @@ type SidebarProps = {
   onSelectAgentSession: (session: HermesSessionInfo) => void;
   recoverableNoteIds?: ReadonlySet<string>;
   collapsed?: boolean;
+  footerAccessory?: ReactNode;
 };
 
 type MenuState =
@@ -240,6 +241,7 @@ export function Sidebar({
   onSelectAgentSession,
   recoverableNoteIds,
   collapsed = false,
+  footerAccessory,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const commandInputRef = useRef<HTMLInputElement>(null);
@@ -1098,6 +1100,7 @@ export function Sidebar({
       )}
 
       <footer className="sidebar-footer">
+        {footerAccessory}
         <button
           type="button"
           className="sidebar-nav-item sidebar-referral"
