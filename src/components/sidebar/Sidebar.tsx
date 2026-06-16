@@ -53,7 +53,7 @@ import {
   listHermesSessions,
   sessionTimestamp,
 } from "../../lib/hermes-adapter";
-import { messageFromError } from "../../lib/errors";
+import { errorCode, messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { isPrimaryShortcut, primaryShortcutLabel } from "../../lib/platform";
@@ -64,6 +64,7 @@ import type {
   ReferralSummary,
 } from "../../lib/tauri";
 import { osAccountsReferralSummary } from "../../lib/tauri";
+import { JuneMark } from "../account/AccountGate";
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
@@ -255,6 +256,9 @@ export function Sidebar({
     useState<ReferralSummary | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
   const [referralError, setReferralError] = useState<string | null>(null);
+  // The deployment can simply not offer referrals (a 404 from /referrals/me).
+  // That's not a transient failure, so it gets a calm message with no retry.
+  const [referralUnavailable, setReferralUnavailable] = useState(false);
   const [referralCopyError, setReferralCopyError] = useState<string | null>(
     null,
   );
@@ -375,9 +379,11 @@ export function Sidebar({
     if (!account.signedIn) return;
     setReferralLoading(true);
     setReferralError(null);
+    setReferralUnavailable(false);
     try {
       setReferralSummary(await osAccountsReferralSummary());
     } catch (error) {
+      setReferralUnavailable(errorCode(error) === "referrals_unavailable");
       setReferralError(messageFromError(error));
     } finally {
       setReferralLoading(false);
@@ -399,13 +405,21 @@ export function Sidebar({
       await navigator.clipboard.writeText(referralSummary.url);
       setReferralCopyError(null);
       setReferralCopied(true);
-      window.setTimeout(() => setReferralCopied(false), 1600);
     } catch {
       setReferralCopyError(
         "Could not copy the link. Select it and copy manually.",
       );
     }
   }
+
+  // Reset the "Copied" affordance the way every other copy button does
+  // (NoteEditor, dictation rows): a single effect with cleanup, so closing
+  // the dialog mid-flight can't fire a stray setState.
+  useEffect(() => {
+    if (!referralCopied) return;
+    const timer = window.setTimeout(() => setReferralCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [referralCopied]);
 
   const commandPaletteGroups = useMemo<CommandPaletteGroup[]>(() => {
     const normalized = normalizeCommandQuery(commandQuery);
@@ -1101,22 +1115,19 @@ export function Sidebar({
 
       <footer className="sidebar-footer">
         {footerAccessory}
-        <button
-          type="button"
-          className="sidebar-nav-item sidebar-referral"
-          disabled={!account.signedIn}
-          onClick={openReferralDialog}
-        >
-          <span className="sidebar-nav-icon">
-            <IconGift1 size={18} />
-          </span>
-          <span className="sidebar-nav-label">Invite friends</span>
-        </button>
         <SidebarIdentity
           account={account}
           menuOpen={identityMenuOpen}
           onToggleMenu={() => setIdentityMenuOpen((open) => !open)}
           onCloseMenu={() => setIdentityMenuOpen(false)}
+          onInviteFriends={
+            account.signedIn
+              ? () => {
+                  setIdentityMenuOpen(false);
+                  openReferralDialog();
+                }
+              : undefined
+          }
           onOpenSettings={() => {
             setIdentityMenuOpen(false);
             onChangeView("settings");
@@ -1145,6 +1156,7 @@ export function Sidebar({
         summary={referralSummary}
         loading={referralLoading}
         error={referralError}
+        unavailable={referralUnavailable}
         copyError={referralCopyError}
         copied={referralCopied}
         onClose={() => setReferralDialogOpen(false)}
@@ -1579,6 +1591,7 @@ function ReferralDialog({
   summary,
   loading,
   error,
+  unavailable,
   copyError,
   copied,
   onClose,
@@ -1589,69 +1602,79 @@ function ReferralDialog({
   summary: ReferralSummary | null;
   loading: boolean;
   error: string | null;
+  unavailable: boolean;
   copyError: string | null;
   copied: boolean;
   onClose: () => void;
   onRetry: () => void;
   onCopy: () => void;
 }) {
-  const availableMonths = summary?.availableMonths ?? 0;
   const pendingFriends = summary?.pendingCount ?? 0;
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title="Give 1 month, get 1 month"
-      description="Share June with a friend. When they become a paying subscriber, you earn a free month too."
-      leading={<IconPeople size={16} />}
-      width={460}
-      footer={
-        <button type="button" className="btn btn-secondary" onClick={onClose}>
-          Done
-        </button>
-      }
+      title="Give a month, get a month"
+      className="referral-dialog"
+      width={640}
+      initialFocusSelector=".referral-copy-inset"
     >
-      <div className="referral-dialog-body">
-        {loading ? (
-          <div className="referral-dialog-status" role="status">
-            <DotSpinner /> Loading referral link
-          </div>
-        ) : error ? (
-          <div className="referral-error-card">
-            <span className="referral-error-title">
-              Invite link unavailable
-            </span>
-            <p>{error}</p>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={onRetry}
-            >
-              Try again
-            </button>
-          </div>
-        ) : summary ? (
-          <>
-            <div className="referral-offer-row" aria-label="Referral reward">
-              <div>
-                <span className="referral-offer-value">1 month</span>
-                <span className="referral-offer-label">For your friend</span>
-              </div>
-              <div>
-                <span className="referral-offer-value">1 month</span>
-                <span className="referral-offer-label">For you</span>
-              </div>
+      <div className="referral-split">
+        <div className="referral-hero">
+          <span className="referral-hero-logo" aria-hidden>
+            <JuneMark />
+          </span>
+          <span className="referral-hero-eyebrow">
+            <IconGift1 size={13} />
+            Refer a friend
+          </span>
+          <p className="referral-hero-title">Give a month, get a month</p>
+          <p className="referral-hero-copy">
+            Share June with a friend. They get a free month, and when they
+            subscribe, so do you.
+          </p>
+        </div>
+        <div className="referral-panel">
+          {loading ? (
+            <div className="referral-dialog-status" role="status">
+              <DotSpinner /> Loading referral link
             </div>
-            <div className="referral-copy-card">
-              <div className="referral-copy-heading">
-                <span>Your invite link</span>
+          ) : unavailable ? (
+            // Deployment doesn't offer referrals — retrying can't fix that, so
+            // there's no "Try again", just a calm note.
+            <div className="referral-dialog-status">
+              <p>Invite links aren't available yet. Check back soon.</p>
+            </div>
+          ) : error ? (
+            <div className="referral-error-card">
+              <span className="referral-error-title">
+                Invite link unavailable
+              </span>
+              <p>{error}</p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={onRetry}
+              >
+                Try again
+              </button>
+            </div>
+          ) : summary ? (
+            <>
+              <span className="referral-panel-title">
+                Share your invite link
+              </span>
+              <div className="referral-link-field">
+                <input
+                  className="referral-link-url"
+                  value={summary.url}
+                  readOnly
+                  aria-label="Invite link"
+                  onFocus={(event) => event.currentTarget.select()}
+                />
                 <button
                   type="button"
-                  className="referral-copy-icon"
-                  aria-label={
-                    copied ? "Invite link copied" : "Copy invite link"
-                  }
-                  title={copied ? "Copied" : "Copy invite link"}
+                  className="referral-copy-inset"
                   onClick={onCopy}
                 >
                   {copied ? (
@@ -1659,66 +1682,33 @@ function ReferralDialog({
                   ) : (
                     <IconClipboard size={14} />
                   )}
+                  {copied ? "Copied" : "Copy invite link"}
                 </button>
               </div>
-              <button
-                type="button"
-                className="referral-link-box"
-                onClick={onCopy}
-                title="Copy invite link"
-              >
-                <span>{summary.url}</span>
-              </button>
-              <button
-                type="button"
-                className="primary-action primary-solid referral-copy-primary"
-                onClick={onCopy}
-              >
-                {copied ? (
-                  <IconCheckmark1Small size={14} />
-                ) : (
-                  <IconClipboard size={14} />
-                )}
-                {copied ? "Copied" : "Copy invite link"}
-              </button>
               {copyError ? (
                 <p className="referral-copy-error">{copyError}</p>
               ) : null}
-            </div>
-            <div className="referral-stats">
-              <div>
-                <span className="referral-stat-value">
-                  {summary.qualifiedCount}
-                </span>
-                <span className="referral-stat-label">Rewarded friends</span>
+              <div className="referral-stats">
+                <div>
+                  <span className="referral-stat-value">
+                    {summary.qualifiedCount}
+                  </span>
+                  <span className="referral-stat-label">Friends referred</span>
+                </div>
               </div>
-              <div>
-                <span className="referral-stat-value">{availableMonths}</span>
-                <span className="referral-stat-label">
-                  {monthLabel(availableMonths)} earned
-                </span>
-              </div>
-            </div>
-            {pendingFriends > 0 ? (
-              <p className="referral-progress-note">
-                {pendingFriends} invited{" "}
-                {pendingFriends === 1 ? "friend is" : "friends are"} waiting to
-                subscribe.
-              </p>
-            ) : null}
-          </>
-        ) : (
-          <div className="referral-dialog-status">
-            <p>Sign in to get your referral link.</p>
-          </div>
-        )}
+              {pendingFriends > 0 ? (
+                <p className="referral-progress-note">
+                  {pendingFriends} invited{" "}
+                  {pendingFriends === 1 ? "friend is" : "friends are"} waiting
+                  to subscribe.
+                </p>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
     </Dialog>
   );
-}
-
-function monthLabel(months: number) {
-  return months === 1 ? "Month" : "Months";
 }
 
 // The user's name is the settings entry point: clicking it opens a small
@@ -1736,6 +1726,7 @@ function SidebarIdentity({
   menuOpen,
   onToggleMenu,
   onCloseMenu,
+  onInviteFriends,
   onOpenSettings,
   onReportIssue,
   onSignOut,
@@ -1744,6 +1735,7 @@ function SidebarIdentity({
   menuOpen: boolean;
   onToggleMenu: () => void;
   onCloseMenu: () => void;
+  onInviteFriends?: () => void;
   onOpenSettings: () => void;
   onReportIssue?: (category: ReportCategory) => void;
   onSignOut?: () => void;
@@ -1784,6 +1776,17 @@ function SidebarIdentity({
       </button>
       {menuOpen ? (
         <div className="sidebar-identity-menu" role="menu">
+          {onInviteFriends ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="sidebar-invite-item"
+              onClick={onInviteFriends}
+            >
+              <IconGift1 size={14} />
+              Invite friends
+            </button>
+          ) : null}
           <button type="button" role="menuitem" onClick={onOpenSettings}>
             <IconSettingsGear4 size={14} />
             Settings

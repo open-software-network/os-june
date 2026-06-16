@@ -4395,15 +4395,6 @@ input:focus-visible,
   border-top: 0;
 }
 
-.sidebar-referral:disabled {
-  cursor: default;
-  opacity: 0.48;
-}
-
-.sidebar-referral:disabled:hover {
-  background: transparent;
-}
-
 .sidebar[data-collapsed="true"] .update-popover {
   display: none;
 }
@@ -4457,6 +4448,12 @@ input:focus-visible,
 
 .sidebar-identity-menu button > svg {
   color: var(--muted-foreground);
+}
+
+/* The invite action carries the brand terracotta so it pops against the
+ * otherwise-muted menu icons. */
+.sidebar-identity-menu button.sidebar-invite-item > svg {
+  color: var(--brand);
 }
 
 /* Report shortcuts stay muted in this menu (the category tints live on the
@@ -11563,18 +11560,226 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.referral-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
+/* Referral dialog — a 50/50 split. The left is a terracotta hero (brand
+ * gradient + the app's fractal-noise grain, the same recipe as
+ * .dictation-hint) that carries the offer; the right is the borderless
+ * action panel with the invite link and stats. The shared Dialog chrome is
+ * suppressed via this class hook so the headline can live in the hero. */
+.referral-dialog {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
 }
 
+/* Float just the close button into the top-right corner. The accessible
+ * title stays in the DOM (for aria-labelledby) but is visually hidden. */
+.referral-dialog .dialog-header {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  z-index: 3;
+  gap: 0;
+}
+
+.referral-dialog .dialog-leading {
+  display: none;
+}
+
+.referral-dialog .dialog-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.referral-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 340px;
+}
+
+.referral-hero {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding: var(--sp-7);
+  color: oklch(100% 0 0);
+  /* Derived entirely from the fixed --brand terracotta (not --warm-* which
+   * flip lightness in dark mode) so the hero stays a rich, white-text-safe
+   * terracotta in both themes: a soft highlight top-left, brand mid, deep
+   * terracotta bottom-right. */
+  background:
+    radial-gradient(
+      120% 120% at 12% 8%,
+      color-mix(in oklch, var(--brand) 82%, white),
+      transparent 55%
+    ),
+    linear-gradient(
+      152deg,
+      var(--brand) 0%,
+      color-mix(in oklch, var(--brand) 68%, black) 100%
+    );
+}
+
+/* The app's signature grain (lifted from .dictation-hint) over the warm
+ * gradient so the panel never reads as a flat fill. */
+.referral-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.referral-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* June brandmark, pinned to the top-left corner of the hero. Absolute so it
+ * floats above the centered offer copy; white via currentColor against the
+ * terracotta. Placed after the `> *` rule so this position wins. */
+.referral-hero-logo {
+  position: absolute;
+  top: var(--sp-6);
+  left: var(--sp-7);
+  display: inline-flex;
+  color: oklch(100% 0 0);
+  opacity: 0.92;
+}
+
+.referral-hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: max-content;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, oklch(100% 0 0) 20%, transparent);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.referral-hero-title {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.referral-hero-copy {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: color-mix(in oklch, oklch(100% 0 0) 86%, transparent);
+}
+
+.referral-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding: var(--sp-7);
+}
+
+.referral-panel-title {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+/* Borderless filled field with the Copy button inset on the right. */
+.referral-link-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.referral-link-url {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+}
+
+.referral-link-url:focus,
+.referral-link-url:focus-visible {
+  outline: none;
+}
+
+.referral-copy-inset {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.referral-copy-inset:hover {
+  opacity: 0.9;
+}
+
+.referral-copy-error,
+.referral-progress-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+/* Borderless stat — a plain figure, no card chrome. */
+.referral-stats > div {
+  min-width: 0;
+}
+
+.referral-stat-value,
+.referral-stat-label {
+  display: block;
+}
+
+.referral-stat-value {
+  color: var(--foreground);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+}
+
+.referral-stat-label {
+  margin-top: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+/* Right-panel states (loading / unavailable / error) stay borderless. */
 .referral-dialog-status {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--sp-3);
-  min-height: 44px;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
 }
@@ -11587,10 +11792,6 @@ input:focus-visible,
   display: grid;
   justify-items: start;
   gap: var(--sp-3);
-  padding: var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
 }
 
 .referral-error-title {
@@ -11603,152 +11804,6 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-}
-
-.referral-offer-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-3);
-}
-
-.referral-offer-row > div {
-  min-width: 0;
-  padding: var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--card);
-}
-
-.referral-offer-value,
-.referral-offer-label {
-  display: block;
-}
-
-.referral-offer-value {
-  color: var(--foreground);
-  font-size: var(--fs-xl);
-  font-weight: 600;
-}
-
-.referral-offer-label {
-  margin-top: var(--sp-1);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-.referral-copy-card {
-  display: grid;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
-}
-
-.referral-copy-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-}
-
-.referral-copy-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--muted-foreground);
-  cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
-}
-
-.referral-copy-icon:hover {
-  background: var(--muted);
-  color: var(--foreground);
-  border-color: var(--ring);
-}
-
-.referral-link-box {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 40px;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    border-color var(--t-fast) var(--ease-out);
-}
-
-.referral-link-box:hover {
-  background: var(--muted);
-  border-color: var(--ring);
-}
-
-.referral-link-box span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.referral-copy-primary {
-  width: 100%;
-}
-
-.referral-copy-error,
-.referral-progress-note {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-.referral-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-3);
-}
-
-.referral-stats > div {
-  min-width: 0;
-  padding: var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--card) 72%, var(--muted));
-}
-
-.referral-stat-value,
-.referral-stat-label {
-  display: block;
-}
-
-.referral-stat-value {
-  color: var(--foreground);
-  font-size: var(--fs-xl);
-  font-weight: 500;
-}
-
-.referral-stat-label {
-  margin-top: var(--sp-1);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
 }
 
 /* Generous padding (+ negative outer margin) so the inputs' focus

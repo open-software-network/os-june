@@ -7,6 +7,17 @@ export function messageFromError(err: unknown) {
   return String(err);
 }
 
+/** Stable error code from a thrown Tauri `AppError` (`{ code, message }`),
+ * or undefined for anything without one. Lets callers branch on a specific
+ * failure (e.g. "referrals_unavailable") instead of matching message text. */
+export function errorCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
+}
+
 export function isHermesSessionsStartupRequestError(err: unknown) {
   return /error sending request for url \(http:\/\/127\.0\.0\.1:\d+\/api\/sessions(?:\?|[)/])/i.test(
     messageFromError(err),
