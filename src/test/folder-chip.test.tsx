@@ -49,9 +49,11 @@ function baseProps(folders: FolderDto[]) {
 }
 
 describe("Folder chip — move-to-folder popover", () => {
-  it("shows 'Folder' label when nothing is assigned", () => {
+  it("shows 'Project' label when nothing is assigned", () => {
     render(<NoteEditor {...baseProps([])} />);
-    expect(screen.getByRole("button", { name: /^Folder/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Project/ }),
+    ).toBeInTheDocument();
   });
 
   it("filters folders by the search query", async () => {
@@ -65,8 +67,8 @@ describe("Folder chip — move-to-folder popover", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /^Folder/ }));
-    const input = screen.getByPlaceholderText("Search or create folder");
+    await user.click(screen.getByRole("button", { name: /^Project/ }));
+    const input = screen.getByPlaceholderText("Search or create project");
     await user.type(input, "wor");
 
     expect(screen.queryByText("Ideas")).toBeNull();
@@ -89,7 +91,9 @@ describe("Folder chip — move-to-folder popover", () => {
     await user.click(screen.getByRole("button", { name: "Open Ideas" }));
 
     expect(onNavigateToFolder).toHaveBeenCalledWith("f1");
-    expect(screen.queryByPlaceholderText("Search or create folder")).toBeNull();
+    expect(
+      screen.queryByPlaceholderText("Search or create project"),
+    ).toBeNull();
   });
 
   it("offers 'Create' when no existing folder matches", async () => {
@@ -99,9 +103,9 @@ describe("Folder chip — move-to-folder popover", () => {
     ]);
     render(<NoteEditor {...props} />);
 
-    await user.click(screen.getByRole("button", { name: /^Folder/ }));
+    await user.click(screen.getByRole("button", { name: /^Project/ }));
     await user.type(
-      screen.getByPlaceholderText("Search or create folder"),
+      screen.getByPlaceholderText("Search or create project"),
       "Personal",
     );
 

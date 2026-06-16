@@ -26,6 +26,7 @@ import type { HermesSessionInfo } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import { Switch } from "../ui/Switch";
+import { userFacingFailureMessage } from "../note-editor/NoteFailureBanner";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
 import { formatRunTime, RoutineRunList } from "./RoutineRunList";
@@ -154,7 +155,9 @@ export function RoutineDetail({
 
   const failure =
     routine.last_status === "error"
-      ? routine.last_error || routine.last_delivery_error
+      ? userFacingFailureMessage(
+          routine.last_error || routine.last_delivery_error || undefined,
+        )
       : null;
 
   return (
