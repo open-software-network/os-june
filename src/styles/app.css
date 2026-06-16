@@ -5126,16 +5126,19 @@ input:focus-visible,
  * cut the active tab's shadow and right edge. Scrolls only in the extreme case
  * where even icon-width tabs overflow. */
 .tab-strip {
+  --tab-strip-shadow-pad: 4px;
+
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex: 1;
   min-width: 0;
-  padding: 4px;
+  padding: var(--tab-strip-shadow-pad);
+  padding-left: 0;
   /* No scroll: tabs that don't fit fold into the overflow popover instead.
-   * hidden (not auto) clips any transient overflow during a resize gracefully;
-   * the 4px padding keeps it from clipping the tab shadows. */
-  overflow: hidden;
+   * Keep overflow visible so a flush first pill can render its normal rounded
+   * corner and soft shadow instead of clipping against the strip edge. */
+  overflow: visible;
 }
 
 /* Each tab takes up to a quarter of the bar by default (capped so it never gets

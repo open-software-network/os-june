@@ -206,7 +206,7 @@ function tabMeta(
         ? notes.find((n) => n.id === nav.noteId)
         : undefined;
       return {
-        title: note?.title?.trim() || "Untitled note",
+        title: note?.title?.trim() || "New note",
         icon: <IconNoteText size={TAB_ICON_SIZE} />,
       };
     }
