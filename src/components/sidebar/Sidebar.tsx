@@ -1,3 +1,5 @@
+import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconClipboard } from "central-icons/IconClipboard";
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconZap } from "central-icons/IconZap";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -10,6 +12,7 @@ import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
+import { IconGift1 } from "central-icons/IconGift1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
@@ -58,9 +61,12 @@ import type {
   AccountStatus,
   HermesSessionInfo,
   NoteListItemDto,
+  ReferralSummary,
 } from "../../lib/tauri";
+import { osAccountsReferralSummary } from "../../lib/tauri";
 import { type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Dialog } from "../ui/Dialog";
 import { DotSpinner } from "../DotSpinner";
 
 const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
@@ -242,6 +248,15 @@ export function Sidebar({
   const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false);
+  const [referralDialogOpen, setReferralDialogOpen] = useState(false);
+  const [referralSummary, setReferralSummary] =
+    useState<ReferralSummary | null>(null);
+  const [referralLoading, setReferralLoading] = useState(false);
+  const [referralError, setReferralError] = useState<string | null>(null);
+  const [referralCopyError, setReferralCopyError] = useState<string | null>(
+    null,
+  );
+  const [referralCopied, setReferralCopied] = useState(false);
   const searchShortcut = primaryShortcutLabel("K");
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
@@ -353,6 +368,42 @@ export function Sidebar({
         .slice(0, AGENT_SIDEBAR_SESSION_LIMIT),
     [filteredAgentSessions, pinnedAgentSessionIds],
   );
+
+  async function loadReferralSummary() {
+    if (!account.signedIn) return;
+    setReferralLoading(true);
+    setReferralError(null);
+    try {
+      setReferralSummary(await osAccountsReferralSummary());
+    } catch (error) {
+      setReferralError(messageFromError(error));
+    } finally {
+      setReferralLoading(false);
+    }
+  }
+
+  function openReferralDialog() {
+    setReferralDialogOpen(true);
+    setReferralCopied(false);
+    setReferralCopyError(null);
+    if (!referralSummary && !referralLoading) {
+      void loadReferralSummary();
+    }
+  }
+
+  async function copyReferralLink() {
+    if (!referralSummary) return;
+    try {
+      await navigator.clipboard.writeText(referralSummary.url);
+      setReferralCopyError(null);
+      setReferralCopied(true);
+      window.setTimeout(() => setReferralCopied(false), 1600);
+    } catch {
+      setReferralCopyError(
+        "Could not copy the link. Select it and copy manually.",
+      );
+    }
+  }
 
   const commandPaletteGroups = useMemo<CommandPaletteGroup[]>(() => {
     const normalized = normalizeCommandQuery(commandQuery);
@@ -1047,6 +1098,17 @@ export function Sidebar({
       )}
 
       <footer className="sidebar-footer">
+        <button
+          type="button"
+          className="sidebar-nav-item sidebar-referral"
+          disabled={!account.signedIn}
+          onClick={openReferralDialog}
+        >
+          <span className="sidebar-nav-icon">
+            <IconGift1 size={18} />
+          </span>
+          <span className="sidebar-nav-label">Invite friends</span>
+        </button>
         <SidebarIdentity
           account={account}
           menuOpen={identityMenuOpen}
@@ -1074,6 +1136,18 @@ export function Sidebar({
           }
         />
       </footer>
+
+      <ReferralDialog
+        open={referralDialogOpen}
+        summary={referralSummary}
+        loading={referralLoading}
+        error={referralError}
+        copyError={referralCopyError}
+        copied={referralCopied}
+        onClose={() => setReferralDialogOpen(false)}
+        onRetry={() => void loadReferralSummary()}
+        onCopy={() => void copyReferralLink()}
+      />
 
       {menu?.kind === "note" ? (
         <NoteContextMenu
@@ -1495,6 +1569,153 @@ function normalizeCommandQuery(value: string) {
 
 function isSearchShortcut(event: KeyboardEvent) {
   return event.key.toLowerCase() === "k" && isPrimaryShortcut(event);
+}
+
+function ReferralDialog({
+  open,
+  summary,
+  loading,
+  error,
+  copyError,
+  copied,
+  onClose,
+  onRetry,
+  onCopy,
+}: {
+  open: boolean;
+  summary: ReferralSummary | null;
+  loading: boolean;
+  error: string | null;
+  copyError: string | null;
+  copied: boolean;
+  onClose: () => void;
+  onRetry: () => void;
+  onCopy: () => void;
+}) {
+  const availableMonths = summary?.availableMonths ?? 0;
+  const pendingFriends = summary?.pendingCount ?? 0;
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Give 1 month, get 1 month"
+      description="Share June with a friend. When they become a paying subscriber, you earn a free month too."
+      leading={<IconPeople size={16} />}
+      width={460}
+      footer={
+        <button type="button" className="btn btn-secondary" onClick={onClose}>
+          Done
+        </button>
+      }
+    >
+      <div className="referral-dialog-body">
+        {loading ? (
+          <div className="referral-dialog-status" role="status">
+            <DotSpinner /> Loading referral link
+          </div>
+        ) : error ? (
+          <div className="referral-error-card">
+            <span className="referral-error-title">
+              Invite link unavailable
+            </span>
+            <p>{error}</p>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onRetry}
+            >
+              Try again
+            </button>
+          </div>
+        ) : summary ? (
+          <>
+            <div className="referral-offer-row" aria-label="Referral reward">
+              <div>
+                <span className="referral-offer-value">1 month</span>
+                <span className="referral-offer-label">For your friend</span>
+              </div>
+              <div>
+                <span className="referral-offer-value">1 month</span>
+                <span className="referral-offer-label">For you</span>
+              </div>
+            </div>
+            <div className="referral-copy-card">
+              <div className="referral-copy-heading">
+                <span>Your invite link</span>
+                <button
+                  type="button"
+                  className="referral-copy-icon"
+                  aria-label={
+                    copied ? "Invite link copied" : "Copy invite link"
+                  }
+                  title={copied ? "Copied" : "Copy invite link"}
+                  onClick={onCopy}
+                >
+                  {copied ? (
+                    <IconCheckmark1Small size={14} />
+                  ) : (
+                    <IconClipboard size={14} />
+                  )}
+                </button>
+              </div>
+              <button
+                type="button"
+                className="referral-link-box"
+                onClick={onCopy}
+                title="Copy invite link"
+              >
+                <span>{summary.url}</span>
+              </button>
+              <button
+                type="button"
+                className="primary-action primary-solid referral-copy-primary"
+                onClick={onCopy}
+              >
+                {copied ? (
+                  <IconCheckmark1Small size={14} />
+                ) : (
+                  <IconClipboard size={14} />
+                )}
+                {copied ? "Copied" : "Copy invite link"}
+              </button>
+              {copyError ? (
+                <p className="referral-copy-error">{copyError}</p>
+              ) : null}
+            </div>
+            <div className="referral-stats">
+              <div>
+                <span className="referral-stat-value">
+                  {summary.qualifiedCount}
+                </span>
+                <span className="referral-stat-label">Rewarded friends</span>
+              </div>
+              <div>
+                <span className="referral-stat-value">{availableMonths}</span>
+                <span className="referral-stat-label">
+                  {monthLabel(availableMonths)} earned
+                </span>
+              </div>
+            </div>
+            {pendingFriends > 0 ? (
+              <p className="referral-progress-note">
+                {pendingFriends} invited{" "}
+                {pendingFriends === 1 ? "friend is" : "friends are"} waiting to
+                subscribe.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <div className="referral-dialog-status">
+            <p>Sign in to get your referral link.</p>
+          </div>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+function monthLabel(months: number) {
+  return months === 1 ? "Month" : "Months";
 }
 
 // The user's name is the settings entry point: clicking it opens a small

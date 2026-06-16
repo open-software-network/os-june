@@ -1181,6 +1181,17 @@ export type AccountStatus = {
   portalUrl?: string;
 };
 
+export type ReferralSummary = {
+  code: string;
+  url: string;
+  referredCount: number;
+  pendingCount: number;
+  qualifiedCount: number;
+  earnedMonths: number;
+  appliedMonths: number;
+  availableMonths: number;
+};
+
 export async function osAccountsStatus() {
   return invoke<AccountStatus>("os_accounts_status");
 }
@@ -1205,6 +1216,10 @@ export async function osAccountsTopUp() {
  * target="_blank" anchors, so portal navigation must go through Rust. */
 export async function osAccountsOpenPortal() {
   return invoke<void>("os_accounts_open_portal");
+}
+
+export async function osAccountsReferralSummary() {
+  return invoke<ReferralSummary>("os_accounts_referral_summary");
 }
 
 export type TrialCheckoutResult = {

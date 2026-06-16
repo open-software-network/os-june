@@ -171,6 +171,7 @@ pub fn run() {
             os_accounts::os_accounts_logout,
             os_accounts::os_accounts_top_up,
             os_accounts::os_accounts_open_portal,
+            os_accounts::os_accounts_referral_summary,
             os_accounts::os_accounts_prepare_trial_checkout,
             os_accounts::os_accounts_start_trial_checkout,
             focus_main_window

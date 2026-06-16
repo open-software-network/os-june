@@ -4395,6 +4395,15 @@ input:focus-visible,
   border-top: 0;
 }
 
+.sidebar-referral:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.sidebar-referral:disabled:hover {
+  background: transparent;
+}
+
 /* Sidebar identity — the user's name doubles as the settings entry point.
  * Clicking it opens a small popover above the footer. */
 .sidebar-identity-wrap {
@@ -11632,6 +11641,194 @@ input:focus-visible,
   margin: calc(-1 * var(--sp-3)) 0 0;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+}
+
+.referral-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.referral-dialog-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 44px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.referral-dialog-status p {
+  margin: 0;
+}
+
+.referral-error-card {
+  display: grid;
+  justify-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.referral-error-title {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.referral-error-card p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.referral-offer-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.referral-offer-row > div {
+  min-width: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.referral-offer-value,
+.referral-offer-label {
+  display: block;
+}
+
+.referral-offer-value {
+  color: var(--foreground);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+}
+
+.referral-offer-label {
+  margin-top: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.referral-copy-card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.referral-copy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.referral-copy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.referral-copy-icon:hover {
+  background: var(--muted);
+  color: var(--foreground);
+  border-color: var(--ring);
+}
+
+.referral-link-box {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.referral-link-box:hover {
+  background: var(--muted);
+  border-color: var(--ring);
+}
+
+.referral-link-box span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.referral-copy-primary {
+  width: 100%;
+}
+
+.referral-copy-error,
+.referral-progress-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.referral-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.referral-stats > div {
+  min-width: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--card) 72%, var(--muted));
+}
+
+.referral-stat-value,
+.referral-stat-label {
+  display: block;
+}
+
+.referral-stat-value {
+  color: var(--foreground);
+  font-size: var(--fs-xl);
+  font-weight: 500;
+}
+
+.referral-stat-label {
+  margin-top: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
 }
 
 /* Generous padding (+ negative outer margin) so the inputs' focus
