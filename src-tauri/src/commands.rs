@@ -645,7 +645,7 @@ pub async fn start_recording(
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
     let started = tokio::task::spawn_blocking(move || {
-        start_capture(&capture_paths, capture_note_id, source_mode)
+        start_capture(app, &capture_paths, capture_note_id, source_mode)
     })
     .await
     .map_err(|error| AppError::new("recording_start_failed", error.to_string()))??;

@@ -56,6 +56,21 @@ export type TranscriptDto = {
   lastError?: string;
 };
 
+export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
+
+export type LiveTranscriptEventDto = {
+  noteId: string;
+  sessionId: string;
+  sourceMode: RecordingSourceMode;
+  source: RecordingSource;
+  segmentId: string;
+  startMs: number;
+  endMs: number;
+  text: string;
+  language?: string;
+  stability: "partial" | "final";
+};
+
 export type AudioLevelDto = {
   peak: number;
   rms: number;

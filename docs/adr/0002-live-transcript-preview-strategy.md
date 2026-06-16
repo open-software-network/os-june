@@ -2,7 +2,7 @@
 
 ## Status
 
-proposed
+accepted - Phase 1 microphone preview implemented
 
 ## Context
 
@@ -61,18 +61,22 @@ type LiveTranscriptStability = "partial" | "final";
 type LiveTranscriptEvent = {
   noteId: string;
   sessionId: string;
+  sourceMode: "microphoneOnly" | "microphonePlusSystem";
   source: LiveTranscriptSource;
   segmentId: string;
-  sequence: number;
   startMs: number;
   endMs: number;
   text: string;
+  language?: string;
   stability: LiveTranscriptStability;
-  provider: string;
-  transport: LiveTranscriptTransport;
-  receivedAt: string;
 };
 ```
+
+Phase 1 ships the microphone chunked-preview subset of this contract through
+the `live-transcript-event` Tauri event. The system-audio lane remains part of
+the provider-neutral design, but live system-source preview requires extending
+the macOS helper process to expose preview PCM without weakening the finalized
+audio source-of-truth path.
 
 The event stream is ephemeral UI state:
 
@@ -144,6 +148,11 @@ trait LiveTranscriptProvider {
 }
 ```
 
+The project toolchain already satisfies the Rust 1.75+ requirement for direct
+`async fn` in traits (`scribe-api` pins Rust 1.95). If this boundary needs to be
+used as an object-safe trait, implement it with `async_trait` or an explicit
+boxed future instead of relying on direct `async fn` trait object dispatch.
+
 Provider implementations can differ internally:
 
 - `ChunkedPreview` can use short rolling WAV windows and the existing Scribe API
@@ -170,6 +179,17 @@ final transcript contract.
 - Drop stale chunks if transcription falls behind.
 - Do not bill users for both preview and final transcription without an explicit
   product decision. The billing model must be resolved before broad rollout.
+
+Implemented Phase 1 behavior:
+
+- The microphone capture callback feeds a bounded preview channel while the WAV
+  writer remains the priority.
+- Preview workers transcribe 8 second microphone chunks as `preview=true`
+  Scribe API requests.
+- The API validates the model and audio but returns a zero-credit receipt for
+  preview requests. It does not authorize a hold or settle a wallet charge.
+- React stores preview events outside `NoteDto`, renders them only in the
+  Transcription tab, and clears them when recording stops.
 
 Expected behavior: users see delayed live preview, usually a few seconds behind.
 This is not word-by-word realtime, but it answers "is June hearing this meeting"
@@ -229,6 +249,8 @@ new cloud provider, if runtime costs are acceptable.
 - Microphone-only and microphone-plus-system modes both have deterministic
   source lanes.
 - Tests cover frontend preview reconciliation and backend preview backpressure.
+- Phase 1 preview calls do not result in a separate user charge without a
+  product decision on billing.
 
 ## Open questions
 
@@ -244,6 +266,7 @@ new cloud provider, if runtime costs are acceptable.
 
 ## References checked on 2026-06-16
 
+- [OpenAI Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription)
 - [OpenAI Realtime and audio guide](https://developers.openai.com/api/docs/guides/realtime)
 - [OpenAI Speech to text guide](https://developers.openai.com/api/docs/guides/speech-to-text)
 - [Google Cloud Speech-to-Text streaming audio guide](https://docs.cloud.google.com/speech-to-text/docs/v1/transcribe-streaming-audio)

@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod live_preview;
 pub mod recovery;
 pub mod system_macos;
 pub mod turns;

@@ -205,6 +205,7 @@ Useful validation docs:
 
 Architecture and product notes:
 
+- [docs/adr/0001-auto-updates-via-tauri-updater.md](docs/adr/0001-auto-updates-via-tauri-updater.md)
 - [docs/adr/0002-live-transcript-preview-strategy.md](docs/adr/0002-live-transcript-preview-strategy.md)
 
 ## Release notes

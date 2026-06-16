@@ -80,6 +80,7 @@ import {
   finishRecording,
   getRecordingStatus,
   getNote,
+  LIVE_TRANSCRIPT_EVENT,
   listNotes,
   listSessionFolders,
   openPrivacySettings,
@@ -96,6 +97,7 @@ import {
   updateNote,
   agentHudHide,
   agentHudShow,
+  type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import {
   playRecordingSound,
@@ -267,6 +269,28 @@ function tabMeta(
   }
 }
 
+function upsertLiveTranscriptEvent(
+  current: LiveTranscriptEventDto[],
+  next: LiveTranscriptEventDto,
+) {
+  const events = current.filter(
+    (event) =>
+      !(
+        event.sessionId === next.sessionId &&
+        event.source === next.source &&
+        event.segmentId === next.segmentId
+      ),
+  );
+  events.push(next);
+  events.sort(
+    (left, right) =>
+      left.startMs - right.startMs ||
+      left.endMs - right.endMs ||
+      left.segmentId.localeCompare(right.segmentId),
+  );
+  return events.slice(-32);
+}
+
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
   const [state, dispatch] = useReducer(
@@ -416,6 +440,9 @@ export function App() {
   >(undefined);
   const recordingStatusRef = useRef(state.recordingStatus);
   const recordingStartInFlightRef = useRef(false);
+  const [liveTranscriptEvents, setLiveTranscriptEvents] = useState<
+    LiveTranscriptEventDto[]
+  >([]);
   useEffect(() => {
     recordingStatusRef.current = state.recordingStatus;
   }, [state.recordingStatus]);
@@ -1647,6 +1674,42 @@ export function App() {
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
 
   useEffect(() => {
+    if (!state.recordingStatus) {
+      setLiveTranscriptEvents([]);
+    }
+  }, [state.recordingStatus?.sessionId]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let aborted = false;
+    void listen<LiveTranscriptEventDto>(LIVE_TRANSCRIPT_EVENT, (event) => {
+      const payload = event.payload;
+      const activeRecording = recordingStatusRef.current;
+      if (!activeRecording || payload.sessionId !== activeRecording.sessionId) {
+        return;
+      }
+      if (
+        recordingNoteIdRef.current &&
+        payload.noteId !== recordingNoteIdRef.current
+      ) {
+        return;
+      }
+      const text = payload.text.trim();
+      if (!text) return;
+      setLiveTranscriptEvents((current) =>
+        upsertLiveTranscriptEvent(current, { ...payload, text }),
+      );
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (
       !selectedNote ||
       !shouldPollProcessingStatus(selectedNote.processingStatus)
@@ -2082,6 +2145,7 @@ export function App() {
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
+      setLiveTranscriptEvents([]);
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, sourceMode);
       recordingStatusRef.current = startingStatus;
@@ -2236,6 +2300,7 @@ export function App() {
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
     dispatch({ type: "recordingStatusCleared" });
+    setLiveTranscriptEvents([]);
     setRecordingNote(undefined);
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
@@ -2870,8 +2935,14 @@ export function App() {
                           : undefined
                       }
                       recordingDisabled={Boolean(
-                        state.recordingStatus && selectedNoteId !== recordingNoteId,
+                        state.recordingStatus &&
+                        selectedNoteId !== recordingNoteId,
                       )}
+                      liveTranscript={
+                        selectedNoteId === recordingNoteId
+                          ? liveTranscriptEvents
+                          : []
+                      }
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}

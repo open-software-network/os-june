@@ -45,6 +45,9 @@ pub(crate) async fn transcribe(
         language.as_deref(),
         validation::MAX_LANGUAGE_CHARS,
     )?;
+    let preview = form
+        .optional_text("preview")
+        .is_some_and(|value| matches!(value.as_str(), "true" | "1"));
     let note_id = form.required_text("noteId")?;
     validation::validate_text_len("note_id", &note_id, validation::MAX_ID_CHARS)?;
     let filename = form
@@ -60,6 +63,7 @@ pub(crate) async fn transcribe(
             context,
             language,
             model_id: ModelId(model_id),
+            preview,
         })
         .await?;
     Ok(Json(ApiResponse::ok(TranscribeResponse::from(output))))

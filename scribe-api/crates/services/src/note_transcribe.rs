@@ -66,6 +66,28 @@ impl NoteTranscribeService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
+        if params.preview {
+            tracing::info!(
+                note_id = %params.note_id,
+                model = %params.model_id.0,
+                seconds,
+                "note_transcribe: preview request is not charged"
+            );
+            let transcript = self
+                .transcriber
+                .transcribe(TranscriptionRequest {
+                    audio: params.audio,
+                    format,
+                    context: params.context,
+                    language: params.language,
+                    model: params.model_id.clone(),
+                })
+                .await?;
+            return Ok(NoteTranscribeOutput {
+                transcript,
+                receipt: uncharged_receipt(),
+            });
+        }
         // Flat-estimate mode: skip per-request estimation for the upfront
         // authorize. The Hold is bigger than necessary; the actual charge
         // below is what the user pays.
@@ -127,6 +149,13 @@ impl NoteTranscribeService {
     }
 }
 
+fn uncharged_receipt() -> Receipt {
+    Receipt {
+        credits_charged: Credits(0),
+        idempotent_replay: false,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NoteTranscribeParams {
     pub user_id: UserId,
@@ -137,6 +166,7 @@ pub struct NoteTranscribeParams {
     pub context: Option<String>,
     pub language: Option<String>,
     pub model_id: ModelId,
+    pub preview: bool,
 }
 
 #[derive(Clone, Debug)]

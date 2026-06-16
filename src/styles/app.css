@@ -6102,6 +6102,11 @@ input:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 
+.transcript-turn-preview {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
 .transcript-turn-text {
   margin: 0;
   color: var(--foreground);

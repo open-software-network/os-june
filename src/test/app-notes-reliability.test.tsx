@@ -71,6 +71,7 @@ vi.mock("../lib/recording-sounds", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
@@ -669,7 +670,9 @@ describe("notes recording reliability", () => {
     );
     expect(container.querySelector(".note-failure-banner")).toBeNull();
 
-    await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Transcription" }),
+    );
     await waitFor(() =>
       expect(mocks.updateNote).toHaveBeenCalledWith({
         noteId: "note-1",
