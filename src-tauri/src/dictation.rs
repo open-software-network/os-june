@@ -186,6 +186,13 @@ impl DictationStyle {
             }
         }
     }
+
+    /// Whether this style capitalizes the start of a sentence. CasualLowercase
+    /// keeps sentence starts lowercase, so the deterministic filler backstop
+    /// must not re-capitalize a surviving first word under it.
+    fn capitalizes_sentence_starts(self) -> bool {
+        !matches!(self, Self::CasualLowercase)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1936,7 +1943,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         utterance_id,
     )
     .await;
-    let outcome = outcome_from_transcription_result(result, recording.observed_audio_level);
+    let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
         emit_dictation_event_value(&app, app_error_event(error));
@@ -2221,17 +2228,41 @@ struct RecordingReadyInfo {
 fn outcome_from_transcription_result(
     result: Result<TranscriptionProviderResult, AppError>,
     observed_audio_level: Option<f32>,
+    style: DictationStyle,
 ) -> DictationTranscriptionOutcome {
     match result {
+        Ok(mut transcript) => {
+            transcript.text = clean_dictation_fillers(&transcript.text, style);
+            outcome_from_clean_transcript(transcript, observed_audio_level)
+        }
+        Err(error) => {
+            let event = promote_silent_error_if_audio_detected(
+                app_error_event(error),
+                observed_audio_level,
+            );
+            DictationTranscriptionOutcome {
+                helper_command: serde_json::json!({ "type": "discard_recording" }),
+                event: Some(event),
+                transcript: None,
+            }
+        }
+    }
+}
+
+fn outcome_from_clean_transcript(
+    transcript: TranscriptionProviderResult,
+    observed_audio_level: Option<f32>,
+) -> DictationTranscriptionOutcome {
+    match transcript {
         // Recorded silence / nothing to type is not a failure — discard quietly
         // and emit a `no_speech` event (classified silent, so the HUD just
         // dismisses instead of flashing an error). Don't store an empty item.
-        Ok(transcript) if transcript.text.trim().is_empty() => DictationTranscriptionOutcome {
+        transcript if transcript.text.trim().is_empty() => DictationTranscriptionOutcome {
             helper_command: serde_json::json!({ "type": "discard_recording" }),
             event: Some(no_text_event_for_observed_audio(observed_audio_level)),
             transcript: None,
         },
-        Ok(transcript) => {
+        transcript => {
             if let Some(prompt) = agent_session_prompt_from_dictation(&transcript.text) {
                 DictationTranscriptionOutcome {
                     helper_command: serde_json::json!({ "type": "discard_recording" }),
@@ -2252,18 +2283,209 @@ fn outcome_from_transcription_result(
                 }
             }
         }
-        Err(error) => {
-            let event = promote_silent_error_if_audio_detected(
-                app_error_event(error),
-                observed_audio_level,
-            );
-            DictationTranscriptionOutcome {
-                helper_command: serde_json::json!({ "type": "discard_recording" }),
-                event: Some(event),
-                transcript: None,
+    }
+}
+
+fn clean_dictation_fillers(text: &str, style: DictationStyle) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let (without_fillers, removed_filler) = remove_standalone_fillers(text);
+    let cleaned = normalize_after_filler_removal(&without_fillers, removed_filler);
+    if removed_filler && !contains_meaningful_dictation_word(&cleaned) {
+        String::new()
+    } else if removed_filler && style.capitalizes_sentence_starts() {
+        // Transcripts capitalize the leading filler ("Um, can you…"), so once
+        // it's stripped the surviving first word would start lowercase. Restore
+        // the capital — but only for styles that capitalize sentence starts, so
+        // we never fight CasualLowercase. And only when we actually removed a
+        // filler; untouched transcripts already carry the provider's casing.
+        capitalize_leading_letter(&cleaned)
+    } else {
+        cleaned
+    }
+}
+
+/// Uppercase the first character when it's a lowercase ASCII letter, leaving
+/// everything else (already-capitalized words, leading punctuation, digits)
+/// untouched.
+fn capitalize_leading_letter(text: &str) -> String {
+    let Some(first) = text.chars().next() else {
+        return text.to_string();
+    };
+    if !first.is_ascii_lowercase() {
+        return text.to_string();
+    }
+    let mut output = String::with_capacity(text.len());
+    output.push(first.to_ascii_uppercase());
+    output.push_str(&text[first.len_utf8()..]);
+    output
+}
+
+fn remove_standalone_fillers(text: &str) -> (String, bool) {
+    let mut output = String::with_capacity(text.len());
+    let mut removed = false;
+    let mut needs_word_boundary = false;
+    let mut index = 0;
+
+    while index < text.len() {
+        let Some(ch) = text[index..].chars().next() else {
+            break;
+        };
+
+        if !ch.is_ascii_alphabetic() {
+            needs_word_boundary = false;
+            output.push(ch);
+            index += ch.len_utf8();
+            continue;
+        }
+
+        let start = index;
+        index += ch.len_utf8();
+        while index < text.len() {
+            let Some(next) = text[index..].chars().next() else {
+                break;
+            };
+            if !next.is_ascii_alphabetic() {
+                break;
             }
+            index += next.len_utf8();
+        }
+
+        let word = &text[start..index];
+        let previous = text[..start].chars().next_back();
+        let next = text[index..].chars().next();
+        if is_dictation_filler_word(word) && previous != Some('-') && next != Some('-') {
+            removed = true;
+            trim_soft_filler_prefix(&mut output);
+            // Removing a filler swallows the whitespace on both sides of it, so
+            // re-insert a separator before the next word. A standalone filler
+            // sentence ("… Um. …") leaves the prior sentence's terminal
+            // punctuation as the last char, so guard on that too — otherwise
+            // "Send it. Um. Now." would collapse to "Send it.Now.".
+            needs_word_boundary = output
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '!' | '?'));
+            index = skip_soft_filler_suffix(text, index);
+        } else {
+            if needs_word_boundary && !output.ends_with(' ') && !output.is_empty() {
+                output.push(' ');
+            }
+            needs_word_boundary = false;
+            output.push_str(word);
         }
     }
+
+    (output, removed)
+}
+
+fn trim_soft_filler_prefix(output: &mut String) {
+    while output.chars().next_back().is_some_and(char::is_whitespace) {
+        output.pop();
+    }
+    if output.ends_with(',') || output.ends_with(':') || output.ends_with(';') {
+        output.pop();
+    }
+    while output.chars().next_back().is_some_and(char::is_whitespace) {
+        output.pop();
+    }
+}
+
+fn skip_soft_filler_suffix(text: &str, mut index: usize) -> usize {
+    while index < text.len() {
+        let Some(ch) = text[index..].chars().next() else {
+            break;
+        };
+        if ch.is_whitespace() || matches!(ch, ',' | ':' | ';' | '.' | '!' | '?') {
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    index
+}
+
+fn normalize_after_filler_removal(text: &str, removed_filler: bool) -> String {
+    let mut normalized = collapse_ascii_whitespace(text.trim());
+    if removed_filler {
+        normalized = normalized
+            .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ':' | ';'))
+            .trim()
+            .to_string();
+    }
+    normalized
+}
+
+fn collapse_ascii_whitespace(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut previous_was_whitespace = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !previous_was_whitespace && !output.is_empty() {
+                output.push(' ');
+            }
+            previous_was_whitespace = true;
+        } else {
+            output.push(ch);
+            previous_was_whitespace = false;
+        }
+    }
+    output.trim().to_string()
+}
+
+fn contains_meaningful_dictation_word(text: &str) -> bool {
+    let mut index = 0;
+    while index < text.len() {
+        let Some(ch) = text[index..].chars().next() else {
+            break;
+        };
+        if !ch.is_ascii_alphabetic() {
+            index += ch.len_utf8();
+            continue;
+        }
+        let start = index;
+        index += ch.len_utf8();
+        while index < text.len() {
+            let Some(next) = text[index..].chars().next() else {
+                break;
+            };
+            if !next.is_ascii_alphabetic() {
+                break;
+            }
+            index += next.len_utf8();
+        }
+        let word = &text[start..index];
+        if !is_dictation_filler_word(word) && !is_dictation_connector_word(word) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_dictation_filler_word(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "um" | "ums"
+            | "umm"
+            | "ummm"
+            | "uh"
+            | "uhs"
+            | "uhh"
+            | "uhhh"
+            | "er"
+            | "erm"
+            | "ah"
+            | "ahh"
+            | "hmm"
+            | "hm"
+    )
+}
+
+fn is_dictation_connector_word(word: &str) -> bool {
+    matches!(word.to_ascii_lowercase().as_str(), "and" | "or" | "then")
 }
 
 fn no_text_event_for_observed_audio(observed_audio_level: Option<f32>) -> serde_json::Value {
@@ -3391,6 +3613,7 @@ mod tests {
                 provider: crate::providers::VENICE_PROVIDER.to_string(),
             }),
             None,
+            DictationStyle::Standard,
         );
 
         assert_eq!(
@@ -3408,6 +3631,109 @@ mod tests {
     }
 
     #[test]
+    fn filler_only_transcription_discards_silently() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Ums and uhs.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({ "type": "discard_recording" })
+        );
+        assert!(outcome.transcript.is_none());
+        let event = outcome.event.expect("filler-only capture emits an event");
+        assert!(is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn mixed_filler_transcription_pastes_clean_text() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Um, uh, Send this, please.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "paste_text",
+                "text": "Send this, please.",
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("Send this, please.")
+        );
+    }
+
+    #[test]
+    fn mid_sentence_fillers_are_removed_without_touching_articles() {
+        assert_eq!(
+            clean_dictation_fillers("I, uh, need a test and an example.", DictationStyle::Standard),
+            "I need a test and an example."
+        );
+    }
+
+    #[test]
+    fn leading_filler_removal_recapitalizes_surviving_first_word() {
+        assert_eq!(
+            clean_dictation_fillers("Um, can you send this email?", DictationStyle::Standard),
+            "Can you send this email?"
+        );
+        assert_eq!(
+            clean_dictation_fillers("Hmm, that is interesting.", DictationStyle::Standard),
+            "That is interesting."
+        );
+        // Mid-sentence fillers don't disturb an already-capitalized start.
+        assert_eq!(
+            clean_dictation_fillers("The um value is um five.", DictationStyle::Standard),
+            "The value is five."
+        );
+    }
+
+    #[test]
+    fn casual_lowercase_style_keeps_stripped_first_word_lowercase() {
+        // The backstop must never re-capitalize under CasualLowercase, even
+        // when stripping a leading filler exposes a lowercase first word.
+        assert_eq!(
+            clean_dictation_fillers("um, can you send this email?", DictationStyle::CasualLowercase),
+            "can you send this email?"
+        );
+        // Standard and Formal do restore the capital.
+        assert_eq!(
+            clean_dictation_fillers("um, can you send this email?", DictationStyle::Formal),
+            "Can you send this email?"
+        );
+    }
+
+    #[test]
+    fn standalone_filler_sentence_keeps_neighboring_sentences_separated() {
+        assert_eq!(
+            clean_dictation_fillers("Let me think. Um. Yeah, do it.", DictationStyle::Standard),
+            "Let me think. Yeah, do it."
+        );
+        assert_eq!(
+            clean_dictation_fillers("That works. Uh, also add tests.", DictationStyle::Standard),
+            "That works. also add tests."
+        );
+        assert_eq!(
+            clean_dictation_fillers("Done! Um. Ship it?", DictationStyle::Standard),
+            "Done! Ship it?"
+        );
+    }
+
+    #[test]
     fn hey_june_transcription_maps_to_agent_session_event() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
@@ -3416,6 +3742,7 @@ mod tests {
                 provider: crate::providers::VENICE_PROVIDER.to_string(),
             }),
             None,
+            DictationStyle::Standard,
         );
 
         assert_eq!(
@@ -3476,6 +3803,7 @@ mod tests {
                 provider: crate::providers::VENICE_PROVIDER.to_string(),
             }),
             None,
+            DictationStyle::Standard,
         );
 
         assert_eq!(
@@ -3496,6 +3824,7 @@ mod tests {
                 provider: crate::providers::VENICE_PROVIDER.to_string(),
             }),
             Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
+            DictationStyle::Standard,
         );
 
         let event = outcome.event.expect("empty capture emits an event");
@@ -3585,6 +3914,7 @@ mod tests {
                 "The provider failed.",
             )),
             None,
+            DictationStyle::Standard,
         );
 
         assert_eq!(
@@ -3609,6 +3939,7 @@ mod tests {
         let outcome = outcome_from_transcription_result(
             Err(AppError::new("scribe_request_failed", "no_speech")),
             Some(0.2),
+            DictationStyle::Standard,
         );
 
         let event = outcome.event.expect("no speech emits an event");
