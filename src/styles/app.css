@@ -5136,9 +5136,10 @@ input:focus-visible,
   padding: var(--tab-strip-shadow-pad);
   padding-left: 0;
   /* No scroll: tabs that don't fit fold into the overflow popover instead.
-   * Keep overflow visible so a flush first pill can render its normal rounded
-   * corner and soft shadow instead of clipping against the strip edge. */
-  overflow: visible;
+   * Clip transient resize spillover, but leave a tiny clip margin so the flush
+   * first pill can render its normal rounded corner and soft shadow. */
+  overflow: clip;
+  overflow-clip-margin: var(--tab-strip-shadow-pad);
 }
 
 /* Each tab takes up to a quarter of the bar by default (capped so it never gets

@@ -243,7 +243,7 @@ describe("App shortcuts", () => {
   });
 
   it("creates a loose note with Command-Shift-N but ignores bare n", async () => {
-    const { container } = render(<App />);
+    render(<App />);
 
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
@@ -256,8 +256,10 @@ describe("App shortcuts", () => {
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),
     );
     await waitFor(() =>
-      expect(container.querySelector(".tab[data-active] .tab-label"))
-        .toHaveTextContent("New note"),
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
     );
   });
 
