@@ -144,7 +144,7 @@ jobs:
   windows-rust:
     name: Tauri Windows build
     needs: changes
-    if: needs.changes.outputs.desktop_bundle == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.desktop_bundle == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

@@ -686,12 +686,10 @@ export function AppSettings({
   const transcriptionOptions = modelOptions(
     veniceModels.transcription,
     providerSettings.transcriptionModel,
-    "transcription",
   );
   const generationOptions = modelOptions(
     veniceModels.generation,
     providerSettings.generationModel,
-    "generation",
   );
   const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
   const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
@@ -1162,7 +1160,6 @@ export function AppSettings({
                   <ModelRow
                     title="Transcription"
                     description="Speech-to-text for note recordings and dictation."
-                    mode="transcription"
                     value={providerSettings.transcriptionModel}
                     options={transcriptionOptions}
                     onOpen={() => openModelPicker("transcription")}
@@ -1170,7 +1167,6 @@ export function AppSettings({
                   <ModelRow
                     title="Text"
                     description="Used for generated notes and agent responses."
-                    mode="generation"
                     value={providerSettings.generationModel}
                     options={generationOptions}
                     onOpen={() => openModelPicker("generation")}
@@ -1460,19 +1456,17 @@ function numericPayload(value: unknown) {
 function ModelRow({
   title,
   description,
-  mode,
   value,
   options,
   onOpen,
 }: {
   title: string;
   description: string;
-  mode: ProviderModelMode;
   value: string;
   options: VeniceModelDto[];
   onOpen: () => void;
 }) {
-  const model = selectedModel(options, value, mode);
+  const model = selectedModel(options, value);
   return (
     <div className="settings-row">
       <div className="settings-row-info">

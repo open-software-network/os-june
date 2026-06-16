@@ -2,7 +2,7 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { HoverTip } from "../ui/HoverTip";
 import { primaryShortcutLabel } from "../../lib/platform";
 
@@ -19,6 +19,7 @@ type TabBarProps = {
   onClose: (id: string) => void;
   onCloseOthers: (id: string) => void;
   onNew: () => void;
+  onDragRegionPointerDown?: (event: PointerEvent<HTMLDivElement>) => void;
 };
 
 type TabMenu = { tabId: string; x: number; y: number };
@@ -91,6 +92,7 @@ export function TabBar({
   onClose,
   onCloseOthers,
   onNew,
+  onDragRegionPointerDown,
 }: TabBarProps) {
   const stripRef = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState(Number.POSITIVE_INFINITY);
@@ -180,6 +182,11 @@ export function TabBar({
     });
   }
 
+  function handleDragRegionPointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    onDragRegionPointerDown?.(event);
+  }
+
   function renderTab(tab: TabItem) {
     const active = tab.id === activeTabId;
     return (
@@ -219,8 +226,20 @@ export function TabBar({
   }
 
   return (
-    <div className="tab-bar" role="tablist" aria-label="Open tabs">
-      <div className="tab-strip" ref={stripRef} data-size={size}>
+    <div
+      className="tab-bar"
+      role="tablist"
+      aria-label="Open tabs"
+      data-tauri-drag-region
+      onPointerDown={handleDragRegionPointerDown}
+    >
+      <div
+        className="tab-strip"
+        ref={stripRef}
+        data-size={size}
+        data-tauri-drag-region
+        onPointerDown={handleDragRegionPointerDown}
+      >
         {visible.map(renderTab)}
         {hidden.length > 0 ? (
           <button

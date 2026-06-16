@@ -104,6 +104,7 @@ type SidebarProps = {
   recordingTitle?: string;
   onOpenRecording?: () => void;
   collapsed?: boolean;
+  footerAccessory?: ReactNode;
 };
 
 type MenuState =
@@ -243,6 +244,7 @@ export function Sidebar({
   recordingTitle = "New note",
   onOpenRecording,
   collapsed = false,
+  footerAccessory,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const commandInputRef = useRef<HTMLInputElement>(null);
@@ -1063,6 +1065,7 @@ export function Sidebar({
       )}
 
       <footer className="sidebar-footer">
+        {footerAccessory}
         <SidebarIdentity
           account={account}
           menuOpen={identityMenuOpen}

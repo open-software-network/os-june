@@ -12,6 +12,7 @@ import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconZap } from "central-icons/IconZap";
+import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listScheduledRunSessions,
@@ -592,6 +593,7 @@ function RoutineRow({
     <li
       className="routines-item"
       data-state={routine.state}
+      data-has-actions="true"
       data-menu-open={menuOpen || undefined}
     >
       <button type="button" className="routines-item-open" onClick={onOpen}>
@@ -626,7 +628,12 @@ function RoutineRow({
           {activity ? (
             <span className="routine-meta-pill">{activity}</span>
           ) : null}
-          {status ? <span className="routine-meta-pill">{status}</span> : null}
+          {status ? (
+            <span className="routine-meta-pill">
+              {paused ? <IconPause size={12} aria-hidden /> : null}
+              {status}
+            </span>
+          ) : null}
         </span>
       </button>
       <span className="routines-item-actions">

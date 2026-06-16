@@ -502,20 +502,20 @@ function FolderCard({
           ) : null}
         </div>
         <p className="folder-card-footer">
-          <span className="folder-card-footer-icon" aria-hidden>
-            <IconNoteText size={11} />
-          </span>
-          <span>
+          <span className="folder-card-footer-item">
+            <span className="folder-card-footer-icon" aria-hidden>
+              <IconNoteText size={11} />
+            </span>
             {folderNotes.length}{" "}
             {folderNotes.length === 1 ? "meeting note" : "meeting notes"}
           </span>
           {folderSessions.length > 0 ? (
             <>
               <span className="metadata-dot" aria-hidden />
-              <span className="folder-card-footer-icon" aria-hidden>
-                <IconBubble3 size={11} />
-              </span>
-              <span>
+              <span className="folder-card-footer-item">
+                <span className="folder-card-footer-icon" aria-hidden>
+                  <IconBubble3 size={11} />
+                </span>
                 {folderSessions.length}{" "}
                 {folderSessions.length === 1 ? "session" : "sessions"}
               </span>

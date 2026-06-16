@@ -2404,6 +2404,21 @@ export function App() {
           pillIsDemo ? undefined : void handleOpenRecordingNote()
         }
         collapsed={sidebarCollapsed}
+        footerAccessory={
+          <UpdateHub
+            readyUpdate={readyUpdate}
+            status={updateStatus}
+            preparing={preparingUpdate}
+            relaunching={relaunchingUpdate}
+            progress={updateProgress}
+            onDismissStatus={() => {
+              if (preparingUpdate) updateProgressHiddenRef.current = true;
+              setUpdateStatus(null);
+              if (!preparingUpdate) setUpdateProgress(null);
+            }}
+            onRelaunch={handleRelaunchUpdate}
+          />
+        }
       />
       <div
         className="sidebar-resize-handle"
@@ -2446,6 +2461,7 @@ export function App() {
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onNew={openNewChatTab}
+          onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
           {accessibilityBlocked ? <PermissionBanner /> : null}
@@ -2822,9 +2838,16 @@ export function App() {
                           const note = await retryProcessing(selectedNote.id);
                           dispatch({ type: "noteProcessingUpdated", note });
                         } catch (err) {
-                          // Surface the failure (the banner only releases its
-                          // busy gate on rejection — it expects us to report).
-                          setError(messageFromError(err));
+                          const message = messageFromError(err);
+                          dispatch({
+                            type: "noteProcessingUpdated",
+                            note: {
+                              ...selectedNote,
+                              processingStatus: "failed",
+                              lastError: message,
+                            },
+                          });
+                          setError(null);
                           throw err;
                         }
                       }}
@@ -2934,19 +2957,6 @@ export function App() {
           handleSetSessionFolder(sessionId, folderId)
         }
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
-      />
-      <UpdateHub
-        readyUpdate={readyUpdate}
-        status={updateStatus}
-        preparing={preparingUpdate}
-        relaunching={relaunchingUpdate}
-        progress={updateProgress}
-        onDismissStatus={() => {
-          if (preparingUpdate) updateProgressHiddenRef.current = true;
-          setUpdateStatus(null);
-          if (!preparingUpdate) setUpdateProgress(null);
-        }}
-        onRelaunch={handleRelaunchUpdate}
       />
     </main>
   );
