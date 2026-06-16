@@ -2043,11 +2043,23 @@ export function App() {
   }
 
   const handleStartRecordingForNote = useCallback(
-    async (noteId: string): Promise<boolean> => {
-      if (recordingStartInFlightRef.current || recordingStatusRef.current) {
+    async (
+      noteId: string,
+      options: { startAlreadyClaimed?: boolean } = {},
+    ): Promise<boolean> => {
+      const startAlreadyClaimed = options.startAlreadyClaimed ?? false;
+      if (
+        recordingStatusRef.current ||
+        (!startAlreadyClaimed && recordingStartInFlightRef.current)
+      ) {
+        if (startAlreadyClaimed) {
+          recordingStartInFlightRef.current = false;
+        }
         return false;
       }
-      recordingStartInFlightRef.current = true;
+      if (!startAlreadyClaimed) {
+        recordingStartInFlightRef.current = true;
+      }
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, sourceMode);
       recordingStatusRef.current = startingStatus;
@@ -2116,14 +2128,19 @@ export function App() {
 
   const handleStartMeetingDetectedRecording = useCallback(async () => {
     if (recordingStartInFlightRef.current || recordingStatusRef.current) return;
+    recordingStartInFlightRef.current = true;
     const previousNoteId = selectedNoteId;
+    let handedStartClaimToRecorder = false;
     try {
       const note = await createNote(undefined);
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(undefined);
       setOriginAllNotes(false);
       setActiveView("meetings");
-      const started = await handleStartRecordingForNote(note.id);
+      handedStartClaimToRecorder = true;
+      const started = await handleStartRecordingForNote(note.id, {
+        startAlreadyClaimed: true,
+      });
       if (started) return;
 
       await deleteNote(note.id);
@@ -2141,6 +2158,10 @@ export function App() {
       }
     } catch (err) {
       setError(messageFromError(err));
+    } finally {
+      if (!handedStartClaimToRecorder) {
+        recordingStartInFlightRef.current = false;
+      }
     }
   }, [handleStartRecordingForNote, selectedNoteId]);
 

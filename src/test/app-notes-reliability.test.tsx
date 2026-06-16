@@ -155,6 +155,14 @@ function recording(overrides: Partial<RecordingSessionDto> = {}) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver;
+  });
+  return { promise, resolve };
+}
+
 describe("notes recording reliability", () => {
   const first = note();
   // Draft on purpose: drafts were the worst case for the wrong-note
@@ -376,6 +384,57 @@ describe("notes recording reliability", () => {
 
     expect(mocks.createNote).not.toHaveBeenCalled();
     expect(mocks.startRecording).not.toHaveBeenCalled();
+  });
+
+  it("claims a meeting-start attempt before creating the fresh note", async () => {
+    const fresh = note({
+      id: "fresh-note",
+      title: "New note",
+      generatedContent: undefined,
+      processingStatus: "draft",
+    });
+    const pendingCreate = deferred<NoteDto>();
+    mocks.createNote.mockReturnValue(pendingCreate.promise);
+    mocks.startRecording.mockResolvedValue(recording({ noteId: "fresh-note" }));
+
+    render(<App />);
+    await waitFor(() =>
+      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await waitFor(() => {
+      if (mocks.createNote.mock.calls.length === 0) {
+        act(() => {
+          void mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
+      expect(mocks.createNote).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      void mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
+    });
+
+    expect(mocks.createNote).toHaveBeenCalledTimes(1);
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingCreate.resolve(fresh);
+      await pendingCreate.promise;
+    });
+
+    await waitFor(() =>
+      expect(mocks.startRecording).toHaveBeenCalledWith(
+        "fresh-note",
+        "microphonePlusSystem",
+      ),
+    );
+    expect(mocks.createNote).toHaveBeenCalledTimes(1);
   });
 
   it("removes the fresh meeting note when recording fails to start", async () => {
