@@ -83,6 +83,7 @@ pub(crate) async fn generate(
             prompt_version: required(request.prompt_version, "prompt_version_required")?,
             title: request.title,
             transcript: request.transcript,
+            transcript_source_labels: request.transcript_source_labels,
             manual_notes: request.manual_notes,
             language: request.language,
             existing_generated_note: request.existing_generated_note,
@@ -136,6 +137,8 @@ pub struct GenerateRequest {
     pub prompt_version: Option<String>,
     pub title: String,
     pub transcript: String,
+    #[serde(default)]
+    pub transcript_source_labels: bool,
     pub manual_notes: Option<String>,
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,

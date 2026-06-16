@@ -65,6 +65,7 @@ pub struct GenerationRequest {
     pub title: String,
     pub existing_generated_note: Option<String>,
     pub transcript: String,
+    pub transcript_source_labels: bool,
     pub manual_notes: Option<String>,
     pub language: Option<String>,
 }
@@ -190,6 +191,7 @@ struct GenerateBody {
     prompt_version: String,
     title: String,
     transcript: String,
+    transcript_source_labels: bool,
     manual_notes: Option<String>,
     language: Option<String>,
     existing_generated_note: Option<String>,
@@ -251,6 +253,7 @@ pub async fn generate_note_from_transcript(
         prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
         title: title_or_placeholder(&request.title),
         transcript: transcript.to_string(),
+        transcript_source_labels: request.transcript_source_labels,
         manual_notes: request.manual_notes,
         language: request.language,
         existing_generated_note: request.existing_generated_note,

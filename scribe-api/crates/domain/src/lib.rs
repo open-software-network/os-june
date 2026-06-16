@@ -165,6 +165,7 @@ pub struct TranscriptionRequest {
 pub struct GenerationRequest {
     pub title: String,
     pub transcript: String,
+    pub transcript_source_labels: bool,
     pub manual_notes: Option<String>,
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
