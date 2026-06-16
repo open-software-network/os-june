@@ -32,6 +32,14 @@ pub struct NoteTranscribeService {
     preview_max_audio_seconds: u64,
 }
 
+struct PreparedNoteTranscription {
+    params: NoteTranscribeParams,
+    format: AudioFormat,
+    seconds: u64,
+    actual: Credits,
+    estimate: Credits,
+}
+
 impl NoteTranscribeService {
     pub fn new(deps: NoteTranscribeServiceDeps) -> Self {
         Self {
@@ -73,45 +81,80 @@ impl NoteTranscribeService {
         // authorize. The Hold is bigger than necessary; the actual charge
         // below is what the user pays.
         let estimate = Credits(self.flat_estimate_credits);
-        if params.preview {
-            if seconds > self.preview_max_audio_seconds {
-                return Err(ServiceError::InvalidInput {
-                    reason: format!(
-                        "live transcript preview chunks must be {} seconds or shorter",
-                        self.preview_max_audio_seconds
-                    ),
-                });
-            }
-            let _authorization = authorize_or_deny(AuthorizeParams {
-                os_accounts: self.os_accounts.as_ref(),
-                user_id: params.user_id.clone(),
-                action: ActionSlug::NoteTranscribe,
-                estimate,
-                hold_ttl_seconds: self.hold_ttl_seconds,
-            })
-            .await?;
-            tracing::info!(
-                note_id = %params.note_id,
-                model = %params.model_id.0,
-                seconds,
-                estimate_credits = estimate.0,
-                "note_transcribe: preview request authorized and not charged"
-            );
-            let transcript = self
-                .transcriber
-                .transcribe(TranscriptionRequest {
-                    audio: params.audio,
-                    format,
-                    context: params.context,
-                    language: params.language,
-                    model: params.model_id.clone(),
-                })
-                .await?;
-            return Ok(NoteTranscribeOutput {
-                transcript,
-                receipt: uncharged_receipt(),
+        let prepared = PreparedNoteTranscription {
+            params,
+            format,
+            seconds,
+            actual,
+            estimate,
+        };
+        if prepared.params.preview {
+            return self.transcribe_preview(prepared).await;
+        }
+        self.transcribe_charged(prepared).await
+    }
+
+    async fn transcribe_preview(
+        &self,
+        prepared: PreparedNoteTranscription,
+    ) -> Result<NoteTranscribeOutput, ServiceError> {
+        let PreparedNoteTranscription {
+            params,
+            format,
+            seconds,
+            estimate,
+            ..
+        } = prepared;
+        if seconds > self.preview_max_audio_seconds {
+            return Err(ServiceError::InvalidInput {
+                reason: format!(
+                    "live transcript preview chunks must be {} seconds or shorter",
+                    self.preview_max_audio_seconds
+                ),
             });
         }
+        authorize_or_deny(AuthorizeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::NoteTranscribe,
+            estimate,
+            hold_ttl_seconds: self.hold_ttl_seconds,
+        })
+        .await?;
+        tracing::info!(
+            note_id = %params.note_id,
+            model = %params.model_id.0,
+            seconds,
+            estimate_credits = estimate.0,
+            "note_transcribe: preview request authorized and not charged"
+        );
+        let transcript = self
+            .transcriber
+            .transcribe(TranscriptionRequest {
+                audio: params.audio,
+                format,
+                context: params.context,
+                language: params.language,
+                model: params.model_id.clone(),
+            })
+            .await?;
+        Ok(NoteTranscribeOutput {
+            transcript,
+            receipt: uncharged_receipt(),
+        })
+    }
+
+    async fn transcribe_charged(
+        &self,
+        prepared: PreparedNoteTranscription,
+    ) -> Result<NoteTranscribeOutput, ServiceError> {
+        let PreparedNoteTranscription {
+            params,
+            format,
+            seconds,
+            actual,
+            estimate,
+        } = prepared;
         tracing::info!(
             note_id = %params.note_id,
             estimate_credits = estimate.0,
