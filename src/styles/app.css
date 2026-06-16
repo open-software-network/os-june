@@ -5993,6 +5993,45 @@ input:focus-visible,
   color: var(--warm-strong);
 }
 
+.transcript-processing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: var(--content-max);
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.transcript-processing-spinner {
+  flex: none;
+  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
+}
+
+.transcript-processing-label {
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: note-text-shimmer 2s linear infinite;
+}
+
 .transcript-view p {
   max-width: var(--content-max);
   margin: 0;
