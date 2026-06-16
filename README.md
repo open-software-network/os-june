@@ -1,24 +1,76 @@
 # June
 
-macOS-first Tauri MVP for local notes, reliable local audio recording, saved audio validation, batch transcription, and generated notes.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/os-june-dark.svg">
+    <img src="public/os-june-light.svg" alt="June" width="122" height="36">
+  </picture>
+</p>
 
-[![Phala Trust Center — TEE verified](https://img.shields.io/badge/Phala%20Trust%20Center-TEE%20verified-success)](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c)
+<p align="center">
+  A private desktop AI assistant for meeting notes, dictation, and agent work.
+</p>
 
-## Privacy
+<p align="center">
+  <a href="https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c">
+    <img alt="Phala Trust Center - TEE verified" src="https://img.shields.io/badge/Phala%20Trust%20Center-TEE%20verified-success">
+  </a>
+  <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue">
+  <img alt="Built with Tauri" src="https://img.shields.io/badge/desktop-Tauri-orange">
+</p>
 
-The `scribe-api` backend runs in an Intel TDX confidential VM on Phala Cloud. Because the running image is attested, neither Phala (the platform) nor Open Software (us) can quietly change it to read your audio, transcripts, or logs at runtime without that change being visible in the verification chain below:
+June is an open source desktop app for turning spoken work into useful work. It
+records reliable local audio, generates editable meeting notes, pastes cleaned
+dictation into any app, and runs a local agent that can help with files,
+research, drafts, and routines.
 
-- **Source** — this repository. The exact commit running in production is stamped into the image's OCI `org.opencontainers.image.revision` label.
-- **Image** — built by [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml) and published to [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-scribe/pkgs/container/scribe-api) as a plain single-arch image whose content digest is directly pullable. dstack cannot verify digest-pinned refs, so deploys pin an immutable per-commit tag (`:<sha>`); the digest each commit deploys is recorded in-repo as a signed `deploy/<env>/<sha>` git tag.
-- **Attestation** — the [Phala Trust Center report](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c) is third-party-verifiable proof that the image digest above is what's actually running inside a real Intel TDX confidential VM.
+The product is designed around a simple privacy contract: your app state,
+recordings, transcripts, files, sessions, and agent memory live on your machine
+by default. When June needs model inference, requests go through Scribe API, a
+TEE-attested backend that keeps provider keys server-side and routes private
+model calls through Venice by default.
 
-Together these bind the running image to a public commit: you can confirm the attested digest is the one our CI built and recorded for that commit. (Bit-for-bit _rebuild-from-source_ reproducibility — so you can regenerate the digest yourself instead of trusting our CI — is in progress.)
+## What June does
 
-Every deployment also serves its own walkthrough of this chain at [`/verify`](https://scribe-api.opensoftware.co/verify) — served from inside the TEE, it reports the exact commit and image the running server was built from, with step-by-step instructions for checking each link.
+| Area               | What it does                                                                                                                                              |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Meeting notes      | Records microphone or microphone plus system audio, validates saved audio, transcribes it, and generates editable notes from the transcript.              |
+| Conversation turns | Splits dual-source recordings into ordered `Microphone` and `System` turns, so the transcript reads like a conversation without speaker diarization.      |
+| Dictation          | Records a push-to-talk or toggle shortcut, cleans up the transcript, pastes it into the previously focused app, and restores the clipboard when possible. |
+| Agent sessions     | Runs a local Hermes-based agent runtime for research, drafts, file work, and routines with approval gates before sensitive actions.                       |
+| Projects           | Groups meeting notes and agent sessions around the work they belong to.                                                                                   |
+| Model choice       | Lets users choose transcription, dictation cleanup, title, and note-generation models from the Scribe API model catalog.                                  |
 
-Everything leaving the TEE for model inference (audio for transcription, prompts and context for note generation and the agent) goes through Venice. By default it runs on Venice private models: zero data retention, no training. If you select an anonymized model not run by Venice, the request is still routed and anonymized by Venice, but the underlying model provider may retain data under its own privacy policy. This chain verifies the **code** running in the confidential VM, not what upstream providers do. End-to-end private inference is a separate workstream.
+## Repository overview
 
-## Development
+June ships the full desktop product and the backend that powers metered AI calls:
+
+```text
+src/          React and TypeScript frontend
+src-tauri/   Tauri v2 Rust desktop backend and native helpers
+scribe-api/  Confidential backend for transcription, generation, models, and billing
+docs/        Product, release, backend, and architecture notes
+specs/       Feature specs, plans, contracts, and validation notes
+```
+
+The desktop app never stores OpenAI, Venice, or OS Accounts App API keys. Those
+belong only in Scribe API. The client authenticates the signed-in user through
+OS Accounts, sends requests to Scribe API, and Scribe API handles provider calls
+and OS Accounts metering.
+
+## Platform support
+
+| Platform    | Status                                                                                                                                                                                                                                       |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS 14.0+ | Primary target. Meeting notes, dictation, system audio on macOS 14.2+, local agent runtime, signed DMG releases, and auto-updates.                                                                                                           |
+| Windows     | Supported for the app shell, OS Accounts sign-in, microphone recording, notes, folders, settings, and the bundled agent runtime. Global dictation paste, macOS system audio, and the macOS Seatbelt write-jail are not available on Windows. |
+
+See [docs/release-macos.md](docs/release-macos.md) and
+[docs/release-windows.md](docs/release-windows.md) for release procedures.
+
+## Quick start
+
+Install dependencies and run the desktop app:
 
 ```sh
 pnpm install
@@ -26,214 +78,146 @@ pnpm tauri:dev
 ```
 
 `pnpm tauri:dev` starts Vite and a local Scribe API when their ports are free.
-If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the dev script
-reuses the existing service. Set `VITE_PORT` or `SCRIBE_API_PORT` to use a
+If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the script
+reuses the existing service. Set `VITE_PORT` or `SCRIBE_API_PORT` to choose a
 different port.
 
-To replay first-run onboarding, clear the saved onboarding checkpoint, and log
-out of OS Accounts without wiping the rest of your local app data:
+Replay first-run onboarding without wiping all app data:
 
 ```sh
 pnpm tauri:dev --replay-onboarding
 ```
 
-The desktop app talks to Scribe API for transcription, dictation cleanup,
-model listing, and note generation. Provider API keys belong only in the
-Scribe API server env; never put OpenAI, Venice, or OS Accounts App API keys in
-the root desktop `.env`.
+## Configuration
+
+Copy the desktop env file:
 
 ```sh
 cp .env.example .env
-# edit SCRIBE_API_URL and OS Accounts client settings when needed
 ```
 
-To run the local Scribe API yourself instead of letting `pnpm tauri:dev` start
-it, use:
+Use the root `.env` for desktop runtime configuration only:
+
+- `SCRIBE_API_URL`
+- `OS_ACCOUNTS_URL`
+- `OS_ACCOUNTS_API_URL`
+- `OS_ACCOUNTS_CLIENT_ID`
+- initial model defaults such as `VENICE_TRANSCRIPTION_MODEL` and
+  `VENICE_GENERATION_MODEL`
+- optional `OS_NOTETAKER_TRANSCRIPTION_LANGUAGE`
+
+Do not put provider keys or OS Accounts App API keys in the root desktop `.env`.
+
+To run Scribe API yourself:
 
 ```sh
 cp scribe-api/.env.example scribe-api/.env
-# fill SCRIBE__OS_ACCOUNTS__APP_API_KEY, SCRIBE__UPSTREAMS__OPENAI__API_KEY,
-# and SCRIBE__UPSTREAMS__VENICE__API_KEY in scribe-api/.env
+# Fill SCRIBE__OS_ACCOUNTS__APP_API_KEY, SCRIBE__UPSTREAMS__OPENAI__API_KEY,
+# and SCRIBE__UPSTREAMS__VENICE__API_KEY in scribe-api/.env.
 (cd scribe-api && cargo run -- serve)
 ```
 
-Restart `pnpm tauri:dev` after changing the root `.env`; the running Tauri
+Restart `pnpm tauri:dev` after changing the root `.env`. The running Tauri
 process does not reload client configuration.
 
-Optional initial model defaults:
+## Local data
 
-```sh
-export VENICE_TRANSCRIPTION_MODEL=nvidia/parakeet-tdt-0.6b-v3
-export VENICE_GENERATION_MODEL=zai-org-glm-5
-export VENICE_TITLE_SUGGESTION_MODEL=nvidia-nemotron-3-nano-30b-a3b
-```
-
-The Settings tab can load available Venice models and save separate selections for transcription/dictation and note generation. Saved selections are stored in the app config directory and take effect for new provider requests.
-
-The app data directory is resolved by Tauri at runtime. In development, inspect the platform app data path for:
+The app data directory is resolved by Tauri at runtime. In development, inspect
+the platform app data path for:
 
 - `notes.sqlite3`
 - `recordings/{note_id}/{session_id}.wav`
 - `recordings/{note_id}/{session_id}/microphone.wav`
-- `recordings/{note_id}/{session_id}/system.wav` when `Microphone + system audio` is selected
+- `recordings/{note_id}/{session_id}/system.wav` when `Microphone + system audio`
+  is selected
 
-## Dictation
+Saved audio is the source of truth for retry. If transcription or generation
+fails after capture, June keeps the audio and processing metadata so work can be
+retried without recording again.
 
-Dictation is paste-only: it does not create notes or store transcript records. Choose a dictation shortcut and an activation mode in Settings. Push-to-talk records while the shortcut is held and stops when it is released. Toggle starts or stops dictation each time the shortcut is pressed. June transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
+## Privacy and verification
 
-Dictation requires a reachable Scribe API and a signed-in OS Accounts user.
-The selected transcription and cleanup models are executed server-side through
-Scribe API, so missing provider keys surface in the Scribe API logs rather than
-the desktop process.
+The production `scribe-api` backend runs in an Intel TDX confidential VM on
+Phala Cloud. The running image is attested, so Phala and Open Software cannot
+quietly change the backend that handles audio, transcripts, prompts, and logs
+without that change appearing in the verification chain.
 
-The default push-to-talk shortcut is `Ctrl+Opt+D`; toggle dictation defaults to `Ctrl+Opt+T`. Settings records shortcuts with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Modifier-only shortcuts such as bare Fn/Globe or Ctrl+Opt are rejected because macOS does not expose them as reliable global key chords for all keyboards.
+The chain has three public anchors:
 
-Manual validation:
+1. **Source:** this repository. The production image records the source commit
+   in its OCI `org.opencontainers.image.revision` label.
+2. **Image:** [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml)
+   builds and publishes
+   [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-scribe/pkgs/container/scribe-api).
+   Deploys pin immutable per-commit tags, and each deployed digest is recorded
+   as a signed `deploy/<env>/<sha>` git tag.
+3. **Attestation:** the
+   [Phala Trust Center report](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c)
+   proves the expected image is running inside an Intel TDX confidential VM.
 
-1. Launch Scribe API with OS Accounts, OpenAI, and Venice env configured.
-2. Grant microphone and Accessibility permissions.
-3. Focus a text field in TextEdit, VS Code, or a browser.
-4. In Settings, confirm push-to-talk shows `Ctrl+Opt+D`.
-5. Hold `Ctrl+Opt+D` to start dictation.
-6. Speak a short sentence.
-7. Release `Ctrl+Opt+D` to stop, transcribe, and paste.
-8. Press `Ctrl+Opt+T` once to start toggle dictation, then press it again to stop.
-9. Confirm the HUD transitions through listening, transcribing, pasting, and success.
-10. Confirm the transcript appears in the original focused text field.
-11. Select a microphone in Settings, restart, and confirm the selection persists.
+Every deployment also serves a self-contained walkthrough at
+[`/verify`](https://scribe-api.opensoftware.co/verify). It reports the exact
+commit and image running in the TEE and explains how to check each link.
 
-## macOS Audio Permission Debugging
+Everything leaving the TEE for model inference goes through Venice. By default,
+June uses Venice private models with zero data retention and no training. If a
+user selects an anonymized model that is not run by Venice, the request is still
+routed and anonymized by Venice, but the underlying model provider may retain
+data under its own policy. This verification chain proves the backend code
+running in the confidential VM, not upstream provider behavior.
 
-The macOS bundle includes:
+## Permissions
 
-- `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`
-- `NSAudioCaptureUsageDescription` in `src-tauri/Info.plist`
+June asks for permissions only where the feature needs them:
 
-The `Microphone only` mode is the default. The `Microphone + system audio` mode uses a small macOS helper built by `src-tauri/build.rs` into `.tauri-helper/` during `pnpm tauri:dev`, `pnpm test:rust`, or `pnpm tauri:build`. Generated helper binaries are ignored by git and kept outside `src-tauri` so Tauri dev does not restart on its own generated files.
+- **Microphone:** required for meeting notes and dictation.
+- **Accessibility:** required for dictation paste into the previously focused
+  app.
+- **Screen and system audio recording:** required when using
+  `Microphone + system audio` on macOS.
+- **File access:** requested by agent workflows when a task needs a specific
+  scope.
 
-Dictation uses a separate macOS helper built into `.tauri-helper/June Dictation Helper.app`. It needs microphone permission for capture and Accessibility permission to post the paste shortcut into the previously focused app.
-
-Local `pnpm tauri:build` output is platform-specific: app and DMG bundles on
-macOS, and an NSIS installer on Windows. macOS output is ad-hoc signed unless a
-signing identity is configured. To build a downloadable, Developer ID-signed
-and notarized DMG, set the signing environment and run:
-
-```sh
-pnpm tauri:build:signed-dmg
-```
-
-The signed DMG build reads signing values from the environment, or from an ignored local `.env.signing` file when present:
-
-```sh
-APPLE_CERTIFICATE=
-APPLE_CERTIFICATE_PASSWORD=
-APPLE_SIGNING_IDENTITY="Developer ID Application: Example, Inc. (TEAMID)"
-APPLE_API_ISSUER=
-APPLE_API_KEY=
-APPLE_API_KEY_PATH=/path/to/AuthKey_KEYID.p8
-```
-
-For GitHub Actions, configure repository secrets with the certificate values plus App Store Connect API key values:
-
-- `APPLE_CERTIFICATE`
-- `APPLE_CERTIFICATE_PASSWORD`
-- `APPLE_SIGNING_IDENTITY`
-- `APPLE_API_ISSUER`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_P8`
-
-Also configure the staging app environment secrets:
-
-- `STAGING_OS_ACCOUNTS_URL`
-- `STAGING_OS_ACCOUNTS_API_URL`
-- `STAGING_OS_ACCOUNTS_CLIENT_ID`
-- `STAGING_SCRIBE_API_URL`
-
-The `staging-desktop-dmg` workflow maps those staging secrets into `OS_ACCOUNTS_URL`, `OS_ACCOUNTS_API_URL`, `OS_ACCOUNTS_CLIENT_ID`, and `SCRIBE_API_URL` only for the build, so the release binary embeds staging endpoints as fallback runtime config.
-
-Configure the production desktop app environment secrets in the GitHub `production`
-environment for the manually-triggered `production-desktop-dmg` workflow:
-
-- `PRODUCTION_OS_ACCOUNTS_URL`
-- `PRODUCTION_OS_ACCOUNTS_API_URL`
-- `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`
-- `PRODUCTION_SCRIBE_API_URL`
-
-The production values should be:
-
-```sh
-PRODUCTION_OS_ACCOUNTS_URL=https://accounts.opensoftware.co
-PRODUCTION_OS_ACCOUNTS_API_URL=https://accounts-api.opensoftware.co
-PRODUCTION_SCRIBE_API_URL=https://scribe-api.opensoftware.co
-```
-
-`PRODUCTION_OS_ACCOUNTS_CLIENT_ID` is the production OS Accounts OAuth client id
-for June. Provider keys such as OpenAI, Venice, and the OS Accounts App API
-key remain server-side in Scribe API/Phala env; they do not belong in the desktop
-DMG workflow.
-
-The `staging-desktop-dmg` workflow and production release workflow can be triggered manually with `workflow_dispatch`. Developer ID builds intentionally avoid App Sandbox and shared keychain group entitlements because those require a provisioning profile. Before distribution, verify the signed app and bundled helpers include the audio-input entitlement:
-
-```sh
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app"
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app/Contents/Resources/native/bin/June.app"
-codesign -dvvv --entitlements :- "src-tauri/target/release/bundle/macos/June.app/Contents/Resources/native/bin/June Dictation Helper.app"
-```
-
-If permission is denied during local testing, reset it from macOS Privacy & Security settings or with:
+The macOS bundle includes `NSMicrophoneUsageDescription` and
+`NSAudioCaptureUsageDescription` in [src-tauri/Info.plist](src-tauri/Info.plist).
+If local permission state gets stuck during development, reset it with:
 
 ```sh
 tccutil reset Microphone co.opensoftware.scribe
 ```
 
-System-audio permission is checked when selecting `Microphone + system audio` and immediately before recording starts. If macOS blocks it, open Privacy & Security and allow audio capture for June or the June audio capture helper, then restart the app.
-
-## Windows Development
-
-Windows builds use the base Tauri config plus
-[`src-tauri/tauri.windows.conf.json`](src-tauri/tauri.windows.conf.json), which
-targets an NSIS installer and excludes the macOS helper app resources. Install
-the normal Tauri Windows prerequisites, including Rust, Node.js, pnpm, WebView2,
-and the Microsoft C++ build tools.
-Local Windows builds skip Authenticode signing unless
-`WINDOWS_CERTIFICATE_PATH` and `WINDOWS_CERTIFICATE_PASSWORD` are set.
-
-Production Windows builds bundle the pinned Hermes runtime under
-`native/hermes`, so a clean install can start the agent without Python,
-GitHub downloads, or a first-run runtime install. Development builds can still
-fall back to the managed Hermes runtime installer, which uses PowerShell and
-requires Python 3.11, 3.12, or 3.13 on `PATH` or through the `py` launcher.
-macOS-only dictation, system-audio capture, and Seatbelt sandbox features report
-unavailable or run without that OS sandbox on Windows.
-
-Production Windows distribution is handled by the manual
-`production-desktop-windows` workflow after the production macOS release creates
-the target version in `open-software-network/os-june-releases`. The Windows
-workflow signs the app executable and NSIS installer with Authenticode, embeds
-production OS Accounts and Scribe API fallback config, uploads
-`June_x64-setup.exe`, and merges `windows-x86_64` into the Tauri updater
-`latest.json`. See [docs/release-windows.md](docs/release-windows.md).
-
-The production Windows installer starts signed-in users on meeting notes and
-does not present dictation as a first-run promise. Agent and routines workflows
-use the bundled Hermes runtime on production Windows builds but still run
-without the macOS Seatbelt write-jail.
-
-## Verification
+## Development commands
 
 ```sh
 pnpm lint
 pnpm test
 pnpm test:rust
+pnpm test:scribe-api
 pnpm build
 pnpm tauri:build
 ```
 
-Manual recording reliability checks are tracked in `specs/001-tauri-note-mvp/manual-validation.md`.
-Source-mode validation scenarios are tracked in `specs/002-system-audio-source-mode/quickstart.md`.
+Useful validation docs:
+
+- [specs/001-tauri-note-mvp/manual-validation.md](specs/001-tauri-note-mvp/manual-validation.md)
+- [specs/002-system-audio-source-mode/quickstart.md](specs/002-system-audio-source-mode/quickstart.md)
+- [specs/003-conversation-turns/quickstart.md](specs/003-conversation-turns/quickstart.md)
+
+## Release notes
+
+Production desktop releases are cut from GitHub Actions. macOS produces signed
+and notarized DMGs with Tauri updater artifacts. Windows produces signed NSIS
+installers and merges Windows updater metadata into the shared release.
+
+Start with:
+
+- [docs/release-macos.md](docs/release-macos.md)
+- [docs/release-windows.md](docs/release-windows.md)
+- [docs/reproducible-builds.md](docs/reproducible-builds.md)
 
 ## License
 
 June is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
-Bundled third-party runtime notices are tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Bundled third-party runtime notices are tracked in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
