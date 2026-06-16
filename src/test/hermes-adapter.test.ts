@@ -1,13 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isRunningScheduledRunSession,
   isScheduledRunPreamble,
   isScheduledRunSession,
-  listActiveScheduledRunSessions,
   listHermesSessions,
   listScheduledRunSessions,
-  mergeScheduledRunSessions,
-  normalizeActiveScheduledRunSessionsResponse,
   normalizeHermesSessionMessagesResponse,
   normalizeHermesSessionsResponse,
   scheduledRunJobId,
@@ -93,59 +90,20 @@ describe("scheduled-run helpers", () => {
 
 const mocks = vi.hoisted(() => ({
   hermesBridgeSessions: vi.fn(),
-  hermesBridgeStatus: vi.fn(),
-  startHermesBridge: vi.fn(),
-  gatewayConnect: vi.fn(),
-  gatewayRequest: vi.fn(),
-  gatewayClose: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   hermesBridgeSessions: mocks.hermesBridgeSessions,
-  hermesBridgeStatus: mocks.hermesBridgeStatus,
-  startHermesBridge: mocks.startHermesBridge,
   hermesBridgeSessionMessages: vi.fn(),
   deleteHermesBridgeSession: vi.fn(),
 }));
 
-vi.mock("../lib/hermes-gateway", () => ({
-  HermesGatewayClient: class {
-    connect = mocks.gatewayConnect;
-    request = mocks.gatewayRequest;
-    close = mocks.gatewayClose;
-  },
-}));
-
-function bridgeConnection(overrides: Record<string, unknown> = {}) {
-  return {
-    baseUrl: "http://127.0.0.1:44200",
-    wsUrl: "ws://127.0.0.1:44200/api/ws",
-    token: "token",
-    port: 44200,
-    command: "hermes",
-    hermesHome: "/tmp/hermes",
-    providerProxyPort: 44201,
-    pid: 123,
-    sandboxed: true,
-    fullMode: false,
-    ...overrides,
-  };
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.gatewayConnect.mockResolvedValue(undefined);
-  mocks.gatewayRequest.mockResolvedValue({ sessions: [] });
-  mocks.hermesBridgeStatus.mockResolvedValue({
-    running: true,
-    connection: bridgeConnection(),
-    connections: [bridgeConnection()],
-  });
-  mocks.startHermesBridge.mockResolvedValue({
-    running: true,
-    connection: bridgeConnection(),
-    connections: [bridgeConnection()],
-  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Hermes adapter", () => {
@@ -189,32 +147,38 @@ describe("Hermes adapter", () => {
     ]);
   });
 
-  it("normalizes active cron sessions from the runtime", () => {
-    const runs = normalizeActiveScheduledRunSessionsResponse({
+  it("includes active scheduled runs from the session store", async () => {
+    mocks.hermesBridgeSessions.mockResolvedValue({
       sessions: [
         {
-          id: "runtime-session",
-          session_key: "cron_a1b2c3d4e5f6_20260611_090000",
-          status: "working",
+          id: "cron_a1b2c3d4e5f6_20260611_090000",
+          source: "cron",
+          is_active: true,
+          preview: "Working on the morning digest.",
           last_active: "2026-06-11T09:00:05Z",
         },
         {
-          session_key: "cron_idle_20260611_090000",
-          status: "idle",
-        },
-        {
-          session_key: "ordinary-session",
-          status: "working",
+          id: "ordinary-session",
+          is_active: true,
+          preview: "A normal chat is still running.",
         },
       ],
     });
 
+    const runs = await listScheduledRunSessions({ includeActive: true });
+
+    expect(mocks.hermesBridgeSessions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limit: 200,
+        minMessages: 0,
+      }),
+    );
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
       id: "cron_a1b2c3d4e5f6_20260611_090000",
       active: true,
       source: "cron",
-      status: "working",
+      status: "running",
       last_active: "2026-06-11T09:00:05Z",
     });
     expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(
@@ -222,65 +186,72 @@ describe("Hermes adapter", () => {
     );
   });
 
-  it("merges active runs into stored scheduled run history", () => {
-    const runs = mergeScheduledRunSessions(
-      [
-        {
-          id: "cron_a1b2c3d4e5f6_20260611_090000",
-          source: "cron",
-          title: "Stored title",
-          preview: "Stored preview",
-          last_active: "2026-06-11T09:00:01Z",
-        },
-      ],
-      [
-        {
-          id: "cron_a1b2c3d4e5f6_20260611_090000",
-          active: true,
-          source: "cron",
-          status: "working",
-          last_active: "2026-06-11T09:00:05Z",
-        },
-      ],
-    );
-
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({
-      id: "cron_a1b2c3d4e5f6_20260611_090000",
-      active: true,
-      status: "working",
-      title: "Stored title",
-      preview: "Stored preview",
-      last_active: "2026-06-11T09:00:05Z",
-    });
-  });
-
-  it("lists active scheduled runs from the gateway", async () => {
-    mocks.gatewayRequest.mockResolvedValue({
+  it("marks recent zero-message scheduled runs as pending", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-11T09:01:00Z"));
+    mocks.hermesBridgeSessions.mockResolvedValue({
       sessions: [
         {
-          id: "runtime-session",
-          session_key: "cron_a1b2c3d4e5f6_20260611_090000",
-          status: "working",
-          last_active: "2026-06-11T09:00:05Z",
+          id: "cron_a1b2c3d4e5f6_20260611_090000",
+          source: "cron",
+          title: "",
+          preview: "",
+          message_count: 0,
+          last_active: "2026-06-11T09:00:00Z",
+        },
+        {
+          id: "cron_finished_20260611_085500",
+          source: "cron",
+          message_count: 0,
+          ended_at: "2026-06-11T08:55:05Z",
+          last_active: "2026-06-11T08:55:00Z",
         },
       ],
     });
 
-    const runs = await listActiveScheduledRunSessions();
+    const runs = await listScheduledRunSessions({ includeActive: true });
+    const pending = runs.find((run) => run.id.includes("a1b2c3d4e5f6")) as
+      | HermesSessionInfo
+      | undefined;
+    const finished = runs.find((run) => run.id.includes("finished"));
 
-    expect(mocks.gatewayConnect).toHaveBeenCalledWith(
-      "ws://127.0.0.1:44200/api/ws",
+    expect(pending).toMatchObject({
+      id: "cron_a1b2c3d4e5f6_20260611_090000",
+      active: true,
+      status: "running",
+    });
+    expect(pending?.title).toBeUndefined();
+    expect(pending?.preview).toBeUndefined();
+    expect(isRunningScheduledRunSession(pending as HermesSessionInfo)).toBe(
+      true,
     );
-    expect(mocks.gatewayRequest).toHaveBeenCalledWith(
-      "session.active_list",
-      {},
-      10000,
+    expect(isRunningScheduledRunSession(finished as HermesSessionInfo)).toBe(
+      false,
     );
-    expect(mocks.gatewayClose).toHaveBeenCalled();
-    expect(runs.map((run) => run.id)).toEqual([
-      "cron_a1b2c3d4e5f6_20260611_090000",
-    ]);
+  });
+
+  it("does not mark old zero-message scheduled runs as running", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-11T09:10:00Z"));
+    mocks.hermesBridgeSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "cron_a1b2c3d4e5f6_20260611_090000",
+          source: "cron",
+          title: "",
+          preview: "",
+          message_count: 0,
+          last_active: "2026-06-11T09:00:00Z",
+        },
+      ],
+    });
+
+    const runs = await listScheduledRunSessions({ includeActive: true });
+
+    expect(runs).toHaveLength(1);
+    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(
+      false,
+    );
   });
 
   it("normalizes raw gateway session lists and sorts by recent activity", () => {

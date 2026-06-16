@@ -1,16 +1,10 @@
 import {
   deleteHermesBridgeSession,
-  hermesBridgeStatus,
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
-  startHermesBridge,
-  type HermesBridgeConnection,
-  type HermesBridgeStatus,
   type HermesSessionInfo,
   type HermesSessionMessage,
 } from "./tauri";
-import { hermesConnectionForMode } from "./hermes-connection";
-import { HermesGatewayClient } from "./hermes-gateway";
 
 export type HermesSessionListOptions = {
   limit?: number;
@@ -76,6 +70,7 @@ export function scheduledRunJobId(sessionId: string) {
  * a recent window and filtering client-side. 200 covers weeks of mixed
  * activity; runs older than the window age out of the history view. */
 const SCHEDULED_RUN_FETCH_LIMIT = 200;
+const PENDING_SCHEDULED_RUN_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
 
 export type ScheduledRunListOptions = {
   includeActive?: boolean;
@@ -85,182 +80,67 @@ export type ScheduledRunListOptions = {
 export async function listScheduledRunSessions(
   options: ScheduledRunListOptions = {},
 ) {
-  const sessions = await listHermesSessions({
+  const listOptions: HermesSessionListOptions = {
     limit: SCHEDULED_RUN_FETCH_LIMIT,
-  });
-  const storedRuns = sessions.filter(isScheduledRunSession);
-  if (!options.includeActive) return storedRuns;
-  try {
-    return mergeScheduledRunSessions(
-      storedRuns,
-      await listActiveScheduledRunSessions(),
-    );
-  } catch {
-    // Active runtime state is best effort. A websocket/status miss should not
-    // hide the persisted run history the session store already returned.
-    return storedRuns;
+  };
+  if (options.includeActive) {
+    // Cron runs are persisted as sessions before their first message lands.
+    // The global session list hides zero-message rows, but routine history
+    // needs them so a just-started run appears immediately.
+    listOptions.minMessages = 0;
   }
-}
-
-type ActiveSessionRow = {
-  id?: unknown;
-  session_id?: unknown;
-  sessionId?: unknown;
-  session_key?: unknown;
-  sessionKey?: unknown;
-  status?: unknown;
-  source?: unknown;
-  title?: unknown;
-  preview?: unknown;
-  started_at?: unknown;
-  startedAt?: unknown;
-  last_active?: unknown;
-  lastActive?: unknown;
-  message_count?: unknown;
-};
-
-/** Scheduled-routine sessions that are currently registered in the runtime. */
-export async function listActiveScheduledRunSessions() {
-  const connections = await activeSessionConnections();
-  const lists = await Promise.all(
-    connections.map(async (connection) => {
-      const client = new HermesGatewayClient();
-      try {
-        await client.connect(connection.wsUrl);
-        const response = await client.request("session.active_list", {}, 10000);
-        return normalizeActiveScheduledRunSessionsResponse(response);
-      } catch {
-        return [];
-      } finally {
-        client.close();
-      }
-    }),
-  );
-  return mergeScheduledRunSessions([], lists.flat());
-}
-
-async function activeSessionConnections() {
-  let status = await hermesBridgeStatus();
-  if (!status.running || connectionList(status).length === 0) {
-    status = await startHermesBridge();
-  }
-  const connections = [
-    ...connectionList(status),
-    hermesConnectionForMode(status, false),
-    hermesConnectionForMode(status, true),
-  ].filter((connection): connection is HermesBridgeConnection =>
-    Boolean(connection?.wsUrl),
-  );
-  return uniqueBy(connections, (connection) => connection.wsUrl);
-}
-
-function connectionList(status: HermesBridgeStatus) {
-  return status.connections?.length
-    ? status.connections
-    : status.connection
-      ? [status.connection]
-      : [];
-}
-
-export function normalizeActiveScheduledRunSessionsResponse(response: unknown) {
-  return extractList(response, "sessions").flatMap((value) => {
-    const row = value as ActiveSessionRow;
-    if (!row || typeof row !== "object") return [];
-    if (!isActiveSessionStatus(row.status)) return [];
-    const sessionId = activeSessionId(row);
-    if (!sessionId || !scheduledRunJobId(sessionId)) return [];
-    const timestamp = timestampString(
-      row.last_active ??
-        row.lastActive ??
-        row.started_at ??
-        row.startedAt ??
-        Date.now(),
-    );
-    return [
-      withScheduledRunDisplay({
-        id: sessionId,
-        active: true,
-        source: SCHEDULED_RUN_SOURCE,
-        status: statusString(row.status) ?? "running",
-        title: stringValue(row.title),
-        preview: stringValue(row.preview),
-        started_at: timestamp,
-        last_active: timestamp,
-        message_count: numberValue(row.message_count),
-      }),
-    ];
-  });
-}
-
-function activeSessionId(row: ActiveSessionRow) {
-  return (
-    stringValue(row.session_key) ??
-    stringValue(row.sessionKey) ??
-    stringValue(row.session_id) ??
-    stringValue(row.sessionId) ??
-    stringValue(row.id)
-  );
-}
-
-function isActiveSessionStatus(value: unknown) {
-  const status = statusString(value);
-  return status !== "idle" && status !== "completed" && status !== "complete";
-}
-
-function statusString(value: unknown) {
-  return stringValue(value)?.toLowerCase();
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  const sessions = await listHermesSessions(listOptions);
+  const runs = sessions.filter(isScheduledRunSession);
+  return options.includeActive ? runs.map(withScheduledRunActivity) : runs;
 }
 
 export function isRunningScheduledRunSession(session: HermesSessionInfo) {
-  return isScheduledRunSession(session) && session.active === true;
-}
-
-export function mergeScheduledRunSessions(
-  storedRuns: HermesSessionInfo[],
-  activeRuns: HermesSessionInfo[],
-) {
-  const byId = new Map<string, HermesSessionInfo>();
-  for (const run of storedRuns) {
-    if (isScheduledRunSession(run)) byId.set(run.id, run);
-  }
-  for (const run of activeRuns) {
-    if (!isScheduledRunSession(run)) continue;
-    const stored = byId.get(run.id);
-    byId.set(run.id, stored ? mergeScheduledRunSession(stored, run) : run);
-  }
-  return Array.from(byId.values()).sort((a, b) =>
-    sessionTimestamp(b).localeCompare(sessionTimestamp(a)),
+  return (
+    isScheduledRunSession(session) &&
+    (session.active === true || session.is_active === true)
   );
 }
 
-function mergeScheduledRunSession(
-  stored: HermesSessionInfo,
-  active: HermesSessionInfo,
+function withScheduledRunActivity(
+  session: HermesSessionInfo,
 ): HermesSessionInfo {
-  const activeTimestamp = sessionTimestamp(active);
-  const storedTimestamp = sessionTimestamp(stored);
-  return withScheduledRunDisplay({
-    ...stored,
-    ...active,
-    title: active.title?.trim() || stored.title,
-    preview: active.preview?.trim() || stored.preview,
-    started_at: active.started_at ?? stored.started_at,
-    last_active:
-      activeTimestamp.localeCompare(storedTimestamp) > 0
-        ? activeTimestamp
-        : storedTimestamp,
-    message_count: active.message_count ?? stored.message_count,
-  });
+  if (!isScheduledRunSession(session)) return session;
+  if (!isRunningScheduledRunSession(session) && !isRecentPendingRun(session)) {
+    return session;
+  }
+  return {
+    ...session,
+    active: true,
+    status: session.status?.trim() || "running",
+    title: hasScheduledRunContent(session) ? session.title : undefined,
+    preview: session.preview?.trim() || undefined,
+  };
+}
+
+function isRecentPendingRun(session: HermesSessionInfo) {
+  if (session.message_count !== 0 || hasSessionEnded(session)) return false;
+  const timestamp = Date.parse(sessionTimestamp(session));
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const ageMs = Date.now() - timestamp;
+  return ageMs >= -60_000 && ageMs <= PENDING_SCHEDULED_RUN_ACTIVE_WINDOW_MS;
+}
+
+function hasSessionEnded(session: HermesSessionInfo) {
+  return Boolean(
+    stringPresent(session.ended_at) ||
+    stringPresent(session.endedAt) ||
+    stringPresent(session.end_reason),
+  );
+}
+
+function hasScheduledRunContent(session: HermesSessionInfo) {
+  return (
+    Boolean(session.preview?.trim()) || session.title !== "Untitled session"
+  );
+}
+
+function stringPresent(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 /** A scheduled run's first message is the routine prompt wrapped in a machine
@@ -429,18 +309,6 @@ function extractList(response: unknown, preferredKey: "sessions" | "messages") {
     if (Array.isArray(candidate)) return candidate;
   }
   return [];
-}
-
-function uniqueBy<T>(items: T[], key: (item: T) => string) {
-  const seen = new Set<string>();
-  const unique: T[] = [];
-  for (const item of items) {
-    const value = key(item);
-    if (seen.has(value)) continue;
-    seen.add(value);
-    unique.push(item);
-  }
-  return unique;
 }
 
 function isHermesSessionInfo(value: unknown): value is HermesSessionInfo {

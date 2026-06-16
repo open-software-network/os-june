@@ -624,6 +624,36 @@ describe("RoutinesView run history", () => {
     expect(screen.getByText("Running")).toBeInTheDocument();
   });
 
+  it("ignores stale run history responses after a newer refresh", async () => {
+    vi.useFakeTimers();
+    mocks.listRoutines.mockResolvedValue([job()]);
+    let resolveFirstLoad: (runs: HermesSessionInfo[]) => void = () => {};
+    adapterMocks.listScheduledRunSessions
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirstLoad = resolve;
+        }),
+      )
+      .mockResolvedValueOnce([run({ active: true, preview: "" })]);
+    renderView();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Running")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirstLoad([]);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Running")).toBeInTheDocument();
+  });
+
   it("labels a run by its session title once the routine is deleted", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     adapterMocks.listScheduledRunSessions.mockResolvedValue([
