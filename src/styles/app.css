@@ -4395,6 +4395,10 @@ input:focus-visible,
   border-top: 0;
 }
 
+.sidebar[data-collapsed="true"] .update-popover {
+  display: none;
+}
+
 /* Sidebar identity — the user's name doubles as the settings entry point.
  * Clicking it opens a small popover above the footer. */
 .sidebar-identity-wrap {
