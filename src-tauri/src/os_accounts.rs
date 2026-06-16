@@ -116,7 +116,19 @@ struct SubscriptionWire {
     trial_period_days: Option<u32>,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize)]
+struct ReferralSummaryWire {
+    code: String,
+    url: String,
+    referred_count: i64,
+    pending_count: i64,
+    qualified_count: i64,
+    earned_months: i64,
+    applied_months: i64,
+    available_months: i64,
+}
+
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ReferralSummary {
     pub code: String,
@@ -189,6 +201,21 @@ impl From<MeWire> for AccountUser {
             email: w.email,
             display_name: w.display_name,
             avatar_url: w.avatar_url,
+        }
+    }
+}
+
+impl From<ReferralSummaryWire> for ReferralSummary {
+    fn from(w: ReferralSummaryWire) -> Self {
+        Self {
+            code: w.code,
+            url: w.url,
+            referred_count: w.referred_count,
+            pending_count: w.pending_count,
+            qualified_count: w.qualified_count,
+            earned_months: w.earned_months,
+            applied_months: w.applied_months,
+            available_months: w.available_months,
         }
     }
 }
@@ -461,7 +488,8 @@ pub async fn os_accounts_referral_summary() -> Result<ReferralSummary, AppError>
             "OS Accounts is not configured for this build.",
         ));
     }
-    authed_get(&cfg, "/referrals/me").await
+    let summary: ReferralSummaryWire = authed_get(&cfg, "/referrals/me").await?;
+    Ok(summary.into())
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]

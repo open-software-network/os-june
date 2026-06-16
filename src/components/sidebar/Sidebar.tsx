@@ -386,7 +386,7 @@ export function Sidebar({
     setReferralDialogOpen(true);
     setReferralCopied(false);
     setReferralCopyError(null);
-    if (!referralSummary && !referralLoading) {
+    if (!referralLoading) {
       void loadReferralSummary();
     }
   }
