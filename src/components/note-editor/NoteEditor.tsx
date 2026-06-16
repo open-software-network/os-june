@@ -1,6 +1,6 @@
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
-import { IconFolder1 } from "central-icons/IconFolder1";
+import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
@@ -639,8 +639,8 @@ function FolderChip({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <IconFolder1 size={14} />
-        {currentFolder?.name ?? "Folder"}
+        <IconProjects size={14} />
+        {currentFolder?.name ?? "Project"}
       </button>
       {currentFolder && onNavigateToFolder ? (
         <button
@@ -663,7 +663,7 @@ function FolderChip({
             <input
               ref={searchRef}
               type="search"
-              placeholder="Search or create folder"
+              placeholder="Search or create project"
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -709,7 +709,7 @@ function FolderChip({
                       isAssigned ? onRemove(folder.id) : onAssign(folder.id)
                     }
                   >
-                    <IconFolder1 size={14} />
+                    <IconProjects size={14} />
                     <span className="move-to-folder-item-name">
                       {folder.name}
                     </span>
@@ -720,7 +720,7 @@ function FolderChip({
                 );
               })
             ) : trimmed.length === 0 ? (
-              <p className="move-to-folder-empty">No folders yet.</p>
+              <p className="move-to-folder-empty">No projects yet.</p>
             ) : null}
           </div>
         </div>

@@ -8854,14 +8854,42 @@ input:focus-visible,
   display: flex;
   align-items: stretch;
   margin: 0;
-  border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .routines-item:hover,
-.routines-item:focus-within {
+.routines-item:focus-within,
+.routines-item[data-menu-open="true"] {
   background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+
+/* Gradient that fades the metadata out on the right as the overflow cluster
+ * slides in over it, matching the meeting-notes / projects total views. */
+.routines-item::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 160px;
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in oklch, var(--muted) 35%, var(--card)) 45%,
+    color-mix(in oklch, var(--muted) 35%, var(--card))
+  );
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.routines-item[data-has-actions="true"]:hover::after,
+.routines-item[data-has-actions="true"]:focus-within::after,
+.routines-item[data-has-actions="true"][data-menu-open="true"]::after {
+  opacity: 1;
 }
 
 .routines-item-open {
@@ -8976,28 +9004,38 @@ input:focus-visible,
   overflow: hidden;
 }
 
+/* The metadata stays put on hover — it isn't faded out. The gradient above
+ * (z-index 1) washes out its right edge and the action cluster (z-index 2)
+ * sits on top, so the menu reads as a layer over the badges while the left
+ * of the metadata still peeks through. */
+
+/* Overflow cluster overlays the row's right edge instead of reserving its own
+ * column, so the metadata can sit flush right until you reach for the menu. */
 .routines-item-actions {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: var(--sp-4);
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  padding: 0 var(--sp-4) 0 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.routines-item[data-has-actions="true"]:hover .routines-item-actions,
+.routines-item[data-has-actions="true"]:focus-within .routines-item-actions,
+.routines-item[data-has-actions="true"][data-menu-open="true"]
+  .routines-item-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .routines-item-menu-wrap {
   position: relative;
   display: inline-flex;
-}
-
-.routines-item-menu-trigger {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.routines-item:hover .routines-item-menu-trigger,
-.routines-item:focus-within .routines-item-menu-trigger,
-.routines-item[data-menu-open="true"] .routines-item-menu-trigger {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .routines-action-menu {
@@ -10395,6 +10433,14 @@ input:focus-visible,
 
 .folder-card-footer > span {
   white-space: nowrap;
+}
+
+/* Each metric keeps its icon hugging its label, so the only wide gaps in the
+ * footer fall between metrics (around the dots) rather than icon-to-text. */
+.folder-card-footer-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
 }
 
 .folder-card-footer-icon {
