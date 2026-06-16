@@ -3788,7 +3788,10 @@ mod tests {
     #[test]
     fn mid_sentence_fillers_are_removed_without_touching_articles() {
         assert_eq!(
-            clean_dictation_fillers("I, uh, need a test and an example.", DictationStyle::Standard),
+            clean_dictation_fillers(
+                "I, uh, need a test and an example.",
+                DictationStyle::Standard
+            ),
             "I need a test and an example."
         );
     }
@@ -3850,10 +3853,7 @@ mod tests {
             "First line.\nSecond line."
         );
         assert_eq!(
-            clean_dictation_fillers(
-                "Paragraph one.\n\nParagraph two.",
-                DictationStyle::Standard
-            ),
+            clean_dictation_fillers("Paragraph one.\n\nParagraph two.", DictationStyle::Standard),
             "Paragraph one.\n\nParagraph two."
         );
         // Horizontal whitespace still collapses within a line.
@@ -3882,7 +3882,10 @@ mod tests {
         // The backstop must never re-capitalize under CasualLowercase, even
         // when stripping a leading filler exposes a lowercase first word.
         assert_eq!(
-            clean_dictation_fillers("um, can you send this email?", DictationStyle::CasualLowercase),
+            clean_dictation_fillers(
+                "um, can you send this email?",
+                DictationStyle::CasualLowercase
+            ),
             "can you send this email?"
         );
         // Standard and Formal do restore the capital.
