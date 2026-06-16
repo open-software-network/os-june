@@ -103,7 +103,7 @@ Do not mark the PR ready yet.
 
 ## Review loop
 
-After the draft PR exists, wait for automated review from Greptile and Codex within the current session when practical.
+After the draft PR exists, wait for automated review from Greptile and Codex within the current session when practical. This can be slow. Poll for up to 30 minutes before concluding no automated review is available, unless the user asks to stop sooner or the session is otherwise blocked.
 
 Use `gh` to inspect review state:
 
@@ -111,6 +111,8 @@ Use `gh` to inspect review state:
 gh pr view <number> --comments --json comments,reviews,reviewRequests
 gh pr checks <number> --watch
 ```
+
+Use a low-noise polling cadence, such as every 2-5 minutes. Re-check both comments and reviews because Greptile often comments while Codex can appear as a review. Keep the user updated while waiting, but do not start duplicate polls or spam the PR with repeated bot pings.
 
 For inline review threads, use GraphQL through `gh api graphql` when `gh pr view` is not enough. Inspect recent repo PRs if the current bot handles or re-trigger comments are unclear. At the time this skill was written, recent reviews used:
 
@@ -143,4 +145,4 @@ Do not merge the PR unless the user explicitly asks.
 
 Stop and ask the user for help only when progress is blocked by authentication, missing secrets, inaccessible external services, or a product decision that cannot be inferred safely.
 
-If automated reviewers do not respond within a reasonable wait, leave the PR as draft or tell the user exactly what is still pending. Do not pretend a final review happened.
+If automated reviewers do not respond after the full 30-minute polling window, leave the PR as draft or tell the user exactly what is still pending. Do not pretend a final review happened.
