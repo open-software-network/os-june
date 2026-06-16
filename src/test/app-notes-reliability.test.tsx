@@ -192,6 +192,8 @@ describe("notes recording reliability", () => {
     // The meeting-detected start path creates a fresh note to record into; this
     // suite asserts recording lands on note-1, so the fresh note IS note-1.
     mocks.createNote.mockResolvedValue(first);
+    mocks.deleteNote.mockResolvedValue(undefined);
+    mocks.listNotes.mockResolvedValue({ items: [first, second] });
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2" ? second : first,
     );
@@ -358,6 +360,51 @@ describe("notes recording reliability", () => {
         screen.queryByRole("button", { name: "Open recording: First note" }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it("removes the fresh meeting note when recording fails to start", async () => {
+    const fresh = note({
+      id: "fresh-note",
+      title: "New note",
+      generatedContent: undefined,
+      processingStatus: "draft",
+    });
+    mocks.createNote.mockResolvedValue(fresh);
+    mocks.getNote.mockImplementation(async (noteId: string) => {
+      if (noteId === "fresh-note") return fresh;
+      if (noteId === "note-2") return second;
+      return first;
+    });
+    mocks.checkRecordingSourceReadiness.mockResolvedValue({
+      sourceMode: "microphonePlusSystem",
+      sources: [
+        {
+          source: "microphone",
+          ready: false,
+          message: "Microphone is not ready.",
+        },
+        { source: "system", ready: true },
+      ],
+    });
+
+    render(<App />);
+    await waitFor(() =>
+      expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await waitFor(async () => {
+      if (mocks.deleteNote.mock.calls.length === 0) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+            payload: undefined,
+          });
+        });
+      }
+      expect(mocks.deleteNote).toHaveBeenCalledWith("fresh-note");
+    });
+    expect(mocks.listNotes).toHaveBeenCalled();
+    expect(mocks.startRecording).not.toHaveBeenCalled();
   });
 
   it("applies the finish result even when the note already sat in a terminal status", async () => {

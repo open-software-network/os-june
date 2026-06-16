@@ -1,19 +1,21 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useId, type RefObject } from "react";
 import { setRecordingPresenceBounds } from "./tauri";
 
 export function useRecordingPresenceBounds(
   ref: RefObject<HTMLElement>,
   enabled = true,
 ) {
+  const ownerId = useId();
+
   useEffect(() => {
     if (!enabled) {
-      void setRecordingPresenceBounds(null);
+      void setRecordingPresenceBounds(null, ownerId);
       return;
     }
 
     const element = ref.current;
     if (!element) {
-      void setRecordingPresenceBounds(null);
+      void setRecordingPresenceBounds(null, ownerId);
       return;
     }
 
@@ -29,6 +31,7 @@ export function useRecordingPresenceBounds(
               height: rect.height,
             }
           : null,
+        ownerId,
       );
     };
 
@@ -45,7 +48,7 @@ export function useRecordingPresenceBounds(
       observer?.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
-      void setRecordingPresenceBounds(null);
+      void setRecordingPresenceBounds(null, ownerId);
     };
-  }, [enabled, ref]);
+  }, [enabled, ownerId, ref]);
 }

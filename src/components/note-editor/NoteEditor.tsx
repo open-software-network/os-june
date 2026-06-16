@@ -37,6 +37,7 @@ type NoteEditorProps = {
   note: NoteDto;
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
+  recordingDisabled?: boolean;
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
   recovery?: RecoverableRecordingDto;
@@ -103,6 +104,7 @@ export function NoteEditor({
   note,
   folders,
   recordingStatus,
+  recordingDisabled = false,
   sourceMode,
   sourceReadiness,
   recovery,
@@ -223,6 +225,8 @@ export function NoteEditor({
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating" ||
     note.processingStatus === "validating";
+  const recordButtonDisabled = recordingDisabled;
+  const recordOptionsDisabled = processingLock || recordingDisabled;
   const showProcessingSkeleton =
     note.processingStatus === "transcribing" ||
     note.processingStatus === "generating";
@@ -435,12 +439,14 @@ export function NoteEditor({
               data-state={shellState}
               data-options-open={
                 !recordingForNote &&
-                !processingLock &&
+                !recordOptionsDisabled &&
                 showRecordingOptions &&
                 optionsOpen
               }
             >
-              {!recordingForNote && !processingLock && showRecordingOptions ? (
+              {!recordingForNote &&
+              !recordOptionsDisabled &&
+              showRecordingOptions ? (
                 <div
                   className="record-options-panel"
                   data-open={optionsOpen}
@@ -544,13 +550,18 @@ export function NoteEditor({
                         <button
                           type="button"
                           className="record-button"
-                          aria-label="Record"
-                          title="Record"
+                          aria-label={
+                            recordingDisabled ? "Recording in progress" : "Record"
+                          }
+                          title={
+                            recordingDisabled ? "Recording in progress" : "Record"
+                          }
+                          disabled={recordButtonDisabled}
                           onClick={onStartRecording}
                         >
                           <IconMicrophone size={20} />
                         </button>
-                        {showRecordingOptions ? (
+                        {showRecordingOptions && !recordOptionsDisabled ? (
                           <button
                             type="button"
                             className="record-options-trigger"

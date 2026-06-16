@@ -1133,9 +1133,10 @@ export async function getRecordingStatus(sessionId: string) {
 
 export async function setRecordingPresenceBounds(
   bounds: RecordingPresenceBoundsDto | null,
+  ownerId: string,
 ) {
   return invoke<void>("set_recording_presence_bounds", {
-    request: { bounds },
+    request: { bounds, ownerId },
   });
 }
 

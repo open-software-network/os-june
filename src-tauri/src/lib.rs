@@ -47,14 +47,23 @@ impl RecordingPresenceBounds {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetRecordingPresenceBoundsRequest {
+    owner_id: String,
     bounds: Option<RecordingPresenceBounds>,
 }
 
+#[derive(Debug, Clone)]
+struct RegisteredRecordingPresenceBounds {
+    owner_id: String,
+    bounds: RecordingPresenceBounds,
+}
+
 #[derive(Default)]
-struct RecordingPresenceBoundsState(Mutex<Option<RecordingPresenceBounds>>);
+struct RecordingPresenceBoundsState(Mutex<Option<RegisteredRecordingPresenceBounds>>);
 
 #[cfg(target_os = "macos")]
 static MAIN_WINDOW_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static MAIN_WINDOW_SUPERCLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
 
 pub fn run() {
     providers::load_local_env();
@@ -388,8 +397,18 @@ fn set_recording_presence_bounds(
     state: tauri::State<'_, RecordingPresenceBoundsState>,
     request: SetRecordingPresenceBoundsRequest,
 ) {
-    if let Ok(mut bounds) = state.0.lock() {
-        *bounds = request.bounds.filter(|bounds| bounds.is_valid());
+    if let Ok(mut current) = state.0.lock() {
+        if let Some(bounds) = request.bounds.filter(|bounds| bounds.is_valid()) {
+            *current = Some(RegisteredRecordingPresenceBounds {
+                owner_id: request.owner_id,
+                bounds,
+            });
+        } else if current
+            .as_ref()
+            .is_some_and(|registered| registered.owner_id == request.owner_id)
+        {
+            *current = None;
+        }
     }
 }
 
@@ -424,19 +443,26 @@ fn install_main_window_first_mouse_bridge(app: &tauri::AppHandle, window: &tauri
     if handle.is_null() {
         return;
     }
-    let Some(class) = main_window_first_mouse_class() else {
-        return;
-    };
-
     unsafe {
         let window = handle as *mut AnyObject;
+        let superclass = objc2::ffi::object_getClass(window);
+        if superclass.is_null() {
+            return;
+        }
+        let superclass = &*superclass;
+        let _ = MAIN_WINDOW_SUPERCLASS.get_or_init(|| superclass);
+        let Some(class) = main_window_first_mouse_class(superclass) else {
+            return;
+        };
         objc2::ffi::object_setClass(window, class as *const _ as *const _);
         let _: () = msg_send![window, setAcceptsMouseMovedEvents: true];
     }
 }
 
 #[cfg(target_os = "macos")]
-fn main_window_first_mouse_class() -> Option<&'static objc2::runtime::AnyClass> {
+fn main_window_first_mouse_class(
+    superclass: &'static objc2::runtime::AnyClass,
+) -> Option<&'static objc2::runtime::AnyClass> {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Sel};
     use objc2::sel;
@@ -444,8 +470,6 @@ fn main_window_first_mouse_class() -> Option<&'static objc2::runtime::AnyClass> 
     const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: i64 = 1;
 
     extern "C-unwind" fn send_event(this: &AnyObject, _sel: Sel, event: *mut AnyObject) {
-        static SUPERCLASS: OnceLock<&'static AnyClass> = OnceLock::new();
-
         unsafe {
             if !event.is_null() {
                 let event_type: i64 = msg_send![event, type];
@@ -457,8 +481,10 @@ fn main_window_first_mouse_class() -> Option<&'static objc2::runtime::AnyClass> 
                 }
             }
 
-            let superclass = *SUPERCLASS
-                .get_or_init(|| AnyClass::get(c"NSWindow").expect("NSWindow class missing"));
+            let superclass = MAIN_WINDOW_SUPERCLASS
+                .get()
+                .copied()
+                .unwrap_or_else(|| AnyClass::get(c"NSWindow").expect("NSWindow class missing"));
             let _: () = msg_send![super(this, superclass), sendEvent: event];
         }
     }
@@ -466,7 +492,6 @@ fn main_window_first_mouse_class() -> Option<&'static objc2::runtime::AnyClass> 
     if let Some(class) = AnyClass::get(c"JuneMainWindow") {
         return Some(class);
     }
-    let superclass = AnyClass::get(c"NSWindow")?;
     let mut builder = objc2::runtime::ClassBuilder::new(c"JuneMainWindow", superclass)?;
     unsafe {
         builder.add_method(
@@ -506,9 +531,9 @@ unsafe fn main_first_mouse_hits_recording_presence(
     let Some(app) = MAIN_WINDOW_APP.get() else {
         return false;
     };
-    let Some(bounds) = app
+    let Some(registered) = app
         .try_state::<RecordingPresenceBoundsState>()
-        .and_then(|state| state.0.lock().ok().and_then(|bounds| *bounds))
+        .and_then(|state| state.0.lock().ok().and_then(|bounds| bounds.clone()))
     else {
         return false;
     };
@@ -521,7 +546,7 @@ unsafe fn main_first_mouse_hits_recording_presence(
     let point: NSPoint = msg_send![event, locationInWindow];
     let x = point.x;
     let y = frame.size.height - point.y;
-    bounds.contains(x, y)
+    registered.bounds.contains(x, y)
 }
 
 #[cfg(target_os = "macos")]

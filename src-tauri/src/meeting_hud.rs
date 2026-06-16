@@ -143,20 +143,16 @@ fn is_live(state: RecordingState) -> bool {
     )
 }
 
-/// The HUD should take over whenever the main window isn't the surface you're
-/// looking at: it's been hidden (close button -> hide), minimized, or June is
-/// no longer the active app because another app took focus. The app-active
-/// check is the important macOS signal here; `Window::is_focused` can lag or
-/// remain true when the whole app resigns active, so it is only a fallback for
-/// same-app focus changes.
+/// The HUD should take over when the main window is no longer a visible
+/// recording surface: it has been hidden (close button -> hide), minimized, or
+/// June is no longer the active app because another app took focus.
 fn main_window_dismissed(app: &AppHandle) -> bool {
     let Some(main) = app.get_webview_window("main") else {
         return false;
     };
     let hidden = !main.is_visible().unwrap_or(true);
     let minimized = main.is_minimized().unwrap_or(false);
-    let unfocused = !main.is_focused().unwrap_or(true);
-    hidden || minimized || app_inactive() || unfocused
+    hidden || minimized || app_inactive()
 }
 
 #[cfg(target_os = "macos")]

@@ -2038,7 +2038,7 @@ export function App() {
   }
 
   const handleStartRecordingForNote = useCallback(
-    async (noteId: string) => {
+    async (noteId: string): Promise<boolean> => {
       setRecordingNote(noteId);
       dispatch({
         type: "recordingStatusChanged",
@@ -2056,7 +2056,7 @@ export function App() {
           setRecordingNote(undefined);
           dispatch({ type: "recordingStatusCleared" });
           setError(micSource?.message ?? "Microphone is not ready.");
-          return;
+          return false;
         }
 
         // System audio is optional. If the fresh probe shows it isn't
@@ -2078,12 +2078,14 @@ export function App() {
           status: recordingToStatus(recording),
         });
         playRecordingSound("start");
+        return true;
       } catch (err) {
         // The ref was set optimistically above; a failed start must not leave
         // the meeting HUD's reopen path pointing at a note with no recording.
         setRecordingNote(undefined);
         dispatch({ type: "recordingStatusCleared" });
         setError(messageFromError(err));
+        return false;
       } finally {
         setCheckingSourceReadiness(false);
       }
@@ -2097,17 +2099,33 @@ export function App() {
   }, [handleStartRecordingForNote, selectedNoteId]);
 
   const handleStartMeetingDetectedRecording = useCallback(async () => {
+    const previousNoteId = selectedNoteId;
     try {
       const note = await createNote(undefined);
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(undefined);
       setOriginAllNotes(false);
       setActiveView("meetings");
-      await handleStartRecordingForNote(note.id);
+      const started = await handleStartRecordingForNote(note.id);
+      if (started) return;
+
+      await deleteNote(note.id);
+      const response = await listNotes();
+      dispatch({ type: "notesLoaded", notes: response.items });
+      const restoreNoteId =
+        previousNoteId && previousNoteId !== note.id
+          ? previousNoteId
+          : response.items[0]?.id;
+      if (restoreNoteId) {
+        const restored = await getNote(restoreNoteId);
+        dispatch({ type: "noteLoaded", note: restored });
+      } else {
+        setActiveView("settings");
+      }
     } catch (err) {
       setError(messageFromError(err));
     }
-  }, [handleStartRecordingForNote]);
+  }, [handleStartRecordingForNote, selectedNoteId]);
 
   // Click the floating global recorder pill to jump back to the note the
   // recording belongs to (it lives wherever you started it, which may not be
@@ -2791,6 +2809,9 @@ export function App() {
                           ? state.recordingStatus
                           : undefined
                       }
+                      recordingDisabled={Boolean(
+                        state.recordingStatus && selectedNoteId !== recordingNoteId,
+                      )}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
