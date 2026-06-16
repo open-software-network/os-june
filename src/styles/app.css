@@ -9002,17 +9002,12 @@ input:focus-visible,
   max-width: min(52vw, 520px);
   min-width: 0;
   overflow: hidden;
-  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-/* The metadata yields to the overflow cluster on hover (the gradient above
- * does the visual fade; the meta itself drops out so nothing peeks through). */
-.routines-item[data-has-actions="true"]:hover .routines-item-meta,
-.routines-item[data-has-actions="true"]:focus-within .routines-item-meta,
-.routines-item[data-has-actions="true"][data-menu-open="true"]
-  .routines-item-meta {
-  opacity: 0;
-}
+/* The metadata stays put on hover — it isn't faded out. The gradient above
+ * (z-index 1) washes out its right edge and the action cluster (z-index 2)
+ * sits on top, so the menu reads as a layer over the badges while the left
+ * of the metadata still peeks through. */
 
 /* Overflow cluster overlays the row's right edge instead of reserving its own
  * column, so the metadata can sit flush right until you reach for the menu. */
