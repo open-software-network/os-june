@@ -1744,6 +1744,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_transcription_requests_include_dictionary_context() {
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let contexts = Arc::clone(&contexts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let contexts = Arc::clone(&contexts);
+                Box::pin(async move {
+                    contexts.lock().unwrap().push((
+                        request.audio_path.to_string_lossy().to_string(),
+                        request.context,
+                    ));
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        transcribe_turn_jobs_bounded(
+            vec![test_job("m0", "microphone", 0), test_job("s1", "system", 1)],
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            Some("Custom dictionary terms:\n- DIM".to_string()),
+            transcriber,
+            None,
+            1,
+        )
+        .await
+        .expect("turn jobs should transcribe");
+
+        let contexts = contexts.lock().unwrap();
+        let context_by_path = contexts.iter().cloned().collect::<HashMap<_, _>>();
+        let first_context = context_by_path["m0"]
+            .as_ref()
+            .expect("first turn should receive dictionary context");
+        assert!(first_context.contains("Custom dictionary terms"));
+        assert!(first_context.contains("DIM"));
+        assert!(!first_context.contains("Previous transcript context"));
+
+        let second_context = context_by_path["s1"]
+            .as_ref()
+            .expect("later turn should keep dictionary context");
+        assert!(second_context.contains("Custom dictionary terms"));
+        assert!(second_context.contains("DIM"));
+        assert!(second_context.contains("Previous transcript context"));
+        assert!(second_context.contains("Microphone: m0"));
+    }
+
+    #[tokio::test]
     async fn source_lane_failures_keep_their_source_reason() {
         let transcriber = Arc::new(move |request: TranscriptionRequest| {
             Box::pin(async move {
