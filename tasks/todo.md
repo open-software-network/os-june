@@ -1,3 +1,29 @@
+# Window Drag With Hidden Tabs
+
+- [x] Inspect the screenshot and existing titlebar drag implementation.
+- [x] Locate the tab strip and titlebar layering.
+- [x] Patch tab strip background drag handling without making controls draggable.
+- [x] Add focused regression coverage.
+- [x] Run targeted tests and practical build checks.
+
+## Notes
+
+The screenshot points at the main window chrome around the tab strip. The app
+already has a full-window `.titlebar-drag` layer under the tab bar, but the tab
+bar is above it, so empty tab-strip space needs the same explicit
+`startDragging()` pointer path used by the base titlebar region.
+
+## Verification
+
+- `pnpm test -- src/test/tab-bar.test.tsx`
+- `pnpm run lint`
+- `pnpm run build`
+- `curl http://127.0.0.1:1422/` against a temporary Vite server returned
+  `200 OK`
+- `pnpm test`
+
+## Previous Work
+
 # Dictation HUD second-run visual stability
 
 - [x] Read the attached transcript and screenshot.
@@ -34,7 +60,7 @@
       animation so the processing HUD appears seamlessly.
 - [x] Compare dictation HUD transparency with the agent HUD surface.
 
-## Notes
+## Previous Notes
 
 The screenshot shows the right side of the dictation pill cut by the window
 edge. The report says the issue heals on the next transition, which points at
@@ -44,7 +70,7 @@ listening show becomes visible while the native frame is still resizing from a
 stale width. Fresh shows now set native alpha to zero, snap-size the window,
 then reveal; visible state-to-state transitions still use the morph.
 
-## Verification
+## Previous Verification
 
 - `pnpm test -- src/test/hud-meeting.test.ts`
 - `pnpm test`
