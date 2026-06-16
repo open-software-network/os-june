@@ -11567,6 +11567,7 @@ input:focus-visible,
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  min-width: 0;
 }
 
 .referral-dialog-status {
@@ -11639,6 +11640,7 @@ input:focus-visible,
 .referral-copy-card {
   display: grid;
   gap: var(--sp-3);
+  min-width: 0;
   padding: var(--sp-4);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -11682,6 +11684,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   width: 100%;
+  min-width: 0;
   min-height: 40px;
   padding: 0 var(--sp-3);
   border: 1px solid var(--border);
