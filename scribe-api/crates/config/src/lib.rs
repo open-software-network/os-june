@@ -303,6 +303,16 @@ pub struct ModelPriceConfig {
     pub capabilities: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+struct TextModelFallback {
+    id: &'static str,
+    display_name: &'static str,
+    input_credits_per_million_tokens: u64,
+    output_credits_per_million_tokens: u64,
+    context_tokens: i64,
+    capabilities: &'static [&'static str],
+}
+
 /// Built-in pricing fallback, used only when the live Venice catalog can't be
 /// reached at startup so metered charges still settle. The catalog carries the
 /// authoritative numbers and extends over this on every boot. Split out of
@@ -350,91 +360,77 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     // charges still settle. The live catalog (which carries the authoritative
     // numbers) extends over this on every boot. Keep the GLM 5.2 entry in sync
     // with DEFAULT_GENERATION_MODEL in the Tauri providers module.
-    pricing.insert(
-        "zai-org-glm-5-2".to_string(),
-        ModelPriceConfig {
-            unit: PriceUnit::Tokens,
-            credits_per_million_seconds: None,
-            input_credits_per_million_tokens: Some(1_750),
-            output_credits_per_million_tokens: Some(5_500),
-            provider: ModelProvider::Venice,
-            model_type: ModelType::Text,
-            display_name: "GLM 5.2".to_string(),
-            description: None,
-            privacy: Some("private".to_string()),
-            pricing: None,
-            context_tokens: Some(200_000),
-            traits: Vec::new(),
-            capabilities: vec![
-                "supportsFunctionCalling".to_string(),
-                "supportsReasoning".to_string(),
-                "supportsReasoningEffort".to_string(),
-                "supportsResponseSchema".to_string(),
-                "supportsWebSearch".to_string(),
+    for model in [
+        TextModelFallback {
+            id: "zai-org-glm-5-2",
+            display_name: "GLM 5.2",
+            input_credits_per_million_tokens: 1_750,
+            output_credits_per_million_tokens: 5_500,
+            context_tokens: 200_000,
+            capabilities: &[
+                "supportsFunctionCalling",
+                "supportsReasoning",
+                "supportsReasoningEffort",
+                "supportsResponseSchema",
+                "supportsWebSearch",
             ],
         },
-    );
-    pricing.insert(
-        "kimi-k2-6".to_string(),
-        ModelPriceConfig {
-            unit: PriceUnit::Tokens,
-            credits_per_million_seconds: None,
-            input_credits_per_million_tokens: Some(850),
-            output_credits_per_million_tokens: Some(4_660),
-            provider: ModelProvider::Venice,
-            model_type: ModelType::Text,
-            display_name: "Kimi K2.6".to_string(),
-            description: None,
-            privacy: Some("private".to_string()),
-            pricing: None,
-            context_tokens: Some(256_000),
-            traits: Vec::new(),
-            capabilities: vec!["supportsFunctionCalling".to_string()],
+        TextModelFallback {
+            id: "kimi-k2-6",
+            display_name: "Kimi K2.6",
+            input_credits_per_million_tokens: 850,
+            output_credits_per_million_tokens: 4_660,
+            context_tokens: 256_000,
+            capabilities: &["supportsFunctionCalling"],
         },
-    );
-    pricing.insert(
-        "zai-org-glm-5-1".to_string(),
-        ModelPriceConfig {
-            unit: PriceUnit::Tokens,
-            credits_per_million_seconds: None,
-            input_credits_per_million_tokens: Some(1_750),
-            output_credits_per_million_tokens: Some(5_500),
-            provider: ModelProvider::Venice,
-            model_type: ModelType::Text,
-            display_name: "GLM 5.1".to_string(),
-            description: None,
-            privacy: Some("private".to_string()),
-            pricing: None,
-            context_tokens: Some(200_000),
-            traits: Vec::new(),
-            capabilities: vec![
-                "supportsFunctionCalling".to_string(),
-                "supportsReasoning".to_string(),
-                "supportsReasoningEffort".to_string(),
-                "supportsResponseSchema".to_string(),
-                "supportsWebSearch".to_string(),
+        TextModelFallback {
+            id: "zai-org-glm-5-1",
+            display_name: "GLM 5.1",
+            input_credits_per_million_tokens: 1_750,
+            output_credits_per_million_tokens: 5_500,
+            context_tokens: 200_000,
+            capabilities: &[
+                "supportsFunctionCalling",
+                "supportsReasoning",
+                "supportsReasoningEffort",
+                "supportsResponseSchema",
+                "supportsWebSearch",
             ],
         },
-    );
-    pricing.insert(
-        "zai-org-glm-5".to_string(),
-        ModelPriceConfig {
-            unit: PriceUnit::Tokens,
-            credits_per_million_seconds: None,
-            input_credits_per_million_tokens: Some(1_000),
-            output_credits_per_million_tokens: Some(3_200),
-            provider: ModelProvider::Venice,
-            model_type: ModelType::Text,
-            display_name: "GLM 5".to_string(),
-            description: None,
-            privacy: Some("private".to_string()),
-            pricing: None,
-            context_tokens: Some(198_000),
-            traits: Vec::new(),
-            capabilities: vec!["supportsFunctionCalling".to_string()],
+        TextModelFallback {
+            id: "zai-org-glm-5",
+            display_name: "GLM 5",
+            input_credits_per_million_tokens: 1_000,
+            output_credits_per_million_tokens: 3_200,
+            context_tokens: 198_000,
+            capabilities: &["supportsFunctionCalling"],
         },
-    );
+    ] {
+        pricing.insert(model.id.to_string(), text_model_config(model));
+    }
     pricing
+}
+
+fn text_model_config(model: TextModelFallback) -> ModelPriceConfig {
+    ModelPriceConfig {
+        unit: PriceUnit::Tokens,
+        credits_per_million_seconds: None,
+        input_credits_per_million_tokens: Some(model.input_credits_per_million_tokens),
+        output_credits_per_million_tokens: Some(model.output_credits_per_million_tokens),
+        provider: ModelProvider::Venice,
+        model_type: ModelType::Text,
+        display_name: model.display_name.to_string(),
+        description: None,
+        privacy: Some("private".to_string()),
+        pricing: None,
+        context_tokens: Some(model.context_tokens),
+        traits: Vec::new(),
+        capabilities: model
+            .capabilities
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+    }
 }
 
 impl Default for AppConfig {
