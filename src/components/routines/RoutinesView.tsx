@@ -12,7 +12,7 @@ import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconZap } from "central-icons/IconZap";
-import { IconPause as IconPauseFilled } from "central-icons-filled/IconPause";
+import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listScheduledRunSessions,
@@ -598,7 +598,7 @@ function RoutineRow({
     >
       <button type="button" className="routines-item-open" onClick={onOpen}>
         <span className="routines-item-icon" aria-hidden>
-          {paused ? <IconPauseFilled size={13} /> : <IconZap size={14} />}
+          {paused ? <IconPause size={14} /> : <IconZap size={14} />}
         </span>
         <span className="routines-item-body">
           <span className="routines-item-title">
