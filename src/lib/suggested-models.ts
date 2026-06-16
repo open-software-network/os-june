@@ -16,12 +16,13 @@ export type SuggestedModel = {
  * Curation snapshot (June 2026), from the live Venice catalog plus public
  * benchmarks (SWE-bench agentic coding, Artificial Analysis intelligence
  * index):
+ * - GLM 5.2: latest GLM flagship and June's default text model, with
+ *   reasoning effort controls, tool use, 200K context, $1.75/$5.50 per 1M
+ *   tokens.
  * - Kimi K2.6: leads the open-weights intelligence rankings, built for long
- *   agentic tool runs, 256K context, $0.85/$4.66 — June's default.
- * - GLM 5.1: latest GLM flagship, top-tier agentic coding and tool use among
- *   open models, 200K context, $1.75/$5.50 per 1M tokens.
- * - GLM 4.7: Venice's own catalog default and "function calling default" —
- *   near-flagship quality at a fraction of the price, $0.55/$2.65.
+ *   agentic tool runs, 256K context, $0.85/$4.66.
+ * - GLM 5.1: previous GLM flagship, top-tier agentic coding and tool use
+ *   among open models, 200K context, $1.75/$5.50 per 1M tokens.
  * - Parakeet: fast, accurate everyday dictation at the lowest price tier.
  * - Whisper Large v3: best multilingual accuracy at the same low price.
  *
@@ -35,19 +36,19 @@ export type SuggestedModel = {
 export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
   generation: [
     {
+      id: "zai-org-glm-5-2",
+      reason:
+        "Default pick: latest GLM flagship with strong reasoning, tool use, structured output, and zero data retention.",
+    },
+    {
       id: "kimi-k2-6",
       reason:
-        "Best overall: leads independent intelligence rankings and excels at long tool-driven tasks, with zero data retention.",
+        "Best alternate: leads independent intelligence rankings and excels at long tool-driven tasks, with zero data retention.",
     },
     {
       id: "zai-org-glm-5-1",
       reason:
-        "Best GLM pick: latest GLM flagship, with top-tier agentic coding and tool use among open models and zero data retention.",
-    },
-    {
-      id: "zai-org-glm-4.7",
-      reason:
-        "Best value: near-flagship quality at a fraction of the price, and Venice's own default for tool calling, with zero data retention.",
+        "Stable GLM alternate: previous GLM flagship with top-tier agentic coding, tool use, and zero data retention.",
     },
   ],
   transcription: [

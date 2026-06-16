@@ -172,14 +172,16 @@ describe("AppSettings", () => {
       settings: {
         transcriptionProvider: "venice",
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "kimi-k2-6",
+        generationModel: "zai-org-glm-5-2",
       },
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
       selectedModel:
-        mode === "transcription" ? "nvidia/parakeet-tdt-0.6b-v3" : "kimi-k2-6",
+        mode === "transcription"
+          ? "nvidia/parakeet-tdt-0.6b-v3"
+          : "zai-org-glm-5-2",
       models:
         mode === "transcription"
           ? [
@@ -222,6 +224,20 @@ describe("AppSettings", () => {
               },
             ]
           : [
+              {
+                provider: "venice",
+                id: "zai-org-glm-5-2",
+                name: "GLM 5.2",
+                modelType: "text",
+                description: "Latest GLM text model for writing notes.",
+                privacy: "private",
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 1750,
+                outputCreditsPerMillionTokens: 5500,
+                contextTokens: 200000,
+                traits: [],
+                capabilities: ["supportsFunctionCalling"],
+              },
               {
                 provider: "venice",
                 id: "kimi-k2-6",
@@ -296,7 +312,7 @@ describe("AppSettings", () => {
           : "venice",
       transcriptionModel:
         mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
-      generationModel: mode === "generation" ? modelId : "kimi-k2-6",
+      generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
@@ -1326,19 +1342,25 @@ describe("AppSettings", () => {
     // Suggested is the default view: only the curated picks present in the
     // catalog show, each with its recommendation reason.
     expect(
+      await screen.findByRole("option", { name: /GLM 5\.2/ }),
+    ).toBeInTheDocument();
+    expect(
       await screen.findByRole("option", { name: /GLM 5\.1/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Kimi K2\.6/ }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("option", { name: /Venice Uncensored/ }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText(/Best overall/)).toBeInTheDocument();
+    expect(screen.getByText(/Default pick/)).toBeInTheDocument();
 
     // All shows the full catalog, without recommendation copy.
     await user.click(screen.getByRole("tab", { name: "All" }));
     expect(
       screen.getByRole("option", { name: /Venice Uncensored/ }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Best overall/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Default pick/)).not.toBeInTheDocument();
 
     // Searching looks across the whole catalog even from Suggested, and a
     // suggested pick stays selectable.
