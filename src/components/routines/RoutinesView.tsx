@@ -46,6 +46,7 @@ import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 
 const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: HermesSessionInfo[] = [];
+const RUN_HISTORY_REFRESH_MS = 10000;
 
 type RoutinesViewProps = {
   /** The chat-first creation path: hands off a composed agent prompt and the
@@ -119,7 +120,7 @@ export function RoutinesView({
   // it — it degrades to a quiet notice inside the section instead.
   const loadRuns = useCallback(async () => {
     try {
-      setRuns(await listScheduledRunSessions());
+      setRuns(await listScheduledRunSessions({ includeActive: true }));
       setRunsUnavailable(false);
     } catch {
       setRunsUnavailable(true);
@@ -134,6 +135,15 @@ export function RoutinesView({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (forcedEmpty) return;
+    const timer = window.setInterval(
+      () => void loadRuns(),
+      RUN_HISTORY_REFRESH_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [forcedEmpty, loadRuns]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();

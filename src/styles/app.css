@@ -9718,7 +9718,15 @@ input:focus-visible,
   min-width: 0;
 }
 
+.routines-run-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
 .routines-run-name {
+  min-width: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
   font-weight: 500;
@@ -9726,6 +9734,17 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.routines-run-status {
+  flex: 0 0 auto;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .routines-run-preview {

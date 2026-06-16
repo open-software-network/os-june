@@ -1,5 +1,8 @@
 import { IconZap } from "central-icons/IconZap";
-import { sessionTimestamp } from "../../lib/hermes-adapter";
+import {
+  isRunningScheduledRunSession,
+  sessionTimestamp,
+} from "../../lib/hermes-adapter";
 import type { HermesSessionInfo } from "../../lib/tauri";
 
 /** Past runs of one or all routines: each row is a cron-sourced session,
@@ -36,7 +39,8 @@ function RunRow({
   label: string;
   onOpen: () => void;
 }) {
-  const preview = run.preview?.trim();
+  const running = isRunningScheduledRunSession(run);
+  const preview = run.preview?.trim() || (running ? "Running now" : "");
   return (
     <li className="routines-run">
       <button type="button" className="routines-run-button" onClick={onOpen}>
@@ -44,7 +48,12 @@ function RunRow({
           <IconZap size={14} />
         </span>
         <span className="routines-run-body">
-          <span className="routines-run-name">{label}</span>
+          <span className="routines-run-title">
+            <span className="routines-run-name">{label}</span>
+            {running ? (
+              <span className="routines-run-status">Running</span>
+            ) : null}
+          </span>
           {preview ? (
             <span className="routines-run-preview">{preview}</span>
           ) : null}
