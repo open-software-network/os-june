@@ -63,7 +63,15 @@ struct RecordingPresenceBoundsState(Mutex<Option<RegisteredRecordingPresenceBoun
 #[cfg(target_os = "macos")]
 static MAIN_WINDOW_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[cfg(target_os = "macos")]
-static MAIN_WINDOW_SUPERCLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
+static MAIN_WINDOW_NS_WINDOW: Mutex<Option<usize>> = Mutex::new(None);
+#[cfg(target_os = "macos")]
+static MAIN_WINDOW_SEND_EVENT_ORIGINAL: OnceLock<MainWindowSendEventImp> = OnceLock::new();
+#[cfg(target_os = "macos")]
+type MainWindowSendEventImp = unsafe extern "C-unwind" fn(
+    &objc2::runtime::AnyObject,
+    objc2::runtime::Sel,
+    *mut objc2::runtime::AnyObject,
+);
 
 pub fn run() {
     providers::load_local_env();
@@ -433,8 +441,8 @@ fn register_main_window_lifecycle(app: &tauri::AppHandle, window: &tauri::Webvie
 
 #[cfg(target_os = "macos")]
 fn install_main_window_first_mouse_bridge(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
     use objc2::runtime::AnyObject;
+    use objc2::sel;
 
     let _ = MAIN_WINDOW_APP.get_or_init(|| app.clone());
     let Ok(handle) = window.ns_window() else {
@@ -445,61 +453,62 @@ fn install_main_window_first_mouse_bridge(app: &tauri::AppHandle, window: &tauri
     }
     unsafe {
         let window = handle as *mut AnyObject;
-        let superclass = objc2::ffi::object_getClass(window);
-        if superclass.is_null() {
+        if let Ok(mut current_window) = MAIN_WINDOW_NS_WINDOW.lock() {
+            *current_window = Some(window as usize);
+        }
+
+        if MAIN_WINDOW_SEND_EVENT_ORIGINAL.get().is_some() {
             return;
         }
-        let superclass = &*superclass;
-        let _ = MAIN_WINDOW_SUPERCLASS.get_or_init(|| superclass);
-        let Some(class) = main_window_first_mouse_class(superclass) else {
+
+        let class = objc2::ffi::object_getClass(window);
+        if class.is_null() {
+            return;
+        }
+        let class = &*class;
+        let Some(method) = class.instance_method(sel!(sendEvent:)) else {
             return;
         };
-        objc2::ffi::object_setClass(window, class as *const _ as *const _);
-        let _: () = msg_send![window, setAcceptsMouseMovedEvents: true];
+        let replacement: objc2::runtime::Imp =
+            std::mem::transmute(main_window_send_event as MainWindowSendEventImp);
+        let original = method.set_implementation(replacement);
+        let original: MainWindowSendEventImp = std::mem::transmute(original);
+        let _ = MAIN_WINDOW_SEND_EVENT_ORIGINAL.set(original);
     }
 }
 
 #[cfg(target_os = "macos")]
-fn main_window_first_mouse_class(
-    superclass: &'static objc2::runtime::AnyClass,
-) -> Option<&'static objc2::runtime::AnyClass> {
+extern "C-unwind" fn main_window_send_event(
+    this: &objc2::runtime::AnyObject,
+    _sel: objc2::runtime::Sel,
+    event: *mut objc2::runtime::AnyObject,
+) {
     use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject, Sel};
-    use objc2::sel;
 
     const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: i64 = 1;
 
-    extern "C-unwind" fn send_event(this: &AnyObject, _sel: Sel, event: *mut AnyObject) {
-        unsafe {
-            if !event.is_null() {
-                let event_type: i64 = msg_send![event, type];
-                if event_type == NS_EVENT_TYPE_LEFT_MOUSE_DOWN
-                    && main_app_inactive()
-                    && main_first_mouse_hits_recording_presence(this, event)
-                {
-                    emit_recording_presence_reopen();
-                }
+    unsafe {
+        let is_registered_main_window = MAIN_WINDOW_NS_WINDOW
+            .lock()
+            .ok()
+            .and_then(|window| *window)
+            .is_some_and(|window| {
+                std::ptr::addr_eq(this, window as *const objc2::runtime::AnyObject)
+            });
+        if is_registered_main_window && !event.is_null() {
+            let event_type: i64 = msg_send![event, type];
+            if event_type == NS_EVENT_TYPE_LEFT_MOUSE_DOWN
+                && main_app_inactive()
+                && main_first_mouse_hits_recording_presence(this, event)
+            {
+                emit_recording_presence_reopen();
             }
+        }
 
-            let superclass = MAIN_WINDOW_SUPERCLASS
-                .get()
-                .copied()
-                .unwrap_or_else(|| AnyClass::get(c"NSWindow").expect("NSWindow class missing"));
-            let _: () = msg_send![super(this, superclass), sendEvent: event];
+        if let Some(original) = MAIN_WINDOW_SEND_EVENT_ORIGINAL.get().copied() {
+            original(this, _sel, event);
         }
     }
-
-    if let Some(class) = AnyClass::get(c"JuneMainWindow") {
-        return Some(class);
-    }
-    let mut builder = objc2::runtime::ClassBuilder::new(c"JuneMainWindow", superclass)?;
-    unsafe {
-        builder.add_method(
-            sel!(sendEvent:),
-            send_event as extern "C-unwind" fn(_, _, _),
-        );
-    }
-    Some(builder.register())
 }
 
 #[cfg(target_os = "macos")]
