@@ -3,7 +3,7 @@ import { IconCalendarRepeat } from "central-icons/IconCalendarRepeat";
 import { IconPlay } from "central-icons/IconPlay";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { IconPause as IconPauseFilled } from "central-icons-filled/IconPause";
+import { IconPause } from "central-icons/IconPause";
 import {
   useEffect,
   useLayoutEffect,
@@ -266,7 +266,7 @@ export function RoutineDetail({
           ) : null}
           {paused ? (
             <span className="routine-meta-pill" aria-label="Paused">
-              <IconPauseFilled size={12} aria-hidden />
+              <IconPause size={12} aria-hidden />
               Paused
             </span>
           ) : null}

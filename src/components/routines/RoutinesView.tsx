@@ -598,7 +598,7 @@ function RoutineRow({
     >
       <button type="button" className="routines-item-open" onClick={onOpen}>
         <span className="routines-item-icon" aria-hidden>
-          {paused ? <IconPause size={14} /> : <IconZap size={14} />}
+          <IconZap size={14} />
         </span>
         <span className="routines-item-body">
           <span className="routines-item-title">
@@ -628,7 +628,12 @@ function RoutineRow({
           {activity ? (
             <span className="routine-meta-pill">{activity}</span>
           ) : null}
-          {status ? <span className="routine-meta-pill">{status}</span> : null}
+          {status ? (
+            <span className="routine-meta-pill">
+              {paused ? <IconPause size={12} aria-hidden /> : null}
+              {status}
+            </span>
+          ) : null}
         </span>
       </button>
       <span className="routines-item-actions">
