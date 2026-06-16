@@ -42,10 +42,7 @@ mod tests {
     };
     use std::{
         collections::BTreeMap,
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
-        },
+        sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
 
@@ -205,12 +202,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dictate_transcribe_starts_asr_while_authorizing() {
-        let authorization_completed = Arc::new(AtomicBool::new(false));
-        let asr_started_before_authorization_completed = Arc::new(AtomicBool::new(false));
-        let os_accounts = Arc::new(SlowAuthorizeOsAccounts {
-            authorization_completed: authorization_completed.clone(),
+    async fn dictate_transcribe_denied_authorization_does_not_dispatch_asr() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            allow: false,
+            deny_reason: Some("insufficient_available_balance".to_string()),
+            ..RecordingOsAccounts::default()
         });
+        let transcriber = Arc::new(RecordingTranscriber::default());
         let service = DictateService::new(DictateServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(
                 "audio-model",
@@ -218,12 +216,8 @@ mod tests {
                 2,
                 ModelType::Asr,
             )]))),
-            os_accounts,
-            transcriber: Arc::new(AuthorizationOverlapTranscriber {
-                authorization_completed,
-                asr_started_before_authorization_completed:
-                    asr_started_before_authorization_completed.clone(),
-            }),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
             cleaner: Arc::new(FixedCleaner),
             duration_probe: Arc::new(FixedDurationProbe),
             transcribe_hold_ttl_seconds: 30,
@@ -231,7 +225,7 @@ mod tests {
             flat_estimate_credits: 1024,
         });
 
-        service
+        let result = service
             .transcribe(DictateTranscribeParams {
                 user_id: UserId("usr_123".to_string()),
                 session_id: "session_1".to_string(),
@@ -242,12 +236,18 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
             })
-            .await
-            .expect("transcribe succeeds");
+            .await;
 
-        assert!(
-            asr_started_before_authorization_completed.load(Ordering::SeqCst),
-            "dictation ASR should not wait for billing authorization to finish"
+        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+        assert_eq!(transcriber.call_count(), 0);
+        assert_eq!(
+            os_accounts.events(),
+            vec![RecordedCall::Authorize {
+                user_id: "usr_123".to_string(),
+                action: "dictate_transcribe".to_string(),
+                estimate: 1024,
+                hold_ttl: 30,
+            }]
         );
     }
 
@@ -681,64 +681,18 @@ mod tests {
         }
     }
 
-    struct SlowAuthorizeOsAccounts {
-        authorization_completed: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl OsAccountsClient for SlowAuthorizeOsAccounts {
-        async fn authorize(
-            &self,
-            _request: AuthorizeRequest,
-        ) -> Result<Authorization, DomainError> {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            self.authorization_completed.store(true, Ordering::SeqCst);
-            Ok(Authorization {
-                allowed: true,
-                action_token: Some("agt_test".to_string()),
-                cap_credits: None,
-                reason: None,
-            })
-        }
-
-        async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError> {
-            Ok(Receipt {
-                credits_charged: request.credits,
-                idempotent_replay: false,
-            })
-        }
-    }
-
-    struct AuthorizationOverlapTranscriber {
-        authorization_completed: Arc<AtomicBool>,
-        asr_started_before_authorization_completed: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl Transcriber for AuthorizationOverlapTranscriber {
-        async fn transcribe(
-            &self,
-            _request: TranscriptionRequest,
-        ) -> Result<Transcript, DomainError> {
-            if !self.authorization_completed.load(Ordering::SeqCst) {
-                self.asr_started_before_authorization_completed
-                    .store(true, Ordering::SeqCst);
-            }
-            Ok(Transcript {
-                text: "Transcript".to_string(),
-                language: Some("en".to_string()),
-                provider: "test".to_string(),
-            })
-        }
-    }
-
     #[derive(Default)]
     struct RecordingTranscriber {
         last_context: Mutex<Option<String>>,
         last_language: Mutex<Option<String>>,
+        calls: Mutex<u64>,
     }
 
     impl RecordingTranscriber {
+        fn call_count(&self) -> u64 {
+            self.calls.lock().map(|value| *value).unwrap_or_default()
+        }
+
         fn last_context(&self) -> Option<String> {
             self.last_context
                 .lock()
@@ -760,6 +714,9 @@ mod tests {
             &self,
             request: TranscriptionRequest,
         ) -> Result<Transcript, DomainError> {
+            if let Ok(mut calls) = self.calls.lock() {
+                *calls += 1;
+            }
             if let Ok(mut last_context) = self.last_context.lock() {
                 *last_context = request.context;
             }
