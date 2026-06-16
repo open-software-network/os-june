@@ -22,6 +22,14 @@ explicit `transcriptSourceLabels` flag. Codex also caught that Markdown output
 could still leak labels behind list or heading markers, so the cleanup handles
 common Markdown prefixes before stripping source labels.
 
+Codex also caught a subtler dual-source case: the spoken content itself can
+begin with source-like words after the outer source label, for example
+`Microphone: System: restart the service`. Cleanup is now transcript-aware and
+only strips a generated source prefix when the stripped text matches the spoken
+content from the labeled transcript. That preserves a correct generated line
+like `System: restart the service` while still cleaning a leaked outer label
+like `Microphone: System: restart the service`.
+
 ## Verification
 
 - `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers venice::tests --locked`

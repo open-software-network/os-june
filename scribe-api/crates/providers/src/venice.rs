@@ -266,7 +266,7 @@ impl Generator for VeniceGenerator {
             .first_choice_text()
             .map(|text| {
                 if request.transcript_source_labels {
-                    cleanup_generated_note_text(&text)
+                    cleanup_generated_note_text(&text, transcript)
                 } else {
                     text
                 }
@@ -698,24 +698,42 @@ fn generation_source_text(
     sections.join("\n\n")
 }
 
-fn cleanup_generated_note_text(text: &str) -> String {
+fn cleanup_generated_note_text(text: &str, labeled_transcript: &str) -> String {
+    let spoken_lines = labeled_transcript_spoken_lines(labeled_transcript);
     text.lines()
-        .map(strip_generated_source_label)
+        .map(|line| strip_generated_source_label(line, &spoken_lines))
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
         .to_string()
 }
 
-fn strip_generated_source_label(line: &str) -> String {
+fn strip_generated_source_label(line: &str, spoken_lines: &[String]) -> String {
     let trimmed = line.trim_start();
     let indent_len = line.len() - trimmed.len();
     let indent = &line[..indent_len];
     let (markdown_marker, text) = markdown_line_marker(trimmed);
-    strip_source_label_prefix(text).map_or_else(
-        || line.to_string(),
-        |rest| format!("{indent}{markdown_marker}{}", rest.trim_start()),
-    )
+    let Some(rest) = strip_source_label_prefix(text) else {
+        return line.to_string();
+    };
+    let stripped = rest.trim_start();
+    if spoken_lines
+        .iter()
+        .any(|spoken| spoken.eq_ignore_ascii_case(stripped))
+    {
+        format!("{indent}{markdown_marker}{stripped}")
+    } else {
+        line.to_string()
+    }
+}
+
+fn labeled_transcript_spoken_lines(labeled_transcript: &str) -> Vec<String> {
+    labeled_transcript
+        .lines()
+        .filter_map(|line| strip_source_label_prefix(line.trim_start()))
+        .map(|line| line.trim_start().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 fn markdown_line_marker(value: &str) -> (&str, &str) {
@@ -1421,21 +1439,38 @@ mod tests {
 
     #[test]
     fn generated_note_cleanup_only_removes_leading_source_labels() {
+        let transcript = "Microphone: Too big.\nSystem: Friday.\nMicrophone: Follow up.\nSystem: Deadline.\nSystem: Restart.\nMicrophone: Quote.";
         assert_eq!(
-            cleanup_generated_note_text("Microphone: Too big.\nSystem: Friday."),
+            cleanup_generated_note_text("Microphone: Too big.\nSystem: Friday.", transcript),
             "Too big.\nFriday."
         );
         assert_eq!(
-            cleanup_generated_note_text("- Microphone: Follow up.\n## System: Deadline."),
+            cleanup_generated_note_text(
+                "- Microphone: Follow up.\n## System: Deadline.",
+                transcript
+            ),
             "- Follow up.\n## Deadline."
         );
         assert_eq!(
-            cleanup_generated_note_text("1. System: Restart.\n> Microphone: Quote."),
+            cleanup_generated_note_text("1. System: Restart.\n> Microphone: Quote.", transcript),
             "1. Restart.\n> Quote."
         );
         assert_eq!(
-            cleanup_generated_note_text("Testing microphone placement."),
+            cleanup_generated_note_text("Testing microphone placement.", transcript),
             "Testing microphone placement."
+        );
+    }
+
+    #[test]
+    fn generated_note_cleanup_preserves_spoken_source_like_prefixes() {
+        let transcript = "Microphone: System: restart the service.";
+        assert_eq!(
+            cleanup_generated_note_text("System: restart the service.", transcript),
+            "System: restart the service."
+        );
+        assert_eq!(
+            cleanup_generated_note_text("Microphone: System: restart the service.", transcript),
+            "System: restart the service."
         );
     }
 
