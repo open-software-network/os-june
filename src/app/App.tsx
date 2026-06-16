@@ -412,6 +412,11 @@ export function App() {
   const [recordingNoteId, setRecordingNoteIdState] = useState<
     string | undefined
   >(undefined);
+  const recordingStatusRef = useRef(state.recordingStatus);
+  const recordingStartInFlightRef = useRef(false);
+  useEffect(() => {
+    recordingStatusRef.current = state.recordingStatus;
+  }, [state.recordingStatus]);
   const setRecordingNote = useCallback((noteId: string | undefined) => {
     recordingNoteIdRef.current = noteId;
     setRecordingNoteIdState(noteId);
@@ -2039,10 +2044,16 @@ export function App() {
 
   const handleStartRecordingForNote = useCallback(
     async (noteId: string): Promise<boolean> => {
+      if (recordingStartInFlightRef.current || recordingStatusRef.current) {
+        return false;
+      }
+      recordingStartInFlightRef.current = true;
       setRecordingNote(noteId);
+      const startingStatus = startingRecordingStatus(noteId, sourceMode);
+      recordingStatusRef.current = startingStatus;
       dispatch({
         type: "recordingStatusChanged",
-        status: startingRecordingStatus(noteId, sourceMode),
+        status: startingStatus,
       });
       try {
         setCheckingSourceReadiness(true);
@@ -2054,6 +2065,7 @@ export function App() {
         );
         if (!micSource?.ready) {
           setRecordingNote(undefined);
+          recordingStatusRef.current = undefined;
           dispatch({ type: "recordingStatusCleared" });
           setError(micSource?.message ?? "Microphone is not ready.");
           return false;
@@ -2073,9 +2085,11 @@ export function App() {
 
         const recording = await startRecording(noteId, effectiveMode);
         setRecordingNote(noteId);
+        const status = recordingToStatus(recording);
+        recordingStatusRef.current = status;
         dispatch({
           type: "recordingStatusChanged",
-          status: recordingToStatus(recording),
+          status,
         });
         playRecordingSound("start");
         return true;
@@ -2083,10 +2097,12 @@ export function App() {
         // The ref was set optimistically above; a failed start must not leave
         // the meeting HUD's reopen path pointing at a note with no recording.
         setRecordingNote(undefined);
+        recordingStatusRef.current = undefined;
         dispatch({ type: "recordingStatusCleared" });
         setError(messageFromError(err));
         return false;
       } finally {
+        recordingStartInFlightRef.current = false;
         setCheckingSourceReadiness(false);
       }
     },
@@ -2099,6 +2115,7 @@ export function App() {
   }, [handleStartRecordingForNote, selectedNoteId]);
 
   const handleStartMeetingDetectedRecording = useCallback(async () => {
+    if (recordingStartInFlightRef.current || recordingStatusRef.current) return;
     const previousNoteId = selectedNoteId;
     try {
       const note = await createNote(undefined);

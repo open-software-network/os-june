@@ -362,6 +362,22 @@ describe("notes recording reliability", () => {
     );
   });
 
+  it("ignores meeting-start signals while a recording is already live", async () => {
+    await startRecordingOnFirstNote();
+
+    mocks.createNote.mockClear();
+    mocks.startRecording.mockClear();
+
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
+    });
+
+    expect(mocks.createNote).not.toHaveBeenCalled();
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+  });
+
   it("removes the fresh meeting note when recording fails to start", async () => {
     const fresh = note({
       id: "fresh-note",
