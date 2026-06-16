@@ -80,7 +80,8 @@ impl DictateService {
                 language: params.language,
                 model: params.model_id.clone(),
             })
-            .await?;
+            .await
+            .map_err(ServiceError::from)?;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "dictate_transcribe:{}:{}:{}",
