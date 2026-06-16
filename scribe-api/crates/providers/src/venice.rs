@@ -696,9 +696,10 @@ fn strip_generated_source_label(line: &str) -> String {
     let trimmed = line.trim_start();
     let indent_len = line.len() - trimmed.len();
     let indent = &line[..indent_len];
-    strip_source_label_prefix(trimmed)
-        .map(|rest| format!("{indent}{}", rest.trim_start()))
-        .unwrap_or_else(|| line.to_string())
+    strip_source_label_prefix(trimmed).map_or_else(
+        || line.to_string(),
+        |rest| format!("{indent}{}", rest.trim_start()),
+    )
 }
 
 fn strip_source_label_prefix(value: &str) -> Option<&str> {

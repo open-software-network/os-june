@@ -20,6 +20,7 @@ defense in depth.
 - `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers venice::tests --locked`
 - `cargo test --manifest-path scribe-api/Cargo.toml -p scribe-providers --locked`
 - `cargo check --manifest-path src-tauri/Cargo.toml --locked`
+- `cargo clippy --manifest-path scribe-api/Cargo.toml --all-targets --all-features --locked -- -D warnings`
 
 ## Previous Work
 
