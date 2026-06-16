@@ -1,5 +1,4 @@
 use crate::{
-    app_paths::AppPaths,
     audio::turns::{
         coalesce_turns_for_transcription, detect_turns, normalize_wav_for_transcription,
         split_wav_for_transcription, write_turn_wav, DetectionSource,
@@ -727,64 +726,6 @@ pub async fn process_saved_source_audio(
         )
         .await?;
     Ok(note)
-}
-
-pub async fn retry_from_saved_audio(
-    repos: &Repositories,
-    paths: &AppPaths,
-    note_id: &str,
-) -> Result<NoteDto, AppError> {
-    let sources = repos
-        .latest_valid_audio_artifact_paths(note_id)
-        .await?
-        .into_iter()
-        .filter_map(|(id, source, path, session_id)| {
-            paths
-                .contained_recording_file(path)
-                .ok()
-                .map(|path| (id, source, path, session_id))
-        })
-        .collect::<Vec<_>>();
-    if sources.is_empty() {
-        return Err(AppError::new(
-            "audio_artifact_missing",
-            "No saved audio is available for retry.",
-        ));
-    }
-    let note = repos.get_note(note_id).await?;
-    let manual_notes = manual_notes_for_generation(&note);
-    if sources.len() == 1 {
-        let (audio_artifact_id, _source, audio_path, session_id) = sources[0].clone();
-        return process_saved_audio(
-            repos,
-            note_id,
-            &session_id,
-            &audio_artifact_id,
-            audio_path,
-            note.title,
-            note.generated_content,
-            manual_notes,
-        )
-        .await;
-    }
-    let session_id = sources
-        .first()
-        .map(|(_id, _source, _path, session_id)| session_id.clone())
-        .unwrap_or_default();
-    process_saved_source_audio(
-        repos,
-        note_id,
-        &session_id,
-        RecordingSourceMode::MicrophonePlusSystem,
-        sources
-            .into_iter()
-            .map(|(id, source, path, _session_id)| (id, source, path))
-            .collect(),
-        note.title,
-        note.generated_content,
-        manual_notes,
-    )
-    .await
 }
 
 #[derive(Debug, Clone)]

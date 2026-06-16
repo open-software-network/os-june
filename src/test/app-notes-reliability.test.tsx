@@ -390,4 +390,58 @@ describe("notes recording reliability", () => {
     expect(container.querySelector(".note-failure-banner")).toBeNull();
     expect(container.querySelector(".error-banner")).toBeNull();
   });
+
+  it("shows processing immediately after retry starts", async () => {
+    const failedNote = {
+      ...first,
+      activeTab: "notes" as const,
+      processingStatus: "failed" as const,
+      lastError: "The processing service returned an invalid response.",
+      audio: {
+        id: "audio-1",
+        format: "wav",
+        durationMs: 1000,
+        sizeBytes: 2048,
+        checksum: "abc",
+        createdAt: now,
+      },
+    };
+    const retryingNote = {
+      ...failedNote,
+      processingStatus: "transcribing" as const,
+      lastError: undefined,
+    };
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : failedNote,
+    );
+    mocks.retryProcessing.mockResolvedValue(retryingNote);
+    mocks.updateNote.mockImplementation(async (input) => ({
+      ...retryingNote,
+      ...input,
+    }));
+
+    const { container } = render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Meeting notes" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /First note Preview/ }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument(),
+    );
+    expect(container.querySelector(".note-failure-banner")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
+    await waitFor(() =>
+      expect(mocks.updateNote).toHaveBeenCalledWith({
+        noteId: "note-1",
+        activeTab: "transcription",
+      }),
+    );
+  });
 });
