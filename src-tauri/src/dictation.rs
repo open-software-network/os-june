@@ -4,7 +4,8 @@ use crate::domain::{
 };
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
 use crate::scribe_api::{
-    dictate_transcribe, DictateTranscribeRequest, TranscriptionProviderResult,
+    cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
+    TranscriptionProviderResult,
 };
 use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -22,6 +23,7 @@ use tauri::{
 };
 
 const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
+const DICTATION_CLEANUP_TIMEOUT_MS: u64 = 15_000;
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
@@ -1903,12 +1905,15 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         notify_dictation_not_signed_in(&app);
         return;
     }
-    if let Err(error) = dictation_transcription_provider(configured_transcription_provider()) {
-        let state = app.state::<HelperState>();
-        let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-        emit_dictation_event_value(&app, app_error_event(error));
-        return;
-    }
+    let provider = match dictation_transcription_provider(configured_transcription_provider()) {
+        Ok(provider) => provider,
+        Err(error) => {
+            let state = app.state::<HelperState>();
+            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            emit_dictation_event_value(&app, app_error_event(error));
+            return;
+        }
+    };
     let current_settings = current_dictation_settings(&app).unwrap_or_default();
     let style = current_settings.style;
     let language = current_settings.language;
@@ -1926,6 +1931,16 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         session_id: session_id.clone(),
         utterance_id: utterance_id.clone(),
     })
+    .await;
+    let result = maybe_cleanup_dictation_result(
+        &app,
+        &provider,
+        result,
+        dictionary_context,
+        style,
+        session_id,
+        utterance_id,
+    )
     .await;
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
     let state = app.state::<HelperState>();
@@ -1970,6 +1985,139 @@ async fn dictionary_context_for_app(app: &AppHandle) -> Option<String> {
     let repos = crate::commands::repositories(app).await.ok()?;
     let entries = repos.list_dictionary_entries().await.ok()?;
     build_dictionary_context(&entries)
+}
+
+async fn maybe_cleanup_dictation_result(
+    app: &AppHandle,
+    provider: &str,
+    result: Result<TranscriptionProviderResult, AppError>,
+    dictionary_context: Option<String>,
+    style: DictationStyle,
+    session_id: String,
+    utterance_id: String,
+) -> Result<TranscriptionProviderResult, AppError> {
+    let mut transcript = match result {
+        Ok(transcript) => transcript,
+        Err(error) => return Err(error),
+    };
+    tracing::info!(
+        provider,
+        style = ?style,
+        "dictation cleanup starting",
+    );
+    match cleanup_dictation_text(
+        &transcript.text,
+        dictionary_context.as_deref(),
+        style,
+        session_id,
+        utterance_id,
+    )
+    .await
+    {
+        Ok(cleaned) => {
+            if !cleaned.trim().is_empty() {
+                transcript.text = cleaned;
+                tracing::info!(provider, "dictation cleanup applied");
+            }
+        }
+        Err(error) => {
+            emit_dictation_cleanup_skipped(app, provider, &error);
+        }
+    }
+    Ok(transcript)
+}
+
+async fn cleanup_dictation_text(
+    text: &str,
+    dictionary_context: Option<&str>,
+    style: DictationStyle,
+    session_id: String,
+    utterance_id: String,
+) -> Result<String, AppError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(String::new());
+    }
+    let cleaned = match tokio::time::timeout(
+        Duration::from_millis(DICTATION_CLEANUP_TIMEOUT_MS),
+        cleanup_text(DictateCleanupRequestParams {
+            text: text.to_string(),
+            dictionary_context: dictionary_context.map(str::to_string),
+            style: style.instruction().to_string(),
+            session_id,
+            utterance_id,
+        }),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(AppError::new(
+                "dictation_cleanup_timeout",
+                "Dictation cleanup timed out.",
+            ));
+        }
+    };
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() {
+        return Err(AppError::new(
+            "provider_response_invalid",
+            "Dictation cleanup response did not contain text output.",
+        ));
+    }
+    if looks_like_instruction_response(&cleaned) {
+        return Err(AppError::new(
+            "dictation_cleanup_invalid",
+            "Dictation cleanup returned an instruction response.",
+        ));
+    }
+    Ok(cleaned)
+}
+
+fn emit_dictation_cleanup_skipped(app: &AppHandle, provider: &str, error: &AppError) {
+    tracing::warn!(
+        provider,
+        code = %error.code,
+        message = %error.message,
+        "dictation cleanup skipped",
+    );
+    emit_dictation_event_value(
+        app,
+        serde_json::json!({
+            "type": "dictation_cleanup_skipped",
+            "payload": {
+                "provider": provider,
+                "code": &error.code,
+                "message": &error.message,
+            },
+        }),
+    );
+}
+
+fn looks_like_instruction_response(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.starts_with("sure")
+        || normalized.starts_with("here")
+        || normalized.starts_with("the transcript ")
+        || normalized.starts_with("the user expresses")
+        || normalized.starts_with("the user did")
+        || normalized.starts_with("the user asks")
+        || normalized.starts_with("i can")
+        || normalized.starts_with("i'll")
+        || normalized.starts_with("i will")
+        || normalized.contains(" the transcript ")
+        || normalized.contains(" the user expresses")
+        || normalized.contains(" the user did")
+        || normalized.contains(" the user asks")
+        || normalized.contains(" did not ask ")
+        || normalized.contains(" only shared ")
+        || normalized.contains(" writing style ")
+        || normalized.contains(" tone is ")
+        || normalized.contains(" filler sounds ")
+        || normalized.contains(" custom terms ")
+        || normalized.contains(" spelled correctly ")
+        || normalized.contains("rewritten text")
+        || normalized.contains("normalized transcript")
 }
 
 fn spawn_dictation_history_write(app: AppHandle, transcript: TranscriptionProviderResult) {
@@ -3967,6 +4115,23 @@ mod tests {
 
         assert!(context.contains("Writing style: casual lowercase"));
         assert!(context.contains("Use lowercase"));
+    }
+
+    #[test]
+    fn detects_instruction_responses_from_cleanup() {
+        assert!(looks_like_instruction_response(
+            "Sure, here is the rewritten text: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the normalized transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "The transcript ends here without additional context. The user did not ask a question."
+        ));
+        assert!(!looks_like_instruction_response("Hello, \"testing\"."));
+        assert!(!looks_like_instruction_response(
+            "The user story for this sprint covers the dictation page."
+        ));
     }
 
     #[test]
