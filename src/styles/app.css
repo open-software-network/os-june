@@ -4385,7 +4385,7 @@ input:focus-visible,
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--sp-2);
   padding-top: 0;
   background: var(--sidebar);
 }
@@ -11708,11 +11708,8 @@ input:focus-visible,
 }
 
 .update-popover {
-  position: fixed;
-  left: var(--sp-5);
-  bottom: calc(var(--sp-3) + var(--control-lg) + var(--sp-5));
-  z-index: 45;
-  width: min(312px, calc(100vw - var(--sp-8)));
+  width: 100%;
+  min-width: 0;
   color: var(--foreground);
   -webkit-app-region: no-drag;
   animation: update-popover-in var(--t-med) var(--ease-spring) both;
@@ -11720,12 +11717,12 @@ input:focus-visible,
 
 .update-relaunch-card {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 22px;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
   align-items: center;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
   width: 100%;
-  min-height: 70px;
-  padding: var(--sp-3);
+  min-height: 64px;
+  padding: var(--sp-2);
   border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
   background: var(--popover);
@@ -11760,8 +11757,8 @@ input:focus-visible,
 .update-relaunch-mark {
   display: inline-grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--brand) 12%, transparent);
   color: var(--brand);
@@ -11781,7 +11778,7 @@ input:focus-visible,
 .update-relaunch-title {
   overflow: hidden;
   color: var(--foreground);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   font-weight: var(--fw-medium);
   line-height: 1.2;
   text-overflow: ellipsis;
@@ -11809,6 +11806,7 @@ input:focus-visible,
 .update-status-card {
   display: grid;
   gap: var(--sp-3);
+  width: 100%;
   padding: var(--sp-3);
   border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
@@ -11899,15 +11897,6 @@ input:focus-visible,
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
-  }
-}
-
-@media (max-width: 560px) {
-  .update-popover {
-    left: var(--sp-3);
-    right: var(--sp-3);
-    bottom: var(--sp-3);
-    width: auto;
   }
 }
 

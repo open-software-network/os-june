@@ -2290,6 +2290,21 @@ export function App() {
         }}
         recoverableNoteIds={recoverableNoteIds}
         collapsed={sidebarCollapsed}
+        footerAccessory={
+          <UpdateHub
+            readyUpdate={readyUpdate}
+            status={updateStatus}
+            preparing={preparingUpdate}
+            relaunching={relaunchingUpdate}
+            progress={updateProgress}
+            onDismissStatus={() => {
+              if (preparingUpdate) updateProgressHiddenRef.current = true;
+              setUpdateStatus(null);
+              if (!preparingUpdate) setUpdateProgress(null);
+            }}
+            onRelaunch={handleRelaunchUpdate}
+          />
+        }
       />
       <div
         className="sidebar-resize-handle"
@@ -2789,19 +2804,6 @@ export function App() {
           handleSetSessionFolder(sessionId, folderId)
         }
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
-      />
-      <UpdateHub
-        readyUpdate={readyUpdate}
-        status={updateStatus}
-        preparing={preparingUpdate}
-        relaunching={relaunchingUpdate}
-        progress={updateProgress}
-        onDismissStatus={() => {
-          if (preparingUpdate) updateProgressHiddenRef.current = true;
-          setUpdateStatus(null);
-          if (!preparingUpdate) setUpdateProgress(null);
-        }}
-        onRelaunch={handleRelaunchUpdate}
       />
     </main>
   );
