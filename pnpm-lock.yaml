@@ -27,7 +27,7 @@ importers:
         specifier: ^2.10.1
         version: 2.10.1
       '@tiptap/extension-mention':
-        specifier: ^3.23.5
+        specifier: 3.23.5
         version: 3.23.5(@tiptap/core@3.23.5(@tiptap/pm@3.23.5))(@tiptap/pm@3.23.5)(@tiptap/suggestion@3.23.5(@tiptap/core@3.23.5(@tiptap/pm@3.23.5))(@tiptap/pm@3.23.5))
       '@tiptap/extension-placeholder':
         specifier: ^3.23.5
@@ -42,7 +42,7 @@ importers:
         specifier: ^3.23.5
         version: 3.23.5
       '@tiptap/suggestion':
-        specifier: ^3.23.5
+        specifier: 3.23.5
         version: 3.23.5(@tiptap/core@3.23.5(@tiptap/pm@3.23.5))(@tiptap/pm@3.23.5)
       border-beam:
         specifier: ^1.2.0
