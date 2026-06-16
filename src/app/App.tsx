@@ -161,6 +161,8 @@ import { handleSidebarResizeStart } from "./sidebar-resize";
 import {
   checkForScribeUpdate,
   prepareScribeUpdate,
+  startPeriodicScribeUpdateChecks,
+  type UpdateCheckMode,
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "./update-decision";
@@ -832,6 +834,7 @@ export function App() {
   // Otherwise the launch effect and the manual-check listener below would tear
   // down and re-fire every time a download or relaunch toggles state.
   const preparingUpdateRef = useRef(false);
+  const checkingUpdateRef = useRef(false);
   const readyUpdateRef = useRef<UpdatePromptPayload<ScribeUpdate> | null>(null);
   const relaunchingUpdateRef = useRef(false);
   const updateProgressHiddenRef = useRef(false);
@@ -846,7 +849,7 @@ export function App() {
   }, [relaunchingUpdate]);
 
   const prepareUpdate = useCallback(
-    (payload: UpdatePromptPayload<ScribeUpdate>, mode: "launch" | "manual") => {
+    (payload: UpdatePromptPayload<ScribeUpdate>, mode: UpdateCheckMode) => {
       if (
         preparingUpdateRef.current ||
         readyUpdateRef.current ||
@@ -896,8 +899,9 @@ export function App() {
   );
 
   const runUpdateCheck = useCallback(
-    (mode: "launch" | "manual") => {
+    (mode: UpdateCheckMode) => {
       if (readyUpdateRef.current || relaunchingUpdateRef.current) return;
+      if (checkingUpdateRef.current) return;
       if (preparingUpdateRef.current) {
         if (mode === "manual") {
           updateProgressHiddenRef.current = false;
@@ -905,7 +909,9 @@ export function App() {
         }
         return;
       }
-      setUpdateStatus(mode === "manual" ? "Checking for updates..." : null);
+      checkingUpdateRef.current = true;
+      if (mode === "manual") setUpdateStatus("Checking for updates...");
+      else if (mode === "launch") setUpdateStatus(null);
       void checkForScribeUpdate(
         {
           check: checkScribeUpdate,
@@ -913,11 +919,16 @@ export function App() {
             prepareUpdate(payload, mode);
           },
           reportNoUpdate: () => setUpdateStatus("June is up to date."),
-          reportFailure: (message) =>
-            setUpdateStatus(`Update check failed: ${message}`),
+          reportFailure: (message) => {
+            if (mode !== "periodic") {
+              setUpdateStatus(`Update check failed: ${message}`);
+            }
+          },
         },
         mode,
-      );
+      ).finally(() => {
+        checkingUpdateRef.current = false;
+      });
     },
     [prepareUpdate],
   );
@@ -943,6 +954,12 @@ export function App() {
     if (appBlocked || launchCheckedRef.current) return;
     launchCheckedRef.current = true;
     runUpdateCheck("launch");
+  }, [appBlocked, runUpdateCheck]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    if (appBlocked) return;
+    return startPeriodicScribeUpdateChecks(runUpdateCheck);
   }, [appBlocked, runUpdateCheck]);
 
   useEffect(() => {

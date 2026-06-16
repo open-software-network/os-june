@@ -4,7 +4,9 @@ export type UpdatePromptPayload<TUpdate> = {
   notes?: string;
 };
 
-export type UpdateCheckMode = "launch" | "manual";
+export type UpdateCheckMode = "launch" | "manual" | "periodic";
+
+export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 export type DownloadEvent =
   | { event: "Started"; data: { contentLength?: number } }
@@ -64,6 +66,17 @@ export async function checkForScribeUpdate<TUpdate extends UpdaterUpdate>(
   } catch (error) {
     deps.reportFailure(messageFromUnknown(error));
   }
+}
+
+export function startPeriodicScribeUpdateChecks(
+  runUpdateCheck: (mode: UpdateCheckMode) => void,
+  intervalMs = UPDATE_CHECK_INTERVAL_MS,
+) {
+  const timer = window.setInterval(
+    () => runUpdateCheck("periodic"),
+    intervalMs,
+  );
+  return () => window.clearInterval(timer);
 }
 
 export async function prepareScribeUpdate<TUpdate extends UpdaterUpdate>({

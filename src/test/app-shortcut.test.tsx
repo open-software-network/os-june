@@ -72,6 +72,7 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
+  startPeriodicScribeUpdateChecks: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -86,6 +87,16 @@ vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
 }));
+
+vi.mock("../app/update-decision", async () => {
+  const actual = await vi.importActual<typeof import("../app/update-decision")>(
+    "../app/update-decision",
+  );
+  return {
+    ...actual,
+    startPeriodicScribeUpdateChecks: mocks.startPeriodicScribeUpdateChecks,
+  };
+});
 
 vi.mock("../lib/tauri", () => ({
   bootstrapApp: mocks.bootstrapApp,
@@ -208,6 +219,7 @@ describe("App shortcuts", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.startPeriodicScribeUpdateChecks.mockReturnValue(vi.fn());
     mocks.listeners.clear();
     mocks.listen.mockImplementation(
       async (
@@ -222,6 +234,24 @@ describe("App shortcuts", () => {
       ...first,
       ...input,
     }));
+  });
+
+  it("starts background update checks after launch gates clear", async () => {
+    vi.stubEnv("DEV", false);
+
+    try {
+      render(<App />);
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+      await waitFor(() =>
+        expect(mocks.startPeriodicScribeUpdateChecks).toHaveBeenCalledOnce(),
+      );
+      expect(mocks.startPeriodicScribeUpdateChecks.mock.calls[0]?.[0]).toEqual(
+        expect.any(Function),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("starts a new session with Command-N", async () => {
