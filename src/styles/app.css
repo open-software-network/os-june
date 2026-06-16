@@ -11983,9 +11983,16 @@ input:focus-visible,
   text-overflow: ellipsis;
 }
 
-.referral-link-url:focus,
-.referral-link-url:focus-visible {
+.referral-link-url:focus {
   outline: none;
+}
+
+/* Keep a visible ring for keyboard focus (clipped inside the field's
+ * rounding) — only the mouse-focus outline is suppressed above. */
+.referral-link-url:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: -2px;
+  border-radius: var(--r-sm);
 }
 
 .referral-copy-inset {

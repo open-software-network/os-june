@@ -1666,7 +1666,6 @@ function ReferralDialog({
       title="Give a month, get a month"
       className="referral-dialog"
       width={640}
-      initialFocusSelector=".referral-copy-inset"
     >
       <div className="referral-split">
         <div className="referral-hero">
