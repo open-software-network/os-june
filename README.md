@@ -41,7 +41,7 @@ model calls through Venice by default.
 | Projects           | Groups meeting notes and agent sessions around the work they belong to.                                                                                   |
 | Model choice       | Lets users choose transcription, dictation cleanup, title, and note-generation models from the Scribe API model catalog.                                  |
 
-## Why this repo exists
+## Repository overview
 
 June ships the full desktop product and the backend that powers metered AI calls:
 
