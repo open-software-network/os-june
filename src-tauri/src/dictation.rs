@@ -2305,41 +2305,47 @@ fn clean_dictation_fillers(text: &str, style: DictationStyle) -> String {
         return String::new();
     }
 
-    let (without_fillers, removed_filler) = remove_standalone_fillers(text);
-    let cleaned = normalize_after_filler_removal(&without_fillers, removed_filler);
-    if removed_filler && !contains_meaningful_dictation_word(&cleaned) {
+    let stripped = remove_standalone_fillers(text);
+    let cleaned = normalize_after_filler_removal(&stripped.text, stripped.removed);
+    if stripped.removed && !contains_meaningful_dictation_word(&cleaned) {
         String::new()
-    } else if removed_filler && style.capitalizes_sentence_starts() {
-        // Transcripts capitalize the leading filler ("Um, can you…"), so once
-        // it's stripped the surviving first word would start lowercase. Restore
-        // the capital — but only for styles that capitalize sentence starts, so
-        // we never fight CasualLowercase. And only when we actually removed a
-        // filler; untouched transcripts already carry the provider's casing.
+    } else if stripped.removed_leading && style.capitalizes_sentence_starts() {
+        // The transcript capitalized the leading filler ("Um, can you…"), so
+        // once it's stripped the surviving first word would start lowercase.
+        // Restore the capital — but only when the filler actually led the
+        // transcript (a mid-sentence filler must not touch a brand/code token
+        // like "iPhone"), and only for styles that capitalize sentence starts
+        // so we never fight CasualLowercase. Mid-sentence sentence-starts are
+        // left as-is; reflowing those is the LLM cleanup pass's job, not this
+        // deterministic backstop's.
         capitalize_leading_letter(&cleaned)
     } else {
         cleaned
     }
 }
 
-/// Uppercase the first character when it's a lowercase ASCII letter, leaving
+/// Uppercase the first character when it's a lowercase letter, leaving
 /// everything else (already-capitalized words, leading punctuation, digits)
-/// untouched.
+/// untouched. Unicode-aware, so accented starts like "é" capitalize too.
 fn capitalize_leading_letter(text: &str) -> String {
-    let Some(first) = text.chars().next() else {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
         return text.to_string();
     };
-    if !first.is_ascii_lowercase() {
+    if !first.is_lowercase() {
         return text.to_string();
     }
     let mut output = String::with_capacity(text.len());
-    output.push(first.to_ascii_uppercase());
-    output.push_str(&text[first.len_utf8()..]);
+    output.extend(first.to_uppercase());
+    output.push_str(chars.as_str());
     output
 }
 
-fn remove_standalone_fillers(text: &str) -> (String, bool) {
+fn remove_standalone_fillers(text: &str) -> RemovedFillers {
     let mut output = String::with_capacity(text.len());
     let mut removed = false;
+    let mut removed_leading = false;
+    let mut emitted_word = false;
     let mut needs_word_boundary = false;
     let mut index = 0;
 
@@ -2349,6 +2355,12 @@ fn remove_standalone_fillers(text: &str) -> (String, bool) {
         };
 
         if !ch.is_ascii_alphabetic() {
+            // Honor a pending boundary here too: a filler can be followed by a
+            // digit or opening quote/paren (e.g. "um 3", "um \"hi\""), which
+            // must keep the separating space the filler removal swallowed.
+            if needs_word_boundary && !ch.is_whitespace() && !output.is_empty() {
+                output.push(' ');
+            }
             needs_word_boundary = false;
             output.push(ch);
             index += ch.len_utf8();
@@ -2372,6 +2384,12 @@ fn remove_standalone_fillers(text: &str) -> (String, bool) {
         let next = text[index..].chars().next();
         if is_dictation_filler_word(word) && previous != Some('-') && next != Some('-') {
             removed = true;
+            // A filler removed before any real word means the transcript led
+            // with it ("Um, …"); that's the only case where re-capitalizing the
+            // surviving first word is correct.
+            if !emitted_word {
+                removed_leading = true;
+            }
             trim_soft_filler_prefix(&mut output);
             // Removing a filler swallows the whitespace on both sides of it, so
             // re-insert a separator before the next word. A standalone filler
@@ -2388,11 +2406,24 @@ fn remove_standalone_fillers(text: &str) -> (String, bool) {
                 output.push(' ');
             }
             needs_word_boundary = false;
+            emitted_word = true;
             output.push_str(word);
         }
     }
 
-    (output, removed)
+    RemovedFillers {
+        text: output,
+        removed,
+        removed_leading,
+    }
+}
+
+struct RemovedFillers {
+    text: String,
+    /// Any standalone filler was stripped.
+    removed: bool,
+    /// A filler led the transcript and was stripped, exposing a new first word.
+    removed_leading: bool,
 }
 
 fn trim_soft_filler_prefix(output: &mut String) {
@@ -3759,6 +3790,39 @@ mod tests {
             clean_dictation_fillers("The um value is um five.", DictationStyle::Standard),
             "The value is five."
         );
+        // Unicode-aware: an accented surviving first word still capitalizes.
+        assert_eq!(
+            clean_dictation_fillers("um, élan is nice.", DictationStyle::Standard),
+            "Élan is nice."
+        );
+    }
+
+    #[test]
+    fn mid_sentence_filler_does_not_recapitalize_brand_or_code_token() {
+        // A filler removed mid-sentence must leave the original first word's
+        // casing alone — only a *leading* filler triggers re-capitalization.
+        assert_eq!(
+            clean_dictation_fillers("iPhone, um, battery is low.", DictationStyle::Standard),
+            "iPhone battery is low."
+        );
+        assert_eq!(
+            clean_dictation_fillers("camelCase, uh, value.", DictationStyle::Standard),
+            "camelCase value."
+        );
+    }
+
+    #[test]
+    fn filler_before_non_alpha_token_keeps_separator() {
+        // The space the filler swallowed must be restored even when the next
+        // token is a digit or an opening quote, not just an alphabetic word.
+        assert_eq!(
+            clean_dictation_fillers("I need um 3 things.", DictationStyle::Standard),
+            "I need 3 things."
+        );
+        assert_eq!(
+            clean_dictation_fillers("I said, um, \"hello\".", DictationStyle::Standard),
+            "I said \"hello\"."
+        );
     }
 
     #[test]
@@ -3782,6 +3846,10 @@ mod tests {
             clean_dictation_fillers("Let me think. Um. Yeah, do it.", DictationStyle::Standard),
             "Let me think. Yeah, do it."
         );
+        // "also" stays lowercase on purpose: this deterministic backstop only
+        // restores the casing of a *leading* filler's surviving word, not every
+        // sentence start. Re-flowing mid-transcript sentence casing is the LLM
+        // cleanup pass's job; the backstop just avoids merging words.
         assert_eq!(
             clean_dictation_fillers("That works. Uh, also add tests.", DictationStyle::Standard),
             "That works. also add tests."
