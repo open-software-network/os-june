@@ -47,17 +47,19 @@ impl OsPlatformIssueReportSink {
     pub fn from_config(http: reqwest::Client, config: &IssueReportsConfig) -> Option<Self> {
         let api_url = config.os_platform_api_url.trim();
         let api_key = config.os_platform_api_key.trim();
-        let org = config.os_platform_org.trim();
-        let project = config.os_platform_project.trim();
-        if api_url.is_empty() || api_key.is_empty() || org.is_empty() || project.is_empty() {
+        let (org, project) = normalize_destination(
+            config.os_platform_org.trim(),
+            config.os_platform_project.trim(),
+        )?;
+        if api_url.is_empty() || api_key.is_empty() {
             return None;
         }
         Some(Self {
             http,
             api_url: api_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
-            org: org.to_string(),
-            project: project.to_string(),
+            org,
+            project,
             label: config.os_platform_label.trim().to_string(),
             reward_asset: config.os_platform_reward_asset.trim().to_string(),
         })
@@ -225,6 +227,47 @@ impl OsPlatformIssueReportSink {
             );
         }
     }
+}
+
+fn normalize_destination(org: &str, project: &str) -> Option<(String, String)> {
+    let org = org.trim_matches('/');
+    if org.is_empty() || project.is_empty() {
+        return None;
+    }
+
+    let project_parts: Vec<&str> = project.split('/').collect();
+    if project_parts.iter().any(|segment| segment.is_empty()) || project_parts.len() > 2 {
+        tracing::warn!(
+            configured_project = %project,
+            "issue_reports: ignoring malformed project destination"
+        );
+        return None;
+    }
+
+    let normalized_project = match project_parts.as_slice() {
+        [project_slug] => *project_slug,
+        [project_org, project_slug] if *project_org == org => *project_slug,
+        [project_org, _] => {
+            tracing::warn!(
+                configured_org = %org,
+                project_org = %project_org,
+                configured_project = %project,
+                "issue_reports: project destination org does not match configured org"
+            );
+            return None;
+        }
+        [] | [_, _, _, ..] => return None,
+    };
+    if normalized_project != project {
+        tracing::warn!(
+            configured_project = %project,
+            normalized_project,
+            configured_org = %org,
+            "issue_reports: normalized legacy org/project destination"
+        );
+    }
+
+    Some((org.to_string(), normalized_project.to_string()))
 }
 
 #[async_trait]
@@ -485,6 +528,68 @@ mod os_platform_tests {
         assert_eq!(sink.project, "june");
         assert_eq!(sink.label, "bug");
         assert_eq!(sink.reward_asset, "POINTS");
+    }
+
+    #[test]
+    fn os_platform_sink_accepts_legacy_org_project_destination() {
+        let config = IssueReportsConfig {
+            os_platform_api_key: "osk_test".to_string(),
+            os_platform_project: "open-software/june".to_string(),
+            ..Default::default()
+        };
+        let sink = OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config)
+            .expect("legacy org/project destination should normalize");
+
+        assert_eq!(sink.org, "open-software");
+        assert_eq!(sink.project, "june");
+    }
+
+    #[test]
+    fn os_platform_sink_keeps_configured_org_for_matching_legacy_destination() {
+        let config = IssueReportsConfig {
+            os_platform_api_key: "osk_test".to_string(),
+            os_platform_org: "june-team".to_string(),
+            os_platform_project: "june-team/june".to_string(),
+            ..Default::default()
+        };
+        let sink = OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config)
+            .expect("matching legacy org/project destination should normalize");
+
+        assert_eq!(sink.org, "june-team");
+        assert_eq!(sink.project, "june");
+    }
+
+    #[test]
+    fn os_platform_sink_rejects_malformed_project_destination() {
+        let config = IssueReportsConfig {
+            os_platform_api_key: "osk_test".to_string(),
+            os_platform_project: "open-software/june/issues".to_string(),
+            ..Default::default()
+        };
+
+        assert!(OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config).is_none());
+    }
+
+    #[test]
+    fn os_platform_sink_rejects_incomplete_legacy_project_destination() {
+        let config = IssueReportsConfig {
+            os_platform_api_key: "osk_test".to_string(),
+            os_platform_project: "open-software/".to_string(),
+            ..Default::default()
+        };
+
+        assert!(OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config).is_none());
+    }
+
+    #[test]
+    fn os_platform_sink_rejects_other_org_project_destination() {
+        let config = IssueReportsConfig {
+            os_platform_api_key: "osk_test".to_string(),
+            os_platform_project: "other-org/june".to_string(),
+            ..Default::default()
+        };
+
+        assert!(OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config).is_none());
     }
 
     #[tokio::test]
