@@ -25,10 +25,39 @@ function renderTabBar(overrides = {}) {
 }
 
 function cssRuleFor(selector: string) {
-  const escaped = selector.replace(/\./g, "\\.");
-  const match = appCss.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`));
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
   if (!match) throw new Error(`Missing CSS rule for ${selector}`);
-  return match[1];
+  const openIndex = match.index + match[0].length - 1;
+  let depth = 0;
+  let quote: string | null = null;
+  let escapedChar = false;
+  for (let index = openIndex; index < appCss.length; index += 1) {
+    const char = appCss[index];
+    if (quote) {
+      if (escapedChar) {
+        escapedChar = false;
+      } else if (char === "\\") {
+        escapedChar = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return appCss.slice(openIndex + 1, index);
+    }
+  }
+  throw new Error(`Unclosed CSS rule for ${selector}`);
 }
 
 describe("TabBar", () => {
