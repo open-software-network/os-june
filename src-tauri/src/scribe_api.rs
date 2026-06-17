@@ -1,5 +1,6 @@
 //! Scribe API client. The Tauri side calls the backend for every metered
 //! action; provider keys live there, never here.
+#![allow(clippy::items_after_test_module)]
 
 use crate::tool_guard::{ToolDestinationClass, ToolGuardAnalysis};
 use crate::{domain::types::AppError, providers::PROVIDER_OPENAI};
@@ -851,7 +852,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ")
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim_end_matches(['.', ':', '-'])
         .trim()
         .to_string();
     if title.is_empty() {

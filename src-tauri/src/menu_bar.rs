@@ -366,13 +366,10 @@ mod tests {
         // solid blob (the bug this asset exists to fix). Both must be present.
         let alphas: Vec<u8> = icon.rgba().chunks(4).map(|px| px[3]).collect();
         assert!(
-            alphas.iter().any(|alpha| *alpha == 0),
+            alphas.contains(&0),
             "template needs a transparent background"
         );
-        assert!(
-            alphas.iter().any(|alpha| *alpha == 255),
-            "template needs an opaque mark"
-        );
+        assert!(alphas.contains(&255), "template needs an opaque mark");
         // Corners stay transparent — an opaque squircle background (the app
         // icon's shape) would fail here.
         let side = icon.width() as usize;

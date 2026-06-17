@@ -692,6 +692,7 @@ impl Repositories {
         Ok(row.is_some())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_agent_tool_event(
         &self,
         task_id: &str,
