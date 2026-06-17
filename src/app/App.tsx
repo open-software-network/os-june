@@ -835,11 +835,7 @@ export function App() {
     void (async () => {
       try {
         const note = await recoverRecording(sessionId, action);
-        if (recordingStatusRef.current?.sessionId === sessionId) {
-          recordingStatusRef.current = undefined;
-          setRecordingNote(undefined);
-          dispatch({ type: "recordingStatusCleared" });
-        }
+        clearActiveRecordingSession(sessionId);
         dispatch({ type: "noteProcessingUpdated", note });
         dispatch({ type: "recoveryRemoved", sessionId });
       } catch (err) {
@@ -848,12 +844,20 @@ export function App() {
           recoveryNoteId &&
           (await applyNoteScopedProcessingFailure(recoveryNoteId, err))
         ) {
+          clearActiveRecordingSession(sessionId);
           dispatch({ type: "recoveryRemoved", sessionId });
           return;
         }
         setError(messageFromError(err));
       }
     })();
+  }
+
+  function clearActiveRecordingSession(sessionId: string) {
+    if (recordingStatusRef.current?.sessionId !== sessionId) return;
+    recordingStatusRef.current = undefined;
+    setRecordingNote(undefined);
+    dispatch({ type: "recordingStatusCleared" });
   }
 
   const handleAccountChanged = useCallback(

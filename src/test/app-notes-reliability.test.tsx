@@ -614,6 +614,61 @@ describe("notes recording reliability", () => {
     expect(container.querySelector(".error-banner")).toBeNull();
   });
 
+  it("clears the active recorder when a recovered transcription failure is scoped", async () => {
+    const failedNote = {
+      ...first,
+      processingStatus: "failed" as const,
+      lastError: "Microphone: upstream_provider_failed",
+      audioSources: [
+        {
+          id: "audio-1",
+          source: "microphone" as const,
+          format: "wav" as const,
+          durationMs: 1000,
+          sizeBytes: 2048,
+          checksum: "abc",
+          createdAt: now,
+        },
+      ],
+    };
+    let recoveryFailed = false;
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [first, second],
+      activeRecoveries: [recovery()],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) => {
+      if (noteId === "note-2") return second;
+      return recoveryFailed ? failedNote : first;
+    });
+    mocks.recoverRecording.mockImplementation(async () => {
+      recoveryFailed = true;
+      throw {
+        code: "transcription_failed",
+        message:
+          "Microphone: The transcription provider could not process this audio.",
+      };
+    });
+
+    await startRecordingOnFirstNote();
+    expect(await screen.findByRole("button", { name: "Done" })).toBeEnabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Recover" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /Microphone: The transcription provider could not process this audio\./,
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open recording: First note" }),
+    ).toBeNull();
+  });
+
   it("applies the finish result even when the note already sat in a terminal status", async () => {
     mocks.finishRecording.mockResolvedValue({
       note: { ...first, processingStatus: "transcribing" },
