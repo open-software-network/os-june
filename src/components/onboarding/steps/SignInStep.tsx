@@ -22,7 +22,7 @@ const JUNE_POINTS = [
     icon: IconMicrophone,
     title: "Speak instead of type",
     detail:
-      "June turns your voice into polished writing into any app on your computer.",
+      "June turns your voice into polished writing in any app on your computer.",
   },
   {
     icon: IconCalendar1,
@@ -34,7 +34,7 @@ const JUNE_POINTS = [
     icon: IconLock,
     title: "Private by default",
     detail:
-      "Prompts leave your device only for inference, using zero data retention private models by default",
+      "Prompts leave your device only for inference, using zero data retention private models by default.",
   },
 ];
 
@@ -107,7 +107,7 @@ export function SignInStep({
   return (
     <StepCard
       title="Welcome to June"
-      subtitle="Private AI for every day life and work."
+      subtitle="Private AI for everyday life and work."
       mark
       wide
     >
