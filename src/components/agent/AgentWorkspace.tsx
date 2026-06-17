@@ -162,6 +162,10 @@ import {
   messageFromError,
 } from "../../lib/errors";
 import {
+  MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
+  MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
+} from "../../lib/hermes-messaging";
+import {
   categoryPrompt,
   displayedUserMessageText,
 } from "../../lib/issue-report-prompt";
@@ -2992,7 +2996,11 @@ export function AgentWorkspace({
     setCapabilityLoading(true);
     try {
       await ensureHermesGateway();
-      const response = await hermesBridgeMessagingPlatforms();
+      const response = await withTimeout(
+        hermesBridgeMessagingPlatforms(),
+        MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
+        MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
+      );
       setMessagingPlatforms(response.platforms);
       setSelectedMessagingPlatformId((current) => {
         if (current && response.platforms.some((item) => item.id === current)) {
@@ -3002,6 +3010,7 @@ export function AgentWorkspace({
       });
       setError(null);
     } catch (err) {
+      setMessagingPlatforms((current) => current ?? []);
       setError(messageFromError(err));
     } finally {
       setCapabilityLoading(false);
@@ -4928,10 +4937,14 @@ async function agentSessionTitleForPrompt(prompt: string) {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message = "Agent title generation timed out.",
+) {
   return new Promise<T>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
-      reject(new Error("Agent title generation timed out."));
+      reject(new Error(message));
     }, timeoutMs);
     promise.then(
       (value) => {
