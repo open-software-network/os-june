@@ -72,6 +72,7 @@ mod tests {
                     api_key: "venice_key".to_string(),
                     base_url: server.uri(),
                 },
+                osguard: UpstreamConfig::default(),
             },
             ["gpt-4o-mini-transcribe".to_string()],
         );

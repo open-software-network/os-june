@@ -621,6 +621,50 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         config.os_accounts.note_transcribe_preview_max_audio_secs,
     )?;
 
+    validate_upstreams(config)?;
+
+    for (model_id, pricing) in &config.pricing {
+        let expected_unit = match pricing.model_type {
+            ModelType::Asr => PriceUnit::Seconds,
+            ModelType::Text => PriceUnit::Tokens,
+        };
+        if pricing.unit != expected_unit {
+            return Err(ConfigError::InvalidPricing {
+                model: model_id.clone(),
+                reason: format!(
+                    "model_type `{}` requires unit `{}`, got `{}`",
+                    pricing.model_type.as_str(),
+                    expected_unit.as_str(),
+                    pricing.unit.as_str()
+                ),
+            });
+        }
+        match pricing.model_type {
+            ModelType::Asr => {
+                validate_positive_rate(
+                    model_id,
+                    pricing.credits_per_million_seconds,
+                    "credits_per_million_seconds",
+                )?;
+            }
+            ModelType::Text => {
+                validate_positive_rate(
+                    model_id,
+                    pricing.input_credits_per_million_tokens,
+                    "input_credits_per_million_tokens",
+                )?;
+                validate_positive_rate(
+                    model_id,
+                    pricing.output_credits_per_million_tokens,
+                    "output_credits_per_million_tokens",
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_upstreams(config: &AppConfig) -> Result<(), ConfigError> {
     let uses_openai = config
         .pricing
         .values()
@@ -664,45 +708,6 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             &config.upstreams.osguard.api_key,
             OSGUARD_API_KEY_PLACEHOLDER,
         )?;
-    }
-
-    for (model_id, pricing) in &config.pricing {
-        let expected_unit = match pricing.model_type {
-            ModelType::Asr => PriceUnit::Seconds,
-            ModelType::Text => PriceUnit::Tokens,
-        };
-        if pricing.unit != expected_unit {
-            return Err(ConfigError::InvalidPricing {
-                model: model_id.clone(),
-                reason: format!(
-                    "model_type `{}` requires unit `{}`, got `{}`",
-                    pricing.model_type.as_str(),
-                    expected_unit.as_str(),
-                    pricing.unit.as_str()
-                ),
-            });
-        }
-        match pricing.model_type {
-            ModelType::Asr => {
-                validate_positive_rate(
-                    model_id,
-                    pricing.credits_per_million_seconds,
-                    "credits_per_million_seconds",
-                )?;
-            }
-            ModelType::Text => {
-                validate_positive_rate(
-                    model_id,
-                    pricing.input_credits_per_million_tokens,
-                    "input_credits_per_million_tokens",
-                )?;
-                validate_positive_rate(
-                    model_id,
-                    pricing.output_credits_per_million_tokens,
-                    "output_credits_per_million_tokens",
-                )?;
-            }
-        }
     }
     Ok(())
 }

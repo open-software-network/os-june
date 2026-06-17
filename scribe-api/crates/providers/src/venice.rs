@@ -420,13 +420,12 @@ impl VeniceChat {
             })?;
         let status = response.status();
         if !status.is_success() {
-            let retryable = retry::is_retryable_status(status);
+            let error = chat_status_error(status);
+            let retryable =
+                error == DomainError::UpstreamProvider && retry::is_retryable_status(status);
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), retryable, "venice: chat non-success response");
-            return Err(UpstreamAttemptError {
-                error: DomainError::UpstreamProvider,
-                retryable,
-            });
+            return Err(UpstreamAttemptError { error, retryable });
         }
         response
             .json::<ChatCompletionResponse>()
@@ -497,7 +496,7 @@ impl VeniceChat {
                 body_bytes = body.len(),
                 "venice: agent chat non-success response"
             );
-            return Err(DomainError::UpstreamProvider);
+            return Err(chat_status_error(status));
         }
         let usage = usage_from_chat_body(&body, &content_type)?;
         Ok(AgentChatCompletion {
@@ -590,6 +589,20 @@ fn inject_safety_context(body: &mut serde_json::Map<String, serde_json::Value>) 
         0,
         serde_json::json!({ "role": "system", "content": SAFETY_CONTEXT }),
     );
+}
+
+/// Classifies a non-success chat status from the upstream. OS-Guard returns
+/// `403` for policy blocks (prompt injection or unredactable PII), which is a
+/// deterministic content rejection — surfaced distinctly so it is neither
+/// retried nor reported as a generic provider failure. Everything else maps to
+/// the generic upstream error, whose retryability the caller derives from the
+/// status separately.
+fn chat_status_error(status: reqwest::StatusCode) -> DomainError {
+    if status == reqwest::StatusCode::FORBIDDEN {
+        DomainError::PolicyBlocked
+    } else {
+        DomainError::UpstreamProvider
+    }
 }
 
 fn usage_from_chat_body(body: &[u8], content_type: &str) -> Result<TokenUsage, DomainError> {
@@ -1231,6 +1244,74 @@ mod tests {
             .await;
 
         assert_eq!(generated, Err(scribe_domain::DomainError::UpstreamProvider));
+    }
+
+    #[tokio::test]
+    async fn generator_maps_policy_block_without_retry() {
+        // OS-Guard returns 403 for prompt injection or unredactable PII. It is
+        // deterministic, so the chat path must surface it as PolicyBlocked and
+        // must not retry (a replay would only block again).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "gateway_token".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
+                manual_notes: None,
+                language: None,
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+            })
+            .await;
+
+        assert_eq!(generated, Err(scribe_domain::DomainError::PolicyBlocked));
+    }
+
+    #[tokio::test]
+    async fn agent_chat_maps_policy_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let agent = VeniceAgentChat::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "gateway_token".to_string(),
+                base_url: server.uri(),
+            },
+        );
+
+        let completion = agent
+            .complete(AgentChatRequest {
+                body: json!({
+                    "model": "text-model",
+                    "messages": [{ "role": "user", "content": "hi" }],
+                }),
+                model: ModelId("text-model".to_string()),
+            })
+            .await;
+
+        assert_eq!(
+            completion.map(|_| ()),
+            Err(scribe_domain::DomainError::PolicyBlocked)
+        );
     }
 
     #[tokio::test]

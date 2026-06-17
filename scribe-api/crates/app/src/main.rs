@@ -96,17 +96,17 @@ fn build_router(
     let transcriber: Arc<dyn scribe_domain::Transcriber> = Arc::new(
         RoutingTranscriber::from_config(http.clone(), &config.upstreams, openai_model_ids),
     );
-    let generator: Arc<dyn scribe_domain::Generator> = Arc::new(VeniceGenerator::from_config(
-        http.clone(),
-        &config.upstreams.venice,
-    ));
-    let cleaner: Arc<dyn scribe_domain::Cleaner> = Arc::new(VeniceCleaner::from_config(
-        http.clone(),
-        &config.upstreams.venice,
-    ));
-    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
-        VeniceAgentChat::from_config(http.clone(), &config.upstreams.venice),
-    );
+    // Chat completions (note generation, dictation cleanup, agent chat) go
+    // through OS-Guard when it is configured, falling back to Venice otherwise.
+    // The providers are OpenAI-compatible, so only the upstream they point at
+    // changes. Audio transcription above stays on Venice unconditionally.
+    let chat_upstream = config.upstreams.chat_upstream();
+    let generator: Arc<dyn scribe_domain::Generator> =
+        Arc::new(VeniceGenerator::from_config(http.clone(), chat_upstream));
+    let cleaner: Arc<dyn scribe_domain::Cleaner> =
+        Arc::new(VeniceCleaner::from_config(http.clone(), chat_upstream));
+    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> =
+        Arc::new(VeniceAgentChat::from_config(http.clone(), chat_upstream));
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);

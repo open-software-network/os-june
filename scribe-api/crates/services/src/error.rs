@@ -14,6 +14,8 @@ pub enum ServiceError {
     AuthorizationDenied,
     #[error("upstream_provider_failed")]
     UpstreamProvider,
+    #[error("policy_blocked")]
+    PolicyBlocked,
     #[error("invalid_input: {reason}")]
     InvalidInput { reason: String },
 }
@@ -35,6 +37,7 @@ impl From<DomainError> for ServiceError {
             DomainError::ModelNotPriced => Self::ModelNotPriced,
             DomainError::InsufficientCredits => Self::InsufficientCredits,
             DomainError::UpstreamProvider => Self::UpstreamProvider,
+            DomainError::PolicyBlocked => Self::PolicyBlocked,
             DomainError::InvalidInput { reason } => Self::InvalidInput { reason },
         }
     }

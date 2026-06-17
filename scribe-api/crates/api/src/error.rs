@@ -1,6 +1,7 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
+    ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    error_response,
 };
 use axum::{http::StatusCode, response::IntoResponse};
 use scribe_domain::AuthError;
@@ -23,6 +24,8 @@ pub enum ApiError {
     AuthorizationDenied,
     #[error("upstream_provider_failed")]
     Upstream,
+    #[error("policy_blocked")]
+    PolicyBlocked,
     #[error("internal_error")]
     Internal,
 }
@@ -85,6 +88,12 @@ impl IntoResponse for ApiError {
                 ERR_UPSTREAM,
                 "upstream_provider_failed",
             ),
+            // The privacy gateway rejected the content (prompt injection or
+            // unredactable PII). Deterministic — a retry will not help, so this
+            // is a 403 rather than the retryable 502 upstream failure.
+            Self::PolicyBlocked => {
+                error_response(StatusCode::FORBIDDEN, ERR_POLICY_BLOCKED, "policy_blocked")
+            }
             Self::Internal => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL,
@@ -102,6 +111,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::InsufficientCredits => Self::InsufficientCredits,
             ServiceError::AuthorizationDenied => Self::AuthorizationDenied,
             ServiceError::UpstreamProvider => Self::Upstream,
+            ServiceError::PolicyBlocked => Self::PolicyBlocked,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
         }
     }
@@ -154,5 +164,19 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 5001);
         assert_eq!(body["message"], "upstream_provider_failed");
+    }
+
+    #[tokio::test]
+    async fn policy_block_maps_to_403_with_structured_code() {
+        // A privacy-gateway policy block (prompt injection or unredactable PII)
+        // is deterministic: it must surface as 403 policy_blocked, distinct from
+        // the retryable 502 upstream failure, so the client does not retry it.
+        let response = ApiError::from(ServiceError::PolicyBlocked).into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 4031);
+        assert_eq!(body["message"], "policy_blocked");
+        assert_eq!(body["success"], false);
     }
 }

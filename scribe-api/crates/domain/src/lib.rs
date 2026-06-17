@@ -248,6 +248,11 @@ pub enum DomainError {
     InsufficientCredits,
     #[error("upstream provider failed")]
     UpstreamProvider,
+    /// The privacy gateway rejected the request on policy grounds (prompt
+    /// injection or PII that cannot be redacted). Deterministic: never retried
+    /// and never billed.
+    #[error("content rejected by policy")]
+    PolicyBlocked,
     #[error("invalid input: {reason}")]
     InvalidInput { reason: String },
 }
