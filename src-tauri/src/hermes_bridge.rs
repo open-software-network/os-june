@@ -202,6 +202,10 @@ pub struct HermesBridge {
     /// per-process proxy would rewrite the file under the other process.
     /// Started lazily on the first spawn, lives until app shutdown.
     provider_proxy: Mutex<Option<SharedProviderProxy>>,
+    /// Pending Tool Guard review prompts emitted by the provider proxy and
+    /// resolved by the desktop UI. Missing, timed-out, or cancelled decisions
+    /// fail closed so raw tool data is not forwarded accidentally.
+    tool_guard_decisions: crate::tool_guard::ToolGuardDecisionHub,
 }
 
 struct HermesProcess {
@@ -412,6 +416,14 @@ pub async fn hermes_bridge_status(
 ) -> Result<HermesBridgeStatus, AppError> {
     let connections = live_connections(&bridge)?;
     Ok(status_for(connections, None))
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_tool_guard_decision(
+    bridge: State<'_, HermesBridge>,
+    response: crate::tool_guard::ToolGuardDecisionResponse,
+) -> Result<(), AppError> {
+    bridge.tool_guard_decisions.respond(response)
 }
 
 /// Reap-and-collect: drops map entries whose process has exited and returns

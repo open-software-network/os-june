@@ -2,7 +2,16 @@ use crate::domain::types::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Mutex,
+    time::Duration,
+};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::oneshot;
+
+pub const TOOL_GUARD_DECISION_EVENT: &str = "tool-guard-decision-request";
+const TOOL_GUARD_DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +121,158 @@ pub struct ToolGuardRedactionResult {
     pub mappings: Vec<ToolGuardReplacementMapping>,
 }
 
+#[derive(Default)]
+pub struct ToolGuardDecisionHub {
+    pending: Mutex<HashMap<String, oneshot::Sender<ToolGuardDecisionResponse>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToolGuardDecision {
+    AllowRaw,
+    RedactAll,
+    RedactSelected(HashSet<String>),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardDecisionRequest {
+    pub decision_id: String,
+    pub kind: ToolGuardDecisionKind,
+    pub tool_call_id: String,
+    pub tool_name: Option<String>,
+    pub destination_id: String,
+    pub analysis_request_id: String,
+    pub findings: Vec<ToolGuardDecisionFinding>,
+    pub advisories: Vec<ToolGuardAdvisory>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolGuardDecisionKind {
+    ToolCall,
+    ToolResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardDecisionFinding {
+    pub finding_id: String,
+    pub pii_type: String,
+    pub confidence_bucket: String,
+    pub replacement: String,
+    pub original_text: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardDecisionResponse {
+    pub decision_id: String,
+    pub action: ToolGuardDecisionAction,
+    #[serde(default)]
+    pub selected_finding_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolGuardDecisionAction {
+    RedactSelected,
+    RedactAll,
+    AllowRaw,
+    Cancel,
+}
+
+impl ToolGuardDecisionHub {
+    pub async fn request_decision(
+        &self,
+        app: &AppHandle,
+        request: ToolGuardDecisionRequest,
+    ) -> Result<ToolGuardDecision, AppError> {
+        let decision_id = request.decision_id.clone();
+        let (sender, receiver) = oneshot::channel();
+        {
+            let mut pending = self.pending.lock().map_err(|_| {
+                AppError::new(
+                    "tool_guard_decision_failed",
+                    "Tool Guard decision lock failed.",
+                )
+            })?;
+            pending.insert(decision_id.clone(), sender);
+        }
+
+        if app.emit(TOOL_GUARD_DECISION_EVENT, request).is_err() {
+            let _ = self.remove_pending(&decision_id);
+            return Err(fail_closed_error("tool_guard_ui_unavailable"));
+        }
+
+        let response = match tokio::time::timeout(TOOL_GUARD_DECISION_TIMEOUT, receiver).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => return Err(fail_closed_error("tool_guard_decision_dropped")),
+            Err(_) => {
+                let _ = self.remove_pending(&decision_id);
+                return Err(fail_closed_error("tool_guard_decision_timeout"));
+            }
+        };
+        if response.decision_id != decision_id {
+            return Err(fail_closed_error("tool_guard_decision_mismatch"));
+        }
+        decision_from_response(response)
+    }
+
+    pub fn respond(&self, response: ToolGuardDecisionResponse) -> Result<(), AppError> {
+        let sender = self.remove_pending(&response.decision_id)?;
+        sender
+            .send(response)
+            .map_err(|_| fail_closed_error("tool_guard_decision_dropped"))
+    }
+
+    fn remove_pending(
+        &self,
+        decision_id: &str,
+    ) -> Result<oneshot::Sender<ToolGuardDecisionResponse>, AppError> {
+        self.pending
+            .lock()
+            .map_err(|_| {
+                AppError::new(
+                    "tool_guard_decision_failed",
+                    "Tool Guard decision lock failed.",
+                )
+            })?
+            .remove(decision_id)
+            .ok_or_else(|| fail_closed_error("tool_guard_decision_missing"))
+    }
+}
+
+pub fn build_decision_request(
+    decision_id: String,
+    kind: ToolGuardDecisionKind,
+    tool_call_id: String,
+    tool_name: Option<String>,
+    destination_id: String,
+    source: &Value,
+    analysis: &ToolGuardAnalysis,
+) -> ToolGuardDecisionRequest {
+    ToolGuardDecisionRequest {
+        decision_id,
+        kind,
+        tool_call_id,
+        tool_name,
+        destination_id,
+        analysis_request_id: analysis.request_id.clone(),
+        findings: analysis
+            .findings
+            .iter()
+            .map(|finding| ToolGuardDecisionFinding {
+                finding_id: finding.finding_id.clone(),
+                pii_type: finding.pii_type.clone(),
+                confidence_bucket: finding.confidence_bucket.clone(),
+                replacement: finding.replacement.clone(),
+                original_text: text_for_finding(source, finding),
+            })
+            .collect(),
+        advisories: analysis.advisories.clone(),
+    }
+}
+
 pub fn apply_redaction_plan(
     value: &Value,
     plan: &ToolGuardRedactionPlan,
@@ -176,6 +337,23 @@ pub fn rehydrate_text(text: &str, mappings: &[ToolGuardReplacementMapping]) -> S
 pub fn object_key_sha256(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decision_from_response(
+    response: ToolGuardDecisionResponse,
+) -> Result<ToolGuardDecision, AppError> {
+    match response.action {
+        ToolGuardDecisionAction::AllowRaw => Ok(ToolGuardDecision::AllowRaw),
+        ToolGuardDecisionAction::RedactAll => Ok(ToolGuardDecision::RedactAll),
+        ToolGuardDecisionAction::RedactSelected => Ok(ToolGuardDecision::RedactSelected(
+            response.selected_finding_ids.into_iter().collect(),
+        )),
+        ToolGuardDecisionAction::Cancel => Err(fail_closed_error("tool_guard_decision_cancelled")),
+    }
+}
+
+fn fail_closed_error(message: &'static str) -> AppError {
+    AppError::new("tool_guard_blocked", message)
 }
 
 fn apply_value_redactions(
