@@ -62,6 +62,7 @@ import {
   useState,
 } from "react";
 import { BackButton } from "../ui/BackButton";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
@@ -110,6 +111,7 @@ import {
   type HermesMessagingPlatformInfo,
   type HermesSessionInfo,
   type HermesSessionMessage,
+  type HermesSkillDocument,
   type HermesSkillInfo,
   type HermesToolsetInfo,
   type VeniceModelDto,
@@ -5004,6 +5006,8 @@ export function SkillsToolsPanel({
   onRefresh,
   onToggleSkill,
   onToggleToolset,
+  onOpenSkill,
+  onSaveSkill,
 }: {
   loading: boolean;
   query: string;
@@ -5014,7 +5018,22 @@ export function SkillsToolsPanel({
   onRefresh: () => void;
   onToggleSkill: (skill: HermesSkillInfo, enabled: boolean) => void;
   onToggleToolset: (toolset: HermesToolsetInfo, enabled: boolean) => void;
+  onOpenSkill?: (skill: HermesSkillInfo) => Promise<HermesSkillDocument>;
+  onSaveSkill?: (
+    skill: HermesSkillInfo,
+    content: string,
+  ) => Promise<HermesSkillDocument>;
 }) {
+  const [selectedSkillName, setSelectedSkillName] = useState<string | null>(
+    null,
+  );
+  const [skillDocument, setSkillDocument] =
+    useState<HermesSkillDocument | null>(null);
+  const [skillDraft, setSkillDraft] = useState("");
+  const [skillLoading, setSkillLoading] = useState(false);
+  const [skillSaving, setSkillSaving] = useState(false);
+  const [skillError, setSkillError] = useState<string | null>(null);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const q = query.trim().toLowerCase();
   const visibleSkills = (skills ?? [])
     .filter((skill) => capabilityMatches(skill, q))
@@ -5024,6 +5043,89 @@ export function SkillsToolsPanel({
     .sort((a, b) =>
       safeText(a.label ?? a.name).localeCompare(safeText(b.label ?? b.name)),
     );
+  const selectedSkill =
+    (skills ?? []).find((skill) => skill.name === selectedSkillName) ?? null;
+  const skillDirty =
+    Boolean(skillDocument) && skillDraft !== (skillDocument?.content ?? "");
+
+  async function openSkill(skill: HermesSkillInfo) {
+    if (!onOpenSkill) return;
+    setSelectedSkillName(skill.name);
+    setSkillDocument(null);
+    setSkillDraft("");
+    setSkillError(null);
+    setSkillLoading(true);
+    try {
+      const document = await onOpenSkill(skill);
+      setSkillDocument(document);
+      setSkillDraft(document.content);
+    } catch (err) {
+      setSkillError(messageFromError(err));
+    } finally {
+      setSkillLoading(false);
+    }
+  }
+
+  async function saveSkill() {
+    if (!selectedSkill || !onSaveSkill || !skillDocument) return;
+    setSkillSaving(true);
+    setSkillError(null);
+    try {
+      const document = await onSaveSkill(selectedSkill, skillDraft);
+      setSkillDocument(document);
+      setSkillDraft(document.content);
+    } catch (err) {
+      setSkillError(messageFromError(err));
+    } finally {
+      setSkillSaving(false);
+    }
+  }
+
+  function closeSkillEditor() {
+    setSelectedSkillName(null);
+    setSkillDocument(null);
+    setSkillDraft("");
+    setSkillError(null);
+    setDiscardConfirmOpen(false);
+  }
+
+  function requestCloseSkillEditor() {
+    if (skillDirty) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    closeSkillEditor();
+  }
+
+  if (selectedSkillName) {
+    return (
+      <>
+        <SkillEditorPanel
+          document={skillDocument}
+          dirty={skillDirty}
+          error={skillError}
+          loading={skillLoading}
+          saving={skillSaving}
+          skill={selectedSkill}
+          value={skillDraft}
+          onBack={requestCloseSkillEditor}
+          onCancel={() => setSkillDraft(skillDocument?.content ?? "")}
+          onChange={setSkillDraft}
+          onSave={() => void saveSkill()}
+        />
+        <ConfirmDialog
+          open={discardConfirmOpen}
+          title="Discard skill edits?"
+          description="Your unsaved changes will be lost."
+          confirmLabel="Discard"
+          destructive
+          onClose={() => setDiscardConfirmOpen(false)}
+          onConfirm={closeSkillEditor}
+        />
+      </>
+    );
+  }
+
   return (
     <section className="agent-management-panel" aria-label="Skills and tools">
       <ManagementToolbar
@@ -5052,6 +5154,7 @@ export function SkillsToolsPanel({
                 meta={skill.category}
                 enabled={Boolean(skill.enabled)}
                 saving={saving === `skill:${skill.name}`}
+                onSelect={onOpenSkill ? () => void openSkill(skill) : undefined}
                 onToggle={(enabled) => onToggleSkill(skill, enabled)}
               />
             ))}
@@ -5077,6 +5180,100 @@ export function SkillsToolsPanel({
           </CapabilityGroup>
         </div>
       )}
+    </section>
+  );
+}
+
+function SkillEditorPanel({
+  dirty,
+  document,
+  error,
+  loading,
+  saving,
+  skill,
+  value,
+  onBack,
+  onCancel,
+  onChange,
+  onSave,
+}: {
+  dirty: boolean;
+  document: HermesSkillDocument | null;
+  error: string | null;
+  loading: boolean;
+  saving: boolean;
+  skill: HermesSkillInfo | null;
+  value: string;
+  onBack: () => void;
+  onCancel: () => void;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  const title = skill?.name ?? document?.name ?? "Skill";
+  return (
+    <section
+      className="agent-management-panel agent-skill-editor-panel"
+      aria-label={title}
+    >
+      <div className="agent-skill-editor">
+        <header className="agent-skill-editor-header">
+          <button
+            type="button"
+            className="btn btn-ghost agent-skill-editor-back"
+            onClick={onBack}
+          >
+            <IconChevronLeftSmall size={15} aria-hidden />
+            Skills
+          </button>
+          <div className="agent-skill-editor-heading">
+            <div>
+              <h3>{title}</h3>
+              {skill?.description ? <p>{skill.description}</p> : null}
+            </div>
+            <div className="agent-platform-pills">
+              {skill?.category ? <span>{skill.category}</span> : null}
+              {document?.relativePath ? (
+                <span>{document.relativePath}</span>
+              ) : null}
+              {skill ? (
+                <span>{skill.enabled ? "Enabled" : "Disabled"}</span>
+              ) : null}
+            </div>
+          </div>
+        </header>
+        {error ? <p className="settings-row-error">{error}</p> : null}
+        {loading ? (
+          <div className="agent-loading">
+            <Spinner />
+          </div>
+        ) : (
+          <textarea
+            className="agent-skill-editor-textarea"
+            value={value}
+            aria-label={`${title} skill Markdown`}
+            disabled={saving}
+            spellCheck={false}
+            onChange={(event) => onChange(event.currentTarget.value)}
+          />
+        )}
+      </div>
+      <footer className="agent-messaging-footer">
+        <button
+          type="button"
+          disabled={!dirty || saving || loading}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="primary-action primary-solid"
+          disabled={!dirty || saving || loading || !document}
+          onClick={onSave}
+        >
+          {saving ? "Saving..." : "Save changes"}
+        </button>
+      </footer>
     </section>
   );
 }
@@ -5559,7 +5756,7 @@ function CapabilityRow({
 }) {
   return (
     <article className="agent-capability-row" data-selected={selected}>
-      <button type="button" onClick={onSelect}>
+      <button type="button" disabled={!onSelect} onClick={onSelect}>
         <div className="agent-capability-title">
           <span>{title}</span>
           {meta ? <em>{meta}</em> : null}

@@ -1730,7 +1730,7 @@ function ReferralDialog({
                   ) : (
                     <IconClipboard size={14} />
                   )}
-                  {copied ? "Copied" : "Copy invite link"}
+                  {copied ? "Copied" : "Copy"}
                 </button>
               </div>
               {copyError ? (
