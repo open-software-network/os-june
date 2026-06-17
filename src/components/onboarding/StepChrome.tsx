@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { BorderBeam } from "border-beam";
 import { JuneMark } from "../account/AccountGate";
+import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 /**
  * One onboarding screen = one welcome-card: a serif title, at most one muted
@@ -59,9 +59,9 @@ export function StepActions({
 }) {
   return (
     <div className="welcome-providers">
-      <OnboardingPrimaryButton disabled={continueDisabled} onClick={onContinue}>
+      <BrandPrimaryButton disabled={continueDisabled} onClick={onContinue}>
         {continueLabel}
-      </OnboardingPrimaryButton>
+      </BrandPrimaryButton>
       {onSkip ? (
         <button type="button" className="onboarding-skip" onClick={onSkip}>
           {skipLabel}
@@ -71,35 +71,4 @@ export function StepActions({
   );
 }
 
-export function OnboardingPrimaryButton({
-  children,
-  disabled,
-  onClick,
-}: {
-  children: ReactNode;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <BorderBeam
-      active={!disabled}
-      borderRadius={10}
-      className="onboarding-primary-beam"
-      colorVariant="sunset"
-      duration={4.8}
-      size="sm"
-      staticColors
-      strength={0.22}
-      theme="light"
-    >
-      <button
-        type="button"
-        className="primary-action onboarding-continue"
-        disabled={disabled}
-        onClick={onClick}
-      >
-        {children}
-      </button>
-    </BorderBeam>
-  );
-}
+export { BrandPrimaryButton as OnboardingPrimaryButton };

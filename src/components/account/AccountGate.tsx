@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { BorderBeam } from "border-beam";
 import { isMacLikePlatform } from "../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
+import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 type Props = {
   account: AccountStatus;
@@ -78,27 +78,13 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
                 </button>
               </div>
             ) : (
-              <BorderBeam
-                active={!loading}
-                borderRadius={10}
-                className="onboarding-primary-beam"
-                colorVariant="sunset"
-                duration={4.8}
-                size="sm"
-                staticColors
-                strength={0.22}
-                theme="light"
+              <BrandPrimaryButton
+                disabled={loading}
+                onClick={() => void handleSignIn()}
               >
-                <button
-                  type="button"
-                  className="primary-action onboarding-continue"
-                  disabled={loading}
-                  onClick={() => void handleSignIn()}
-                >
-                  <OsMark />
-                  <span>Continue with OpenSoftware</span>
-                </button>
-              </BorderBeam>
+                <OsMark />
+                <span>Continue with OpenSoftware</span>
+              </BrandPrimaryButton>
             )}
           </div>
         ) : (
