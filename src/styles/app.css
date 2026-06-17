@@ -12941,6 +12941,45 @@ input:focus-visible,
   text-align: center;
 }
 
+.trial-privacy-recap {
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}
+
+.trial-privacy-recap h2 {
+  margin: 0 0 var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: center;
+}
+
+.trial-privacy-recap ul {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trial-privacy-label {
+  display: block;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.trial-privacy-detail {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
 .trial-gate-link {
   padding: 0;
   border: 0;

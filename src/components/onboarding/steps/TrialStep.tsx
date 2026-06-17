@@ -12,6 +12,24 @@ import {
 import { Spinner } from "../../ui/Spinner";
 import { StepActions, StepCard } from "../StepChrome";
 
+const PRIVACY_RECAP_ITEMS = [
+  {
+    label: "Local first",
+    detail:
+      "Your app state, recordings, transcripts, files, sessions, and memory stay on your device by default.",
+  },
+  {
+    label: "Private AI models",
+    detail:
+      "Prompts leave your device only for inference, using private models with zero data retention and no training by default.",
+  },
+  {
+    label: "Minimal data retention",
+    detail:
+      "June keeps only what's needed to maintain your account. Everything else is stored locally on your device.",
+  },
+];
+
 /**
  * The free-trial step, deliberately placed after permissions (the user has
  * invested) and right before the hands-on dictation practice (the practice
@@ -65,7 +83,24 @@ export function TrialStep({
       <StepCard
         title="You're good to go"
         subtitle="Your trial is live. Try talking to June."
+        wide
       >
+        <section
+          className="trial-privacy-recap"
+          aria-labelledby="trial-privacy-title"
+        >
+          <h2 id="trial-privacy-title">
+            And remember, June keeps it all private
+          </h2>
+          <ul>
+            {PRIVACY_RECAP_ITEMS.map((item) => (
+              <li key={item.label}>
+                <span className="trial-privacy-label">{item.label}</span>
+                <span className="trial-privacy-detail">{item.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
         <StepActions onContinue={onContinue} />
       </StepCard>
     );

@@ -440,13 +440,16 @@ describe("OnboardingFlow", () => {
         ),
       ).toBeInTheDocument();
       expect(
-        screen.queryByText("Talk instead of type"),
+        screen.queryByText("Speak instead of type"),
       ).not.toBeInTheDocument();
       expect(
-        screen.queryByText(/Dictate into any app/),
+        screen.queryByText(/June turns your voice into polished writing/),
       ).not.toBeInTheDocument();
       expect(
-        screen.queryByText("An agent on your computer"),
+        screen.queryByText("Effortlessly capture meetings"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Chat and work with June"),
       ).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
@@ -478,6 +481,29 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", {
       name: "You're good to go",
     });
+    expect(
+      screen.getByRole("heading", {
+        name: "And remember, June keeps it all private",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Local first")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your app state, recordings, transcripts, files, sessions, and memory stay on your device by default.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Private AI models")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Prompts leave your device only for inference, using private models with zero data retention and no training by default.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Minimal data retention")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "June keeps only what's needed to maintain your account. Everything else is stored locally on your device.",
+      ),
+    ).toBeInTheDocument();
     expect(mocks.focusMainWindow).toHaveBeenCalledOnce();
 
     await user.click(screen.getByRole("button", { name: "Continue" }));
