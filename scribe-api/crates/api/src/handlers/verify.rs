@@ -208,7 +208,7 @@ genuine Intel TDX VM).</p>
   <li>
     <p>Compare against the digest our CI recorded in the repository at deploy
     time, as an immutable <code>deploy/&lt;env&gt;/&lt;sha&gt;</code> git tag:</p>
-    <pre><code>git clone @REPO_URL@ &amp;&amp; cd os-scribe
+    <pre><code>git clone @REPO_URL@ &amp;&amp; cd os-june
 git tag -l 'deploy/*/@SHORT_SHA@' -n3</code></pre>
     <p>The tag message states which image digest commit <code>@SHORT_SHA@</code>
     deployed. It must match the digest from step 2.</p>
@@ -282,6 +282,9 @@ mod tests {
         let html = render_page(&info());
         assert!(html.contains(
             "https://github.com/open-software-network/os-june/commit/0123abc4567890def0123abc4567890def012345"
+        ));
+        assert!(html.contains(
+            "git clone https://github.com/open-software-network/os-june &amp;&amp; cd os-june"
         ));
         assert!(html.contains("ghcr.io/open-software-network/scribe-api:0123abc"));
         assert!(html.contains("https://trust.phala.com/app/15f8d2fd"));
