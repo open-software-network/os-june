@@ -1,14 +1,16 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { useEffect, useMemo, useState } from "react";
-import {
-  TOOL_GUARD_DECISION_EVENT,
-  hermesBridgeToolGuardDecision,
-  type ToolGuardDecisionAction,
-  type ToolGuardDecisionFinding,
-  type ToolGuardDecisionRequest,
+import type {
+  ToolGuardDecisionAction,
+  ToolGuardDecisionFinding,
+  ToolGuardDecisionRequest,
+  ToolGuardDecisionResponse,
 } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
+
+const TOOL_GUARD_DECISION_EVENT = "tool-guard-decision-request";
 
 export function ToolGuardReviewDialog() {
   const [queue, setQueue] = useState<ToolGuardDecisionRequest[]>([]);
@@ -65,11 +67,13 @@ export function ToolGuardReviewDialog() {
     setSubmitting(action);
     setError(null);
     try {
-      await hermesBridgeToolGuardDecision({
-        decisionId: active.decisionId,
-        action,
-        selectedFindingIds:
-          action === "redactSelected" ? Array.from(selectedFindingIds) : [],
+      await invoke<void>("hermes_bridge_tool_guard_decision", {
+        response: {
+          decisionId: active.decisionId,
+          action,
+          selectedFindingIds:
+            action === "redactSelected" ? Array.from(selectedFindingIds) : [],
+        } satisfies ToolGuardDecisionResponse,
       });
       setQueue((items) => items.slice(1));
     } catch (err) {

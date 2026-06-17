@@ -39,7 +39,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
-  hermesBridgeToolGuardDecision: vi.fn(),
+  invoke: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
@@ -97,8 +97,6 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
-  hermesBridgeToolGuardDecision: mocks.hermesBridgeToolGuardDecision,
-  TOOL_GUARD_DECISION_EVENT: "tool-guard-decision-request",
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -128,6 +126,10 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
 }));
 
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
@@ -231,7 +233,7 @@ describe("AgentWorkspace", () => {
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
     });
-    mocks.hermesBridgeToolGuardDecision.mockResolvedValue(undefined);
+    mocks.invoke.mockResolvedValue(undefined);
     // Mirrors the backend: starting a mode yields a status that contains
     // that mode's connection (alongside any other live mode).
     mocks.startHermesBridge.mockImplementation(
@@ -351,11 +353,16 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Redact selected" }));
 
     await waitFor(() =>
-      expect(mocks.hermesBridgeToolGuardDecision).toHaveBeenCalledWith({
-        decisionId: "decision-1",
-        action: "redactSelected",
-        selectedFindingIds: ["finding-1"],
-      }),
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "hermes_bridge_tool_guard_decision",
+        {
+          response: {
+            decisionId: "decision-1",
+            action: "redactSelected",
+            selectedFindingIds: ["finding-1"],
+          },
+        },
+      ),
     );
   });
 
