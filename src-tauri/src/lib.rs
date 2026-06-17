@@ -172,6 +172,8 @@ pub fn run() {
             hermes_bridge::start_hermes_bridge,
             hermes_bridge::stop_hermes_bridge,
             hermes_bridge::toggle_hermes_bridge_skill,
+            hermes_bridge::get_hermes_bridge_skill,
+            hermes_bridge::update_hermes_bridge_skill,
             hermes_bridge::toggle_hermes_bridge_toolset,
             hermes_bridge::update_hermes_bridge_messaging_platform,
             hermes_bridge::hermes_agent_cli_access,
