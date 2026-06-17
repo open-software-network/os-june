@@ -516,12 +516,24 @@ pub fn load() -> Result<AppConfig, ConfigError> {
     Ok(config)
 }
 
+const LEGACY_OS_ACCOUNTS_APP_API_KEY_PLACEHOLDER: &str = concat!("osk", "_REPLACE_ME");
+const LEGACY_OPENAI_API_KEY_PLACEHOLDER: &str = concat!("sk", "_REPLACE_ME");
+const OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS: &[&str] = &[
+    "REPLACE_WITH_OS_ACCOUNTS_APP_API_KEY",
+    LEGACY_OS_ACCOUNTS_APP_API_KEY_PLACEHOLDER,
+];
+const OPENAI_API_KEY_PLACEHOLDERS: &[&str] = &[
+    "REPLACE_WITH_OPENAI_API_KEY",
+    LEGACY_OPENAI_API_KEY_PLACEHOLDER,
+];
+const VENICE_API_KEY_PLACEHOLDERS: &[&str] = &["VENICE_API_KEY_REPLACE_ME"];
+
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     validate_required_text("os_accounts.api_url", &config.os_accounts.api_url)?;
     validate_required_secret(
         "os_accounts.app_api_key",
         &config.os_accounts.app_api_key,
-        "REPLACE_WITH_OS_ACCOUNTS_APP_API_KEY",
+        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
     )?;
     validate_positive_config(
         "os_accounts.note_transcribe_preview_max_audio_secs",
@@ -544,7 +556,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         validate_required_secret(
             "upstreams.openai.api_key",
             &config.upstreams.openai.api_key,
-            "REPLACE_WITH_OPENAI_API_KEY",
+            OPENAI_API_KEY_PLACEHOLDERS,
         )?;
     }
     if uses_venice {
@@ -555,7 +567,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         validate_required_secret(
             "upstreams.venice.api_key",
             &config.upstreams.venice.api_key,
-            "VENICE_API_KEY_REPLACE_ME",
+            VENICE_API_KEY_PLACEHOLDERS,
         )?;
     }
 
@@ -610,10 +622,13 @@ fn validate_required_text(field: &'static str, value: &str) -> Result<(), Config
 fn validate_required_secret(
     field: &'static str,
     value: &str,
-    placeholder: &'static str,
+    placeholders: &[&str],
 ) -> Result<(), ConfigError> {
     validate_required_text(field, value)?;
-    if value.trim() == placeholder {
+    if placeholders
+        .iter()
+        .any(|placeholder| value.trim() == *placeholder)
+    {
         return Err(ConfigError::InvalidRequired {
             field,
             reason: "placeholder value must be replaced",
@@ -648,7 +663,10 @@ fn validate_positive_rate(
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, ModelPriceConfig, ModelProvider, ModelType, PriceUnit, validate};
+    use super::{
+        AppConfig, ModelPriceConfig, ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
+        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS, validate,
+    };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
 
@@ -765,12 +783,34 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_provider_placeholder_key() {
-        let mut config = valid_config();
-        config.upstreams.venice.api_key = "VENICE_API_KEY_REPLACE_ME".to_string();
+    fn validate_rejects_os_accounts_placeholder_keys() {
+        for placeholder in OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS {
+            let mut config = valid_config();
+            config.os_accounts.app_api_key = (*placeholder).to_string();
 
-        let result = validate(&config);
+            let result = validate(&config);
 
-        assert!(result.is_err());
+            assert!(result.is_err(), "accepted placeholder: {placeholder}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_provider_placeholder_keys() {
+        for placeholder in OPENAI_API_KEY_PLACEHOLDERS {
+            let mut config = valid_config();
+            config.upstreams.openai.api_key = (*placeholder).to_string();
+
+            let result = validate(&config);
+
+            assert!(result.is_err(), "accepted placeholder: {placeholder}");
+        }
+        for placeholder in VENICE_API_KEY_PLACEHOLDERS {
+            let mut config = valid_config();
+            config.upstreams.venice.api_key = (*placeholder).to_string();
+
+            let result = validate(&config);
+
+            assert!(result.is_err(), "accepted placeholder: {placeholder}");
+        }
     }
 }
