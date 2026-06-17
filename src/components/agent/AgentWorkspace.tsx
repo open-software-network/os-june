@@ -3543,7 +3543,7 @@ export function AgentWorkspace({
               importingFiles
                 ? "Attaching file…"
                 : heroMode
-                  ? "Describe a task for June…"
+                  ? "Ask June anything, run / commands"
                   : "Send a message"
             }
             onChange={(text, nextCategory) => {
