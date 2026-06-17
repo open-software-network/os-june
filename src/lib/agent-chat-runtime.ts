@@ -402,7 +402,8 @@ function appendLiveHermesEvents(
       const taskIndex =
         typeof taskIndexRaw === "number" ? taskIndexRaw : undefined;
       const key =
-        subagentId ?? (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
+        subagentId ??
+        (taskIndex !== undefined ? `task-${taskIndex}` : "subagent");
       const partId = `subagent:${key}`;
       const goal = stringValue(payload?.goal);
       const taskCountRaw = payload?.task_count;

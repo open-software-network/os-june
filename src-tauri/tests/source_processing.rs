@@ -136,14 +136,14 @@ fn builds_transcription_context_from_previous_turns() {
 fn builds_dictionary_context_from_custom_terms() {
     let context = build_dictionary_context(&[DictionaryEntryDto {
         id: "entry-1".to_string(),
-        phrase: "Junho Hong".to_string(),
+        phrase: "Jane Doe".to_string(),
         created_at: "2026-05-26T00:00:00Z".to_string(),
         updated_at: "2026-05-26T00:00:00Z".to_string(),
     }])
     .expect("dictionary context should be built");
 
     assert!(context.contains("Custom dictionary terms"));
-    assert!(context.contains("Junho Hong"));
+    assert!(context.contains("Jane Doe"));
     assert!(context.contains("exact spelling and capitalization"));
 }
 

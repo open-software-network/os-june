@@ -123,9 +123,9 @@ const signedInAccount = {
   configured: true,
   user: {
     id: "usr_123",
-    handle: "junho",
-    email: "junho@example.com",
-    displayName: "Junho",
+    handle: "alex",
+    email: "alex@example.com",
+    displayName: "Alex",
   },
   balance: { usdMillis: 1200 },
 };
@@ -340,12 +340,12 @@ describe("AppSettings", () => {
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
               name: "sample.pdf",
-              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf",
               kind: "file",
               size: 1700,
               modifiedAt: "2026-06-04T18:39:00Z",
@@ -355,12 +355,12 @@ describe("AppSettings", () => {
         {
           id: "memory",
           label: "Memory",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/memory",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/memory",
           description: "Persistent Hermes memory files and stores.",
           entries: [
             {
               name: "USER.md",
-              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/memory/USER.md",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/memory/USER.md",
               kind: "file",
               size: 39,
               modifiedAt: "2026-06-04T18:47:00Z",

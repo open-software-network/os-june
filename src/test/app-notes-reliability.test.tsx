@@ -205,7 +205,7 @@ describe("notes recording reliability", () => {
     const account: AccountStatus = {
       signedIn: true,
       configured: true,
-      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
       balance: { usdMillis: 1200 },
       subscription: { subscribed: true, status: "active" },
     };

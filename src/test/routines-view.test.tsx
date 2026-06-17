@@ -159,7 +159,7 @@ describe("RoutinesView list", () => {
       job({
         job_id: "ghi789",
         name: "Disk watchdog",
-        script: "/Users/junho/bin/check-disk.sh",
+        script: "/Users/alex/bin/check-disk.sh",
         no_agent: true,
       }),
     ]);

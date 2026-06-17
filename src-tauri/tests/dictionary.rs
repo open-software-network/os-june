@@ -76,11 +76,11 @@ async fn deletes_a_dictation_history_item() {
 async fn creates_updates_and_soft_deletes_dictionary_entries() {
     let repos = repos().await;
     let created = repos
-        .create_dictionary_entry("  Junho Hong  ")
+        .create_dictionary_entry("  Jane Doe  ")
         .await
         .expect("create dictionary entry");
 
-    assert_eq!(created.phrase, "Junho Hong");
+    assert_eq!(created.phrase, "Jane Doe");
 
     let updated = repos
         .update_dictionary_entry(&created.id, "OpenAI")

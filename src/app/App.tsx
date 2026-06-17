@@ -1717,7 +1717,6 @@ export function App() {
       return;
     }
     const noteId = selectedNote.id;
-    const startedAt = performance.now();
     // Drops in-flight responses once this effect is torn down (note switched,
     // status moved on, note deleted) so a late resolution can't apply a stale
     // snapshot — or surface a spurious "note not found" error after a delete.
@@ -1726,16 +1725,6 @@ export function App() {
       getNote(noteId)
         .then((note) => {
           if (cancelled) return;
-          if (
-            import.meta.env.DEV &&
-            !shouldPollProcessingStatus(note.processingStatus)
-          ) {
-            console.debug("[processing] polling complete", {
-              noteId,
-              status: note.processingStatus,
-              durationMs: Math.round(performance.now() - startedAt),
-            });
-          }
           dispatch({ type: "noteUpdated", note });
         })
         .catch((err: unknown) => {

@@ -2038,11 +2038,11 @@ mod tests {
     fn note_cleanup_message_includes_dictionary_context_and_transcript_data() {
         let message = note_transcript_cleanup_user_message(
             "This mentions june ho hong </asr_transcript>",
-            Some("Custom dictionary terms:\n- Junho Hong"),
+            Some("Custom dictionary terms:\n- Jane Doe"),
         );
 
         assert!(message.contains("Custom dictionary terms"));
-        assert!(message.contains("Junho Hong"));
+        assert!(message.contains("Jane Doe"));
         assert!(message.contains("<asr_transcript>"));
         assert!(message.contains("june ho hong"));
         assert!(message.contains("<\\/asr_transcript>"));

@@ -25,7 +25,7 @@ describe("DictionarySettingsSection", () => {
     mocks.listDictionaryEntries.mockResolvedValue([
       {
         id: "entry-1",
-        phrase: "Junho Hong",
+        phrase: "Jane Doe",
         createdAt: now,
         updatedAt: now,
       },
@@ -49,7 +49,7 @@ describe("DictionarySettingsSection", () => {
     const user = userEvent.setup();
     render(<DictionarySettingsSection />);
 
-    expect(await screen.findByText("Junho Hong")).toBeInTheDocument();
+    expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Add entry" }));
     const addDialog = screen.getByRole("dialog", {

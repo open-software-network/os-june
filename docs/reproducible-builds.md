@@ -7,7 +7,7 @@
 
 ## Why
 
-When we open-source `os-scribe` we want to make a claim a skeptic can check
+When we open-source `os-june` we want to make a claim a skeptic can check
 without trusting us:
 
 > "The code in this public commit is **exactly** what runs in the TEE."

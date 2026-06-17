@@ -248,7 +248,7 @@ describe("AgentWorkspace", () => {
     mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
-      path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
+      path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
       rootLabel: "Workspace",
       size: 1234,
       previewDataUrl: path.endsWith(".png")
@@ -258,14 +258,14 @@ describe("AgentWorkspace", () => {
     mocks.importHermesBridgeFileBytes.mockImplementation(
       async (name: string) => ({
         name,
-        path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${name}`,
+        path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${name}`,
         rootLabel: "Workspace",
         size: 5,
         previewDataUrl: null,
       }),
     );
     mocks.downloadHermesBridgeFile.mockResolvedValue(
-      "/Users/junho/Downloads/sample.pdf",
+      "/Users/alex/Downloads/sample.pdf",
     );
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
     mocks.deleteHermesSession.mockResolvedValue(undefined);
@@ -542,7 +542,7 @@ describe("AgentWorkspace", () => {
         agentDiagnosis: "The screenshot shows the recorder stuck on saving.",
         attachmentNames: ["screenshot.png"],
         attachmentPaths: [
-          "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
+          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
         ],
         sessionId: "session-2",
       }),
@@ -1808,13 +1808,13 @@ describe("AgentWorkspace", () => {
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
     const samplePath =
-      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf";
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/sample.pdf";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -1855,12 +1855,12 @@ describe("AgentWorkspace", () => {
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
               name: "report.md",
-              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md",
               kind: "file",
               size: 1768,
               modifiedAt: "2026-06-04T18:39:00Z",
@@ -1902,13 +1902,13 @@ describe("AgentWorkspace", () => {
   it("opens a markdown artifact in the viewer panel with rendered content", async () => {
     const user = userEvent.setup();
     const reportPath =
-      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md";
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -1976,7 +1976,7 @@ describe("AgentWorkspace", () => {
   it("lists every surfaced file behind the session bar files button", async () => {
     const user = userEvent.setup();
     const workspaceRoot =
-      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -2057,13 +2057,13 @@ describe("AgentWorkspace", () => {
 
   it("does not render download cards for files the user attached", async () => {
     const attachedPath =
-      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -2111,24 +2111,24 @@ describe("AgentWorkspace", () => {
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
               name: "notes.md",
-              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/notes.md",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/notes.md",
               kind: "file",
               size: 512,
               modifiedAt: "2026-06-04T18:39:00Z",
             },
             {
               name: "archive",
-              path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive",
+              path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive",
               kind: "directory",
               children: [
                 {
                   name: "notes.md",
-                  path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive/notes.md",
+                  path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/archive/notes.md",
                   kind: "file",
                   size: 512,
                   modifiedAt: "2026-06-04T18:39:00Z",
@@ -2158,13 +2158,13 @@ describe("AgentWorkspace", () => {
 
   it("renders generated workspace images as file cards without previews", async () => {
     const screenshotPath =
-      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/screenshot.png";
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/screenshot.png";
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
           id: "workspace",
           label: "Workspace",
-          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
@@ -2217,7 +2217,7 @@ describe("AgentWorkspace", () => {
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
         paths: [
-          "/Users/junho/Library/Application Support/CleanShot/media/screenshot.png",
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
         ],
       },
     });
@@ -2235,12 +2235,12 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
         text: expect.stringContaining(
-          "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
+          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
         ),
       }),
     );
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
-      "/Users/junho/Library/Application Support/CleanShot/media/screenshot.png",
+      "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
     );
   });
 

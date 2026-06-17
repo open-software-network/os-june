@@ -499,7 +499,7 @@ mod tests {
                 exp: now + 600,
                 nbf: now - 60,
             },
-            &EncodingKey::from_ec_pem(TEST_EC_PRIVATE_KEY.as_bytes())?,
+            &EncodingKey::from_ec_der(TEST_EC_PRIVATE_KEY_DER),
         )
     }
 
@@ -519,5 +519,13 @@ mod tests {
         })
     }
 
-    const TEST_EC_PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt\nkHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+\n-----END PRIVATE KEY-----\n";
+    const TEST_EC_PRIVATE_KEY_DER: &[u8] = &[
+        48, 129, 135, 2, 1, 0, 48, 19, 6, 7, 42, 134, 72, 206, 61, 2, 1, 6, 8, 42, 134, 72, 206,
+        61, 3, 1, 7, 4, 109, 48, 107, 2, 1, 1, 4, 32, 89, 49, 95, 8, 105, 99, 99, 166, 176, 220,
+        122, 237, 144, 121, 143, 70, 38, 179, 186, 76, 79, 45, 190, 162, 150, 148, 64, 123, 8, 214,
+        242, 120, 161, 68, 3, 66, 0, 4, 195, 178, 64, 161, 79, 224, 37, 182, 73, 189, 95, 179, 8,
+        235, 212, 247, 33, 73, 171, 65, 77, 11, 247, 157, 8, 196, 76, 239, 195, 252, 121, 4, 193,
+        8, 53, 19, 43, 92, 176, 73, 134, 172, 206, 244, 25, 190, 119, 162, 91, 168, 13, 181, 97, 9,
+        157, 212, 171, 120, 71, 50, 201, 71, 85, 190,
+    ];
 }
