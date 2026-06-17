@@ -7,7 +7,7 @@ use std::{
     fs,
     io::{self, Write},
     net::TcpListener,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -3045,15 +3045,45 @@ fn filesystem_entry(path: PathBuf, depth: usize) -> Result<HermesFilesystemEntry
 }
 
 fn is_hidden_secret_path(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        name.to_str().is_some_and(is_sensitive_path_component)
+    })
+}
+
+fn is_sensitive_path_component(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
     matches!(
-        name,
-        ".env" | "auth.lock" | ".credentials" | "credentials" | "secrets" | "secrets.json"
-    ) || name.ends_with(".lock")
-        || name.ends_with(".key")
-        || name.ends_with(".pem")
+        normalized.as_str(),
+        ".ssh" | ".aws" | ".azure" | ".gnupg" | ".kube" | ".docker"
+    ) || is_sensitive_file_name(&normalized)
+}
+
+fn is_sensitive_file_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized == ".env"
+        || normalized.starts_with(".env.")
+        || matches!(
+            normalized.as_str(),
+            "auth.lock"
+                | ".credentials"
+                | "credentials"
+                | "credentials.json"
+                | "application_default_credentials.json"
+                | "secrets"
+                | "secrets.json"
+                | "id_rsa"
+                | "id_dsa"
+                | "id_ecdsa"
+                | "id_ed25519"
+        )
+        || normalized.ends_with(".lock")
+        || normalized.ends_with(".key")
+        || normalized.ends_with(".pem")
+        || normalized.ends_with(".p12")
+        || normalized.ends_with(".pfx")
 }
 
 fn system_time_to_iso(value: std::time::SystemTime) -> String {
@@ -3523,6 +3553,25 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn hidden_secret_filter_rejects_common_credential_paths() {
+        for path in [
+            "/workspace/.env.local",
+            "/workspace/.ssh/id_ed25519",
+            "/workspace/.aws/config",
+            "/workspace/project/id_rsa",
+            "/workspace/project/client.p12",
+            "/workspace/project/application_default_credentials.json",
+        ] {
+            assert!(is_hidden_secret_path(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn hidden_secret_filter_allows_non_sensitive_dotfiles() {
+        assert!(!is_hidden_secret_path(Path::new("/workspace/.gitignore")));
     }
 
     #[test]
