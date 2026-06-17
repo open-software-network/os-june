@@ -3243,6 +3243,20 @@ async fn handle_scribe_provider_connection(
                             .await?;
                             return Ok(());
                         }
+                        if let Err(error) = rehydrate_assistant_text(&state, &mut value) {
+                            write_json_response(
+                                &mut stream,
+                                502,
+                                serde_json::json!({
+                                    "error": {
+                                        "message": format!("Tool Guard could not rehydrate the provider response: {}", error.message),
+                                        "type": error.code
+                                    }
+                                }),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
                         write_synthetic_sse_response(&mut stream, status, value).await?;
                     } else {
                         match serde_json::from_slice::<serde_json::Value>(&body) {
@@ -3256,6 +3270,20 @@ async fn handle_scribe_provider_connection(
                                         serde_json::json!({
                                             "error": {
                                                 "message": format!("Tool Guard blocked the provider response: {}", error.message),
+                                                "type": error.code
+                                            }
+                                        }),
+                                    )
+                                    .await?;
+                                    return Ok(());
+                                }
+                                if let Err(error) = rehydrate_assistant_text(&state, &mut value) {
+                                    write_json_response(
+                                        &mut stream,
+                                        502,
+                                        serde_json::json!({
+                                            "error": {
+                                                "message": format!("Tool Guard could not rehydrate the provider response: {}", error.message),
                                                 "type": error.code
                                             }
                                         }),
@@ -3465,6 +3493,46 @@ fn set_proposed_tool_call_arguments(
             )
         })?;
     tool_call["function"]["arguments"] = serde_json::Value::String(serialized);
+    Ok(())
+}
+
+fn rehydrate_assistant_text(
+    state: &ScribeProviderProxyState,
+    body: &mut serde_json::Value,
+) -> Result<(), AppError> {
+    let mappings = state
+        .mappings
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "tool_guard_mapping_failed",
+                "Tool Guard mapping lock failed.",
+            )
+        })?
+        .clone();
+    if mappings.is_empty() {
+        return Ok(());
+    }
+    let Some(choices) = body
+        .get_mut("choices")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    for choice in choices {
+        let Some(message) = choice.get_mut("message") else {
+            continue;
+        };
+        let Some(content) = message
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let rehydrated = crate::tool_guard::rehydrate_text(&content, &mappings);
+        message["content"] = serde_json::Value::String(rehydrated);
+    }
     Ok(())
 }
 
