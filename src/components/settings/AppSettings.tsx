@@ -209,6 +209,8 @@ type AppSettingsProps = {
   // own nav — the standalone path exercised by app-settings tests.
   activeTab?: SettingsTab;
   onTabChange?: (tab: SettingsTab) => void;
+  // Runs the app updater's manual check flow.
+  onCheckForUpdates?: () => void;
   // Opens a new agent session seeded with a report category chip.
   onReportIssue?: (category: ReportCategory) => void;
 };
@@ -229,6 +231,7 @@ export function AppSettings({
   onEnableSystemAudio,
   activeTab: controlledTab,
   onTabChange,
+  onCheckForUpdates,
   onReportIssue,
 }: AppSettingsProps) {
   const [settings, setSettings] =
@@ -1223,6 +1226,26 @@ export function AppSettings({
                     </span>
                   </div>
                 </div>
+
+                {onCheckForUpdates ? (
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Updates</h3>
+                      <p className="settings-row-description">
+                        Check whether a newer version of June is available.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={onCheckForUpdates}
+                      >
+                        Check for updates
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="settings-row">
                   <div className="settings-row-info">

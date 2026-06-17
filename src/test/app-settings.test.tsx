@@ -1471,6 +1471,32 @@ describe("AppSettings", () => {
     expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
   });
 
+  it("checks for updates from About", async () => {
+    const onCheckForUpdates = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={onCheckForUpdates}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+    expect(await screen.findByText("Updates")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(onCheckForUpdates).toHaveBeenCalledOnce();
+  });
+
   it("opens the server attestation page from About through Rust", async () => {
     // Not an anchor: the webview drops target="_blank" navigations, so the
     // button must invoke the scribe_open_verify_page command instead.
