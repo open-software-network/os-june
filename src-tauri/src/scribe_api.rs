@@ -1,6 +1,7 @@
 //! Scribe API client. The Tauri side calls the backend for every metered
 //! action; provider keys live there, never here.
 
+use crate::tool_guard::{ToolDestinationClass, ToolGuardAnalysis};
 use crate::{domain::types::AppError, providers::PROVIDER_OPENAI};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
@@ -210,6 +211,35 @@ struct DictateCleanupBody {
     model: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardCallAnalysisBody {
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub destination_id: String,
+    pub destination_class: ToolDestinationClass,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_schema_ref: Option<String>,
+    pub arguments: serde_json::Value,
+    pub deadline_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_context: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardResultAnalysisBody {
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub destination_id: String,
+    pub destination_class: ToolDestinationClass,
+    pub result: serde_json::Value,
+    pub deadline_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_context: Option<serde_json::Value>,
+}
+
 pub async fn transcribe_saved_audio(
     request: TranscriptionRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
@@ -322,6 +352,18 @@ pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String,
     };
     let response: CleanupResponse = post_json("/v1/dictate/cleanup", &body).await?;
     Ok(response.text)
+}
+
+pub async fn analyze_tool_guard_call(
+    body: ToolGuardCallAnalysisBody,
+) -> Result<ToolGuardAnalysis, AppError> {
+    post_json("/v1/tool-guard/calls", &body).await
+}
+
+pub async fn analyze_tool_guard_result(
+    body: ToolGuardResultAnalysisBody,
+) -> Result<ToolGuardAnalysis, AppError> {
+    post_json("/v1/tool-guard/results", &body).await
 }
 
 pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {

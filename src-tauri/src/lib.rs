@@ -13,6 +13,7 @@ pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
+pub mod tool_guard;
 
 use serde::Deserialize;
 use std::sync::Mutex;
