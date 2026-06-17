@@ -10,13 +10,16 @@ import {
   hermesBridgeMessagingPlatforms,
   hermesBridgeSkills,
   hermesBridgeToolsets,
+  getHermesBridgeSkill,
   agentHudHide,
   agentHudShow,
   setHermesAgentCliAccess,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
+  updateHermesBridgeSkill,
   updateHermesBridgeMessagingPlatform,
   type HermesMessagingPlatformInfo,
+  type HermesSkillDocument,
   type HermesSkillInfo,
   type HermesToolsetInfo,
   type HermesFilesystemSnapshot,
@@ -199,6 +202,22 @@ export function AgentSettingsSection() {
     }
   }
 
+  async function openSkillDocument(skill: HermesSkillInfo) {
+    return getHermesBridgeSkill(skill.name);
+  }
+
+  async function saveSkillDocument(
+    skill: HermesSkillInfo,
+    content: string,
+  ): Promise<HermesSkillDocument> {
+    const document = await updateHermesBridgeSkill({
+      name: skill.name,
+      content,
+    });
+    await loadCapabilities();
+    return document;
+  }
+
   async function setToolsetEnabled(
     toolset: HermesToolsetInfo,
     enabled: boolean,
@@ -370,6 +389,8 @@ export function AgentSettingsSection() {
             onToggleSkill={(skill, enabled) =>
               void setSkillEnabled(skill, enabled)
             }
+            onOpenSkill={openSkillDocument}
+            onSaveSkill={saveSkillDocument}
             onToggleToolset={(toolset, enabled) =>
               void setToolsetEnabled(toolset, enabled)
             }

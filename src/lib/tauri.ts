@@ -443,6 +443,12 @@ export type HermesSkillInfo = {
   enabled?: boolean;
 };
 
+export type HermesSkillDocument = {
+  name: string;
+  relativePath: string;
+  content: string;
+};
+
 export type HermesToolsetInfo = {
   name: string;
   label?: string;
@@ -863,6 +869,21 @@ export async function hermesBridgeStatus() {
 
 export async function hermesBridgeSkills() {
   return invoke<HermesSkillInfo[]>("hermes_bridge_skills");
+}
+
+export async function getHermesBridgeSkill(name: string) {
+  return invoke<HermesSkillDocument>("get_hermes_bridge_skill", {
+    request: { name },
+  });
+}
+
+export async function updateHermesBridgeSkill(input: {
+  name: string;
+  content: string;
+}) {
+  return invoke<HermesSkillDocument>("update_hermes_bridge_skill", {
+    request: input,
+  });
 }
 
 export async function toggleHermesBridgeSkill(input: {

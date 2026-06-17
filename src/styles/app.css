@@ -797,6 +797,10 @@ input:focus-visible,
   overflow: hidden;
 }
 
+.agent-skill-editor-panel {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
 .agent-management-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -884,6 +888,10 @@ input:focus-visible,
   cursor: pointer;
 }
 
+.agent-capability-row > button:first-child:disabled {
+  cursor: default;
+}
+
 .agent-capability-row[data-selected="true"] {
   margin: 0 calc(var(--sp-3) * -1);
   border-radius: var(--r-sm);
@@ -926,6 +934,62 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.35;
+}
+
+.agent-skill-editor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agent-skill-editor-header {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-skill-editor-back {
+  width: fit-content;
+}
+
+.agent-skill-editor-heading {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.agent-skill-editor-heading h3 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.agent-skill-editor-heading p {
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.agent-skill-editor-textarea {
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 0;
+  padding: var(--sp-5);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  outline: none;
+}
+
+.agent-skill-editor-textarea:focus {
+  box-shadow: inset 0 0 0 1px var(--ring-focus);
 }
 
 .agent-files-root {

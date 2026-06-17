@@ -41,6 +41,7 @@ const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
@@ -287,6 +288,27 @@ pub struct StartHermesBridgeRequest {
 pub struct ToggleHermesCapabilityRequest {
     pub name: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHermesSkillRequest {
+    pub name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillDocument {
+    pub name: String,
+    pub relative_path: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -745,6 +767,145 @@ pub async fn toggle_hermes_bridge_skill(
         })),
     )
     .await
+}
+
+#[tauri::command]
+pub fn get_hermes_bridge_skill(
+    app: AppHandle,
+    request: HermesSkillRequest,
+) -> Result<HermesSkillDocument, AppError> {
+    let skills_root = resolve_scribe_hermes_home(&app)?.join("skills");
+    let path = resolve_hermes_skill_file_in_root(&skills_root, &request.name)?;
+    let metadata = fs::metadata(&path)
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+    if metadata.len() > HERMES_SKILL_MAX_BYTES as u64 {
+        return Err(AppError::new(
+            "hermes_skill_too_large",
+            "This skill is too large to edit in June.",
+        ));
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+    Ok(HermesSkillDocument {
+        name: request.name.trim().to_string(),
+        relative_path: skill_relative_path(&skills_root, &path)?,
+        content,
+    })
+}
+
+#[tauri::command]
+pub fn update_hermes_bridge_skill(
+    app: AppHandle,
+    request: UpdateHermesSkillRequest,
+) -> Result<HermesSkillDocument, AppError> {
+    if request.content.len() > HERMES_SKILL_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_skill_too_large",
+            "This skill is too large to edit in June.",
+        ));
+    }
+    let skills_root = resolve_scribe_hermes_home(&app)?.join("skills");
+    let path = resolve_hermes_skill_file_in_root(&skills_root, &request.name)?;
+    fs::write(&path, request.content)
+        .map_err(|error| AppError::new("hermes_skill_write_failed", error.to_string()))?;
+    let content = fs::read_to_string(&path)
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+    Ok(HermesSkillDocument {
+        name: request.name.trim().to_string(),
+        relative_path: skill_relative_path(&skills_root, &path)?,
+        content,
+    })
+}
+
+fn resolve_hermes_skill_file_in_root(skills_root: &Path, name: &str) -> Result<PathBuf, AppError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::new(
+            "hermes_skill_name_required",
+            "Skill name is required.",
+        ));
+    }
+    if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err(AppError::new(
+            "hermes_skill_name_invalid",
+            "Skill name must be a single skill id.",
+        ));
+    }
+
+    let root = skills_root
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+    let mut matches = Vec::new();
+    collect_skill_file_matches(&root, name, 0, &mut matches)
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+
+    match matches.len() {
+        0 => Err(AppError::new(
+            "hermes_skill_not_found",
+            format!("Could not find skill \"{name}\"."),
+        )),
+        1 => {
+            let path = matches
+                .remove(0)
+                .canonicalize()
+                .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+            if !path.starts_with(&root) {
+                return Err(AppError::new(
+                    "hermes_skill_path_invalid",
+                    "Skill file is outside the managed skills directory.",
+                ));
+            }
+            Ok(path)
+        }
+        _ => Err(AppError::new(
+            "hermes_skill_ambiguous",
+            format!("More than one skill named \"{name}\" exists."),
+        )),
+    }
+}
+
+fn collect_skill_file_matches(
+    directory: &Path,
+    name: &str,
+    depth: usize,
+    matches: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    if depth > 4 {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_name().to_string_lossy() == name {
+            let skill_file = path.join("SKILL.md");
+            if skill_file.is_file() {
+                matches.push(skill_file);
+            }
+        }
+        collect_skill_file_matches(&path, name, depth + 1, matches)?;
+    }
+    Ok(())
+}
+
+fn skill_relative_path(skills_root: &Path, path: &Path) -> Result<String, AppError> {
+    let root = skills_root
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+    let path = path
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_skill_read_failed", error.to_string()))?;
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().into_owned())
+        .map_err(|_| {
+            AppError::new(
+                "hermes_skill_path_invalid",
+                "Skill file is outside the managed skills directory.",
+            )
+        })
 }
 
 #[derive(Serialize, Clone, Copy)]
@@ -3579,6 +3740,61 @@ mod tests {
         assert!(soul.contains("You are June"));
         assert!(!soul.contains("Seatbelt"));
         assert!(!soul.contains("sandbox"));
+    }
+
+    #[test]
+    fn skill_resolver_finds_root_and_categorized_skills() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let root_skill = home.path().join("dogfood");
+        let categorized_skill = home.path().join("github").join("github-pr-workflow");
+        std::fs::create_dir_all(&root_skill).expect("root skill dir");
+        std::fs::create_dir_all(&categorized_skill).expect("categorized skill dir");
+        std::fs::write(root_skill.join("SKILL.md"), "# Dogfood\n").expect("root skill");
+        std::fs::write(categorized_skill.join("SKILL.md"), "# GitHub PR\n")
+            .expect("categorized skill");
+
+        assert_eq!(
+            resolve_hermes_skill_file_in_root(home.path(), "dogfood")
+                .expect("resolve root")
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("SKILL.md")
+        );
+        assert!(
+            resolve_hermes_skill_file_in_root(home.path(), "github-pr-workflow")
+                .expect("resolve categorized")
+                .ends_with(
+                    Path::new("github")
+                        .join("github-pr-workflow")
+                        .join("SKILL.md")
+                )
+        );
+    }
+
+    #[test]
+    fn skill_resolver_rejects_ambiguous_skill_names() {
+        let home = tempfile::tempdir().expect("tempdir");
+        for category in ["one", "two"] {
+            let dir = home.path().join(category).join("same-name");
+            std::fs::create_dir_all(&dir).expect("skill dir");
+            std::fs::write(dir.join("SKILL.md"), "# Same\n").expect("skill");
+        }
+
+        let err =
+            resolve_hermes_skill_file_in_root(home.path(), "same-name").expect_err("ambiguous");
+
+        assert_eq!(err.code, "hermes_skill_ambiguous");
+    }
+
+    #[test]
+    fn skill_resolver_rejects_path_like_names() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        for name in ["../secret", "github/github-pr-workflow", r"github\skill"] {
+            let err = resolve_hermes_skill_file_in_root(home.path(), name)
+                .expect_err("invalid skill name");
+            assert_eq!(err.code, "hermes_skill_name_invalid");
+        }
     }
 
     #[cfg(target_os = "macos")]
