@@ -522,6 +522,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn note_transcribe_preview_returns_transcript_when_zero_credit_settlement_fails() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            fail_charge: true,
+            ..RecordingOsAccounts::default()
+        });
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let output = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-session-1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+            })
+            .await
+            .expect("preview transcript should not be hidden by zero-credit settlement failure");
+
+        assert_eq!(output.transcript.text, "Transcript");
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert_eq!(transcriber.call_count(), 1);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 0,
+                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
+                        .to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn note_transcribe_preview_denied_authorization_does_not_dispatch_asr() {
         let os_accounts = Arc::new(RecordingOsAccounts {
             allow: false,
@@ -731,6 +789,7 @@ mod tests {
         allow: bool,
         cap: Option<u64>,
         deny_reason: Option<String>,
+        fail_charge: bool,
         events: Mutex<Vec<RecordedCall>>,
     }
 
@@ -740,6 +799,7 @@ mod tests {
                 allow: true,
                 cap: None,
                 deny_reason: None,
+                fail_charge: false,
                 events: Mutex::new(Vec::new()),
             }
         }
@@ -751,6 +811,7 @@ mod tests {
                 allow: true,
                 cap,
                 deny_reason: None,
+                fail_charge: false,
                 events: Mutex::new(Vec::new()),
             }
         }
@@ -789,6 +850,9 @@ mod tests {
                     credits: request.credits.0,
                     idempotency_key: request.idempotency_key,
                 });
+            }
+            if self.fail_charge {
+                return Err(DomainError::UpstreamProvider);
             }
             Ok(Receipt {
                 credits_charged: request.credits,

@@ -143,13 +143,27 @@ impl NoteTranscribeService {
             })
             .await
             .map_err(ServiceError::from);
-        let receipt = charge(ChargeParams {
+        let receipt = match charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
             credits: Credits(0),
             idempotency_key,
         })
-        .await?;
+        .await
+        {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                tracing::warn!(
+                    note_id = %params.note_id,
+                    error = %error,
+                    "note_transcribe: preview zero-credit settlement failed"
+                );
+                Receipt {
+                    credits_charged: Credits(0),
+                    idempotent_replay: false,
+                }
+            }
+        };
         let transcript = transcript_result?;
         tracing::info!(
             note_id = %params.note_id,

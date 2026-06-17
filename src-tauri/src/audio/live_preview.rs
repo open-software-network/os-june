@@ -25,7 +25,7 @@ const PREVIEW_BATCH_BUFFER: usize = 512;
 const PREVIEW_STALE_BATCH_THRESHOLD: usize = PREVIEW_BATCH_BUFFER / 2;
 const PREVIEW_CHUNK_MS: i64 = 8_000;
 const PREVIEW_CONTEXT_TURNS: usize = 3;
-const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.012;
+const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.001;
 const SYSTEM_PREVIEW_POLL_MS: u64 = 500;
 
 #[derive(Debug, Clone, Serialize)]
@@ -720,8 +720,10 @@ mod tests {
     }
 
     #[test]
-    fn silence_gate_skips_quiet_preview_chunks() {
+    fn silence_gate_only_skips_near_zero_preview_chunks() {
         assert!(is_effectively_silent(&[0; 128]));
+        assert!(is_effectively_silent(&[10; 128]));
+        assert!(!is_effectively_silent(&[170; 128]));
         assert!(!is_effectively_silent(&[2_000; 128]));
     }
 
