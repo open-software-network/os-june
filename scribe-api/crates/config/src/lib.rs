@@ -73,7 +73,7 @@ pub struct IssueReportsConfig {
 }
 
 fn default_issue_report_api_url() -> String {
-    "https://api.platform.opensoftware.co".to_string()
+    "https://app.opensoftware.co/api".to_string()
 }
 
 fn default_issue_report_org() -> String {

@@ -480,7 +480,7 @@ mod os_platform_tests {
         let sink = OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config)
             .expect("default June issue report destination plus API key is configured");
 
-        assert_eq!(sink.api_url, "https://api.platform.opensoftware.co");
+        assert_eq!(sink.api_url, "https://app.opensoftware.co/api");
         assert_eq!(sink.org, "open-software");
         assert_eq!(sink.project, "june");
         assert_eq!(sink.label, "bug");

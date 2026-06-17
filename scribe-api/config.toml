@@ -17,7 +17,7 @@ trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba641
 # project. The only per-environment value is the bot user's fellow API key
 # (osk_...), set via SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY. Without it,
 # reports are accepted but land in structured logs only.
-os_platform_api_url = "https://api.platform.opensoftware.co"
+os_platform_api_url = "https://app.opensoftware.co/api"
 os_platform_api_key = ""
 os_platform_org = "open-software"
 os_platform_project = "june"
