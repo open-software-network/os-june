@@ -1,4 +1,10 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useState,
+} from "react";
 
 import { CategoryIcon } from "./CategoryIcon";
 import type { ReportCategoryDef } from "./reportCategory";
@@ -67,7 +73,11 @@ export const CategorySuggestionList = forwardRef<
   }
 
   return (
-    <div className="agent-category-menu" role="listbox" aria-label="Tag this message">
+    <div
+      className="agent-category-menu"
+      role="listbox"
+      aria-label="Tag this message"
+    >
       {items.map((item, index) => (
         <button
           key={item.key}

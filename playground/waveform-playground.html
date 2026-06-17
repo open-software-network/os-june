@@ -336,7 +336,10 @@
         </div>
 
         <div class="group">
-          <h3>Idle pulse <span class="tag">flat row · travels across (timing)</span></h3>
+          <h3>
+            Idle pulse
+            <span class="tag">flat row · travels across (timing)</span>
+          </h3>
           <div id="waveCtl"></div>
         </div>
 
@@ -366,7 +369,8 @@
 
         <div class="group">
           <h3>
-            Spectrum <span class="tag">FFT bands · "shimmer across" (Part 2)</span>
+            Spectrum
+            <span class="tag">FFT bands · "shimmer across" (Part 2)</span>
           </h3>
           <div class="knob">
             <label
@@ -568,7 +572,7 @@
       const LEVEL_HISTORY_LENGTH = 32;
       const IDLE_LEVEL = 0;
 
-      // Andrew's tuned set — now mirrors what shipped to the real HUD
+      // The tuned set — now mirrors what shipped to the real HUD
       // (src/hud.ts, src/lib/audio-meter.ts) so the top A/B row matches the app:
       //   • Whisper≈yell compression: AUDIO_VISUAL_GAIN 16→28, WHISPER_FLOOR 0→0.2.
       //   • Idle carrier "shimmer across" at IDLE_AMP 0.07.
@@ -761,7 +765,8 @@
         // the idle carrier and scope keep working.
         function pushBands(bands) {
           let overall = 0;
-          for (let i = 0; i < count; i++) overall = Math.max(overall, bands[i] || 0);
+          for (let i = 0; i < count; i++)
+            overall = Math.max(overall, bands[i] || 0);
           head = (head + 1) % len;
           history[head] = overall;
           // Apply the lens weights so the silhouette stays CENTER-peaked (middle
@@ -875,7 +880,11 @@
             const bump = Math.exp(
               -(d * d) / (2 * p.IDLE_PULSE_WIDTH * p.IDLE_PULSE_WIDTH),
             );
-            lvl = clamp(lvl + p.IDLE_AMP * bump * (1 - lvl * p.IDLE_DUCKING), 0, 1);
+            lvl = clamp(
+              lvl + p.IDLE_AMP * bump * (1 - lvl * p.IDLE_DUCKING),
+              0,
+              1,
+            );
           }
           if (p.SPEECH_WAVE_AMP > 0) {
             // Bipolar (−1..1): bars rise AND dip as the crest sweeps past their

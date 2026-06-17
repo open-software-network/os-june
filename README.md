@@ -148,7 +148,7 @@ The chain has three public anchors:
    in its OCI `org.opencontainers.image.revision` label.
 2. **Image:** [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml)
    builds and publishes
-   [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-scribe/pkgs/container/scribe-api).
+   [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-june/pkgs/container/scribe-api).
    Deploys pin immutable per-commit tags, and each deployed digest is recorded
    as a signed `deploy/<env>/<sha>` git tag.
 3. **Attestation:** the

@@ -521,7 +521,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     validate_required_secret(
         "os_accounts.app_api_key",
         &config.os_accounts.app_api_key,
-        "osk_REPLACE_ME",
+        "REPLACE_WITH_OS_ACCOUNTS_APP_API_KEY",
     )?;
     validate_positive_config(
         "os_accounts.note_transcribe_preview_max_audio_secs",
@@ -544,7 +544,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         validate_required_secret(
             "upstreams.openai.api_key",
             &config.upstreams.openai.api_key,
-            "sk_REPLACE_ME",
+            "REPLACE_WITH_OPENAI_API_KEY",
         )?;
     }
     if uses_venice {
@@ -664,12 +664,12 @@ mod tests {
     #[test]
     fn config_debug_redacts_secrets() {
         let mut config = AppConfig::default();
-        config.os_accounts.app_api_key = "osk_secret_value".to_string();
+        config.os_accounts.app_api_key = "app_api_key_secret_value".to_string();
         config.upstreams.openai.api_key = "sk-secret".to_string();
         config.upstreams.venice.api_key = "vc-secret".to_string();
         let dump = format!("{config:?}");
         assert!(
-            !dump.contains("osk_secret_value"),
+            !dump.contains("app_api_key_secret_value"),
             "app_api_key leaked in Debug: {dump}"
         );
         assert!(!dump.contains("sk-secret"));

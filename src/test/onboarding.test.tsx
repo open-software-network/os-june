@@ -58,7 +58,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 const account: AccountStatus = {
   signedIn: true,
   configured: true,
-  user: { id: "u1", handle: "gaut", displayName: "Gaut Tester" },
+  user: { id: "u1", handle: "casey", displayName: "Casey Tester" },
   subscription: { subscribed: true, status: "trialing" },
 };
 

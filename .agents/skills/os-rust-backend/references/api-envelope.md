@@ -38,7 +38,7 @@ impl<T: ToSchema> ApiResponse<T> {
 ### Success
 
 ```json
-{ "data": { "id": "usr_abc", "handle": "junho" }, "success": true }
+{ "data": { "id": "usr_abc", "handle": "alex" }, "success": true }
 ```
 
 ### Success with a list
@@ -188,7 +188,7 @@ Two rules baked into the design:
 
 ## What goes in `data`?
 
-- A single object: `{ id: "usr_abc", handle: "junho" }`.
+- A single object: `{ id: "usr_abc", handle: "alex" }`.
 - A list: `[ { ... }, { ... } ]`.
 - An empty list when there are no items: `[]`. **Not** `null`.
 - For mutating endpoints with no useful payload: `{ ok: true }` or the affected

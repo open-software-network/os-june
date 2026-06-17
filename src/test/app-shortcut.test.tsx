@@ -206,14 +206,14 @@ describe("App shortcuts", () => {
     mocks.osAccountsStatus.mockResolvedValue({
       signedIn: true,
       configured: true,
-      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
       balance: { usdMillis: 1200 },
       subscription: { subscribed: true, status: "active" },
     });
     mocks.osAccountsLogin.mockResolvedValue({
       signedIn: true,
       configured: true,
-      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
       balance: { usdMillis: 1200 },
       subscription: { subscribed: true, status: "active" },
     });
@@ -469,7 +469,7 @@ describe("App shortcuts", () => {
     resolveStatus?.({
       signedIn: true,
       configured: true,
-      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
       balance: { usdMillis: 1200 },
       subscription: { subscribed: true, status: "active" },
     });

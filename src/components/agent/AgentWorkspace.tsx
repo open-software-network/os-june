@@ -4704,7 +4704,7 @@ function PrivacyModeBadge({ badge }: { badge?: ModelPrivacyBadge }) {
 // honest unit to label.
 function UnrestrictedBadge() {
   const description =
-    "This session runs without the file sandbox — June can change any file your account can. Sandboxed sessions keep their jail and run alongside on a separate, jailed runtime.";
+    "This session runs without the file sandbox: June can change any file your account can. Sandboxed sessions keep their jail and run alongside on a separate, jailed runtime.";
   return (
     <HoverTip
       tip={description}

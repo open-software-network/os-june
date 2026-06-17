@@ -949,12 +949,20 @@ describe("Agent chat runtime", () => {
         {
           type: "subagent.tool",
           receivedAt: "2026-06-04T10:00:01.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page", tool_preview: "edit privacy.tsx" },
+          payload: {
+            subagent_id: "sa-1",
+            goal: "Write the privacy page",
+            tool_preview: "edit privacy.tsx",
+          },
         },
         {
           type: "subagent.complete",
           receivedAt: "2026-06-04T10:00:02.000Z",
-          payload: { subagent_id: "sa-1", goal: "Write the privacy page", summary: "Done: 1 file written" },
+          payload: {
+            subagent_id: "sa-1",
+            goal: "Write the privacy page",
+            summary: "Done: 1 file written",
+          },
         },
       ],
     );
@@ -973,8 +981,12 @@ describe("Agent chat runtime", () => {
       status: "running",
     });
     // The first subagent's row accumulated its activity then its summary.
-    expect((tools?.[0] as { text?: string }).text).toContain("edit privacy.tsx");
-    expect((tools?.[0] as { text?: string }).text).toContain("Done: 1 file written");
+    expect((tools?.[0] as { text?: string }).text).toContain(
+      "edit privacy.tsx",
+    );
+    expect((tools?.[0] as { text?: string }).text).toContain(
+      "Done: 1 file written",
+    );
   });
 
   it("keeps the goal label when a later subagent event omits it", () => {

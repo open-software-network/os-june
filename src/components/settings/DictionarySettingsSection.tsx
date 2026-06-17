@@ -239,7 +239,7 @@ function DictionaryEntryDialog({
             className="dialog-input"
             value={phrase}
             onChange={(event) => onChange(event.currentTarget.value)}
-            placeholder="e.g. Anthropic, ARR, Junho Hong"
+            placeholder="e.g. Anthropic, ARR, Jane Doe"
             autoComplete="off"
             maxLength={160}
             aria-invalid={error ? true : undefined}
