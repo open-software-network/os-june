@@ -283,8 +283,10 @@ async fn run_system_live_preview_worker(
     let mut current_format = None;
 
     while !cancelled.load(Ordering::Acquire) {
+        let mut had_samples = false;
         match reader.read_new_samples() {
             Ok(Some(read)) if !read.samples.is_empty() => {
+                had_samples = true;
                 let format = (read.sample_rate, read.channels);
                 if current_format != Some(format) {
                     current_format = Some(format);
@@ -348,6 +350,9 @@ async fn run_system_live_preview_worker(
             }
         }
 
+        if had_samples {
+            continue;
+        }
         tokio::time::sleep(Duration::from_millis(SYSTEM_PREVIEW_POLL_MS)).await;
     }
 }
