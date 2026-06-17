@@ -1,7 +1,10 @@
 use crate::{
     app_paths::AppPaths,
     audio::{
-        live_preview::{start_live_transcript_preview, LivePreviewController, LivePreviewSink},
+        live_preview::{
+            start_live_transcript_preview, start_system_live_transcript_preview,
+            LivePreviewController, LivePreviewSink, SystemLivePreviewController,
+        },
         system_macos::SystemAudioCapture,
     },
     domain::types::{
@@ -78,6 +81,8 @@ struct ActiveRecording {
     writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     stats: Arc<Mutex<CaptureStats>>,
     live_preview: Option<LivePreviewController>,
+    system_live_preview: Option<SystemLivePreviewController>,
+    live_preview_enabled: bool,
     _stream: cpal::Stream,
 }
 
@@ -179,13 +184,15 @@ pub fn start_capture(
     let writer_for_callback = Arc::clone(&writer);
     let stats_for_callback = Arc::clone(&stats);
     let paused_for_callback = Arc::clone(&paused_flag);
-    let live_preview = if crate::scribe_api::configured() && crate::os_accounts::cached_signed_in()
-    {
+    let live_preview_available =
+        crate::scribe_api::configured() && crate::os_accounts::cached_signed_in();
+    let live_preview = if live_preview_available {
         Some(start_live_transcript_preview(
-            app,
+            app.clone(),
             note_id.clone(),
             session_id.clone(),
             source_mode,
+            RecordingSource::Microphone,
             sample_rate,
             channels,
         ))
@@ -247,6 +254,7 @@ pub fn start_capture(
         }
     }
     .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
+    let mut system_live_preview = None;
     let system_capture = if let (Some(system_partial_path), Some(system_final_path)) =
         (system_partial_path.clone(), system_final_path.clone())
     {
@@ -255,7 +263,18 @@ pub fn start_capture(
             system_final_path.clone(),
             Duration::ZERO,
         ) {
-            Ok(capture) => Some(capture),
+            Ok(capture) => {
+                if live_preview_available {
+                    system_live_preview = Some(start_system_live_transcript_preview(
+                        app.clone(),
+                        note_id.clone(),
+                        session_id.clone(),
+                        source_mode,
+                        system_partial_path,
+                    ));
+                }
+                Some(capture)
+            }
             Err(error) => {
                 if let Ok(mut writer_guard) = writer.lock() {
                     let _ = writer_guard.take();
@@ -267,6 +286,7 @@ pub fn start_capture(
     } else {
         None
     };
+    let live_preview_enabled = live_preview.is_some() || system_live_preview.is_some();
     stream
         .play()
         .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
@@ -285,6 +305,7 @@ pub fn start_capture(
         },
         silence_warning: false,
         bytes_written: 0,
+        live_preview_enabled,
         sources: source_statuses(
             source_mode,
             RecordingState::Recording,
@@ -313,6 +334,8 @@ pub fn start_capture(
         writer,
         stats,
         live_preview,
+        system_live_preview,
+        live_preview_enabled,
         _stream: stream,
     });
 
@@ -421,6 +444,7 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
         elapsed_ms: status.elapsed_ms,
         device_label: None,
         level: status.level,
+        live_preview_enabled: recording.live_preview_enabled,
         sources: status.sources,
         warnings: status.warnings,
     };
@@ -435,12 +459,16 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
         writer,
         paused_flag,
         live_preview,
+        system_live_preview,
         _stream,
         ..
     } = recording;
     paused_flag.store(true, Ordering::Release);
     if let Some(live_preview) = live_preview {
         live_preview.cancel();
+    }
+    if let Some(system_live_preview) = system_live_preview {
+        system_live_preview.cancel();
     }
     drop(_stream);
     let microphone_finalized = (|| -> Result<(), AppError> {
@@ -632,6 +660,7 @@ impl ActiveRecording {
             silence_warning: self.started.elapsed() >= Duration::from_secs(10)
                 && rms < DEFAULT_SILENCE_THRESHOLD,
             bytes_written,
+            live_preview_enabled: self.live_preview_enabled,
             sources: source_statuses(
                 self.source_mode,
                 state,

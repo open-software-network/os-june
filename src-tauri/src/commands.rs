@@ -679,6 +679,7 @@ pub async fn start_recording(
         elapsed_ms: started.status.elapsed_ms,
         device_label: started.device_label,
         level: started.status.level,
+        live_preview_enabled: started.status.live_preview_enabled,
         sources: started.status.sources,
         warnings: Vec::new(),
     })

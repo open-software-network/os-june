@@ -243,6 +243,7 @@ export type RecordingStatusDto = {
   level: AudioLevelDto;
   silenceWarning: boolean;
   bytesWritten: number;
+  livePreviewEnabled?: boolean;
   sources?: SourceStatusDto[];
   warnings?: SourceWarningDto[];
 };
@@ -263,6 +264,7 @@ export type RecordingSessionDto = {
   elapsedMs: number;
   deviceLabel?: string;
   level: AudioLevelDto;
+  livePreviewEnabled?: boolean;
   sources?: SourceStatusDto[];
   warnings?: SourceWarningDto[];
 };

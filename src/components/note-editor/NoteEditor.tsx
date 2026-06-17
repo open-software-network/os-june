@@ -259,7 +259,8 @@ export function NoteEditor({
   const showTranscriptProcessing =
     processingLock && transcriptText.trim().length > 0;
   const showLivePreviewWaiting =
-    recordingActive && liveTranscriptTurns.length === 0;
+    recordingForNote?.livePreviewEnabled === true &&
+    liveTranscriptTurns.length === 0;
   // Processing runs in the background and is queued per note, so a recording
   // that's still transcribing/generating no longer blocks starting another —
   // you can stack messages and they process in order. The record button only

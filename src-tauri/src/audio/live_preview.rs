@@ -6,11 +6,14 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 use std::{
     collections::VecDeque,
+    fs::File,
+    io::{ErrorKind, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -23,6 +26,7 @@ const PREVIEW_STALE_BATCH_THRESHOLD: usize = PREVIEW_BATCH_BUFFER / 2;
 const PREVIEW_CHUNK_MS: i64 = 8_000;
 const PREVIEW_CONTEXT_TURNS: usize = 3;
 const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.012;
+const SYSTEM_PREVIEW_POLL_MS: u64 = 500;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,11 +77,16 @@ pub struct LivePreviewController {
     sink: LivePreviewSink,
 }
 
+pub struct SystemLivePreviewController {
+    cancelled: Arc<AtomicBool>,
+}
+
 struct LivePreviewWorkerParams {
     app: AppHandle,
     note_id: String,
     session_id: String,
     source_mode: RecordingSourceMode,
+    source: RecordingSource,
     sample_rate: u32,
     channels: u16,
     receiver: mpsc::Receiver<LivePreviewBatch>,
@@ -88,6 +97,7 @@ struct PreviewChunkRequest<'a> {
     note_id: &'a str,
     session_id: &'a str,
     source_mode: RecordingSourceMode,
+    source: RecordingSource,
     segment_id: &'a str,
     start_ms: i64,
     end_ms: i64,
@@ -113,11 +123,24 @@ impl Drop for LivePreviewController {
     }
 }
 
+impl SystemLivePreviewController {
+    pub fn cancel(self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for SystemLivePreviewController {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
 pub fn start_live_transcript_preview(
     app: AppHandle,
     note_id: String,
     session_id: String,
     source_mode: RecordingSourceMode,
+    source: RecordingSource,
     sample_rate: u32,
     channels: u16,
 ) -> LivePreviewController {
@@ -130,6 +153,7 @@ pub fn start_live_transcript_preview(
             note_id,
             session_id,
             source_mode,
+            source,
             sample_rate: sample_rate.max(1),
             channels: channels.max(1),
             receiver,
@@ -146,12 +170,36 @@ pub fn start_live_transcript_preview(
     }
 }
 
+pub fn start_system_live_transcript_preview(
+    app: AppHandle,
+    note_id: String,
+    session_id: String,
+    source_mode: RecordingSourceMode,
+    partial_path: PathBuf,
+) -> SystemLivePreviewController {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    tauri::async_runtime::spawn(async move {
+        run_system_live_preview_worker(
+            app,
+            note_id,
+            session_id,
+            source_mode,
+            partial_path,
+            worker_cancelled,
+        )
+        .await;
+    });
+    SystemLivePreviewController { cancelled }
+}
+
 async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
     let LivePreviewWorkerParams {
         app,
         note_id,
         session_id,
         source_mode,
+        source,
         sample_rate,
         channels,
         mut receiver,
@@ -191,12 +239,13 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
                 segment_index += 1;
                 continue;
             }
-            let segment_id = format!("microphone-{segment_index}");
+            let segment_id = preview_segment_id(source, segment_index);
             let context = preview_context(&recent_preview_text);
             if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                 note_id: &note_id,
                 session_id: &session_id,
                 source_mode,
+                source,
                 segment_id: &segment_id,
                 start_ms,
                 end_ms,
@@ -218,6 +267,91 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
     }
 }
 
+async fn run_system_live_preview_worker(
+    app: AppHandle,
+    note_id: String,
+    session_id: String,
+    source_mode: RecordingSourceMode,
+    partial_path: PathBuf,
+    cancelled: Arc<AtomicBool>,
+) {
+    let mut reader = WavTailReader::new(partial_path);
+    let mut buffer = Vec::new();
+    let mut buffer_start_sample = 0_u64;
+    let mut recent_preview_text = VecDeque::with_capacity(PREVIEW_CONTEXT_TURNS);
+    let mut segment_index = 0_i64;
+    let mut current_format = None;
+
+    while !cancelled.load(Ordering::Acquire) {
+        match reader.read_new_samples() {
+            Ok(Some(read)) if !read.samples.is_empty() => {
+                let format = (read.sample_rate, read.channels);
+                if current_format != Some(format) {
+                    current_format = Some(format);
+                    buffer.clear();
+                    buffer_start_sample = read.start_sample;
+                }
+
+                let expected_start = buffer_start_sample.saturating_add(buffer.len() as u64);
+                if buffer.is_empty() || read.start_sample != expected_start {
+                    buffer.clear();
+                    buffer_start_sample = read.start_sample;
+                }
+                buffer.extend(read.samples);
+
+                let chunk_samples =
+                    samples_for_ms(read.sample_rate, read.channels, PREVIEW_CHUNK_MS);
+                while chunk_samples > 0 && buffer.len() >= chunk_samples {
+                    let chunk_start_sample = buffer_start_sample;
+                    let samples = buffer.drain(..chunk_samples).collect::<Vec<_>>();
+                    buffer_start_sample = buffer_start_sample.saturating_add(chunk_samples as u64);
+                    let start_ms =
+                        sample_offset_ms(chunk_start_sample, read.sample_rate, read.channels);
+                    let end_ms =
+                        sample_offset_ms(buffer_start_sample, read.sample_rate, read.channels);
+                    if is_effectively_silent(&samples) {
+                        segment_index += 1;
+                        continue;
+                    }
+
+                    let segment_id = preview_segment_id(RecordingSource::System, segment_index);
+                    let context = preview_context(&recent_preview_text);
+                    if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
+                        note_id: &note_id,
+                        session_id: &session_id,
+                        source_mode,
+                        source: RecordingSource::System,
+                        segment_id: &segment_id,
+                        start_ms,
+                        end_ms,
+                        sample_rate: read.sample_rate,
+                        channels: read.channels,
+                        samples: &samples,
+                        context,
+                    })
+                    .await
+                    {
+                        if cancelled.load(Ordering::Acquire) {
+                            return;
+                        }
+                        remember_preview_text(&mut recent_preview_text, &event.text);
+                        let _ = app.emit(LIVE_TRANSCRIPT_EVENT, event);
+                    }
+                    segment_index += 1;
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => {}
+            Err(error) => {
+                eprintln!("live transcript preview failed to read system audio: {error}");
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(SYSTEM_PREVIEW_POLL_MS)).await;
+    }
+}
+
 fn newest_preview_batch(
     mut batch: LivePreviewBatch,
     receiver: &mut mpsc::Receiver<LivePreviewBatch>,
@@ -232,6 +366,170 @@ fn should_drop_stale_batches(queued_batches: usize) -> bool {
     queued_batches >= PREVIEW_STALE_BATCH_THRESHOLD
 }
 
+struct WavTailRead {
+    start_sample: u64,
+    sample_rate: u32,
+    channels: u16,
+    samples: Vec<i16>,
+}
+
+struct WavTailReader {
+    path: PathBuf,
+    data_offset: Option<u64>,
+    sample_rate: u32,
+    channels: u16,
+    next_byte_offset: u64,
+}
+
+struct WavLayout {
+    data_offset: u64,
+    sample_rate: u32,
+    channels: u16,
+}
+
+impl WavTailReader {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            data_offset: None,
+            sample_rate: 0,
+            channels: 0,
+            next_byte_offset: 0,
+        }
+    }
+
+    fn read_new_samples(&mut self) -> std::io::Result<Option<WavTailRead>> {
+        if self.data_offset.is_none() {
+            let Some(layout) = read_wav_layout(&self.path)? else {
+                return Ok(None);
+            };
+            self.data_offset = Some(layout.data_offset);
+            self.sample_rate = layout.sample_rate;
+            self.channels = layout.channels;
+            self.next_byte_offset = layout.data_offset;
+        }
+
+        let data_offset = self.data_offset.unwrap_or(0);
+        let file_len = std::fs::metadata(&self.path)?.len();
+        if file_len < data_offset || file_len < self.next_byte_offset {
+            self.data_offset = None;
+            self.next_byte_offset = 0;
+            return Ok(None);
+        }
+
+        let available_bytes = file_len.saturating_sub(self.next_byte_offset);
+        let aligned_bytes = available_bytes - (available_bytes % 2);
+        if aligned_bytes == 0 {
+            return Ok(None);
+        }
+
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(self.next_byte_offset))?;
+        let mut bytes = vec![0_u8; aligned_bytes as usize];
+        match file.read_exact(&mut bytes) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+            Err(error) => return Err(error),
+        }
+
+        let start_sample = self.next_byte_offset.saturating_sub(data_offset) / 2;
+        self.next_byte_offset = self.next_byte_offset.saturating_add(aligned_bytes);
+        let samples = bytes
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+
+        Ok(Some(WavTailRead {
+            start_sample,
+            sample_rate: self.sample_rate.max(1),
+            channels: self.channels.max(1),
+            samples,
+        }))
+    }
+}
+
+fn read_wav_layout(path: &Path) -> std::io::Result<Option<WavLayout>> {
+    const HEADER_SCAN_LIMIT: u64 = 64 * 1024;
+
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < 44 {
+        return Ok(None);
+    }
+
+    let scan_len = file_len.min(HEADER_SCAN_LIMIT) as usize;
+    let mut bytes = vec![0_u8; scan_len];
+    file.read_exact(&mut bytes)?;
+    if bytes.get(0..4) != Some(&b"RIFF"[..]) || bytes.get(8..12) != Some(&b"WAVE"[..]) {
+        return Ok(None);
+    }
+
+    let mut offset = 12_usize;
+    let mut sample_rate = None;
+    let mut channels = None;
+    let mut data_offset = None;
+
+    while offset + 8 <= bytes.len() {
+        let chunk_id = &bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes([
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ]) as usize;
+        let chunk_data_start = offset + 8;
+
+        if chunk_id == b"fmt " {
+            if chunk_data_start + 16 > bytes.len() {
+                return Ok(None);
+            }
+            let audio_format =
+                u16::from_le_bytes([bytes[chunk_data_start], bytes[chunk_data_start + 1]]);
+            let parsed_channels =
+                u16::from_le_bytes([bytes[chunk_data_start + 2], bytes[chunk_data_start + 3]]);
+            let parsed_sample_rate = u32::from_le_bytes([
+                bytes[chunk_data_start + 4],
+                bytes[chunk_data_start + 5],
+                bytes[chunk_data_start + 6],
+                bytes[chunk_data_start + 7],
+            ]);
+            let bits_per_sample =
+                u16::from_le_bytes([bytes[chunk_data_start + 14], bytes[chunk_data_start + 15]]);
+            if !matches!(audio_format, 1 | 0xfffe)
+                || bits_per_sample != 16
+                || parsed_channels == 0
+                || parsed_sample_rate == 0
+            {
+                return Ok(None);
+            }
+            channels = Some(parsed_channels);
+            sample_rate = Some(parsed_sample_rate);
+        } else if chunk_id == b"data" {
+            data_offset = Some(chunk_data_start as u64);
+            break;
+        }
+
+        let padded_size = chunk_size.saturating_add(chunk_size % 2);
+        offset = chunk_data_start.saturating_add(padded_size);
+    }
+
+    let Some(data_offset) = data_offset else {
+        return Ok(None);
+    };
+    let Some(sample_rate) = sample_rate else {
+        return Ok(None);
+    };
+    let Some(channels) = channels else {
+        return Ok(None);
+    };
+
+    Ok(Some(WavLayout {
+        data_offset,
+        sample_rate,
+        channels,
+    }))
+}
+
 async fn transcribe_preview_chunk(
     request: PreviewChunkRequest<'_>,
 ) -> Option<LiveTranscriptEventDto> {
@@ -239,6 +537,7 @@ async fn transcribe_preview_chunk(
         note_id,
         session_id,
         source_mode,
+        source,
         segment_id,
         start_ms,
         end_ms,
@@ -275,7 +574,7 @@ async fn transcribe_preview_chunk(
                 note_id: note_id.to_string(),
                 session_id: session_id.to_string(),
                 source_mode,
-                source: RecordingSource::Microphone,
+                source,
                 segment_id: segment_id.to_string(),
                 start_ms,
                 end_ms,
@@ -301,6 +600,10 @@ fn preview_chunk_path(session_id: &str, segment_id: &str) -> PathBuf {
         segment_id,
         Uuid::new_v4()
     ))
+}
+
+fn preview_segment_id(source: RecordingSource, segment_index: i64) -> String {
+    format!("{}-{segment_index}", source.as_db())
 }
 
 fn write_preview_wav(
@@ -386,10 +689,13 @@ fn remember_preview_text(recent_preview_text: &mut VecDeque<String>, text: &str)
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::types::RecordingSource;
+
     use super::{
-        duration_ms, is_effectively_silent, newest_preview_batch, preview_context,
-        remember_preview_text, sample_offset_ms, samples_for_ms, should_drop_stale_batches,
-        LivePreviewBatch, LivePreviewSink, PREVIEW_STALE_BATCH_THRESHOLD,
+        duration_ms, is_effectively_silent, newest_preview_batch, preview_chunk_path,
+        preview_context, preview_segment_id, read_wav_layout, remember_preview_text,
+        sample_offset_ms, samples_for_ms, should_drop_stale_batches, write_preview_wav,
+        LivePreviewBatch, LivePreviewSink, WavTailReader, PREVIEW_STALE_BATCH_THRESHOLD,
     };
     use std::{
         collections::VecDeque,
@@ -499,5 +805,46 @@ mod tests {
         assert!(!context.contains("first"));
         assert!(context.contains("second\nthird\nfourth"));
         assert!(context.contains("Do not repeat it."));
+    }
+
+    #[test]
+    fn preview_segment_ids_include_audio_source() {
+        assert_eq!(
+            preview_segment_id(RecordingSource::Microphone, 7),
+            "microphone-7"
+        );
+        assert_eq!(preview_segment_id(RecordingSource::System, 3), "system-3");
+    }
+
+    #[test]
+    fn wav_tail_reader_reads_samples_once() {
+        let path = preview_chunk_path("tail-test", "reader");
+        let samples = vec![1, -2, 300, -400];
+        write_preview_wav(&path, 16_000, 2, &samples).expect("write wav");
+
+        let mut reader = WavTailReader::new(path.clone());
+        let read = reader
+            .read_new_samples()
+            .expect("read samples")
+            .expect("samples");
+
+        assert_eq!(read.start_sample, 0);
+        assert_eq!(read.sample_rate, 16_000);
+        assert_eq!(read.channels, 2);
+        assert_eq!(read.samples, samples);
+        assert!(reader.read_new_samples().expect("read none").is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn wav_layout_waits_for_complete_header() {
+        let path = preview_chunk_path("tail-test", "incomplete");
+        std::fs::write(&path, b"RIFF").expect("write incomplete wav");
+
+        let layout = read_wav_layout(&path).expect("read layout");
+
+        assert!(layout.is_none());
+        let _ = std::fs::remove_file(path);
     }
 }

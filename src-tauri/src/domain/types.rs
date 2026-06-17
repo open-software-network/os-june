@@ -351,6 +351,8 @@ pub struct RecordingSessionDto {
     pub device_label: Option<String>,
     pub level: AudioLevelDto,
     #[serde(default)]
+    pub live_preview_enabled: bool,
+    #[serde(default)]
     pub sources: Vec<SourceStatusDto>,
     #[serde(default)]
     pub warnings: Vec<SourceWarningDto>,
@@ -368,6 +370,8 @@ pub struct RecordingStatusDto {
     pub level: AudioLevelDto,
     pub silence_warning: bool,
     pub bytes_written: i64,
+    #[serde(default)]
+    pub live_preview_enabled: bool,
     #[serde(default)]
     pub sources: Vec<SourceStatusDto>,
     #[serde(default)]

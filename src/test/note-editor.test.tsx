@@ -198,6 +198,43 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Live preview")).toBeInTheDocument();
   });
 
+  it("only shows the live preview waiting state when preview is enabled", () => {
+    const recordingStatus = {
+      sessionId: "session-1",
+      state: "recording" as const,
+      elapsedMs: 8000,
+      level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+      silenceWarning: false,
+      bytesWritten: 4096,
+    };
+    const { rerender } = render(
+      <NoteEditor
+        {...props}
+        note={note({ activeTab: "transcription" })}
+        recordingStatus={recordingStatus}
+      />,
+    );
+
+    expect(
+      screen.queryByText("Listening for transcript preview..."),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <NoteEditor
+        {...props}
+        note={note({ activeTab: "transcription" })}
+        recordingStatus={{
+          ...recordingStatus,
+          livePreviewEnabled: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Listening for transcript preview...",
+    );
+  });
+
   it("shows transcript progress while retrying over existing turns", () => {
     render(
       <NoteEditor

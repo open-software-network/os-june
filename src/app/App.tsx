@@ -3371,6 +3371,7 @@ function recordingToStatus(recording: {
   state: RecordingStatusDto["state"];
   elapsedMs: number;
   level: RecordingStatusDto["level"];
+  livePreviewEnabled?: RecordingStatusDto["livePreviewEnabled"];
   sources?: RecordingStatusDto["sources"];
   warnings?: RecordingStatusDto["warnings"];
 }): RecordingStatusDto {
@@ -3383,6 +3384,7 @@ function recordingToStatus(recording: {
     level: recording.level,
     silenceWarning: false,
     bytesWritten: 0,
+    livePreviewEnabled: recording.livePreviewEnabled ?? false,
     sources: recording.sources,
     warnings: recording.warnings,
   };
@@ -3424,6 +3426,7 @@ function startingRecordingStatus(
     level: { peak: 0, rms: 0, recentPeaks: [] },
     silenceWarning: false,
     bytesWritten: 0,
+    livePreviewEnabled: false,
     sources,
     warnings: [],
   };
