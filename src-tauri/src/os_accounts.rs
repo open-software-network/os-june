@@ -19,7 +19,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 #[cfg(debug_assertions)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -326,12 +326,12 @@ pub fn load_local_env() {
 
 /// Two slots, both populated only while a login is in flight:
 /// - `cancel`: drained by `os_accounts_cancel_login` to abort the wait.
-/// - `callback`: drained by the deep-link `on_open_url` handler (release
-///   builds only — dev uses a loopback listener, no slot needed).
+/// - `callback`: receives every auth deep-link callback while the release
+///   login flow validates `state`; dev uses a loopback listener instead.
 #[derive(Default)]
 pub struct LoginFlow {
     cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    callback: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
+    callback: std::sync::Mutex<Option<mpsc::UnboundedSender<String>>>,
 }
 
 #[tauri::command]
@@ -432,9 +432,8 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
             let _ = sender.send(());
         }
     }
-    // Dropping any pending callback sender causes the deep-link wait in
-    // release builds to resolve with an Err, which the select! arm then
-    // surfaces as the cancel error. In dev the slot is unused.
+    // Drop any pending callback sender too. In release the cancel branch wins
+    // the select; in dev the slot is unused.
     if let Ok(mut slot) = flow.callback.lock() {
         slot.take();
     }
@@ -706,11 +705,12 @@ pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppErro
     }
 }
 
-/// Register the deep-link handler at app setup. Drains any in-flight
-/// login's callback slot when an `osscribe://auth/callback?...` URL
-/// arrives — works in both cold-launch (OS starts the app with the URL)
-/// and warm-launch (app already running, OS hands the URL to the existing
-/// instance via tauri-plugin-single-instance's deep-link feature).
+/// Register the deep-link handler at app setup. Forwards every exact
+/// `osscribe://auth/callback?...` URL to any in-flight login so the login
+/// flow can validate `state` before accepting it. Works in both cold-launch
+/// (OS starts the app with the URL) and warm-launch (app already running, OS
+/// hands the URL to the existing instance via tauri-plugin-single-instance's
+/// deep-link feature).
 ///
 /// Safe to call in dev too; the loopback flow doesn't use the callback
 /// slot, so the handler just never fires there.
@@ -753,10 +753,14 @@ pub fn setup_deep_link(app: &tauri::App) {
         let Some(flow) = app_handle.try_state::<LoginFlow>() else {
             return;
         };
-        // Extract the sender into an owned `Option` so the MutexGuard is
-        // dropped before `flow` falls out of scope at the closure's end —
-        // avoids an E0597 drop-order race on the temporary if-let.
-        let tx = flow.callback.lock().ok().and_then(|mut slot| slot.take());
+        // Clone the sender instead of draining it. A stray webpage can open a
+        // custom-scheme callback with the wrong OAuth state; the login flow
+        // ignores that URL and keeps waiting for the real provider callback.
+        let tx = flow
+            .callback
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().cloned());
         if let Some(tx) = tx {
             let _ = tx.send(url_str);
         }
@@ -808,7 +812,7 @@ async fn await_authorization_code(
     #[cfg(not(debug_assertions))]
     {
         let _ = cfg.loopback_port; // unused in release; keep the borrow shape
-        let (callback_tx, callback_rx) = tokio::sync::oneshot::channel::<String>();
+        let (callback_tx, mut callback_rx) = mpsc::unbounded_channel::<String>();
         if let Ok(mut slot) = flow.callback.lock() {
             *slot = Some(callback_tx);
         }
@@ -829,23 +833,12 @@ async fn await_authorization_code(
         }
 
         let outcome = tokio::select! {
-            result = tokio::time::timeout(LOGIN_TIMEOUT, callback_rx) => {
+            result = tokio::time::timeout(
+                LOGIN_TIMEOUT,
+                await_valid_callback_url(&mut callback_rx, csrf),
+            ) => {
                 match result {
-                    Ok(Ok(url)) => {
-                        let (code, state) = parse_callback_query(&url);
-                        if state.as_deref() != Some(csrf) {
-                            Err(AppError::new(
-                                "state_mismatch",
-                                "Login response failed verification. Please try again.",
-                            ))
-                        } else {
-                            code.ok_or_else(|| AppError::new(
-                                "missing_code",
-                                "Login response was missing an authorization code.",
-                            ))
-                        }
-                    }
-                    Ok(Err(_)) => Err(AppError::new("login_canceled", "Sign-in canceled.")),
+                    Ok(result) => result,
                     Err(_) => Err(AppError::new(
                         "login_timed_out",
                         "Login timed out. Please try again.",
@@ -920,27 +913,31 @@ async fn await_callback(listener: &TcpListener, expected_state: &str) -> Result<
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("");
 
-        if !path.starts_with("/callback") {
+        if !is_loopback_callback_path(path) {
             write_http(&mut stream, "404 Not Found", "Not found").await;
             continue;
         }
 
-        let (code, state) = parse_callback_query(path);
-        write_http(&mut stream, "200 OK", SUCCESS_BODY).await;
-
-        if state.as_deref() != Some(expected_state) {
-            return Err(AppError::new(
-                "state_mismatch",
-                "Login response failed verification. Please try again.",
-            ));
+        match validate_callback_code(path, expected_state) {
+            CallbackCode::Ignore => {
+                write_http(&mut stream, "400 Bad Request", "Invalid login callback").await;
+                continue;
+            }
+            CallbackCode::MissingCode => {
+                write_http(&mut stream, "400 Bad Request", "Missing authorization code").await;
+                return Err(missing_code_error());
+            }
+            CallbackCode::Code(code) => {
+                write_http(&mut stream, "200 OK", SUCCESS_BODY).await;
+                return Ok(code);
+            }
         }
-        return code.ok_or_else(|| {
-            AppError::new(
-                "missing_code",
-                "Login response was missing an authorization code.",
-            )
-        });
     }
+}
+
+#[cfg(debug_assertions)]
+fn is_loopback_callback_path(path: &str) -> bool {
+    path.split_once('?').map_or(path, |(path, _query)| path) == "/callback"
 }
 
 #[cfg(debug_assertions)]
@@ -971,6 +968,42 @@ fn parse_callback_query(path: &str) -> (Option<String>, Option<String>) {
         }
     }
     (code, state)
+}
+
+enum CallbackCode {
+    Ignore,
+    MissingCode,
+    Code(String),
+}
+
+fn validate_callback_code(path: &str, expected_state: &str) -> CallbackCode {
+    let (code, state) = parse_callback_query(path);
+    if state.as_deref() != Some(expected_state) {
+        return CallbackCode::Ignore;
+    }
+    code.map_or(CallbackCode::MissingCode, CallbackCode::Code)
+}
+
+#[cfg(any(not(debug_assertions), test))]
+async fn await_valid_callback_url(
+    callback_rx: &mut mpsc::UnboundedReceiver<String>,
+    expected_state: &str,
+) -> Result<String, AppError> {
+    while let Some(url) = callback_rx.recv().await {
+        match validate_callback_code(&url, expected_state) {
+            CallbackCode::Ignore => continue,
+            CallbackCode::MissingCode => return Err(missing_code_error()),
+            CallbackCode::Code(code) => return Ok(code),
+        }
+    }
+    Err(AppError::new("login_canceled", "Sign-in canceled."))
+}
+
+fn missing_code_error() -> AppError {
+    AppError::new(
+        "missing_code",
+        "Login response was missing an authorization code.",
+    )
 }
 
 fn http_client() -> &'static reqwest::Client {
@@ -1361,4 +1394,54 @@ fn browser_open_command(url: &str) -> std::process::Command {
     let mut command = std::process::Command::new("xdg-open");
     command.arg(url);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callback_validation_ignores_wrong_state() {
+        assert!(matches!(
+            validate_callback_code("osscribe://auth/callback?code=bad&state=wrong", "expected"),
+            CallbackCode::Ignore
+        ));
+    }
+
+    #[test]
+    fn callback_validation_accepts_matching_state() {
+        assert!(matches!(
+            validate_callback_code(
+                "osscribe://auth/callback?code=good&state=expected",
+                "expected"
+            ),
+            CallbackCode::Code(code) if code == "good"
+        ));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn loopback_callback_path_rejects_prefix_matches() {
+        assert!(is_loopback_callback_path(
+            "/callback?code=good&state=expected"
+        ));
+        assert!(!is_loopback_callback_path(
+            "/callback-extra?code=bad&state=expected"
+        ));
+    }
+
+    #[tokio::test]
+    async fn callback_receiver_waits_through_spoofed_state() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send("osscribe://auth/callback?code=bad&state=wrong".to_string())
+            .expect("send spoofed callback");
+        tx.send("osscribe://auth/callback?code=good&state=expected".to_string())
+            .expect("send valid callback");
+
+        let code = await_valid_callback_url(&mut rx, "expected")
+            .await
+            .expect("valid callback");
+
+        assert_eq!(code, "good");
+    }
 }
