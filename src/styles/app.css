@@ -2645,6 +2645,7 @@ input:focus-visible,
    * taller and it pre-washes the backdrop the frosted box samples, and the
    * conversation stops showing through the glass. */
   height: 48px;
+  border-bottom-left-radius: var(--r-window);
   background: linear-gradient(to bottom, transparent, var(--card) 72%);
 }
 
@@ -5211,11 +5212,11 @@ input:focus-visible,
   gap: var(--sp-2);
   flex: 1;
   min-width: 0;
+  margin-left: calc(-1 * var(--tab-strip-shadow-pad));
   padding: var(--tab-strip-shadow-pad);
-  padding-left: 0;
   /* No scroll: tabs that don't fit fold into the overflow popover instead.
-   * Clip transient resize spillover, but leave a tiny clip margin so the flush
-   * first pill can render its normal rounded corner and soft shadow. */
+   * Clip transient resize spillover. The negative margin keeps the first tab
+   * aligned with the card while preserving paint room inside the clip edge. */
   overflow: clip;
   overflow-clip-margin: var(--tab-strip-shadow-pad);
 }
@@ -5233,7 +5234,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  height: calc(var(--titlebar-h) - 4px);
+  height: calc(var(--titlebar-h) - var(--sp-2));
   padding: 0 var(--sp-1) 0 var(--sp-2);
   flex: 1 1 0;
   min-width: 40px;
@@ -5335,8 +5336,8 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: calc(var(--titlebar-h) - 4px);
-  height: calc(var(--titlebar-h) - 4px);
+  width: calc(var(--titlebar-h) - var(--sp-2));
+  height: calc(var(--titlebar-h) - var(--sp-2));
   padding: 0;
   border: 0;
   border-radius: var(--r-md);
@@ -5393,7 +5394,7 @@ input:focus-visible,
   align-items: center;
   gap: 1px;
   flex: 0 0 auto;
-  height: calc(var(--titlebar-h) - 4px);
+  height: calc(var(--titlebar-h) - var(--sp-2));
   padding: 0 var(--sp-1);
   border: 0;
   border-radius: var(--r-md);

@@ -1,5 +1,10 @@
 # Lessons
 
+- When a user asks about modal/backdrop ordering, treat it as a stacking
+  contract first. Do not hide chrome unless they explicitly ask for visibility
+  changes; verify the intended z-index relationship instead.
+- When fixing clipped chrome, preserve the requested alignment. Move the clip
+  boundary or paint gutter instead of shifting the visible control.
 - When a custom chrome layer sits above the base titlebar drag layer, empty
   space in that layer must forward pointerdown to the explicit native
   `startDragging()` path while child controls guard themselves by target.
