@@ -284,9 +284,9 @@ fn tool_guard_result_body() -> serde_json::Value {
 fn future_deadline_ms() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system clock is after Unix epoch")
+        .unwrap_or_default()
         .as_millis();
-    (now + 30_000) as u64
+    u64::try_from(now.saturating_add(30_000)).unwrap_or(u64::MAX)
 }
 
 #[tokio::test]
