@@ -547,6 +547,128 @@ describe("notes recording reliability", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps recovered transcription failures scoped to the failed note", async () => {
+    const failedNote = {
+      ...first,
+      processingStatus: "failed" as const,
+      lastError: "Microphone: upstream_provider_failed",
+      audioSources: [
+        {
+          id: "audio-1",
+          source: "microphone" as const,
+          format: "wav" as const,
+          durationMs: 1000,
+          sizeBytes: 2048,
+          checksum: "abc",
+          createdAt: now,
+        },
+      ],
+    };
+    let recoveryFailed = false;
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [first, second],
+      activeRecoveries: [recovery()],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) => {
+      if (noteId === "note-2") return second;
+      return recoveryFailed ? failedNote : first;
+    });
+    mocks.recoverRecording.mockImplementation(async () => {
+      recoveryFailed = true;
+      throw {
+        code: "transcription_failed",
+        message:
+          "Microphone: The transcription provider could not process this audio.",
+      };
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Meeting notes" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /First note Preview/ }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Recover" }));
+
+    await waitFor(() =>
+      expect(mocks.recoverRecording).toHaveBeenCalledWith("rec-1", "validate"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /Microphone: The transcription provider could not process this audio\./,
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(container.querySelector(".note-failure-banner")).not.toBeNull();
+    expect(container.querySelector(".error-banner")).toBeNull();
+    expect(screen.queryByLabelText("Recoverable recording")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    expect(container.querySelector(".note-failure-banner")).toBeNull();
+    expect(container.querySelector(".error-banner")).toBeNull();
+  });
+
+  it("clears the active recorder when a recovered transcription failure is scoped", async () => {
+    const failedNote = {
+      ...first,
+      processingStatus: "failed" as const,
+      lastError: "Microphone: upstream_provider_failed",
+      audioSources: [
+        {
+          id: "audio-1",
+          source: "microphone" as const,
+          format: "wav" as const,
+          durationMs: 1000,
+          sizeBytes: 2048,
+          checksum: "abc",
+          createdAt: now,
+        },
+      ],
+    };
+    let recoveryFailed = false;
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [first, second],
+      activeRecoveries: [recovery()],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) => {
+      if (noteId === "note-2") return second;
+      return recoveryFailed ? failedNote : first;
+    });
+    mocks.recoverRecording.mockImplementation(async () => {
+      recoveryFailed = true;
+      throw {
+        code: "transcription_failed",
+        message:
+          "Microphone: The transcription provider could not process this audio.",
+      };
+    });
+
+    await startRecordingOnFirstNote();
+    expect(await screen.findByRole("button", { name: "Done" })).toBeEnabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Recover" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /Microphone: The transcription provider could not process this audio\./,
+        ),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open recording: First note" }),
+    ).toBeNull();
+  });
+
   it("applies the finish result even when the note already sat in a terminal status", async () => {
     mocks.finishRecording.mockResolvedValue({
       note: { ...first, processingStatus: "transcribing" },

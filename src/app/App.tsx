@@ -829,17 +829,35 @@ export function App() {
   );
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
-    void recoverRecording(sessionId, action)
-      .then((note) => {
-        if (recordingStatusRef.current?.sessionId === sessionId) {
-          recordingStatusRef.current = undefined;
-          setRecordingNote(undefined);
-          dispatch({ type: "recordingStatusCleared" });
-        }
+    const recoveryNoteId = state.activeRecoveries.find(
+      (recovery) => recovery.sessionId === sessionId,
+    )?.noteId;
+    void (async () => {
+      try {
+        const note = await recoverRecording(sessionId, action);
+        clearActiveRecordingSession(sessionId);
         dispatch({ type: "noteProcessingUpdated", note });
         dispatch({ type: "recoveryRemoved", sessionId });
-      })
-      .catch((err: unknown) => setError(messageFromError(err)));
+      } catch (err) {
+        if (
+          action === "validate" &&
+          recoveryNoteId &&
+          (await applyNoteScopedProcessingFailure(recoveryNoteId, err))
+        ) {
+          clearActiveRecordingSession(sessionId);
+          dispatch({ type: "recoveryRemoved", sessionId });
+          return;
+        }
+        setError(messageFromError(err));
+      }
+    })();
+  }
+
+  function clearActiveRecordingSession(sessionId: string) {
+    if (recordingStatusRef.current?.sessionId !== sessionId) return;
+    recordingStatusRef.current = undefined;
+    setRecordingNote(undefined);
+    dispatch({ type: "recordingStatusCleared" });
   }
 
   const handleAccountChanged = useCallback(
@@ -2285,9 +2303,29 @@ export function App() {
       const result = await finishRecording(sessionId);
       dispatch({ type: "noteProcessingUpdated", note: result.note });
     } catch (err) {
-      setError(messageFromError(err));
+      if (
+        !owningNoteId ||
+        !(await applyNoteScopedProcessingFailure(owningNoteId, err))
+      ) {
+        setError(messageFromError(err));
+      }
     } finally {
       finishingSessionsRef.current.delete(sessionId);
+    }
+  }
+
+  async function applyNoteScopedProcessingFailure(
+    noteId: string,
+    err: unknown,
+  ) {
+    try {
+      const note = await getNote(noteId);
+      if (note.processingStatus !== "failed") return false;
+      dispatch({ type: "noteProcessingUpdated", note });
+      setError(null);
+      return true;
+    } catch {
+      return false;
     }
   }
 
