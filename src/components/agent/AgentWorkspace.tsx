@@ -161,6 +161,7 @@ import {
   isHermesSessionsStartupRequestError,
   messageFromError,
 } from "../../lib/errors";
+import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
@@ -4935,28 +4936,6 @@ async function agentSessionTitleForPrompt(prompt: string) {
   } catch {
     return titleFromPrompt(prompt);
   }
-}
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message = "Agent title generation timed out.",
-) {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      reject(new Error(message));
-    }, timeoutMs);
-    promise.then(
-      (value) => {
-        window.clearTimeout(timeout);
-        resolve(value);
-      },
-      (error: unknown) => {
-        window.clearTimeout(timeout);
-        reject(error);
-      },
-    );
-  });
 }
 
 function isReplaceableAgentSessionTitle(title: unknown) {
