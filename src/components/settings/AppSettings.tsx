@@ -270,6 +270,9 @@ export function AppSettings({
   const [micTestPlaying, setMicTestPlaying] = useState(false);
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
   const activeTab = controlled ? controlledTab : internalTab;
+  const settingsTabs = account.localDev
+    ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
+    : SETTINGS_TABS;
   const macLikePlatform = isMacLikePlatform();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
@@ -302,6 +305,17 @@ export function AppSettings({
       void resetMicTestState(true);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!account.localDev || activeTab !== "billing") {
+      return;
+    }
+    if (controlled) {
+      onTabChange?.("general");
+      return;
+    }
+    setInternalTab("general");
+  }, [account.localDev, activeTab, controlled, onTabChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -770,7 +784,7 @@ export function AppSettings({
             role="tablist"
             aria-label="Settings sections"
           >
-            {SETTINGS_TABS.map((tab) => (
+            {settingsTabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
@@ -846,7 +860,7 @@ export function AppSettings({
           </>
         ) : null}
 
-        {activeTab === "billing" ? (
+        {activeTab === "billing" && !account.localDev ? (
           <BillingSettingsSection
             account={account}
             onRefresh={onAccountRefresh}

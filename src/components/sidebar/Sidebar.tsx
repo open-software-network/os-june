@@ -385,7 +385,7 @@ export function Sidebar({
   );
 
   async function loadReferralSummary() {
-    if (!account.signedIn) return;
+    if (!account.signedIn || account.localDev) return;
     setReferralLoading(true);
     setReferralError(null);
     setReferralUnavailable(false);
@@ -400,6 +400,7 @@ export function Sidebar({
   }
 
   function openReferralDialog() {
+    if (account.localDev) return;
     setReferralDialogOpen(true);
     setReferralCopied(false);
     setReferralCopyError(null);
@@ -923,6 +924,7 @@ export function Sidebar({
       {inSettings ? (
         <SettingsSidebarNav
           activeTab={settingsTab}
+          localDev={account.localDev === true}
           onSelectTab={(tab) => onSettingsTabChange?.(tab)}
           onBack={() =>
             onExitSettings ? onExitSettings() : onChangeView("notes")
@@ -1137,7 +1139,7 @@ export function Sidebar({
           onToggleMenu={() => setIdentityMenuOpen((open) => !open)}
           onCloseMenu={() => setIdentityMenuOpen(false)}
           onInviteFriends={
-            account.signedIn
+            account.signedIn && !account.localDev
               ? () => {
                   setIdentityMenuOpen(false);
                   openReferralDialog();
@@ -1442,13 +1444,22 @@ function buildSidebarDevStateSessions(): HermesSessionInfo[] {
 
 function SettingsSidebarNav({
   activeTab,
+  localDev,
   onSelectTab,
   onBack,
 }: {
   activeTab: SettingsTab;
+  localDev: boolean;
   onSelectTab: (tab: SettingsTab) => void;
   onBack: () => void;
 }) {
+  const groups = localDev
+    ? SETTINGS_SIDEBAR_GROUPS.map((group) => ({
+        ...group,
+        items: group.items.filter((item) => item.id !== "billing"),
+      })).filter((group) => group.items.length > 0)
+    : SETTINGS_SIDEBAR_GROUPS;
+
   return (
     <section
       className="sidebar-section sidebar-settings-section"
@@ -1464,7 +1475,7 @@ function SettingsSidebarNav({
         </span>
         <span className="sidebar-nav-label">Back to app</span>
       </button>
-      {SETTINGS_SIDEBAR_GROUPS.map((group) => (
+      {groups.map((group) => (
         <div key={group.title} className="sidebar-settings-group">
           <div className="section-title">
             <span className="section-title-label">{group.title}</span>
@@ -1857,7 +1868,7 @@ function SidebarIdentity({
                 </button>
               ))
             : null}
-          {account.signedIn && onSignOut ? (
+          {account.signedIn && !account.localDev && onSignOut ? (
             <>
               <div className="context-menu-separator" role="separator" />
               <button type="button" role="menuitem" onClick={onSignOut}>

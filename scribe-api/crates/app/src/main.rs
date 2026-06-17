@@ -1,10 +1,14 @@
 use clap::{Parser, Subcommand};
 use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
-use scribe_config::{AppConfig, ModelPriceConfig, ModelProvider};
+use scribe_config::{
+    AppConfig, ModelPriceConfig, ModelProvider, OPENAI_API_KEY_PLACEHOLDER,
+    VENICE_API_KEY_PLACEHOLDER,
+};
 use scribe_providers::{
-    JwksTokenVerifier, LogIssueReportSink, MultiFormatDurationProbe, OsAccountsHttpClient,
-    OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceCleaner, VeniceGenerator,
-    VeniceModelCatalog, WebhookIssueReportSink, default_client, jwks_client,
+    JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
+    MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
+    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, WebhookIssueReportSink,
+    default_client, jwks_client,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -52,6 +56,10 @@ async fn load_pricing(
     http: reqwest::Client,
 ) -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = config.pricing.clone();
+    if !provider_is_configured(config, ModelProvider::Venice) {
+        tracing::info!("Venice API key is not configured; skipping Venice model catalog");
+        return pricing;
+    }
     match VeniceModelCatalog::from_config(http, &config.upstreams.venice)
         .priced_models()
         .await
@@ -71,8 +79,12 @@ async fn load_pricing(
 fn build_router(
     config: &AppConfig,
     http: &reqwest::Client,
-    pricing_config: BTreeMap<String, ModelPriceConfig>,
+    mut pricing_config: BTreeMap<String, ModelPriceConfig>,
 ) -> axum::Router {
+    if config.local_dev.enabled {
+        pricing_config = filter_unconfigured_provider_models(config, pricing_config);
+    }
+
     let openai_model_ids = pricing_config
         .iter()
         .filter(|(_, model)| model.provider == ModelProvider::Openai)
@@ -80,9 +92,7 @@ fn build_router(
         .collect::<Vec<_>>();
 
     let pricing = Arc::new(PricingTable::new(pricing_config));
-    let os_accounts: Arc<dyn scribe_domain::OsAccountsClient> = Arc::new(
-        OsAccountsHttpClient::from_config(http.clone(), &config.os_accounts),
-    );
+    let os_accounts = build_os_accounts_client(config, http);
     let transcriber: Arc<dyn scribe_domain::Transcriber> = Arc::new(
         RoutingTranscriber::from_config(http.clone(), &config.upstreams, openai_model_ids),
     );
@@ -99,9 +109,7 @@ fn build_router(
     );
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
-    let token_verifier: Arc<dyn scribe_domain::TokenVerifier> = Arc::new(
-        JwksTokenVerifier::from_config(jwks_client(), &config.os_accounts),
-    );
+    let token_verifier = build_token_verifier(config);
     let issue_reports = build_issue_report_sink(config, http);
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
@@ -163,6 +171,71 @@ fn build_router(
         },
     });
     scribe_api::router(state)
+}
+
+fn build_os_accounts_client(
+    config: &AppConfig,
+    http: &reqwest::Client,
+) -> Arc<dyn scribe_domain::OsAccountsClient> {
+    if config.local_dev.enabled {
+        tracing::warn!("local dev mode enabled; OS Accounts metering is disabled");
+        Arc::new(LocalDevOsAccountsClient)
+    } else {
+        Arc::new(OsAccountsHttpClient::from_config(
+            http.clone(),
+            &config.os_accounts,
+        ))
+    }
+}
+
+fn build_token_verifier(config: &AppConfig) -> Arc<dyn scribe_domain::TokenVerifier> {
+    if config.local_dev.enabled {
+        Arc::new(LocalDevTokenVerifier::new(
+            config.local_dev.bearer_token.clone(),
+            config.local_dev.user_id.clone(),
+        ))
+    } else {
+        Arc::new(JwksTokenVerifier::from_config(
+            jwks_client(),
+            &config.os_accounts,
+        ))
+    }
+}
+
+fn filter_unconfigured_provider_models(
+    config: &AppConfig,
+    pricing_config: BTreeMap<String, ModelPriceConfig>,
+) -> BTreeMap<String, ModelPriceConfig> {
+    let original_len = pricing_config.len();
+    let filtered = pricing_config
+        .into_iter()
+        .filter(|(_, model)| provider_is_configured(config, model.provider))
+        .collect::<BTreeMap<_, _>>();
+    let removed = original_len.saturating_sub(filtered.len());
+    if removed > 0 {
+        tracing::info!(
+            removed,
+            remaining = filtered.len(),
+            "filtered models whose provider API keys are not configured"
+        );
+    }
+    filtered
+}
+
+fn provider_is_configured(config: &AppConfig, provider: ModelProvider) -> bool {
+    match provider {
+        ModelProvider::Openai => {
+            provider_key_is_configured(&config.upstreams.openai.api_key, OPENAI_API_KEY_PLACEHOLDER)
+        }
+        ModelProvider::Venice => {
+            provider_key_is_configured(&config.upstreams.venice.api_key, VENICE_API_KEY_PLACEHOLDER)
+        }
+    }
+}
+
+fn provider_key_is_configured(api_key: &str, placeholder: &str) -> bool {
+    let api_key = api_key.trim();
+    !api_key.is_empty() && api_key != placeholder
 }
 
 fn build_issue_report_sink(

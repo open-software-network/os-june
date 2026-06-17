@@ -38,6 +38,11 @@ const OAUTH_SCOPES: &str = "profile:read billing:read billing:write credits:spen
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
 const KEYCHAIN_USER: &str = "tokens";
+const LOCAL_DEV_ENV: &str = "OS_SCRIBE_LOCAL_DEV";
+const LOCAL_DEV_BEARER_TOKEN_ENV: &str = "OS_SCRIBE_LOCAL_DEV_BEARER_TOKEN";
+const LOCAL_DEV_USER_ID_ENV: &str = "OS_SCRIBE_LOCAL_DEV_USER_ID";
+const DEFAULT_LOCAL_DEV_BEARER_TOKEN: &str = "local-dev-token";
+const DEFAULT_LOCAL_DEV_USER_ID: &str = "usr_local_dev";
 #[cfg(debug_assertions)]
 const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE";
 #[cfg(debug_assertions)]
@@ -180,6 +185,8 @@ pub struct AccountSubscription {
 pub struct AccountStatus {
     pub signed_in: bool,
     pub configured: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub local_dev: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<AccountUser>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,6 +198,10 @@ pub struct AccountStatus {
     /// The accounts portal origin, where the free-trial flow lives.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portal_url: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl From<MeWire> for AccountUser {
@@ -230,6 +241,9 @@ impl From<BalanceWire> for AccountBalance {
 }
 
 pub(crate) fn cached_signed_in() -> bool {
+    if local_dev_enabled() {
+        return true;
+    }
     SIGNED_IN_CACHE.load(Ordering::Relaxed)
 }
 
@@ -301,6 +315,69 @@ fn env_or_build_trimmed(key: &str, build_value: Option<&'static str>) -> String 
     }
 }
 
+fn env_truthy(key: &str) -> bool {
+    matches!(
+        env_trimmed(key).to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+pub(crate) fn local_dev_enabled() -> bool {
+    load_local_env();
+    env_truthy(LOCAL_DEV_ENV)
+}
+
+fn local_dev_bearer_token() -> String {
+    load_local_env();
+    let token = env_trimmed(LOCAL_DEV_BEARER_TOKEN_ENV);
+    if token.is_empty() {
+        DEFAULT_LOCAL_DEV_BEARER_TOKEN.to_string()
+    } else {
+        token
+    }
+}
+
+fn local_dev_user_id() -> String {
+    load_local_env();
+    normalize_local_dev_user_id(&env_trimmed(LOCAL_DEV_USER_ID_ENV))
+}
+
+fn normalize_local_dev_user_id(value: &str) -> String {
+    let user_id = value.trim();
+    if user_id.starts_with("usr_") {
+        user_id.to_string()
+    } else {
+        DEFAULT_LOCAL_DEV_USER_ID.to_string()
+    }
+}
+
+fn local_dev_account_status() -> AccountStatus {
+    AccountStatus {
+        signed_in: true,
+        configured: true,
+        local_dev: true,
+        user: Some(AccountUser {
+            id: local_dev_user_id(),
+            handle: "local-dev".to_string(),
+            email: None,
+            display_name: Some("Local developer".to_string()),
+            avatar_url: None,
+        }),
+        balance: Some(AccountBalance {
+            credits: 0,
+            usd_millis: 0,
+        }),
+        subscription: Some(AccountSubscription {
+            subscribed: true,
+            status: Some("active".to_string()),
+            trial_end: None,
+            current_period_end: None,
+            trial_period_days: None,
+        }),
+        portal_url: None,
+    }
+}
+
 pub fn load_local_env() {
     ENV_LOADED.get_or_init(|| {
         let mut candidates: Vec<std::path::PathBuf> = Vec::new();
@@ -336,6 +413,10 @@ pub struct LoginFlow {
 
 #[tauri::command]
 pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
+    if local_dev_enabled() {
+        set_cached_signed_in(true);
+        return Ok(local_dev_account_status());
+    }
     let cfg = Config::load();
     if load_tokens().await.is_none() {
         set_cached_signed_in(false);
@@ -350,6 +431,7 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
             Ok(AccountStatus {
                 signed_in: true,
                 configured: cfg.configured(),
+                local_dev: false,
                 user: Some(user),
                 balance: Some(balance),
                 subscription,
@@ -370,6 +452,10 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
 pub async fn os_accounts_login(
     flow: tauri::State<'_, LoginFlow>,
 ) -> Result<AccountStatus, AppError> {
+    if local_dev_enabled() {
+        set_cached_signed_in(true);
+        return Ok(local_dev_account_status());
+    }
     let cfg = Config::load();
     if !cfg.configured() {
         let mut missing: Vec<&str> = Vec::new();
@@ -418,6 +504,7 @@ pub async fn os_accounts_login(
     Ok(AccountStatus {
         signed_in: true,
         configured: true,
+        local_dev: false,
         user: Some(user),
         balance: Some(balance),
         subscription,
@@ -443,6 +530,11 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
 
 #[tauri::command]
 pub async fn os_accounts_logout() -> Result<(), AppError> {
+    if local_dev_enabled() {
+        clear_prepared_checkout();
+        set_cached_signed_in(true);
+        return Ok(());
+    }
     let cfg = Config::load();
     if let Some(pair) = load_tokens().await {
         let _ = http_client()
@@ -459,6 +551,9 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
 
 #[tauri::command]
 pub fn os_accounts_top_up() -> Result<(), AppError> {
+    if local_dev_enabled() {
+        return Ok(());
+    }
     let cfg = Config::load();
     open_in_browser(cfg.accounts_url.trim_end_matches('/'))
 }
@@ -468,6 +563,9 @@ pub fn os_accounts_top_up() -> Result<(), AppError> {
 /// (trial gate, billing) must route through this command.
 #[tauri::command]
 pub fn os_accounts_open_portal() -> Result<(), AppError> {
+    if local_dev_enabled() {
+        return Ok(());
+    }
     let cfg = Config::load();
     let url = cfg.accounts_url.trim_end_matches('/');
     if url.is_empty() {
@@ -481,6 +579,12 @@ pub fn os_accounts_open_portal() -> Result<(), AppError> {
 
 #[tauri::command]
 pub async fn os_accounts_referral_summary() -> Result<ReferralSummary, AppError> {
+    if local_dev_enabled() {
+        return Err(AppError::new(
+            "referrals_unavailable",
+            "Referral links are not available in local development mode.",
+        ));
+    }
     let cfg = Config::load();
     if !cfg.configured() {
         return Err(AppError::new(
@@ -584,6 +688,9 @@ enum MintedTrialCheckout {
 /// page. This is the slow part of starting a trial: up to a token refresh
 /// plus the accounts API creating the session at Stripe.
 async fn mint_trial_checkout() -> Result<MintedTrialCheckout, AppError> {
+    if local_dev_enabled() {
+        return Ok(MintedTrialCheckout::AlreadySubscribed);
+    }
     let cfg = Config::load();
     if !cfg.configured() {
         return Err(AppError::new(
@@ -665,6 +772,9 @@ pub enum TrialCheckoutPrepared {
 /// explicit click path.
 #[tauri::command]
 pub async fn os_accounts_prepare_trial_checkout() -> Result<TrialCheckoutPrepared, AppError> {
+    if local_dev_enabled() {
+        return Ok(TrialCheckoutPrepared::AlreadySubscribed);
+    }
     // Held across the mint so overlapping prepare calls can't both reach
     // Stripe; the freshness re-check below then answers the loser from the
     // winner's cache entry. See PREPARE_TRIAL_CHECKOUT_LOCK.
@@ -690,6 +800,9 @@ pub async fn os_accounts_prepare_trial_checkout() -> Result<TrialCheckoutPrepare
 /// answers with the portal fallback.
 #[tauri::command]
 pub async fn os_accounts_start_trial_checkout() -> Result<TrialCheckout, AppError> {
+    if local_dev_enabled() {
+        return Ok(TrialCheckout::AlreadySubscribed);
+    }
     // Consume the cached session rather than reusing it: each open gets a
     // session that is known-unused, and the UI re-prepares in the background
     // after a cancel.
@@ -1052,6 +1165,10 @@ async fn refresh_locked(cfg: &Config) -> Result<String, AppError> {
 
 /// Read the current access token without refreshing.
 pub async fn access_token() -> Result<String, AppError> {
+    if local_dev_enabled() {
+        set_cached_signed_in(true);
+        return Ok(local_dev_bearer_token());
+    }
     let pair = match load_tokens().await {
         Some(pair) => pair,
         None => {
@@ -1101,6 +1218,10 @@ fn access_token_is_stale(jwt: &str) -> bool {
 
 /// Force a token refresh and return the new access token.
 pub async fn refresh_access_token() -> Result<String, AppError> {
+    if local_dev_enabled() {
+        set_cached_signed_in(true);
+        return Ok(local_dev_bearer_token());
+    }
     let cfg = Config::load();
     match refresh_locked(&cfg).await {
         Ok(access) => Ok(access),
@@ -1361,4 +1482,33 @@ fn browser_open_command(url: &str) -> std::process::Command {
     let mut command = std::process::Command::new("xdg-open");
     command.arg(url);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_blank_local_dev_user_id_to_default() {
+        assert_eq!(
+            normalize_local_dev_user_id("   "),
+            DEFAULT_LOCAL_DEV_USER_ID.to_string()
+        );
+    }
+
+    #[test]
+    fn normalizes_invalid_local_dev_user_id_to_default() {
+        assert_eq!(
+            normalize_local_dev_user_id("local-dev"),
+            DEFAULT_LOCAL_DEV_USER_ID.to_string()
+        );
+    }
+
+    #[test]
+    fn preserves_valid_local_dev_user_id() {
+        assert_eq!(
+            normalize_local_dev_user_id("  usr_custom_local  "),
+            "usr_custom_local"
+        );
+    }
 }

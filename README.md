@@ -70,9 +70,13 @@ See [docs/release-macos.md](docs/release-macos.md) and
 
 ## Quick start
 
-Install dependencies and run the desktop app:
+Clone the repo, copy both env examples, add at least one provider key, and run
+the desktop app:
 
 ```sh
+cp .env.example .env
+cp scribe-api/.env.example scribe-api/.env
+# Edit scribe-api/.env and set SCRIBE__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
@@ -90,30 +94,80 @@ pnpm tauri:dev --replay-onboarding
 
 ## Configuration
 
-Copy the desktop env file:
+The example env files default to open source local mode:
+
+- no OS Accounts login
+- no billing or credit charges
+- no provider keys in the desktop env
+- Scribe API accepts the local bearer token shared by `.env` and
+  `scribe-api/.env`
+
+Provider keys belong only in `scribe-api/.env`. For the default local setup,
+set `SCRIBE__UPSTREAMS__VENICE__API_KEY` to a Venice API key. Add
+`SCRIBE__UPSTREAMS__OPENAI__API_KEY` only if you want to use OpenAI
+transcription models.
+
+Copy the env files:
 
 ```sh
 cp .env.example .env
+cp scribe-api/.env.example scribe-api/.env
 ```
 
-Use the root `.env` for desktop runtime configuration only:
+Use the root `.env` for desktop runtime configuration:
 
 - `SCRIBE_API_URL`
-- `OS_ACCOUNTS_URL`
-- `OS_ACCOUNTS_API_URL`
-- `OS_ACCOUNTS_CLIENT_ID`
+- `OS_SCRIBE_LOCAL_DEV`
+- `OS_SCRIBE_LOCAL_DEV_BEARER_TOKEN`
+- `OS_SCRIBE_LOCAL_DEV_USER_ID`
 - initial model defaults such as `VENICE_TRANSCRIPTION_MODEL` and
   `VENICE_GENERATION_MODEL`
 - optional `OS_NOTETAKER_TRANSCRIPTION_LANGUAGE`
 
+Use `scribe-api/.env` for server-side secrets and local auth:
+
+- `SCRIBE__LOCAL_DEV__ENABLED`
+- `SCRIBE__LOCAL_DEV__BEARER_TOKEN`
+- `SCRIBE__UPSTREAMS__VENICE__API_KEY`
+- `SCRIBE__UPSTREAMS__OPENAI__API_KEY`
+- optional provider base URLs such as `SCRIBE__UPSTREAMS__VENICE__BASE_URL`
+
+The local bearer token must match in both env files. It is not an OS Accounts
+token. It is just the shared secret used by the local desktop app and local
+Scribe API. The Scribe API env example binds local mode to `127.0.0.1`; if you
+bind it to a network interface, replace the default local bearer token in both
+env files first. If you change the local dev user id, keep
+`OS_SCRIBE_LOCAL_DEV_USER_ID` in the root `.env` aligned with
+`SCRIBE__LOCAL_DEV__USER_ID` in `scribe-api/.env`.
+
 Do not put provider keys or OS Accounts App API keys in the root desktop `.env`.
 
-To run Scribe API yourself:
+To expose your own models, edit [scribe-api/config.toml](scribe-api/config.toml)
+and add or change `[pricing."<model-id>"]` entries. Each priced model needs a
+provider, model type, display name, unit, and positive pricing rate. Then set
+the matching provider key and optional base URL in `scribe-api/.env`, and update
+the root `.env` default model ids if you want June to select those models on
+first launch.
+
+To run with OS Accounts and billing instead of local mode, set these flags off:
 
 ```sh
-cp scribe-api/.env.example scribe-api/.env
-# Fill SCRIBE__OS_ACCOUNTS__APP_API_KEY, SCRIBE__UPSTREAMS__OPENAI__API_KEY,
-# and SCRIBE__UPSTREAMS__VENICE__API_KEY in scribe-api/.env.
+OS_SCRIBE_LOCAL_DEV=0
+SCRIBE__LOCAL_DEV__ENABLED=false
+```
+
+Then fill the connected deployment settings:
+
+- `SCRIBE__OS_ACCOUNTS__API_URL`
+- `SCRIBE__OS_ACCOUNTS__APP_API_KEY`
+- `OS_ACCOUNTS_URL`
+- `OS_ACCOUNTS_API_URL`
+- `OS_ACCOUNTS_CLIENT_ID`
+- provider keys for every provider exposed in the pricing table
+
+You can also run Scribe API directly:
+
+```sh
 (cd scribe-api && cargo run -- serve)
 ```
 
