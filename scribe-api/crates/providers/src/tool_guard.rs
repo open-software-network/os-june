@@ -144,10 +144,19 @@ mod tests {
         ToolGuardResultAnalysisRequest,
     };
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{body_string_contains, header, method, path},
     };
+
+    fn future_deadline_ms() -> u64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_millis();
+        (now + 30_000) as u64
+    }
 
     fn call_request() -> ToolGuardCallAnalysisRequest {
         ToolGuardCallAnalysisRequest {
@@ -159,7 +168,7 @@ mod tests {
             destination_class: ToolDestinationClass::ExternalUntrusted,
             tool_schema_ref: Some("schema:web_lookup:v1".to_string()),
             arguments: json!({ "query": "alice@example.com" }),
-            deadline_ms: 1000,
+            deadline_ms: future_deadline_ms(),
             policy_context: None,
         }
     }
@@ -172,7 +181,7 @@ mod tests {
             destination_id: "web".to_string(),
             destination_class: ToolDestinationClass::ExternalUntrusted,
             result: json!({ "answer": "ok" }),
-            deadline_ms: 1000,
+            deadline_ms: future_deadline_ms(),
             policy_context: None,
         }
     }

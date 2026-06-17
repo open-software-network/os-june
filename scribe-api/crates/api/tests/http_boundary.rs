@@ -24,7 +24,7 @@ use std::{
     collections::BTreeMap,
     error::Error,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tower::ServiceExt;
 
@@ -266,7 +266,7 @@ fn tool_guard_call_body() -> serde_json::Value {
         "destinationId": "web",
         "destinationClass": "external_untrusted",
         "arguments": { "query": "alice@example.com" },
-        "deadlineMs": 1000
+        "deadlineMs": future_deadline_ms()
     })
 }
 
@@ -277,8 +277,16 @@ fn tool_guard_result_body() -> serde_json::Value {
         "destinationId": "web",
         "destinationClass": "external_untrusted",
         "result": { "answer": "ok" },
-        "deadlineMs": 1000
+        "deadlineMs": future_deadline_ms()
     })
+}
+
+fn future_deadline_ms() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after Unix epoch")
+        .as_millis();
+    (now + 30_000) as u64
 }
 
 #[tokio::test]
@@ -393,6 +401,25 @@ async fn integration_tool_guard_call_rejects_missing_fields() -> Result<(), Box<
         "unexpected status: {}",
         response.status()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_tool_guard_call_rejects_expired_deadline() -> Result<(), Box<dyn Error>> {
+    let tool_guard = Arc::new(RecordingToolGuard::default());
+    let router = router(test_state_with_tool_guard(tool_guard));
+    let mut body = tool_guard_call_body();
+    body["deadlineMs"] = serde_json::json!(1000);
+
+    let response = oneshot(
+        &router,
+        json_request("/v1/tool-guard/calls", &body, Some(AUTHORIZATION))?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "deadlineMs_expired");
     Ok(())
 }
 

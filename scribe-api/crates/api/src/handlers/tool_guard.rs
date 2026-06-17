@@ -7,6 +7,7 @@ use scribe_domain::{
     ToolGuardResultAnalysisRequest,
 };
 use serde::Deserialize;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Proxies a tool-call analysis to OS-Guard's Tool Guard. The desktop client
 /// sends the pending tool call (arguments plus correlation fields); scribe sets
@@ -143,6 +144,13 @@ fn validate_tool_name(value: &str) -> Result<(), ApiError> {
 fn validate_deadline(deadline_ms: u64) -> Result<(), ApiError> {
     if deadline_ms == 0 {
         return Err(ApiError::bad_request("deadlineMs_required"));
+    }
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ApiError::Internal)?
+        .as_millis();
+    if u128::from(deadline_ms) <= now_ms {
+        return Err(ApiError::bad_request("deadlineMs_expired"));
     }
     Ok(())
 }
