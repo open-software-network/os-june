@@ -220,9 +220,13 @@ pub struct VeniceGenerator {
 }
 
 impl VeniceGenerator {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        policy_gateway: bool,
+    ) -> Self {
         Self {
-            chat: VeniceChat::new(http, config),
+            chat: VeniceChat::new(http, config, policy_gateway),
         }
     }
 }
@@ -295,9 +299,13 @@ pub struct VeniceAgentChat {
 }
 
 impl VeniceAgentChat {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        policy_gateway: bool,
+    ) -> Self {
         Self {
-            chat: VeniceChat::new(http, config),
+            chat: VeniceChat::new(http, config, policy_gateway),
         }
     }
 }
@@ -313,9 +321,13 @@ impl AgentChatCompleter for VeniceAgentChat {
 }
 
 impl VeniceCleaner {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        policy_gateway: bool,
+    ) -> Self {
         Self {
-            chat: VeniceChat::new(http, config),
+            chat: VeniceChat::new(http, config, policy_gateway),
         }
     }
 }
@@ -358,14 +370,32 @@ struct VeniceChat {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    /// True only when the chat upstream is the OS-Guard privacy gateway. The
+    /// gateway returns `403` for a policy block (prompt injection or
+    /// unredactable PII); Venice uses `403` for authorization/account failures
+    /// instead, so the policy-block mapping must be gated on this flag.
+    policy_gateway: bool,
 }
 
 impl VeniceChat {
-    fn new(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    fn new(http: reqwest::Client, config: &UpstreamConfig, policy_gateway: bool) -> Self {
         Self {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            policy_gateway,
+        }
+    }
+
+    /// Classifies a non-success chat status. Only when the upstream is the
+    /// OS-Guard gateway does `403` mean a deterministic policy block (never
+    /// retried, surfaced distinctly); for a Venice-direct upstream a `403` is
+    /// an authorization/account failure and maps to the generic upstream error.
+    fn status_error(&self, status: reqwest::StatusCode) -> DomainError {
+        if self.policy_gateway && status == reqwest::StatusCode::FORBIDDEN {
+            DomainError::PolicyBlocked
+        } else {
+            DomainError::UpstreamProvider
         }
     }
 
@@ -388,7 +418,7 @@ impl VeniceChat {
                     %url,
                     model = %body.model,
                     attempt,
-                    "venice: transient chat failure, retrying"
+                    "chat: transient failure, retrying"
                 );
                 tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
                 continue;
@@ -412,7 +442,7 @@ impl VeniceChat {
             .await
             .map_err(|error| {
                 let retryable = retry::is_retryable_transport_error(&error);
-                tracing::error!(%error, %url, model = %body.model, retryable, "venice: chat transport error");
+                tracing::error!(%error, %url, model = %body.model, retryable, "chat: transport error");
                 UpstreamAttemptError {
                     error: DomainError::UpstreamProvider,
                     retryable,
@@ -420,18 +450,18 @@ impl VeniceChat {
             })?;
         let status = response.status();
         if !status.is_success() {
-            let error = chat_status_error(status);
+            let error = self.status_error(status);
             let retryable =
                 error == DomainError::UpstreamProvider && retry::is_retryable_status(status);
             let body_text = response.text().await.unwrap_or_default();
-            tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), retryable, "venice: chat non-success response");
+            tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), retryable, "chat: non-success response");
             return Err(UpstreamAttemptError { error, retryable });
         }
         response
             .json::<ChatCompletionResponse>()
             .await
             .map_err(|error| {
-                tracing::error!(%error, %url, model = %body.model, "venice: chat response JSON parse failed");
+                tracing::error!(%error, %url, model = %body.model, "chat: response JSON parse failed");
                 UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
             })
     }
@@ -474,7 +504,7 @@ impl VeniceChat {
             .send()
             .await
             .map_err(|error| {
-                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
+                tracing::error!(%error, %url, model = %model.0, "chat: agent transport error");
                 DomainError::UpstreamProvider
             })?;
         let status = response.status();
@@ -485,7 +515,7 @@ impl VeniceChat {
             .unwrap_or("application/json")
             .to_string();
         let body = response.bytes().await.map_err(|error| {
-            tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+            tracing::error!(%error, %url, model = %model.0, "chat: agent body read failed");
             DomainError::UpstreamProvider
         })?;
         if !status.is_success() {
@@ -494,9 +524,9 @@ impl VeniceChat {
                 %url,
                 model = %model.0,
                 body_bytes = body.len(),
-                "venice: agent chat non-success response"
+                "chat: agent non-success response"
             );
-            return Err(chat_status_error(status));
+            return Err(self.status_error(status));
         }
         let usage = usage_from_chat_body(&body, &content_type)?;
         Ok(AgentChatCompletion {
@@ -589,20 +619,6 @@ fn inject_safety_context(body: &mut serde_json::Map<String, serde_json::Value>) 
         0,
         serde_json::json!({ "role": "system", "content": SAFETY_CONTEXT }),
     );
-}
-
-/// Classifies a non-success chat status from the upstream. OS-Guard returns
-/// `403` for policy blocks (prompt injection or unredactable PII), which is a
-/// deterministic content rejection — surfaced distinctly so it is neither
-/// retried nor reported as a generic provider failure. Everything else maps to
-/// the generic upstream error, whose retryability the caller derives from the
-/// status separately.
-fn chat_status_error(status: reqwest::StatusCode) -> DomainError {
-    if status == reqwest::StatusCode::FORBIDDEN {
-        DomainError::PolicyBlocked
-    } else {
-        DomainError::UpstreamProvider
-    }
 }
 
 fn usage_from_chat_body(body: &[u8], content_type: &str) -> Result<TokenUsage, DomainError> {
@@ -1024,6 +1040,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         let generated = generator
@@ -1077,6 +1094,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         let generated = generator
@@ -1121,6 +1139,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         let generated = generator
@@ -1192,6 +1211,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         let generated = generator
@@ -1228,6 +1248,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         let generated = generator
@@ -1264,6 +1285,7 @@ mod tests {
                 api_key: "gateway_token".to_string(),
                 base_url: server.uri(),
             },
+            true,
         );
 
         let generated = generator
@@ -1283,6 +1305,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generator_maps_venice_direct_403_to_upstream_not_policy_block() {
+        // When OS-Guard is not configured, chat goes to Venice directly, where a
+        // 403 is an authorization/account failure (content-policy is 422). It
+        // must NOT be reported as a policy block — only a gateway 403 is.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let generator = VeniceGenerator::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+            false,
+        );
+
+        let generated = generator
+            .generate(GenerationRequest {
+                title: "Title".to_string(),
+                transcript: "Transcript".to_string(),
+                transcript_source_labels: false,
+                manual_notes: None,
+                language: None,
+                existing_generated_note: None,
+                model: ModelId("zai-org-glm-5".to_string()),
+                system_prompt: "system".to_string(),
+            })
+            .await;
+
+        assert_eq!(generated, Err(scribe_domain::DomainError::UpstreamProvider));
+    }
+
+    #[tokio::test]
     async fn agent_chat_maps_policy_block() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1296,6 +1354,7 @@ mod tests {
                 api_key: "gateway_token".to_string(),
                 base_url: server.uri(),
             },
+            true,
         );
 
         let completion = agent
@@ -1382,6 +1441,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         let completion = agent
@@ -1418,6 +1478,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         generator
@@ -1461,6 +1522,7 @@ mod tests {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
             },
+            false,
         );
 
         agent

@@ -281,6 +281,13 @@ impl UpstreamsConfig {
             &self.osguard
         }
     }
+
+    /// Whether chat completions route through the OS-Guard gateway (true) or
+    /// Venice directly (false). Used to gate gateway-specific response handling
+    /// such as treating a `403` as a policy block.
+    pub fn chat_routes_through_osguard(&self) -> bool {
+        !self.osguard.base_url.trim().is_empty()
+    }
 }
 
 impl Debug for UpstreamsConfig {

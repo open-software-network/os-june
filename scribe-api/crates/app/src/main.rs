@@ -101,12 +101,22 @@ fn build_router(
     // The providers are OpenAI-compatible, so only the upstream they point at
     // changes. Audio transcription above stays on Venice unconditionally.
     let chat_upstream = config.upstreams.chat_upstream();
-    let generator: Arc<dyn scribe_domain::Generator> =
-        Arc::new(VeniceGenerator::from_config(http.clone(), chat_upstream));
-    let cleaner: Arc<dyn scribe_domain::Cleaner> =
-        Arc::new(VeniceCleaner::from_config(http.clone(), chat_upstream));
-    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> =
-        Arc::new(VeniceAgentChat::from_config(http.clone(), chat_upstream));
+    // A 403 means a policy block only when chat routes through OS-Guard; for a
+    // Venice-direct upstream a 403 is an authorization/account failure.
+    let chat_via_osguard = config.upstreams.chat_routes_through_osguard();
+    let generator: Arc<dyn scribe_domain::Generator> = Arc::new(VeniceGenerator::from_config(
+        http.clone(),
+        chat_upstream,
+        chat_via_osguard,
+    ));
+    let cleaner: Arc<dyn scribe_domain::Cleaner> = Arc::new(VeniceCleaner::from_config(
+        http.clone(),
+        chat_upstream,
+        chat_via_osguard,
+    ));
+    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
+        VeniceAgentChat::from_config(http.clone(), chat_upstream, chat_via_osguard),
+    );
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
@@ -170,6 +180,7 @@ fn build_router(
             source_repo_url: config.attestation.source_repo_url.clone(),
             image_repo: config.attestation.image_repo.clone(),
             trust_center_url: config.attestation.trust_center_url.clone(),
+            chat_via_osguard: config.upstreams.chat_routes_through_osguard(),
         },
     });
     scribe_api::router(state)
