@@ -1,10 +1,10 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
-    error_response,
+    ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_TOOL_GUARD_UNAVAILABLE, ERR_UNAUTHORIZED,
+    ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
 };
 use axum::{http::StatusCode, response::IntoResponse};
-use scribe_domain::AuthError;
+use scribe_domain::{AuthError, DomainError};
 use scribe_services::ServiceError;
 use thiserror::Error;
 
@@ -26,6 +26,8 @@ pub enum ApiError {
     Upstream,
     #[error("policy_blocked")]
     PolicyBlocked,
+    #[error("tool_guard_unavailable")]
+    ToolGuardUnavailable,
     #[error("internal_error")]
     Internal,
 }
@@ -94,6 +96,15 @@ impl IntoResponse for ApiError {
             Self::PolicyBlocked => {
                 error_response(StatusCode::FORBIDDEN, ERR_POLICY_BLOCKED, "policy_blocked")
             }
+            // Tool Guard requires OS-Guard to be configured; there is no Venice
+            // fallback. When it is not configured, the feature is unavailable on
+            // this deployment rather than a per-request failure — 503 so the
+            // client can disable the capability instead of retrying.
+            Self::ToolGuardUnavailable => error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ERR_TOOL_GUARD_UNAVAILABLE,
+                "tool_guard_unavailable",
+            ),
             Self::Internal => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL,
@@ -113,6 +124,18 @@ impl From<ServiceError> for ApiError {
             ServiceError::UpstreamProvider => Self::Upstream,
             ServiceError::PolicyBlocked => Self::PolicyBlocked,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
+        }
+    }
+}
+
+impl From<DomainError> for ApiError {
+    fn from(error: DomainError) -> Self {
+        match error {
+            DomainError::PolicyBlocked => Self::PolicyBlocked,
+            DomainError::InvalidInput { reason } => Self::bad_request(reason),
+            DomainError::UpstreamProvider
+            | DomainError::ModelNotPriced
+            | DomainError::InsufficientCredits => Self::Upstream,
         }
     }
 }

@@ -10,6 +10,7 @@ pub const ERR_AUTHORIZATION_DENIED: i32 = 4401;
 pub const ERR_POLICY_BLOCKED: i32 = 4031;
 pub const ERR_INTERNAL: i32 = 5000;
 pub const ERR_UPSTREAM: i32 = 5001;
+pub const ERR_TOOL_GUARD_UNAVAILABLE: i32 = 5031;
 
 #[derive(Serialize)]
 pub struct ApiResponse<T> {
