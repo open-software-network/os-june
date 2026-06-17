@@ -11,7 +11,9 @@ use scribe_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
     GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    Receipt, TokenUsage, ToolGuardAnalysis, ToolGuardAnalyzer, ToolGuardCallAnalysisRequest,
+    ToolGuardRedactionPlan, ToolGuardResultAnalysisRequest, Transcriber, Transcript,
+    TranscriptionRequest, UserId,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -256,6 +258,144 @@ async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), 
     Ok(())
 }
 
+fn tool_guard_call_body() -> serde_json::Value {
+    serde_json::json!({
+        "agentTurnId": "turn-1",
+        "toolCallId": "call-1",
+        "toolName": "web_lookup",
+        "destinationId": "web",
+        "destinationClass": "external_untrusted",
+        "arguments": { "query": "alice@example.com" },
+        "deadlineMs": 1000
+    })
+}
+
+fn tool_guard_result_body() -> serde_json::Value {
+    serde_json::json!({
+        "agentTurnId": "turn-1",
+        "toolCallId": "call-1",
+        "destinationId": "web",
+        "destinationClass": "external_untrusted",
+        "result": { "answer": "ok" },
+        "deadlineMs": 1000
+    })
+}
+
+#[tokio::test]
+async fn integration_tool_guard_call_requires_auth() -> Result<(), Box<dyn Error>> {
+    let tool_guard = Arc::new(RecordingToolGuard::default());
+    let router = router(test_state_with_tool_guard(tool_guard));
+
+    let response = oneshot(
+        &router,
+        json_request("/v1/tool-guard/calls", &tool_guard_call_body(), None)?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["error_code"], 3001);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_tool_guard_call_unconfigured_returns_unavailable() -> Result<(), Box<dyn Error>>
+{
+    // With no analyzer wired (OS-Guard unconfigured), the endpoint must fail
+    // cleanly as unavailable rather than falling back to anything.
+    let response = send(json_request(
+        "/v1/tool-guard/calls",
+        &tool_guard_call_body(),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 5031);
+    assert_eq!(body["message"], "tool_guard_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_tool_guard_call_relays_analysis_with_auth_identity()
+-> Result<(), Box<dyn Error>> {
+    let tool_guard = Arc::new(RecordingToolGuard::default());
+    let router = router(test_state_with_tool_guard(tool_guard.clone()));
+
+    // A client-supplied callerIdentity must be ignored: scribe sets it from the
+    // verified token (usr_test for the fake verifier).
+    let mut body = tool_guard_call_body();
+    body["callerIdentity"] = serde_json::json!("usr_spoofed");
+    let response = oneshot(
+        &router,
+        json_request("/v1/tool-guard/calls", &body, Some(AUTHORIZATION))?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await?;
+    assert_eq!(json["success"], true);
+    assert_eq!(json["data"]["request_id"], "req-test");
+    assert_eq!(
+        tool_guard.last_caller_identity(),
+        Some("usr_test".to_string())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_tool_guard_result_relays_analysis_with_auth_identity()
+-> Result<(), Box<dyn Error>> {
+    let tool_guard = Arc::new(RecordingToolGuard::default());
+    let router = router(test_state_with_tool_guard(tool_guard.clone()));
+
+    let response = oneshot(
+        &router,
+        json_request(
+            "/v1/tool-guard/results",
+            &tool_guard_result_body(),
+            Some(AUTHORIZATION),
+        )?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await?;
+    assert_eq!(json["data"]["request_id"], "req-test");
+    assert_eq!(
+        tool_guard.last_caller_identity(),
+        Some("usr_test".to_string())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_tool_guard_call_rejects_missing_fields() -> Result<(), Box<dyn Error>> {
+    let tool_guard = Arc::new(RecordingToolGuard::default());
+    let router = router(test_state_with_tool_guard(tool_guard));
+
+    let response = oneshot(
+        &router,
+        json_request(
+            "/v1/tool-guard/calls",
+            &serde_json::json!({ "toolName": "web_lookup" }),
+            Some(AUTHORIZATION),
+        )?,
+    )
+    .await;
+
+    // A malformed body is rejected before any forward to the gateway.
+    assert!(
+        response.status() == StatusCode::BAD_REQUEST
+            || response.status() == StatusCode::UNPROCESSABLE_ENTITY,
+        "unexpected status: {}",
+        response.status()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
     let response = send(get_request("/verify")?).await;
@@ -322,18 +462,31 @@ fn test_state() -> ApiState {
 }
 
 fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
-    test_state_with_sinks(Arc::new(RecordingIssueReportSink::default()), attestation)
+    test_state_with_sinks(
+        Arc::new(RecordingIssueReportSink::default()),
+        None,
+        attestation,
+    )
 }
 
 fn test_state_with_issue_sink(
     issue_reports: Arc<dyn IssueReportSink>,
     attestation: AttestationInfo,
 ) -> ApiState {
-    test_state_with_sinks(issue_reports, attestation)
+    test_state_with_sinks(issue_reports, None, attestation)
+}
+
+fn test_state_with_tool_guard(tool_guard: Arc<dyn ToolGuardAnalyzer>) -> ApiState {
+    test_state_with_sinks(
+        Arc::new(RecordingIssueReportSink::default()),
+        Some(tool_guard),
+        test_attestation(),
+    )
 }
 
 fn test_state_with_sinks(
     issue_reports: Arc<dyn IssueReportSink>,
+    tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
     attestation: AttestationInfo,
 ) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
@@ -381,6 +534,7 @@ fn test_state_with_sinks(
             flat_estimate_credits: 1_000,
         })),
         issue_reports,
+        tool_guard,
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
@@ -436,6 +590,13 @@ fn models() -> BTreeMap<String, ModelPriceConfig> {
 
 async fn send(request: Request<Body>) -> axum::response::Response {
     match test_router().oneshot(request).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
+}
+
+async fn oneshot(router: &Router, request: Request<Body>) -> axum::response::Response {
+    match router.clone().oneshot(request).await {
         Ok(response) => response,
         Err(error) => match error {},
     }
@@ -671,6 +832,57 @@ impl Cleaner for FakeCleaner {
                 completion_tokens: 100,
             },
         })
+    }
+}
+
+/// Records the `caller_identity` scribe forwarded so tests can assert it came
+/// from auth rather than the request body, and returns a fixed analysis.
+#[derive(Default)]
+struct RecordingToolGuard {
+    last_caller_identity: Mutex<Option<String>>,
+}
+
+impl RecordingToolGuard {
+    fn last_caller_identity(&self) -> Option<String> {
+        self.last_caller_identity
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    fn fixed_analysis() -> ToolGuardAnalysis {
+        ToolGuardAnalysis {
+            request_id: "req-test".to_string(),
+            canonical_request_hash: "hash".to_string(),
+            findings: Vec::new(),
+            advisories: Vec::new(),
+            redaction_plan: ToolGuardRedactionPlan {
+                operations: Vec::new(),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl ToolGuardAnalyzer for RecordingToolGuard {
+    async fn analyze_call(
+        &self,
+        request: ToolGuardCallAnalysisRequest,
+    ) -> Result<ToolGuardAnalysis, DomainError> {
+        if let Ok(mut last) = self.last_caller_identity.lock() {
+            *last = Some(request.caller_identity);
+        }
+        Ok(Self::fixed_analysis())
+    }
+
+    async fn analyze_result(
+        &self,
+        request: ToolGuardResultAnalysisRequest,
+    ) -> Result<ToolGuardAnalysis, DomainError> {
+        if let Ok(mut last) = self.last_caller_identity.lock() {
+            *last = Some(request.caller_identity);
+        }
+        Ok(Self::fixed_analysis())
     }
 }
 
