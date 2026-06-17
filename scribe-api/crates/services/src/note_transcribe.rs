@@ -102,7 +102,8 @@ impl NoteTranscribeService {
             params,
             format,
             seconds,
-            ..
+            actual,
+            estimate,
         } = prepared;
         if seconds > self.preview_max_audio_seconds {
             return Err(ServiceError::InvalidInput {
@@ -112,13 +113,22 @@ impl NoteTranscribeService {
                 ),
             });
         }
+        let authorization = authorize_or_deny(AuthorizeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::NoteTranscribe,
+            estimate,
+            hold_ttl_seconds: self.hold_ttl_seconds,
+        })
+        .await?;
         tracing::info!(
             note_id = %params.note_id,
             model = %params.model_id.0,
             seconds,
-            "note_transcribe: preview request accepted without metering hold"
+            estimate_credits = estimate.0,
+            "note_transcribe: preview request authorized"
         );
-        let transcript = self
+        let transcript_result = self
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
@@ -127,17 +137,28 @@ impl NoteTranscribeService {
                 language: params.language,
                 model: params.model_id.clone(),
             })
-            .await?;
+            .await;
+        let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
+        let idempotency_key = format!(
+            "note_transcribe_preview:{}:{}",
+            params.user_id.0, params.note_id
+        );
+        let receipt = charge(ChargeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            action_token: authorization.action_token,
+            credits: charge_credits,
+            idempotency_key,
+        })
+        .await?;
         tracing::info!(
             note_id = %params.note_id,
-            "note_transcribe: preview transcriber returned"
+            credits_charged = receipt.credits_charged.0,
+            "note_transcribe: preview hold settled"
         );
+        let transcript = transcript_result?;
         Ok(NoteTranscribeOutput {
             transcript,
-            receipt: Receipt {
-                credits_charged: Credits(0),
-                idempotent_replay: false,
-            },
+            receipt,
         })
     }
 

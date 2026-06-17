@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_dispatches_asr_without_accounts_hold() {
+    async fn note_transcribe_preview_authorizes_dispatches_asr_and_charges_actual_credits() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let transcriber = Arc::new(RecordingTranscriber::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
@@ -444,8 +444,24 @@ mod tests {
             .await
             .expect("preview transcription succeeds");
 
-        assert_eq!(output.receipt.credits_charged.0, 0);
-        assert_eq!(os_accounts.events(), Vec::new());
+        assert_eq!(output.receipt.credits_charged.0, 4);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 4,
+                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
+                        .to_string(),
+                },
+            ]
+        );
         assert_eq!(transcriber.call_count(), 1);
         assert_eq!(
             transcriber.last_context(),
@@ -455,7 +471,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_failure_does_not_create_accounts_hold() {
+    async fn note_transcribe_preview_failure_still_settles_hold() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(
@@ -486,11 +502,27 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
-        assert_eq!(os_accounts.events(), Vec::new());
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 4,
+                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
+                        .to_string(),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_does_not_require_accounts_authorization() {
+    async fn note_transcribe_preview_denied_authorization_does_not_dispatch_asr() {
         let os_accounts = Arc::new(RecordingOsAccounts {
             allow: false,
             deny_reason: Some("insufficient_available_balance".to_string()),
@@ -512,7 +544,7 @@ mod tests {
             preview_max_audio_seconds: 30,
         });
 
-        let output = service
+        let result = service
             .transcribe(NoteTranscribeParams {
                 user_id: UserId("usr_123".to_string()),
                 note_id: "live-preview-session-1".to_string(),
@@ -523,13 +555,19 @@ mod tests {
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
             })
-            .await
-            .expect("preview transcript should not create an accounts hold");
+            .await;
 
-        assert_eq!(output.transcript.text, "Transcript");
-        assert_eq!(output.receipt.credits_charged.0, 0);
-        assert_eq!(transcriber.call_count(), 1);
-        assert_eq!(os_accounts.events(), Vec::new());
+        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
+        assert_eq!(transcriber.call_count(), 0);
+        assert_eq!(
+            os_accounts.events(),
+            vec![RecordedCall::Authorize {
+                user_id: "usr_123".to_string(),
+                action: "note_transcribe".to_string(),
+                estimate: 1024,
+                hold_ttl: 60,
+            }]
+        );
     }
 
     #[tokio::test]

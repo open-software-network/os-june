@@ -47,7 +47,7 @@ pub(crate) async fn transcribe(
     )?;
     // This client field is not an authorization decision. It only requests
     // live-preview semantics; NoteTranscribeService still probes duration,
-    // enforces the preview cap, and returns a no-charge preview receipt.
+    // enforces the preview cap, and gates ASR through OS Accounts.
     let preview = parse_preview_flag(form.optional_text("preview").as_deref());
     let note_id = form.required_text("noteId")?;
     validation::validate_text_len("note_id", &note_id, validation::MAX_ID_CHARS)?;
