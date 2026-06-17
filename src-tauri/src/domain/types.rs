@@ -294,6 +294,12 @@ pub struct MicrophonePermissionResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CheckRecordingSourceReadinessRequest {
     pub source_mode: RecordingSourceMode,
+    #[serde(default = "default_probe_system_audio")]
+    pub probe_system_audio: bool,
+}
+
+fn default_probe_system_audio() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

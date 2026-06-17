@@ -1130,11 +1130,15 @@ export async function updateNote(input: {
 
 export async function checkRecordingSourceReadiness(
   sourceMode: RecordingSourceMode,
+  options: { probeSystemAudio?: boolean } = {},
 ) {
   return invoke<RecordingSourceReadinessDto>(
     "check_recording_source_readiness",
     {
-      request: { sourceMode },
+      request: {
+        sourceMode,
+        probeSystemAudio: options.probeSystemAudio ?? true,
+      },
     },
   );
 }

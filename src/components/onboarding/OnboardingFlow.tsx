@@ -12,10 +12,7 @@ import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TrialStep } from "./steps/TrialStep";
-import {
-  usePermissionStatuses,
-  useSystemAudioStatus,
-} from "./use-permission-status";
+import { usePermissionStatuses } from "./use-permission-status";
 
 type StepId = "sign-in" | "permissions" | "trial" | "dictation-practice";
 
@@ -111,10 +108,6 @@ export function OnboardingFlow({
 
   // Only poll the helper while the user is on the permissions screen.
   const permissionStatuses = usePermissionStatuses(stepId === "permissions");
-  // The probe behind this is also what fires the system-audio TCC prompt
-  // on a fresh install — deliberately run from the permissions screen, in
-  // context, instead of ambushing the user after onboarding.
-  const systemAudio = useSystemAudioStatus(stepId === "permissions");
 
   // Onboarding pitches the bare-fn default, but a version bump replays the
   // wizard for existing users, so it must not clobber a key they customized
@@ -204,12 +197,7 @@ export function OnboardingFlow({
             onContinue={goNext}
           />
         ) : stepId === "permissions" ? (
-          <PermissionsStep
-            statuses={permissionStatuses}
-            systemAudioStatus={systemAudio.status}
-            onAllowSystemAudio={systemAudio.probe}
-            onContinue={goNext}
-          />
+          <PermissionsStep statuses={permissionStatuses} onContinue={goNext} />
         ) : stepId === "trial" ? (
           <TrialStep
             account={account}

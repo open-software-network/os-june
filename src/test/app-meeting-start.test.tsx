@@ -235,6 +235,20 @@ describe("meeting start transcription event", () => {
     });
   }
 
+  it("checks system audio capability without probing permission on launch", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.checkRecordingSourceReadiness.mock.calls).toContainEqual([
+        "microphonePlusSystem",
+        { probeSystemAudio: false },
+      ]),
+    );
+    expect(mocks.checkRecordingSourceReadiness.mock.calls).not.toContainEqual([
+      "microphonePlusSystem",
+    ]);
+  });
+
   it("creates a fresh note before recording from the meeting prompt", async () => {
     const fresh = note({
       id: "note-2",
@@ -253,6 +267,9 @@ describe("meeting start transcription event", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     await fireMeetingStartUntilRecording();
+    expect(mocks.checkRecordingSourceReadiness.mock.calls).toContainEqual([
+      "microphonePlusSystem",
+    ]);
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
   });

@@ -54,7 +54,10 @@ describe("Tauri command contracts", () => {
       1,
       "check_recording_source_readiness",
       {
-        request: { sourceMode: "microphonePlusSystem" },
+        request: {
+          sourceMode: "microphonePlusSystem",
+          probeSystemAudio: true,
+        },
       },
     );
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "start_recording", {
@@ -63,6 +66,22 @@ describe("Tauri command contracts", () => {
     expect(mocks.invoke).toHaveBeenNthCalledWith(3, "finish_recording", {
       request: { sessionId: "session-1" },
     });
+  });
+
+  it("can check recording source readiness without probing system audio", async () => {
+    await checkRecordingSourceReadiness("microphonePlusSystem", {
+      probeSystemAudio: false,
+    });
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "check_recording_source_readiness",
+      {
+        request: {
+          sourceMode: "microphonePlusSystem",
+          probeSystemAudio: false,
+        },
+      },
+    );
   });
 
   it("keeps retry and recovery commands authoritative", async () => {
