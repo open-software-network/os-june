@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconTextIndicator } from "central-icons/IconTextIndicator";
-import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import {
   dictationHelperCommand,
   openPrivacySettings,
@@ -15,7 +14,6 @@ import {
   isMicrophoneDenied,
   isMicrophoneGranted,
   type PermissionStatuses,
-  type SystemAudioStatus,
 } from "../use-permission-status";
 
 function PermissionRow({
@@ -66,26 +64,15 @@ function PermissionRow({
 
 export function PermissionsStep({
   statuses,
-  systemAudioStatus,
-  onAllowSystemAudio,
   onContinue,
 }: {
   statuses: PermissionStatuses;
-  systemAudioStatus: SystemAudioStatus;
-  /** Re-runs the capture-helper probe; fires the TCC prompt while the
-   * permission is still undetermined. */
-  onAllowSystemAudio: () => void;
   onContinue: () => void;
 }) {
   const [showUnknownStatuses, setShowUnknownStatuses] = useState(false);
   const micGranted = isMicrophoneGranted(statuses);
   const micDenied = isMicrophoneDenied(statuses);
   const accessibilityGranted = isAccessibilityGranted(statuses);
-  const systemAudioGranted = systemAudioStatus === "granted";
-  const systemAudioDenied = systemAudioStatus === "denied";
-  // macOS < 14.2 (or a missing capture helper) can never grant; the row
-  // explains itself and stays out of the Continue gate.
-  const systemAudioUnsupported = systemAudioStatus === "unsupported";
   const showPermissionRows = statuses.checked || showUnknownStatuses;
   const macLikePlatform = isMacLikePlatform();
 
@@ -131,7 +118,7 @@ export function PermissionsStep({
       title="Let June listen and type"
       subtitle={
         macLikePlatform
-          ? "Dictation and meeting notes need three macOS permissions."
+          ? "Dictation and meeting notes need two macOS permissions."
           : "Dictation and meeting notes need microphone access."
       }
       wide
@@ -172,30 +159,6 @@ export function PermissionsStep({
                 showPermissionRows ? openAccessibilitySettings : undefined
               }
             />
-            <PermissionRow
-              icon={<IconVolumeFull size={15} />}
-              granted={showPermissionRows && systemAudioGranted}
-              probing={showPermissionRows && systemAudioStatus === "probing"}
-              title="System audio"
-              detail={
-                systemAudioDenied
-                  ? "Turned off in System Settings. Flip the toggle and June will notice."
-                  : systemAudioUnsupported
-                    ? "Needs macOS 14.2 or later."
-                    : systemAudioStatus === "probing"
-                      ? "Waiting for macOS. Approve the prompt when it appears."
-                      : "Hears your calls and meetings, only while you record."
-              }
-              onAllow={
-                showPermissionRows
-                  ? systemAudioDenied
-                    ? () => void openPrivacySettings("systemAudio")
-                    : systemAudioStatus === "unknown"
-                      ? onAllowSystemAudio
-                      : undefined
-                  : undefined
-              }
-            />
           </>
         ) : null}
       </ul>
@@ -204,9 +167,7 @@ export function PermissionsStep({
         continueDisabled={
           !showPermissionRows ||
           !micGranted ||
-          (macLikePlatform &&
-            (!accessibilityGranted ||
-              !(systemAudioGranted || systemAudioUnsupported)))
+          (macLikePlatform && !accessibilityGranted)
         }
         onSkip={onContinue}
       />

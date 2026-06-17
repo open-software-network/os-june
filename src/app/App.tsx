@@ -146,6 +146,7 @@ import type {
   NoteListItemDto,
   RecordingSourceMode,
   RecordingSourceReadinessDto,
+  SourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import {
@@ -380,6 +381,7 @@ export function App() {
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
+  const systemAudioSettingsReturnProbeRef = useRef(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
@@ -389,11 +391,15 @@ export function App() {
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] =
     useState<UpdateInstallProgress | null>(null);
-  const systemGranted = !!sourceReadiness?.sources.find(
+  const systemSourceReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "system",
-  )?.ready;
+  );
+  const systemAudioBlocked = isSystemAudioBlockedSource(systemSourceReadiness);
+  const systemAudioUnavailable = isSystemAudioUnavailableSource(
+    systemSourceReadiness,
+  );
   const sourceMode: RecordingSourceMode =
-    userWantsSystemAudio && systemGranted
+    userWantsSystemAudio && !systemAudioBlocked && !systemAudioUnavailable
       ? "microphonePlusSystem"
       : "microphoneOnly";
   const {
@@ -1539,17 +1545,22 @@ export function App() {
       .catch((err: unknown) => setError(messageFromError(err)));
   }, [appBlocked]);
 
-  // Probe with "microphonePlusSystem" on mount so sourceReadiness always
-  // has the system source. Onboarding's permissions screen normally fires
-  // the native TCC prompt in context; for users who skipped that step the
-  // helper preflight behind this call surfaces it here instead.
+  // Populate mic state plus system-audio capability on mount without running
+  // the helper permission probe. The native system-audio prompt belongs to the
+  // moment the user starts a recording that wants system audio.
   useEffect(() => {
     if (appBlocked) return;
     let cancelled = false;
     setCheckingSourceReadiness(true);
-    checkRecordingSourceReadiness("microphonePlusSystem")
+    checkRecordingSourceReadiness("microphonePlusSystem", {
+      probeSystemAudio: false,
+    })
       .then((readiness) => {
-        if (!cancelled) setSourceReadiness(readiness);
+        if (!cancelled) {
+          setSourceReadiness((previous) =>
+            mergeNonProbingSourceReadiness(previous, readiness),
+          );
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(messageFromError(err));
@@ -1557,10 +1568,9 @@ export function App() {
       .finally(() => {
         if (!cancelled) setCheckingSourceReadiness(false);
       });
-    // Eagerly request mic from the helper. This fires the native TCC
-    // prompt for fresh installs (matching the system-audio eager prompt),
-    // and for already-denied users it immediately emits the current
-    // status so the mic-blocked strip renders without further user
+    // Eagerly request mic from the helper. This fires the native TCC prompt
+    // for fresh installs, and for already-denied users it immediately emits
+    // the current status so the mic-blocked strip renders without further user
     // action. For granted users it's a no-op.
     void dictationHelperCommand({
       type: "request_microphone_permission",
@@ -1594,13 +1604,33 @@ export function App() {
         () => undefined,
       );
       if (captureActive) return;
-      void checkRecordingSourceReadiness("microphonePlusSystem")
-        .then(setSourceReadiness)
+      const previousSystem = sourceReadiness?.sources.find(
+        (source) => source.source === "system",
+      );
+      const shouldProbeSystemAudio =
+        systemAudioSettingsReturnProbeRef.current ||
+        isSystemAudioBlockedSource(previousSystem);
+      systemAudioSettingsReturnProbeRef.current = false;
+      const readinessPromise = shouldProbeSystemAudio
+        ? checkRecordingSourceReadiness("microphonePlusSystem")
+        : checkRecordingSourceReadiness("microphonePlusSystem", {
+            probeSystemAudio: false,
+          });
+      void readinessPromise
+        .then((readiness) => {
+          if (shouldProbeSystemAudio) {
+            setSourceReadiness(readiness);
+            return;
+          }
+          setSourceReadiness((previous) =>
+            mergeNonProbingSourceReadiness(previous, readiness),
+          );
+        })
         .catch(() => undefined);
     }
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [appBlocked, state.recordingStatus?.state]);
+  }, [appBlocked, sourceReadiness, state.recordingStatus?.state]);
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
@@ -1611,6 +1641,7 @@ export function App() {
   // the user to the System Settings pane.
   function handleEnableSystemAudio() {
     setUserWantsSystemAudio(true);
+    systemAudioSettingsReturnProbeRef.current = true;
     void openPrivacySettings("systemAudio");
   }
 
@@ -2142,7 +2173,11 @@ export function App() {
       try {
         setCheckingSourceReadiness(true);
         const readiness = await checkRecordingSourceReadiness(sourceMode);
-        setSourceReadiness(readiness);
+        setSourceReadiness((previous) =>
+          sourceMode === "microphoneOnly" && userWantsSystemAudio
+            ? mergeMicOnlyFallbackReadiness(previous, readiness)
+            : readiness,
+        );
 
         const micSource = readiness.sources.find(
           (source) => source.source === "microphone",
@@ -2155,10 +2190,10 @@ export function App() {
           return false;
         }
 
-        // System audio is optional. If the fresh probe shows it isn't
-        // available, fall back to mic-only for this take — the derived
-        // sourceMode will follow automatically next render via
-        // setSourceReadiness above.
+        // System audio is optional. If the fresh probe shows it is blocked or
+        // unavailable, fall back to mic-only for this take. Passive readiness
+        // refreshes preserve that blocked verdict until an explicit probe
+        // reports system audio ready again.
         const systemSource = readiness.sources.find(
           (source) => source.source === "system",
         );
@@ -3357,6 +3392,75 @@ function isDeniedPermission(state?: string) {
 // non-blocking so the banner doesn't flash before the helper's first report.
 export function isAccessibilityBlocked(state?: string) {
   return state !== undefined && state !== "granted";
+}
+
+function isSystemAudioBlockedSource(source?: SourceReadinessDto) {
+  return (
+    source?.permissionState === "denied" ||
+    source?.permissionState === "restricted"
+  );
+}
+
+function isSystemAudioUnavailableSource(source?: SourceReadinessDto) {
+  return (
+    source?.permissionState === "unsupported" ||
+    source?.captureAvailable === false
+  );
+}
+
+export function mergeMicOnlyFallbackReadiness(
+  previous: RecordingSourceReadinessDto | undefined,
+  next: RecordingSourceReadinessDto,
+): RecordingSourceReadinessDto {
+  if (next.sources.some((source) => source.source === "system")) return next;
+  const previousSystem = previous?.sources.find(
+    (source) => source.source === "system",
+  );
+  if (
+    !previousSystem ||
+    (!isSystemAudioBlockedSource(previousSystem) &&
+      !isSystemAudioUnavailableSource(previousSystem))
+  ) {
+    return next;
+  }
+
+  const sources = [...next.sources, previousSystem];
+  return {
+    ...next,
+    ready: sources.every((source) => !source.required || source.ready),
+    sources,
+  };
+}
+
+export function mergeNonProbingSourceReadiness(
+  previous: RecordingSourceReadinessDto | undefined,
+  next: RecordingSourceReadinessDto,
+): RecordingSourceReadinessDto {
+  const previousSystem = previous?.sources.find(
+    (source) => source.source === "system",
+  );
+  if (!previousSystem || !isSystemAudioBlockedSource(previousSystem)) {
+    return next;
+  }
+
+  const nextSystemIndex = next.sources.findIndex(
+    (source) => source.source === "system",
+  );
+  if (nextSystemIndex < 0) return next;
+
+  const nextSystem = next.sources[nextSystemIndex];
+  if (nextSystem.ready || nextSystem.permissionState !== "unknown") {
+    return next;
+  }
+
+  const sources = next.sources.map((source, index) =>
+    index === nextSystemIndex ? previousSystem : source,
+  );
+  return {
+    ...next,
+    ready: sources.every((source) => !source.required || source.ready),
+    sources,
+  };
 }
 
 function isNewSessionShortcut(event: KeyboardEvent) {

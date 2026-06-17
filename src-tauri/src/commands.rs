@@ -549,9 +549,11 @@ pub async fn check_recording_source_readiness(
     // The system-audio permission probe can block for over a minute while the
     // helper waits on a CoreAudio permission grant; keep that work off the
     // async runtime so other commands stay responsive.
-    tokio::task::spawn_blocking(move || recording_source_readiness(request.source_mode))
-        .await
-        .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))
+    tokio::task::spawn_blocking(move || {
+        recording_source_readiness(request.source_mode, request.probe_system_audio)
+    })
+    .await
+    .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))
 }
 
 /// Opens the scribe-api `/verify` page (enclave attestation, routing,
@@ -629,9 +631,10 @@ pub async fn start_recording(
     let source_mode = request.source_mode.unwrap_or_default();
     // Readiness probing and capture startup both wait on the system-audio
     // helper (up to tens of seconds); run them off the async runtime.
-    let readiness = tokio::task::spawn_blocking(move || recording_source_readiness(source_mode))
-        .await
-        .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))?;
+    let readiness =
+        tokio::task::spawn_blocking(move || recording_source_readiness(source_mode, true))
+            .await
+            .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))?;
     if !readiness.ready {
         let message = readiness
             .sources
@@ -990,7 +993,10 @@ async fn finish_recording_session(
     })
 }
 
-fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
+fn recording_source_readiness(
+    source_mode: RecordingSourceMode,
+    probe_system_audio: bool,
+) -> RecordingSourceReadinessDto {
     let (microphone_state, microphone_hint) = microphone_permission_state();
     let microphone_ready = microphone_state == "granted";
     let mut sources = vec![SourceReadinessDto {
@@ -1007,7 +1013,11 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
     }];
     if source_mode == RecordingSourceMode::MicrophonePlusSystem {
         let mut system = crate::audio::system_macos::system_audio_readiness();
-        if should_probe_system_audio_permission(system.ready, is_capture_active()) {
+        if !probe_system_audio {
+            if system.permission_state == "unknown" {
+                system.ready = false;
+            }
+        } else if should_probe_system_audio_permission(system.ready, is_capture_active()) {
             if let Err(error) = crate::audio::system_macos::helper_permission_check() {
                 system.ready = false;
                 system.permission_state = "denied".to_string();
@@ -1652,6 +1662,7 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 #[cfg(test)]
 mod tests {
     use super::should_probe_system_audio_permission;
+    use crate::domain::types::{CheckRecordingSourceReadinessRequest, RecordingSourceMode};
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {
@@ -1662,5 +1673,36 @@ mod tests {
     fn probes_system_audio_permission_only_when_available_and_idle() {
         assert!(should_probe_system_audio_permission(true, false));
         assert!(!should_probe_system_audio_permission(false, false));
+    }
+
+    #[test]
+    fn readiness_request_defaults_to_system_audio_probe() {
+        let request: CheckRecordingSourceReadinessRequest =
+            serde_json::from_value(serde_json::json!({
+                "sourceMode": "microphonePlusSystem"
+            }))
+            .expect("request should deserialize");
+
+        assert_eq!(
+            request.source_mode,
+            RecordingSourceMode::MicrophonePlusSystem
+        );
+        assert!(request.probe_system_audio);
+    }
+
+    #[test]
+    fn readiness_request_can_skip_system_audio_probe() {
+        let request: CheckRecordingSourceReadinessRequest =
+            serde_json::from_value(serde_json::json!({
+                "sourceMode": "microphonePlusSystem",
+                "probeSystemAudio": false
+            }))
+            .expect("request should deserialize");
+
+        assert_eq!(
+            request.source_mode,
+            RecordingSourceMode::MicrophonePlusSystem
+        );
+        assert!(!request.probe_system_audio);
     }
 }

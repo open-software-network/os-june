@@ -15,7 +15,9 @@ export function upsertLiveTranscriptEvent(
   );
 }
 
-function coalesceAdjacentLiveTranscriptEvents(events: LiveTranscriptEventDto[]) {
+function coalesceAdjacentLiveTranscriptEvents(
+  events: LiveTranscriptEventDto[],
+) {
   const coalesced: LiveTranscriptEventDto[] = [];
   for (const event of events) {
     const previous = coalesced.at(-1);

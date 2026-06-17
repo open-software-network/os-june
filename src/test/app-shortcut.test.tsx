@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
@@ -306,6 +312,82 @@ describe("App shortcuts", () => {
     expect(
       await screen.findByRole("heading", { name: "Appearance" }),
     ).toBeInTheDocument();
+  });
+
+  it("probes system audio once after returning from System Settings", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
+    );
+    const user = userEvent.setup();
+    const deniedReadiness = {
+      sourceMode: "microphonePlusSystem",
+      ready: false,
+      sources: [
+        { source: "microphone", ready: true, permissionState: "granted" },
+        {
+          source: "system",
+          ready: false,
+          permissionState: "denied",
+          captureAvailable: false,
+          recoveryAction: "openSystemAudioSettings",
+        },
+      ],
+    };
+    const grantedReadiness = {
+      sourceMode: "microphonePlusSystem",
+      ready: true,
+      sources: [
+        { source: "microphone", ready: true, permissionState: "granted" },
+        {
+          source: "system",
+          ready: true,
+          permissionState: "unknown",
+          captureAvailable: true,
+          recoveryAction: "openSystemAudioSettings",
+        },
+      ],
+    };
+
+    try {
+      mocks.checkRecordingSourceReadiness
+        .mockResolvedValueOnce(deniedReadiness)
+        .mockResolvedValue(grantedReadiness);
+
+      render(<App />);
+
+      await waitFor(() =>
+        expect(mocks.checkRecordingSourceReadiness.mock.calls).toContainEqual([
+          "microphonePlusSystem",
+          { probeSystemAudio: false },
+        ]),
+      );
+      mocks.checkRecordingSourceReadiness.mockClear();
+
+      await act(async () => {
+        mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+      });
+      await user.click(await screen.findByRole("button", { name: "Audio" }));
+      await user.click(await screen.findByRole("button", { name: "Enable" }));
+
+      expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+
+      await waitFor(() =>
+        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith(
+          "microphonePlusSystem",
+        ),
+      );
+      expect(mocks.checkRecordingSourceReadiness).not.toHaveBeenCalledWith(
+        "microphonePlusSystem",
+        { probeSystemAudio: false },
+      );
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("starts a session with Ctrl-N and creates a note with Ctrl-Shift-N on Windows", async () => {
