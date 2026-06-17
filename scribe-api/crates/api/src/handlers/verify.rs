@@ -57,16 +57,17 @@ fn render_page(info: &AttestationInfo) -> String {
     };
 
     // Privacy copy depends on whether chat routes through OS-Guard: audio always
-    // goes to Venice directly, but with OS-Guard configured the chat prompts and
+    // goes to Venice directly, but with OS-Guard configured chat prompts and
     // context are redacted by the gateway before reaching Venice.
     let inference_routing = if info.chat_via_osguard {
         "Audio for transcription leaves the TEE for Venice directly. Prompts and \
-         context for note generation and the agent go through the OS-Guard \
-         privacy gateway, which redacts detected PII before forwarding to Venice."
+         context for note generation, dictation cleanup, and the agent go through \
+         the OS-Guard privacy gateway, which redacts detected PII before \
+         forwarding to Venice."
     } else {
         "Everything leaving the TEE for model inference (audio for transcription, \
-         prompts and context for note generation and the agent) goes through \
-         Venice."
+         prompts and context for note generation, dictation cleanup, and the \
+         agent) goes through Venice."
     };
 
     PAGE_TEMPLATE
