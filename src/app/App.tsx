@@ -119,6 +119,7 @@ import { notifyAgentSessionStatus } from "../lib/agent-notifications";
 import { messageFromError } from "../lib/errors";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
 import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
@@ -267,28 +268,6 @@ function tabMeta(
         icon: <IconNoteText size={TAB_ICON_SIZE} />,
       };
   }
-}
-
-function upsertLiveTranscriptEvent(
-  current: LiveTranscriptEventDto[],
-  next: LiveTranscriptEventDto,
-) {
-  const events = current.filter(
-    (event) =>
-      !(
-        event.sessionId === next.sessionId &&
-        event.source === next.source &&
-        event.segmentId === next.segmentId
-      ),
-  );
-  events.push(next);
-  events.sort(
-    (left, right) =>
-      left.startMs - right.startMs ||
-      left.endMs - right.endMs ||
-      left.segmentId.localeCompare(right.segmentId),
-  );
-  return events.slice(-32);
 }
 
 export function App() {
