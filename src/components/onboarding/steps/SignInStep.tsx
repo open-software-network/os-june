@@ -6,7 +6,6 @@ import { isMacLikePlatform } from "../../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
-import { Spinner } from "../../ui/Spinner";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
 // macOS can introduce the full agent, dictation, and notes surface because the
@@ -126,7 +125,6 @@ export function SignInStep({
               aria-live="polite"
             >
               <span className="welcome-progress-label">
-                <Spinner className="welcome-spinner" aria-hidden />
                 <span>Complete sign-in in browser</span>
               </span>
               <button

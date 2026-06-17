@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { BorderBeam } from "border-beam";
 import { isMacLikePlatform } from "../../lib/platform";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
-import { Spinner } from "../ui/Spinner";
 
 type Props = {
   account: AccountStatus;
@@ -62,12 +62,11 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
           <div className="welcome-providers">
             {busy ? (
               <div
-                className="welcome-auth-progress"
+                className="welcome-auth-progress onboarding-waiting"
                 role="status"
                 aria-live="polite"
               >
                 <span className="welcome-progress-label">
-                  <Spinner className="welcome-spinner" aria-hidden />
                   <span>Complete sign-in in browser</span>
                 </span>
                 <button
@@ -79,15 +78,27 @@ export function AccountGate({ account, loading, onAccountChanged }: Props) {
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                className="primary-action"
-                disabled={loading}
-                onClick={() => void handleSignIn()}
+              <BorderBeam
+                active={!loading}
+                borderRadius={10}
+                className="onboarding-primary-beam"
+                colorVariant="sunset"
+                duration={4.8}
+                size="sm"
+                staticColors
+                strength={0.22}
+                theme="light"
               >
-                <OsMark />
-                <span>Continue with OpenSoftware</span>
-              </button>
+                <button
+                  type="button"
+                  className="primary-action onboarding-continue"
+                  disabled={loading}
+                  onClick={() => void handleSignIn()}
+                >
+                  <OsMark />
+                  <span>Continue with OpenSoftware</span>
+                </button>
+              </BorderBeam>
             )}
           </div>
         ) : (

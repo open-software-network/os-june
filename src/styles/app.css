@@ -12236,8 +12236,8 @@ input:focus-visible,
 
 /* The wizard's in-flight rows (sign-in handoff, trial checkout) keep the
    terracotta primary's exact footprint but fade it flat: a disabled-feeling
-   tint of the button it replaces, not a raised control. Only the spinner
-   keeps full terracotta — it's the live part. */
+   tint of the button it replaces, not a raised control. Flows that still have
+   active backend work can keep a terracotta spinner as the live part. */
 .welcome-auth-progress.onboarding-waiting {
   border-color: color-mix(in oklch, var(--brand) 16%, transparent);
   border-radius: var(--r-lg);
