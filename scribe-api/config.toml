@@ -58,6 +58,14 @@ base_url = "https://api.openai.com/v1"
 [upstreams.venice]
 base_url = "https://api.venice.ai/api/v1"
 
+# OS-Guard privacy gateway. When base_url is set, chat completions (note
+# generation, dictation cleanup, agent chat) are routed through it so PII is
+# redacted before reaching the provider; audio transcription always stays on
+# Venice. Leave base_url empty to keep chat on Venice. The gateway token is a
+# secret and is supplied via SCRIBE__UPSTREAMS__OSGUARD__API_KEY, not here.
+[upstreams.osguard]
+base_url = ""
+
 [pricing."gpt-4o-mini-transcribe"]
 unit = "seconds"
 credits_per_million_seconds = 1000000
