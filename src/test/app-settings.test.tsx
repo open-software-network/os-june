@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -11,6 +12,7 @@ import { AppSettings } from "../components/settings/AppSettings";
 import type { DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
+import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
@@ -1471,6 +1473,32 @@ describe("AppSettings", () => {
     expect(screen.getByText(APP_COMMIT_HASH)).toBeInTheDocument();
   });
 
+  it("checks for updates from About", async () => {
+    const onCheckForUpdates = vi.fn();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        onCheckForUpdates={onCheckForUpdates}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "About" }));
+    expect(await screen.findByText("Updates")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(onCheckForUpdates).toHaveBeenCalledOnce();
+  });
+
   it("opens the server attestation page from About through Rust", async () => {
     // Not an anchor: the webview drops target="_blank" navigations, so the
     // button must invoke the scribe_open_verify_page command instead.
@@ -1560,6 +1588,43 @@ describe("AppSettings", () => {
     expect(screen.getByText("sample.pdf")).toBeInTheDocument();
     expect(screen.getByText("USER.md")).toBeInTheDocument();
     expect(screen.queryByText("Logs")).toBeNull();
+  });
+
+  it("shows a refreshable messaging state when platform loading hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.hermesBridgeMessagingPlatforms.mockReturnValue(
+        new Promise(() => {}),
+      );
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Messaging" }));
+
+      await act(async () => {
+        vi.advanceTimersByTime(MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS);
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+      expect(screen.getByText("No matching platforms")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Refresh" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("toggles the agent HUD from Agent settings", async () => {

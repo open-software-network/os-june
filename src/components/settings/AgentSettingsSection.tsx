@@ -30,6 +30,11 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../../lib/agent-hud-settings";
+import { withTimeout } from "../../lib/async-timeout";
+import {
+  MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
+  MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
+} from "../../lib/hermes-messaging";
 import { Switch } from "../ui/Switch";
 
 type AgentSettingsPanel = "skills" | "messaging" | "files";
@@ -152,7 +157,11 @@ export function AgentSettingsSection() {
   async function loadMessagingPlatforms() {
     setLoading(true);
     try {
-      const response = await hermesBridgeMessagingPlatforms();
+      const response = await withTimeout(
+        hermesBridgeMessagingPlatforms(),
+        MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
+        MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
+      );
       setPlatforms(response.platforms);
       setSelectedPlatformId((current) => {
         if (current && response.platforms.some((item) => item.id === current)) {
@@ -162,6 +171,7 @@ export function AgentSettingsSection() {
       });
       setError(null);
     } catch (err) {
+      setPlatforms((current) => current ?? []);
       setError(messageFromError(err));
     } finally {
       setLoading(false);

@@ -7705,7 +7705,11 @@ input:focus-visible,
 .settings-agent-card {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  min-height: 640px;
+  min-height: clamp(
+    var(--settings-agent-card-min-h),
+    calc(100dvh - var(--settings-agent-card-viewport-offset)),
+    var(--settings-agent-card-max-h)
+  );
   padding: 0;
   overflow: hidden;
 }
@@ -7715,7 +7719,22 @@ input:focus-visible,
 }
 
 .settings-agent-card .agent-management-panel {
+  grid-row: 3;
+  height: 100%;
   min-height: 0;
+}
+
+.settings-agent-card .agent-skill-editor-panel,
+.settings-agent-card .agent-skill-editor {
+  height: 100%;
+}
+
+.settings-agent-card .agent-skill-editor-textarea {
+  min-height: clamp(
+    var(--settings-skill-editor-min-h),
+    var(--settings-skill-editor-ideal-h),
+    var(--settings-skill-editor-max-h)
+  );
 }
 
 .settings-agent-card .agent-messaging-layout {

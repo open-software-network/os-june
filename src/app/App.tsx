@@ -2642,6 +2642,7 @@ export function App() {
                   onEnableSystemAudio={handleEnableSystemAudio}
                   activeTab={settingsTab}
                   onTabChange={setSettingsTab}
+                  onCheckForUpdates={() => runUpdateCheck("manual")}
                   onReportIssue={handleReportIssue}
                 />
               ) : activeView === "dictation" ? (
