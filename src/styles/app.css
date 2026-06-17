@@ -7705,7 +7705,7 @@ input:focus-visible,
 .settings-agent-card {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  min-height: 640px;
+  min-height: clamp(640px, calc(100dvh - 96px), 900px);
   padding: 0;
   overflow: hidden;
 }
@@ -7715,7 +7715,17 @@ input:focus-visible,
 }
 
 .settings-agent-card .agent-management-panel {
+  height: 100%;
   min-height: 0;
+}
+
+.settings-agent-card .agent-skill-editor-panel,
+.settings-agent-card .agent-skill-editor {
+  height: 100%;
+}
+
+.settings-agent-card .agent-skill-editor-textarea {
+  min-height: clamp(360px, 52dvh, 620px);
 }
 
 .settings-agent-card .agent-messaging-layout {
