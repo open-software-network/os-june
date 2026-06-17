@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_authorizes_dispatches_asr_and_settles_zero_credits() {
+    async fn note_transcribe_preview_dispatches_asr_without_accounts_hold() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let transcriber = Arc::new(RecordingTranscriber::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
@@ -445,23 +445,7 @@ mod tests {
             .expect("preview transcription succeeds");
 
         assert_eq!(output.receipt.credits_charged.0, 0);
-        assert_eq!(
-            os_accounts.events(),
-            vec![
-                RecordedCall::Authorize {
-                    user_id: "usr_123".to_string(),
-                    action: "note_transcribe".to_string(),
-                    estimate: 1024,
-                    hold_ttl: 60,
-                },
-                RecordedCall::Charge {
-                    action_token: "agt_test".to_string(),
-                    credits: 0,
-                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
-                        .to_string(),
-                },
-            ]
-        );
+        assert_eq!(os_accounts.events(), Vec::new());
         assert_eq!(transcriber.call_count(), 1);
         assert_eq!(
             transcriber.last_context(),
@@ -471,7 +455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_settles_zero_credits_when_asr_fails() {
+    async fn note_transcribe_preview_failure_does_not_create_accounts_hold() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(
@@ -502,29 +486,14 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
-        assert_eq!(
-            os_accounts.events(),
-            vec![
-                RecordedCall::Authorize {
-                    user_id: "usr_123".to_string(),
-                    action: "note_transcribe".to_string(),
-                    estimate: 1024,
-                    hold_ttl: 60,
-                },
-                RecordedCall::Charge {
-                    action_token: "agt_test".to_string(),
-                    credits: 0,
-                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
-                        .to_string(),
-                },
-            ]
-        );
+        assert_eq!(os_accounts.events(), Vec::new());
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_returns_transcript_when_zero_credit_settlement_fails() {
+    async fn note_transcribe_preview_does_not_require_accounts_authorization() {
         let os_accounts = Arc::new(RecordingOsAccounts {
-            fail_charge: true,
+            allow: false,
+            deny_reason: Some("insufficient_available_balance".to_string()),
             ..RecordingOsAccounts::default()
         });
         let transcriber = Arc::new(RecordingTranscriber::default());
@@ -555,77 +524,12 @@ mod tests {
                 preview: true,
             })
             .await
-            .expect("preview transcript should not be hidden by zero-credit settlement failure");
+            .expect("preview transcript should not create an accounts hold");
 
         assert_eq!(output.transcript.text, "Transcript");
         assert_eq!(output.receipt.credits_charged.0, 0);
         assert_eq!(transcriber.call_count(), 1);
-        assert_eq!(
-            os_accounts.events(),
-            vec![
-                RecordedCall::Authorize {
-                    user_id: "usr_123".to_string(),
-                    action: "note_transcribe".to_string(),
-                    estimate: 1024,
-                    hold_ttl: 60,
-                },
-                RecordedCall::Charge {
-                    action_token: "agt_test".to_string(),
-                    credits: 0,
-                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
-                        .to_string(),
-                },
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn note_transcribe_preview_denied_authorization_does_not_dispatch_asr() {
-        let os_accounts = Arc::new(RecordingOsAccounts {
-            allow: false,
-            deny_reason: Some("insufficient_available_balance".to_string()),
-            ..RecordingOsAccounts::default()
-        });
-        let transcriber = Arc::new(RecordingTranscriber::default());
-        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
-            pricing: Arc::new(PricingTable::new(models([(
-                "audio-model",
-                PriceUnit::Seconds,
-                2,
-                ModelType::Asr,
-            )]))),
-            os_accounts: os_accounts.clone(),
-            transcriber: transcriber.clone(),
-            duration_probe: Arc::new(FixedDurationProbe),
-            hold_ttl_seconds: 60,
-            flat_estimate_credits: 1024,
-            preview_max_audio_seconds: 30,
-        });
-
-        let result = service
-            .transcribe(NoteTranscribeParams {
-                user_id: UserId("usr_123".to_string()),
-                note_id: "live-preview-session-1".to_string(),
-                audio: vec![1, 2, 3],
-                filename: "preview.wav".to_string(),
-                context: None,
-                language: None,
-                model_id: ModelId("audio-model".to_string()),
-                preview: true,
-            })
-            .await;
-
-        assert!(matches!(result, Err(ServiceError::InsufficientCredits)));
-        assert_eq!(transcriber.call_count(), 0);
-        assert_eq!(
-            os_accounts.events(),
-            vec![RecordedCall::Authorize {
-                user_id: "usr_123".to_string(),
-                action: "note_transcribe".to_string(),
-                estimate: 1024,
-                hold_ttl: 60,
-            }]
-        );
+        assert_eq!(os_accounts.events(), Vec::new());
     }
 
     #[tokio::test]

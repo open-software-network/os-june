@@ -102,7 +102,6 @@ impl NoteTranscribeService {
             params,
             format,
             seconds,
-            estimate,
             ..
         } = prepared;
         if seconds > self.preview_max_audio_seconds {
@@ -113,26 +112,13 @@ impl NoteTranscribeService {
                 ),
             });
         }
-        let authorization = authorize_or_deny(AuthorizeParams {
-            os_accounts: self.os_accounts.as_ref(),
-            user_id: params.user_id.clone(),
-            action: ActionSlug::NoteTranscribe,
-            estimate,
-            hold_ttl_seconds: self.hold_ttl_seconds,
-        })
-        .await?;
         tracing::info!(
             note_id = %params.note_id,
             model = %params.model_id.0,
             seconds,
-            estimate_credits = estimate.0,
-            "note_transcribe: preview request authorized"
+            "note_transcribe: preview request accepted without metering hold"
         );
-        let idempotency_key = format!(
-            "note_transcribe_preview:{}:{}",
-            params.user_id.0, params.note_id
-        );
-        let transcript_result = self
+        let transcript = self
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
@@ -141,37 +127,17 @@ impl NoteTranscribeService {
                 language: params.language,
                 model: params.model_id.clone(),
             })
-            .await
-            .map_err(ServiceError::from);
-        let receipt = match charge(ChargeParams {
-            os_accounts: self.os_accounts.as_ref(),
-            action_token: authorization.action_token,
-            credits: Credits(0),
-            idempotency_key,
-        })
-        .await
-        {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                tracing::warn!(
-                    note_id = %params.note_id,
-                    error = %error,
-                    "note_transcribe: preview zero-credit settlement failed"
-                );
-                Receipt {
-                    credits_charged: Credits(0),
-                    idempotent_replay: false,
-                }
-            }
-        };
-        let transcript = transcript_result?;
+            .await?;
         tracing::info!(
             note_id = %params.note_id,
-            "note_transcribe: preview hold settled with zero credits"
+            "note_transcribe: preview transcriber returned"
         );
         Ok(NoteTranscribeOutput {
             transcript,
-            receipt,
+            receipt: Receipt {
+                credits_charged: Credits(0),
+                idempotent_replay: false,
+            },
         })
     }
 
