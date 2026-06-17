@@ -3227,11 +3227,49 @@ async fn handle_scribe_provider_connection(
                             }
                         }
                     } else if requested_stream {
-                        let value = serde_json::from_slice::<serde_json::Value>(&body)
+                        let mut value = serde_json::from_slice::<serde_json::Value>(&body)
                             .unwrap_or_else(|_| serde_json::json!({}));
+                        if let Err(error) = guard_inbound_tool_calls(&state, &mut value).await {
+                            write_json_response(
+                                &mut stream,
+                                502,
+                                serde_json::json!({
+                                    "error": {
+                                        "message": format!("Tool Guard blocked the provider response: {}", error.message),
+                                        "type": error.code
+                                    }
+                                }),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
                         write_synthetic_sse_response(&mut stream, status, value).await?;
                     } else {
-                        write_raw_response(&mut stream, status, &content_type, &body).await?;
+                        match serde_json::from_slice::<serde_json::Value>(&body) {
+                            Ok(mut value) => {
+                                if let Err(error) =
+                                    guard_inbound_tool_calls(&state, &mut value).await
+                                {
+                                    write_json_response(
+                                        &mut stream,
+                                        502,
+                                        serde_json::json!({
+                                            "error": {
+                                                "message": format!("Tool Guard blocked the provider response: {}", error.message),
+                                                "type": error.code
+                                            }
+                                        }),
+                                    )
+                                    .await?;
+                                    return Ok(());
+                                }
+                                write_json_response(&mut stream, status, value).await?;
+                            }
+                            Err(_) => {
+                                write_raw_response(&mut stream, status, &content_type, &body)
+                                    .await?;
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -3271,6 +3309,163 @@ fn force_non_streaming_chat_completion(body: &mut serde_json::Value) {
     if let Some(object) = body.as_object_mut() {
         object.insert("stream".to_string(), serde_json::Value::Bool(false));
     }
+}
+
+async fn guard_inbound_tool_calls(
+    state: &ScribeProviderProxyState,
+    body: &mut serde_json::Value,
+) -> Result<(), AppError> {
+    let agent_turn_id = uuid::Uuid::new_v4().to_string();
+    let calls = proposed_tool_calls(body);
+    for call in calls {
+        let destination_id = call.tool_name.clone();
+        let analysis = crate::scribe_api::analyze_tool_guard_call(
+            crate::scribe_api::ToolGuardCallAnalysisBody {
+                agent_turn_id: agent_turn_id.clone(),
+                tool_call_id: call.tool_call_id.clone(),
+                tool_name: call.tool_name.clone(),
+                destination_id: destination_id.clone(),
+                destination_class: crate::tool_guard::ToolDestinationClass::ExternalUntrusted,
+                tool_schema_ref: None,
+                arguments: call.arguments.clone(),
+                deadline_ms: tool_guard_deadline_ms(),
+                policy_context: None,
+            },
+        )
+        .await?;
+        if analysis.findings.is_empty() && analysis.advisories.is_empty() {
+            continue;
+        }
+        let decision_id = uuid::Uuid::new_v4().to_string();
+        let decision_request = crate::tool_guard::build_decision_request(
+            decision_id,
+            crate::tool_guard::ToolGuardDecisionKind::ToolCall,
+            call.tool_call_id.clone(),
+            Some(call.tool_name.clone()),
+            destination_id,
+            &call.arguments,
+            &analysis,
+        );
+        let decision = state
+            .decisions
+            .request_decision(&state.app, decision_request)
+            .await?;
+        let redaction = match decision {
+            crate::tool_guard::ToolGuardDecision::AllowRaw => continue,
+            crate::tool_guard::ToolGuardDecision::RedactAll => {
+                crate::tool_guard::apply_redaction_plan(
+                    &call.arguments,
+                    &analysis.redaction_plan,
+                    None,
+                )?
+            }
+            crate::tool_guard::ToolGuardDecision::RedactSelected(selected) => {
+                crate::tool_guard::apply_redaction_plan(
+                    &call.arguments,
+                    &analysis.redaction_plan,
+                    Some(&selected),
+                )?
+            }
+        };
+        set_proposed_tool_call_arguments(body, &call, redaction.value)?;
+        remember_tool_guard_mappings(state, redaction.mappings)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ProposedToolCall {
+    choice_index: usize,
+    tool_call_index: usize,
+    tool_call_id: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+    arguments_were_json: bool,
+}
+
+fn proposed_tool_calls(body: &serde_json::Value) -> Vec<ProposedToolCall> {
+    body.get("choices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .flat_map(|(choice_index, choice)| {
+            choice
+                .get("message")
+                .and_then(|message| message.get("tool_calls"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(move |(tool_call_index, tool_call)| {
+                    let function = tool_call.get("function")?;
+                    let raw_arguments = function
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let parsed_arguments =
+                        serde_json::from_str::<serde_json::Value>(&raw_arguments);
+                    let (arguments, arguments_were_json) = match parsed_arguments {
+                        Ok(value) => (value, true),
+                        Err(_) => (serde_json::Value::String(raw_arguments), false),
+                    };
+                    Some(ProposedToolCall {
+                        choice_index,
+                        tool_call_index,
+                        tool_call_id: tool_call
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("tool-call-{}", uuid::Uuid::new_v4())),
+                        tool_name: function
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string(),
+                        arguments,
+                        arguments_were_json,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn set_proposed_tool_call_arguments(
+    body: &mut serde_json::Value,
+    call: &ProposedToolCall,
+    arguments: serde_json::Value,
+) -> Result<(), AppError> {
+    let serialized = if call.arguments_were_json {
+        serde_json::to_string(&arguments).map_err(|_| {
+            AppError::new(
+                "tool_guard_redaction_failed",
+                "tool_guard_arguments_invalid",
+            )
+        })?
+    } else {
+        arguments
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| arguments.to_string())
+    };
+    let tool_call = body
+        .get_mut("choices")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|choices| choices.get_mut(call.choice_index))
+        .and_then(|choice| choice.get_mut("message"))
+        .and_then(|message| message.get_mut("tool_calls"))
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|tool_calls| tool_calls.get_mut(call.tool_call_index))
+        .ok_or_else(|| {
+            AppError::new(
+                "tool_guard_redaction_failed",
+                "tool_guard_tool_call_missing",
+            )
+        })?;
+    tool_call["function"]["arguments"] = serde_json::Value::String(serialized);
+    Ok(())
 }
 
 async fn guard_outbound_tool_results(
