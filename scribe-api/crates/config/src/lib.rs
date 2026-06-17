@@ -10,10 +10,15 @@ use std::{
 use thiserror::Error;
 
 const REDACTED: &str = "<redacted>";
+pub const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER: &str = "local-dev-token";
+pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
+pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
+    #[serde(default)]
+    pub local_dev: LocalDevConfig,
     pub os_accounts: OsAccountsConfig,
     pub upstreams: UpstreamsConfig,
     pub attestation: AttestationConfig,
@@ -27,6 +32,7 @@ impl Debug for AppConfig {
         formatter
             .debug_struct("AppConfig")
             .field("server", &self.server)
+            .field("local_dev", &self.local_dev)
             .field("os_accounts", &self.os_accounts)
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
@@ -141,6 +147,52 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct LocalDevConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_local_dev_bearer_token")]
+    pub bearer_token: String,
+    #[serde(default = "default_local_dev_user_id")]
+    pub user_id: String,
+}
+
+fn default_local_dev_bearer_token() -> String {
+    LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER.to_string()
+}
+
+fn default_local_dev_user_id() -> String {
+    "usr_local_dev".to_string()
+}
+
+impl Default for LocalDevConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bearer_token: default_local_dev_bearer_token(),
+            user_id: default_local_dev_user_id(),
+        }
+    }
+}
+
+impl Debug for LocalDevConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalDevConfig")
+            .field("enabled", &self.enabled)
+            .field(
+                "bearer_token",
+                if self.bearer_token.is_empty() {
+                    &"<unset>"
+                } else {
+                    &REDACTED
+                },
+            )
+            .field("user_id", &self.user_id)
+            .finish()
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -451,6 +503,7 @@ impl Default for AppConfig {
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
             },
+            local_dev: LocalDevConfig::default(),
             os_accounts: OsAccountsConfig {
                 api_url: String::new(),
                 app_api_key: String::new(),
@@ -517,12 +570,23 @@ pub fn load() -> Result<AppConfig, ConfigError> {
 }
 
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
-    validate_required_text("os_accounts.api_url", &config.os_accounts.api_url)?;
-    validate_required_secret(
-        "os_accounts.app_api_key",
-        &config.os_accounts.app_api_key,
-        "osk_REPLACE_ME",
-    )?;
+    if config.local_dev.enabled {
+        validate_local_dev_bearer_token(config)?;
+        validate_required_text("local_dev.user_id", &config.local_dev.user_id)?;
+        if !config.local_dev.user_id.starts_with("usr_") {
+            return Err(ConfigError::InvalidRequired {
+                field: "local_dev.user_id",
+                reason: "must start with usr_",
+            });
+        }
+    } else {
+        validate_required_text("os_accounts.api_url", &config.os_accounts.api_url)?;
+        validate_required_secret(
+            "os_accounts.app_api_key",
+            &config.os_accounts.app_api_key,
+            "osk_REPLACE_ME",
+        )?;
+    }
     validate_positive_config(
         "os_accounts.note_transcribe_preview_max_audio_secs",
         config.os_accounts.note_transcribe_preview_max_audio_secs,
@@ -541,22 +605,26 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             "upstreams.openai.base_url",
             &config.upstreams.openai.base_url,
         )?;
-        validate_required_secret(
-            "upstreams.openai.api_key",
-            &config.upstreams.openai.api_key,
-            "sk_REPLACE_ME",
-        )?;
+        if !config.local_dev.enabled {
+            validate_required_secret(
+                "upstreams.openai.api_key",
+                &config.upstreams.openai.api_key,
+                OPENAI_API_KEY_PLACEHOLDER,
+            )?;
+        }
     }
     if uses_venice {
         validate_required_text(
             "upstreams.venice.base_url",
             &config.upstreams.venice.base_url,
         )?;
-        validate_required_secret(
-            "upstreams.venice.api_key",
-            &config.upstreams.venice.api_key,
-            "VENICE_API_KEY_REPLACE_ME",
-        )?;
+        if !config.local_dev.enabled {
+            validate_required_secret(
+                "upstreams.venice.api_key",
+                &config.upstreams.venice.api_key,
+                VENICE_API_KEY_PLACEHOLDER,
+            )?;
+        }
     }
 
     for (model_id, pricing) in &config.pricing {
@@ -598,6 +666,22 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         }
     }
     Ok(())
+}
+
+fn validate_local_dev_bearer_token(config: &AppConfig) -> Result<(), ConfigError> {
+    if is_loopback_host(&config.server.host) {
+        validate_required_text("local_dev.bearer_token", &config.local_dev.bearer_token)
+    } else {
+        validate_required_secret(
+            "local_dev.bearer_token",
+            &config.local_dev.bearer_token,
+            LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER,
+        )
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host.trim(), "127.0.0.1" | "localhost" | "::1")
 }
 
 fn validate_required_text(field: &'static str, value: &str) -> Result<(), ConfigError> {
@@ -664,6 +748,7 @@ mod tests {
     #[test]
     fn config_debug_redacts_secrets() {
         let mut config = AppConfig::default();
+        config.local_dev.bearer_token = "local-secret-token".to_string();
         config.os_accounts.app_api_key = "osk_secret_value".to_string();
         config.upstreams.openai.api_key = "sk-secret".to_string();
         config.upstreams.venice.api_key = "vc-secret".to_string();
@@ -672,6 +757,7 @@ mod tests {
             !dump.contains("osk_secret_value"),
             "app_api_key leaked in Debug: {dump}"
         );
+        assert!(!dump.contains("local-secret-token"));
         assert!(!dump.contains("sk-secret"));
         assert!(!dump.contains("vc-secret"));
         assert!(dump.contains("<redacted>"));
@@ -768,6 +854,62 @@ mod tests {
     fn validate_rejects_provider_placeholder_key() {
         let mut config = valid_config();
         config.upstreams.venice.api_key = "VENICE_API_KEY_REPLACE_ME".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_local_dev_skips_os_accounts_requirements() {
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.upstreams.venice.api_key = "venice-test".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_local_dev_allows_missing_provider_keys() {
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.upstreams.openai.api_key = String::new();
+        config.upstreams.venice.api_key = "VENICE_API_KEY_REPLACE_ME".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_local_dev_rejects_blank_bearer_token() {
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.local_dev.bearer_token = "  ".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_local_dev_rejects_default_bearer_token_on_non_loopback_host() {
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.server.host = "0.0.0.0".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_local_dev_rejects_non_user_id() {
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.local_dev.user_id = "local_dev".to_string();
 
         let result = validate(&config);
 

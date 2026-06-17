@@ -1207,6 +1207,7 @@ export type AccountSubscription = {
 export type AccountStatus = {
   signedIn: boolean;
   configured: boolean;
+  localDev?: boolean;
   user?: AccountUser;
   balance?: AccountBalance;
   /** Absent when the subscription state couldn't be determined — distinct
