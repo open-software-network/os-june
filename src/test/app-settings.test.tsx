@@ -402,6 +402,37 @@ describe("AppSettings", () => {
     expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(1);
   });
 
+  it("hides billing and sign-out controls in local mode", () => {
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          localDev: true,
+          subscription: { subscribed: true, status: "active" },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Requests use your local Scribe API. No OpenSoftware account is used.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "Billing" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Sign out" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("updates dictation microphone and note recording source", async () => {
     const user = userEvent.setup();
     const onSourceModeChange = vi.fn();

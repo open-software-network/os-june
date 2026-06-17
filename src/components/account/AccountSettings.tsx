@@ -27,8 +27,9 @@ export function AccountSettings({
       <header className="settings-header">
         <h1 className="settings-title">Account</h1>
         <p className="settings-description">
-          Sign in with OpenSoftware to use your shared identity and balance
-          across the network.
+          {account.localDev
+            ? "Local mode is active. June uses your local Scribe API without OpenSoftware sign-in or billing."
+            : "Sign in with OpenSoftware to use your shared identity and balance across the network."}
         </p>
       </header>
 
@@ -38,7 +39,9 @@ export function AccountSettings({
         onAccountChanged={onAccountChanged}
         onRefresh={onRefresh}
       />
-      <BillingSettingsSection account={account} onRefresh={onRefresh} />
+      {account.localDev ? null : (
+        <BillingSettingsSection account={account} onRefresh={onRefresh} />
+      )}
     </div>
   );
 }
@@ -103,23 +106,27 @@ export function AccountSettingsSection({
           <div className="settings-row">
             <div className="settings-row-info">
               <h3 className="settings-row-title">
-                {loading
-                  ? "Checking sign-in..."
-                  : account.signedIn
-                    ? displayName(account)
-                    : "Not signed in"}
+                {account.localDev
+                  ? "Local mode"
+                  : loading
+                    ? "Checking sign-in..."
+                    : account.signedIn
+                      ? displayName(account)
+                      : "Not signed in"}
               </h3>
               <p className="settings-row-description">
-                {account.signedIn
-                  ? (account.user?.email ??
-                    `@${account.user?.handle ?? "account"}`)
-                  : account.configured
-                    ? "Your login is managed by OpenSoftware."
-                    : "OpenSoftware sign-in is not configured for this build."}
+                {account.localDev
+                  ? "Requests use your local Scribe API. No OpenSoftware account is used."
+                  : account.signedIn
+                    ? (account.user?.email ??
+                      `@${account.user?.handle ?? "account"}`)
+                    : account.configured
+                      ? "Your login is managed by OpenSoftware."
+                      : "OpenSoftware sign-in is not configured for this build."}
               </p>
             </div>
             <div className="settings-row-control">
-              {account.signedIn ? (
+              {account.localDev ? null : account.signedIn ? (
                 <button
                   type="button"
                   className="btn btn-secondary"

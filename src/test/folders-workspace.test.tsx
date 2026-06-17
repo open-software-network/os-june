@@ -318,6 +318,40 @@ describe("Sidebar primary navigation", () => {
       screen.getByRole("button", { name: /account menu/i }),
     ).not.toHaveAttribute("data-active");
   });
+
+  it("hides billing and invite actions in local dev mode", async () => {
+    const user = userEvent.setup();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="settings"
+        account={{
+          signedIn: true,
+          configured: true,
+          localDev: true,
+          user: { id: "usr_local_dev", handle: "local-dev" },
+        }}
+        settingsTab="general"
+        onSettingsTabChange={vi.fn()}
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Billing" })).toBeNull();
+    expect(screen.getByRole("button", { name: "General" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /account menu/i }));
+    expect(
+      screen.queryByRole("menuitem", { name: "Invite friends" }),
+    ).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
+  });
 });
 
 describe("FoldersWorkspace — list view", () => {

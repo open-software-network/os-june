@@ -797,6 +797,10 @@ input:focus-visible,
   overflow: hidden;
 }
 
+.agent-skill-editor-panel {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
 .agent-management-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -884,6 +888,10 @@ input:focus-visible,
   cursor: pointer;
 }
 
+.agent-capability-row > button:first-child:disabled {
+  cursor: default;
+}
+
 .agent-capability-row[data-selected="true"] {
   margin: 0 calc(var(--sp-3) * -1);
   border-radius: var(--r-sm);
@@ -926,6 +934,62 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.35;
+}
+
+.agent-skill-editor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agent-skill-editor-header {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-skill-editor-back {
+  width: fit-content;
+}
+
+.agent-skill-editor-heading {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.agent-skill-editor-heading h3 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.agent-skill-editor-heading p {
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.agent-skill-editor-textarea {
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 0;
+  padding: var(--sp-5);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  outline: none;
+}
+
+.agent-skill-editor-textarea:focus {
+  box-shadow: inset 0 0 0 1px var(--ring-focus);
 }
 
 .agent-files-root {
@@ -2645,6 +2709,7 @@ input:focus-visible,
    * taller and it pre-washes the backdrop the frosted box samples, and the
    * conversation stops showing through the glass. */
   height: 48px;
+  border-bottom-left-radius: var(--r-window);
   background: linear-gradient(to bottom, transparent, var(--card) 72%);
 }
 
@@ -5211,11 +5276,11 @@ input:focus-visible,
   gap: var(--sp-2);
   flex: 1;
   min-width: 0;
+  margin-left: calc(-1 * var(--tab-strip-shadow-pad));
   padding: var(--tab-strip-shadow-pad);
-  padding-left: 0;
   /* No scroll: tabs that don't fit fold into the overflow popover instead.
-   * Clip transient resize spillover, but leave a tiny clip margin so the flush
-   * first pill can render its normal rounded corner and soft shadow. */
+   * Clip transient resize spillover. The negative margin keeps the first tab
+   * aligned with the card while preserving paint room inside the clip edge. */
   overflow: clip;
   overflow-clip-margin: var(--tab-strip-shadow-pad);
 }
@@ -5233,7 +5298,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  height: calc(var(--titlebar-h) - 4px);
+  height: calc(var(--titlebar-h) - var(--sp-2));
   padding: 0 var(--sp-1) 0 var(--sp-2);
   flex: 1 1 0;
   min-width: 40px;
@@ -5335,8 +5400,8 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: calc(var(--titlebar-h) - 4px);
-  height: calc(var(--titlebar-h) - 4px);
+  width: calc(var(--titlebar-h) - var(--sp-2));
+  height: calc(var(--titlebar-h) - var(--sp-2));
   padding: 0;
   border: 0;
   border-radius: var(--r-md);
@@ -5393,7 +5458,7 @@ input:focus-visible,
   align-items: center;
   gap: 1px;
   flex: 0 0 auto;
-  height: calc(var(--titlebar-h) - 4px);
+  height: calc(var(--titlebar-h) - var(--sp-2));
   padding: 0 var(--sp-1);
   border: 0;
   border-radius: var(--r-md);
