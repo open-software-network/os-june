@@ -477,7 +477,7 @@ impl Default for AppConfig {
             },
             attestation: AttestationConfig {
                 source_commit: String::new(),
-                source_repo_url: "https://github.com/open-software-network/os-scribe".to_string(),
+                source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
                 image_repo: "ghcr.io/open-software-network/scribe-api".to_string(),
                 trust_center_url:
                     "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"

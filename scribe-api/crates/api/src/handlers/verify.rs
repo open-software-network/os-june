@@ -248,7 +248,7 @@ mod tests {
     fn info() -> AttestationInfo {
         AttestationInfo {
             source_commit: "0123abc4567890def0123abc4567890def012345".to_string(),
-            source_repo_url: "https://github.com/open-software-network/os-scribe".to_string(),
+            source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
             image_repo: "ghcr.io/open-software-network/scribe-api".to_string(),
             trust_center_url: "https://trust.phala.com/app/15f8d2fd".to_string(),
         }
@@ -281,7 +281,7 @@ mod tests {
     fn render_links_commit_and_attestation() {
         let html = render_page(&info());
         assert!(html.contains(
-            "https://github.com/open-software-network/os-scribe/commit/0123abc4567890def0123abc4567890def012345"
+            "https://github.com/open-software-network/os-june/commit/0123abc4567890def0123abc4567890def012345"
         ));
         assert!(html.contains("ghcr.io/open-software-network/scribe-api:0123abc"));
         assert!(html.contains("https://trust.phala.com/app/15f8d2fd"));
