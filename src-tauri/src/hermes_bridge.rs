@@ -3463,11 +3463,19 @@ fn rehydrate_assistant_text(
     if mappings.is_empty() {
         return Ok(());
     }
+    rehydrate_assistant_text_from_mappings(body, &mappings);
+    Ok(())
+}
+
+fn rehydrate_assistant_text_from_mappings(
+    body: &mut serde_json::Value,
+    mappings: &[crate::tool_guard::ToolGuardReplacementMapping],
+) {
     let Some(choices) = body
         .get_mut("choices")
         .and_then(serde_json::Value::as_array_mut)
     else {
-        return Ok(());
+        return;
     };
     for choice in choices {
         let Some(message) = choice.get_mut("message") else {
@@ -3483,7 +3491,6 @@ fn rehydrate_assistant_text(
         let rehydrated = crate::tool_guard::rehydrate_text(&content, &mappings);
         message["content"] = serde_json::Value::String(rehydrated);
     }
-    Ok(())
 }
 
 async fn guard_outbound_tool_results(
@@ -3757,23 +3764,22 @@ async fn write_tool_guard_blocked_response(
     stream: &mut tokio::net::TcpStream,
     error: &AppError,
 ) -> io::Result<()> {
+    write_json_response(stream, 403, tool_guard_blocked_response_body(error)).await
+}
+
+fn tool_guard_blocked_response_body(error: &AppError) -> serde_json::Value {
     let reason = if error.code.is_empty() {
         "tool_guard_blocked"
     } else {
         error.code.as_str()
     };
-    write_json_response(
-        stream,
-        403,
-        serde_json::json!({
-            "error": {
-                "message": "tool_guard_blocked",
-                "type": "tool_guard_blocked",
-                "reason": reason
-            }
-        }),
-    )
-    .await
+    serde_json::json!({
+        "error": {
+            "message": "tool_guard_blocked",
+            "type": "tool_guard_blocked",
+            "reason": reason
+        }
+    })
 }
 
 async fn write_raw_response(
@@ -3998,6 +4004,110 @@ mod tests {
         let entry = &body["data"][0];
         assert_eq!(entry["id"], "zai-org-glm-5");
         assert!(entry.get("context_length").is_none());
+    }
+
+    #[test]
+    fn provider_proxy_forces_non_streaming_for_guarded_requests() {
+        let mut body = serde_json::json!({ "stream": true, "messages": [] });
+
+        assert!(chat_completion_requested_stream(&body));
+        force_non_streaming_chat_completion(&mut body);
+
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn provider_proxy_synthesizes_stream_chunks_from_buffered_completions() {
+        let chunk = chat_completion_sse_chunk(serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Done"
+                },
+                "finish_reason": "stop"
+            }]
+        }));
+
+        assert_eq!(chunk["object"], "chat.completion.chunk");
+        assert_eq!(chunk["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(chunk["choices"][0]["delta"]["content"], "Done");
+        assert_eq!(chunk["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn provider_proxy_extracts_and_rewrites_tool_call_arguments() {
+        let mut body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_lookup",
+                            "arguments": "{\"query\":\"alice@example.com\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let calls = proposed_tool_calls(&body);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_call_id, "call-1");
+        assert_eq!(calls[0].tool_name, "web_lookup");
+        assert_eq!(calls[0].arguments["query"], "alice@example.com");
+
+        set_proposed_tool_call_arguments(
+            &mut body,
+            &calls[0],
+            serde_json::json!({ "query": "[[OSG.EMAIL.1]]" }),
+        )
+        .expect("rewrite succeeds");
+
+        let arguments = body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments string");
+        let parsed: serde_json::Value = serde_json::from_str(arguments).expect("valid JSON args");
+        assert_eq!(parsed["query"], "[[OSG.EMAIL.1]]");
+    }
+
+    #[test]
+    fn provider_proxy_rehydrates_assistant_text_from_mappings() {
+        let mut body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "I found [[OSG.EMAIL.1]]."
+                }
+            }]
+        });
+        let mappings = vec![crate::tool_guard::ToolGuardReplacementMapping {
+            replacement: "[[OSG.EMAIL.1]]".to_string(),
+            original: "alice@example.com".to_string(),
+        }];
+
+        rehydrate_assistant_text_from_mappings(&mut body, &mappings);
+
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "I found alice@example.com."
+        );
+    }
+
+    #[test]
+    fn provider_proxy_tool_guard_failures_use_fail_closed_error_shape() {
+        let body = tool_guard_blocked_response_body(&AppError::new(
+            "scribe_request_failed",
+            "tool_guard_unavailable",
+        ));
+
+        assert_eq!(body["error"]["message"], "tool_guard_blocked");
+        assert_eq!(body["error"]["type"], "tool_guard_blocked");
+        assert_eq!(body["error"]["reason"], "scribe_request_failed");
     }
 
     #[test]
