@@ -7,8 +7,8 @@ use scribe_config::{
 use scribe_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
     MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, WebhookIssueReportSink,
-    default_client, jwks_client,
+    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, default_client,
+    jwks_client,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -245,10 +245,6 @@ fn build_issue_report_sink(
     if let Some(sink) = OsPlatformIssueReportSink::from_config(http.clone(), &config.issue_reports)
     {
         tracing::info!("issue reports will be filed as os-platform issues");
-        Arc::new(sink)
-    } else if let Some(sink) =
-        WebhookIssueReportSink::from_config(http.clone(), &config.issue_reports)
-    {
         Arc::new(sink)
     } else {
         tracing::info!("no issue report sink configured; reports will be logged only");

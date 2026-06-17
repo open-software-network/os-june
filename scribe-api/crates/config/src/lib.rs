@@ -42,21 +42,13 @@ impl Debug for AppConfig {
     }
 }
 
-/// Where user-submitted issue reports get forwarded. Every section is
-/// optional: with os-platform configured, reports become Issues in the
-/// tracker; else with a webhook, a JSON POST; else they land in the
-/// structured logs only.
+/// Where user-submitted issue reports get forwarded. The destination defaults
+/// to the June project in os-platform; only the bot API key is environment
+/// specific. Without that key, reports land in structured logs only.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct IssueReportsConfig {
-    /// Receives each report as a JSON POST. Often embeds a secret token
-    /// (Slack/Discord-style webhooks), hence the redacted Debug. Set via
-    /// `SCRIBE__ISSUE_REPORTS__WEBHOOK_URL`.
-    #[serde(default)]
-    pub webhook_url: String,
-    /// Base URL of the os-platform (fellow) API, e.g.
-    /// `https://api.platform.opensoftware.co`. Empty disables the
-    /// tracker sink. `SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_URL`.
-    #[serde(default)]
+    /// Base URL of the os-platform (fellow) API.
+    #[serde(default = "default_issue_report_api_url")]
     pub os_platform_api_url: String,
     /// fellow API key (`osk_…`) of the reporting bot user — that user
     /// must be a member of the target Org/Project. Redacted Debug.
@@ -64,10 +56,10 @@ pub struct IssueReportsConfig {
     #[serde(default)]
     pub os_platform_api_key: String,
     /// Target Org handle (or opaque `org_…` id).
-    #[serde(default)]
+    #[serde(default = "default_issue_report_org")]
     pub os_platform_org: String,
     /// Target Project handle (or opaque `prj_…` id).
-    #[serde(default)]
+    #[serde(default = "default_issue_report_project")]
     pub os_platform_project: String,
     /// Label slug attached to every report Issue.
     #[serde(default = "default_issue_report_label")]
@@ -76,24 +68,39 @@ pub struct IssueReportsConfig {
     /// Issues are bounties under the hood, and creation fails when neither
     /// the Project nor the Org has a default reward asset — naming one here
     /// sidesteps that. Empty omits the field and relies on the defaults.
-    #[serde(default)]
+    #[serde(default = "default_issue_report_reward_asset")]
     pub os_platform_reward_asset: String,
+}
+
+fn default_issue_report_api_url() -> String {
+    "https://api.platform.opensoftware.co".to_string()
+}
+
+fn default_issue_report_org() -> String {
+    "open-software".to_string()
+}
+
+fn default_issue_report_project() -> String {
+    "june".to_string()
 }
 
 fn default_issue_report_label() -> String {
     "bug".to_string()
 }
 
+fn default_issue_report_reward_asset() -> String {
+    "POINTS".to_string()
+}
+
 impl Default for IssueReportsConfig {
     fn default() -> Self {
         Self {
-            webhook_url: String::new(),
-            os_platform_api_url: String::new(),
+            os_platform_api_url: default_issue_report_api_url(),
             os_platform_api_key: String::new(),
-            os_platform_org: String::new(),
-            os_platform_project: String::new(),
+            os_platform_org: default_issue_report_org(),
+            os_platform_project: default_issue_report_project(),
             os_platform_label: default_issue_report_label(),
-            os_platform_reward_asset: String::new(),
+            os_platform_reward_asset: default_issue_report_reward_asset(),
         }
     }
 }
@@ -102,14 +109,6 @@ impl Debug for IssueReportsConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("IssueReportsConfig")
-            .field(
-                "webhook_url",
-                if self.webhook_url.is_empty() {
-                    &"<unset>"
-                } else {
-                    &REDACTED
-                },
-            )
             .field("os_platform_api_url", &self.os_platform_api_url)
             .field(
                 "os_platform_api_key",

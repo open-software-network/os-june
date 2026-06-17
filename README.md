@@ -130,6 +130,8 @@ Use `scribe-api/.env` for server-side secrets and local auth:
 - `SCRIBE__LOCAL_DEV__BEARER_TOKEN`
 - `SCRIBE__UPSTREAMS__VENICE__API_KEY`
 - `SCRIBE__UPSTREAMS__OPENAI__API_KEY`
+- optional `SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` for filing in-app
+  issue reports into the fixed June os-platform project
 - optional provider base URLs such as `SCRIBE__UPSTREAMS__VENICE__BASE_URL`
 
 The local bearer token must match in both env files. It is not an OS Accounts

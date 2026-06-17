@@ -13,23 +13,18 @@ image_repo = "ghcr.io/open-software-network/scribe-api"
 trust_center_url = "https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c"
 
 [issue_reports]
-# Where user-submitted issue reports go, first match wins:
-# 1. os-platform issue tracker — reports become Issues tagged with
-#    os_platform_label in the configured Org/Project. The API key is a
-#    fellow key (osk_...) of a bot user that is a member of that Org;
-#    set it per environment via SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY.
-# 2. Webhook — each report as a JSON POST. Often embeds a secret token, so
-#    set it per environment via SCRIBE__ISSUE_REPORTS__WEBHOOK_URL.
-# 3. Neither configured: reports land in the structured logs only.
-os_platform_api_url = ""
+# User-submitted issue reports are filed as os-platform Issues in the June
+# project. The only per-environment value is the bot user's fellow API key
+# (osk_...), set via SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY. Without it,
+# reports are accepted but land in structured logs only.
+os_platform_api_url = "https://api.platform.opensoftware.co"
 os_platform_api_key = ""
-os_platform_org = ""
-os_platform_project = ""
+os_platform_org = "open-software"
+os_platform_project = "june"
 os_platform_label = "bug"
 # Reward asset for the zero-reward Issue (required when the target Org has
 # no default reward asset configured).
-os_platform_reward_asset = ""
-webhook_url = ""
+os_platform_reward_asset = "POINTS"
 
 [os_accounts]
 # api_url has no default — must come from SCRIBE__OS_ACCOUNTS__API_URL
