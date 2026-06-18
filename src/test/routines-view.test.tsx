@@ -491,24 +491,21 @@ describe("RoutinesView detail", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Run history" }));
 
     const history = screen.getByRole("tabpanel", { name: "Run history" });
-    expect(
-      within(history).getByText("Morning Summary Digest"),
-    ).toBeInTheDocument();
+    expect(within(history).getByText("Morning summary")).toBeInTheDocument();
     expect(within(history).queryByText("Someone else's run")).toBeNull();
 
     await userEvent.click(
-      within(history).getByRole("button", { name: /morning summary digest/i }),
+      within(history).getByRole("button", { name: /morning summary/i }),
     );
     expect(onOpenRun).toHaveBeenCalledWith(mine);
   });
 
-  it("labels untitled detail runs with the routine name", async () => {
+  it("labels normalized detail runs with the routine name", async () => {
     mocks.listRoutines.mockResolvedValue([job({ name: "Morning brief" })]);
     adapterMocks.listScheduledRunSessions.mockResolvedValue([
       run({
-        title: "Untitled session",
-        preview:
-          "[IMPORTANT: You are running as a scheduled cron job. DELIVER...]",
+        title: "Deliver the Morning Brief",
+        preview: "Send today's important updates.",
       }),
     ]);
     renderView();
@@ -517,7 +514,7 @@ describe("RoutinesView detail", () => {
 
     const history = screen.getByRole("tabpanel", { name: "Run history" });
     expect(within(history).getByText("Morning brief")).toBeInTheDocument();
-    expect(within(history).queryByText("Untitled session")).toBeNull();
+    expect(within(history).queryByText("Deliver the Morning Brief")).toBeNull();
   });
 
   it("surfaces the last run failure", async () => {

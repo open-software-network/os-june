@@ -16,7 +16,6 @@ import {
   type RoutineJob,
   type RoutineUpdates,
 } from "../../lib/hermes-routines";
-import { isReplaceableScheduledRunTitle } from "../../lib/hermes-adapter";
 import {
   compactScheduleLabel,
   draftFromSchedule,
@@ -395,11 +394,7 @@ export function RoutineDetail({
               <div className="settings-card routines-runs-card">
                 <RoutineRunList
                   runs={runs}
-                  label={(run) =>
-                    isReplaceableScheduledRunTitle(run.title)
-                      ? routine.name
-                      : (run.title?.trim() ?? routine.name)
-                  }
+                  label={() => routine.name}
                   onOpen={onOpenRun}
                 />
               </div>
