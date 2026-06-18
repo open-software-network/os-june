@@ -68,7 +68,8 @@ export function SignInStep({
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  const points = isMacLikePlatform() ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
+  const isMac = isMacLikePlatform();
+  const points = isMac ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
 
   const cancelInFlight = useCallback(async () => {
     try {
@@ -109,7 +110,7 @@ export function SignInStep({
       subtitle="Private AI for everyday life and work."
       mark
       wide
-      className="welcome-card-intro"
+      className={isMac ? "welcome-card-intro" : undefined}
     >
       <ul className="onboarding-points">
         {points.map(({ icon: Icon, title, detail }) => (
