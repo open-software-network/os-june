@@ -1350,6 +1350,7 @@ impl Repositories {
         elapsed_ms: i64,
     ) -> Result<(), sqlx::Error> {
         let status = state.as_db();
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "UPDATE recording_sessions
              SET status = ?, expected_elapsed_ms = max(expected_elapsed_ms, ?)
@@ -1359,7 +1360,7 @@ impl Repositories {
         .bind(status)
         .bind(elapsed_ms)
         .bind(session_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             "UPDATE audio_artifacts
@@ -1370,9 +1371,9 @@ impl Repositories {
         .bind(status)
         .bind(elapsed_ms)
         .bind(session_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        tx.commit().await
     }
 
     pub async fn mark_recording_recoverable(
@@ -1382,6 +1383,7 @@ impl Repositories {
     ) -> Result<(), sqlx::Error> {
         let now = timestamp();
         let message = "Recording interrupted before it could be finished.";
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "UPDATE recording_sessions
              SET status = 'recoverable',
@@ -1402,7 +1404,7 @@ impl Repositories {
         .bind(message)
         .bind(&now)
         .bind(session_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             "UPDATE audio_artifacts
@@ -1422,14 +1424,22 @@ impl Repositories {
         )
         .bind(message)
         .bind(session_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        self.set_note_status(
-            note_id,
-            ProcessingStatus::Recoverable,
-            Some("Recording interrupted. Review recovery options.".to_string()),
+        sqlx::query(
+            "UPDATE notes
+             SET processing_status = ?,
+                 last_error = ?,
+                 updated_at = ?
+             WHERE id = ?",
         )
-        .await
+        .bind(ProcessingStatus::Recoverable.as_db())
+        .bind("Recording interrupted. Review recovery options.")
+        .bind(&now)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
     }
 
     pub async fn add_checkpoint(

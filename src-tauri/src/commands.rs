@@ -697,9 +697,7 @@ pub async fn pause_recording(
     request: SessionRequest,
 ) -> Result<RecordingStatusDto, AppError> {
     let snapshot = pause_capture(&request.session_id)?;
-    if snapshot.should_persist {
-        persist_recording_recovery_snapshot(&repositories(&app).await?, &snapshot).await?;
-    }
+    checkpoint_recording_recovery_snapshot(&app, &snapshot).await;
     Ok(snapshot.status)
 }
 
@@ -709,9 +707,7 @@ pub async fn resume_recording(
     request: SessionRequest,
 ) -> Result<RecordingStatusDto, AppError> {
     let snapshot = resume_capture(&request.session_id)?;
-    if snapshot.should_persist {
-        persist_recording_recovery_snapshot(&repositories(&app).await?, &snapshot).await?;
-    }
+    checkpoint_recording_recovery_snapshot(&app, &snapshot).await;
     Ok(snapshot.status)
 }
 
@@ -721,10 +717,33 @@ pub async fn get_recording_status(
     request: SessionRequest,
 ) -> Result<RecordingStatusDto, AppError> {
     let snapshot = capture_status_for_recovery(&request.session_id)?;
-    if snapshot.should_persist {
-        persist_recording_recovery_snapshot(&repositories(&app).await?, &snapshot).await?;
-    }
+    checkpoint_recording_recovery_snapshot(&app, &snapshot).await;
     Ok(snapshot.status)
+}
+
+async fn checkpoint_recording_recovery_snapshot(
+    app: &AppHandle,
+    snapshot: &CaptureRecoverySnapshot,
+) {
+    if !snapshot.should_persist {
+        return;
+    }
+    let repos = match repositories(app).await {
+        Ok(repos) => repos,
+        Err(error) => {
+            eprintln!(
+                "recording recovery checkpoint unavailable for session {}: {}: {}",
+                snapshot.status.session_id, error.code, error.message
+            );
+            return;
+        }
+    };
+    if let Err(error) = persist_recording_recovery_snapshot(&repos, snapshot).await {
+        eprintln!(
+            "recording recovery checkpoint failed for session {}: {}: {}",
+            snapshot.status.session_id, error.code, error.message
+        );
+    }
 }
 
 async fn persist_recording_recovery_snapshot(
@@ -1397,6 +1416,9 @@ fn recovery_source_path(
 }
 
 fn recovery_validation_expected_duration_ms(path: &Path, stored_duration_ms: i64) -> i64 {
+    if stored_duration_ms > 1 {
+        return stored_duration_ms;
+    }
     wav_duration_ms(path).unwrap_or_else(|| stored_duration_ms.max(1))
 }
 
@@ -1719,21 +1741,20 @@ mod tests {
 
     #[test]
     fn recovered_wav_duration_overrides_stale_stored_duration() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("partial.wav");
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(&path, spec).expect("writer");
-        for _ in 0..16_000 {
-            writer.write_sample(0_i16).expect("sample");
-        }
-        writer.finalize().expect("finalize");
+        let (_dir, path) = write_one_second_wav();
 
+        assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1_000);
         assert_eq!(recovery_validation_expected_duration_ms(&path, 1), 1_000);
+    }
+
+    #[test]
+    fn recovered_wav_duration_preserves_persisted_expected_duration() {
+        let (_dir, path) = write_one_second_wav();
+
+        assert_eq!(
+            recovery_validation_expected_duration_ms(&path, 10_000),
+            10_000
+        );
     }
 
     #[test]
@@ -1747,5 +1768,22 @@ mod tests {
             2_500
         );
         assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1);
+    }
+
+    fn write_one_second_wav() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).expect("writer");
+        for _ in 0..16_000 {
+            writer.write_sample(0_i16).expect("sample");
+        }
+        writer.finalize().expect("finalize");
+        (dir, path)
     }
 }
