@@ -1291,6 +1291,9 @@ pub async fn recover_recording(
         let note = repos.get_note(&info.note_id).await?;
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
+        repos
+            .mark_recording_recovery_valid(&info.session_id)
+            .await?;
         return process_saved_source_audio(
             &repos,
             &info.note_id,
@@ -1748,6 +1751,13 @@ mod tests {
     }
 
     #[test]
+    fn recovered_wav_duration_reads_flush_only_wav() {
+        let (_dir, path) = write_one_second_flushed_wav();
+
+        assert_eq!(recovery_validation_expected_duration_ms(&path, 0), 1_000);
+    }
+
+    #[test]
     fn recovered_wav_duration_preserves_persisted_expected_duration() {
         let (_dir, path) = write_one_second_wav();
 
@@ -1784,6 +1794,24 @@ mod tests {
             writer.write_sample(0_i16).expect("sample");
         }
         writer.finalize().expect("finalize");
+        (dir, path)
+    }
+
+    fn write_one_second_flushed_wav() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).expect("writer");
+        for _ in 0..16_000 {
+            writer.write_sample(0_i16).expect("sample");
+        }
+        writer.flush().expect("flush");
+        std::mem::forget(writer);
         (dir, path)
     }
 }

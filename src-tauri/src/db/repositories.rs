@@ -1442,6 +1442,22 @@ impl Repositories {
         tx.commit().await
     }
 
+    pub async fn mark_recording_recovery_valid(&self, session_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE recording_sessions
+             SET status = 'valid',
+                 last_error = NULL,
+                 ended_at = COALESCE(ended_at, ?)
+             WHERE id = ?
+               AND status = 'recoverable'",
+        )
+        .bind(timestamp())
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn add_checkpoint(
         &self,
         session_id: &str,

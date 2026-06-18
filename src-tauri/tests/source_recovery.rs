@@ -68,3 +68,47 @@ async fn scan_surfaces_recoverable_sources() {
         .iter()
         .any(|source| source.source.as_db() == "system"));
 }
+
+#[tokio::test]
+async fn scan_ignores_recovery_after_session_is_marked_valid() {
+    let repos = repos().await;
+    let dir = tempdir().expect("tempdir");
+    let note = repos.create_note(None).await.expect("note");
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-1",
+            RecordingSourceMode::MicrophonePlusSystem,
+            &dir.path().join("microphone.partial.wav").to_string_lossy(),
+            &dir.path().join("microphone.wav").to_string_lossy(),
+            None,
+        )
+        .await
+        .expect("session");
+    let mic_partial = dir.path().join("microphone.partial.wav");
+    std::fs::write(&mic_partial, b"mic bytes").expect("mic bytes");
+    repos
+        .create_pending_source_artifact(
+            &note.id,
+            "session-1",
+            "microphone",
+            &mic_partial.to_string_lossy(),
+            &dir.path().join("microphone.wav").to_string_lossy(),
+        )
+        .await
+        .expect("mic artifact");
+    repos
+        .mark_recording_recoverable("session-1", &note.id)
+        .await
+        .expect("mark recoverable");
+
+    repos
+        .mark_recording_recovery_valid("session-1")
+        .await
+        .expect("mark valid");
+    let recoveries = scan_recoverable_recordings(&repos.pool)
+        .await
+        .expect("recoveries");
+
+    assert!(recoveries.is_empty());
+}
