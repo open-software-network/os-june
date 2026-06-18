@@ -3,8 +3,10 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { RECORDING_INACTIVITY_RESPONSE_MS } from "./recording-inactivity";
 
 const NOTIFICATION_SOUND = "Ping";
+const RESPONSE_SECONDS = Math.round(RECORDING_INACTIVITY_RESPONSE_MS / 1000);
 
 async function canNotify() {
   let granted = await isPermissionGranted().catch(() => false);
@@ -20,7 +22,7 @@ export async function notifyRecordingStillMeetingPrompt(sessionId: string) {
   try {
     await sendNotification({
       title: "Still in a meeting?",
-      body: "June will pause the recording soon if you do not answer.",
+      body: `June will pause the recording in ${RESPONSE_SECONDS} seconds if you do not answer.`,
       group: `scribe-recording-${sessionId}`,
       sound: NOTIFICATION_SOUND,
     });

@@ -92,5 +92,5 @@ function activityLevel(level: AudioLevelDto | undefined) {
   if (level.recentPeaks.length > 0) {
     return Math.max(...level.recentPeaks);
   }
-  return level.rms;
+  return 0;
 }

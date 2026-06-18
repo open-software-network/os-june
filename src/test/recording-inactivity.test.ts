@@ -55,6 +55,15 @@ describe("recording inactivity", () => {
     expect(recordingHasActivity(quietAfterSpeech)).toBe(false);
   });
 
+  it("treats missing recent peaks as quiet instead of falling back to rms", () => {
+    const staleRms = status({
+      level: { peak: 0.8, rms: 0.05, recentPeaks: [] },
+    });
+
+    expect(recordingActivityLevel(staleRms)).toBe(0);
+    expect(recordingHasActivity(staleRms)).toBe(false);
+  });
+
   it("keeps source activity from opening the prompt", () => {
     const activeSystemAudio = status({
       level: { peak: 0.001, rms: 0.001, recentPeaks: [0.001] },
