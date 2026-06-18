@@ -71,6 +71,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
+  AGENT_POLICY_BLOCK_DECISION_EVENT,
   createAgentTask,
   dictationHelperCommand,
   explainAgentApproval,
@@ -83,6 +84,7 @@ import {
   hermesAgentCliAccess,
   hermesBridgeSkills,
   hermesBridgeStatus,
+  hermesBridgePolicyBlockDecision,
   hermesBridgeToolsets,
   importHermesBridgeFile,
   importHermesBridgeFileBytes,
@@ -107,6 +109,8 @@ import {
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
   type ImportedHermesFile,
+  type PolicyBlockDecisionAction,
+  type PolicyBlockDecisionRequest,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
   type HermesSessionInfo,
@@ -715,6 +719,8 @@ type AgentSessionContinuity = {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  directPolicySessionIds: string[];
+  rejectedPolicySessionIds: string[];
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
@@ -727,6 +733,8 @@ function captureSessionContinuity(state: {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  directPolicySessionIds: Set<string>;
+  rejectedPolicySessionIds: Set<string>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
     ...state.workingSessionIds,
@@ -750,6 +758,12 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
+    directPolicySessionIds: [...state.directPolicySessionIds].filter(
+      (sessionId) => activeIds.has(sessionId),
+    ),
+    rejectedPolicySessionIds: [...state.rejectedPolicySessionIds].filter(
+      (sessionId) => activeIds.has(sessionId),
+    ),
   };
 }
 
@@ -795,6 +809,18 @@ export function AgentWorkspace({
   const [issueReportNotice, setIssueReportNotice] = useState<string | null>(
     null,
   );
+  const [policyBlockSubmitting, setPolicyBlockSubmitting] = useState<
+    Record<string, PolicyBlockDecisionAction>
+  >({});
+  const policyBlockSessionIdsRef = useRef<Record<string, string>>({});
+  const [directPolicySessionIds, setDirectPolicySessionIds] = useState<
+    Set<string>
+  >(() => new Set(continuity?.directPolicySessionIds ?? []));
+  const directPolicySessionIdsRef = useRef(directPolicySessionIds);
+  const [rejectedPolicySessionIds, setRejectedPolicySessionIds] = useState<
+    Set<string>
+  >(() => new Set(continuity?.rejectedPolicySessionIds ?? []));
+  const rejectedPolicySessionIdsRef = useRef(rejectedPolicySessionIds);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1031,11 +1057,15 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
+    directPolicySessionIdsRef.current = directPolicySessionIds;
+    rejectedPolicySessionIdsRef.current = rejectedPolicySessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
+    directPolicySessionIds,
     hermesSessionItems,
     pendingHermesMessages,
+    rejectedPolicySessionIds,
     selectedHermesSessionId,
     waitingSessionIds,
     workingSessionIds,
@@ -1090,6 +1120,109 @@ export function AgentWorkspace({
     };
   }, []);
 
+  const appendPolicyBlockLiveEvent = useCallback(
+    (
+      sessionId: string,
+      event: HermesGatewayEvent & { receivedAt: string },
+    ) => {
+      const nextSessionEvents = [
+        ...(liveEventsRef.current[sessionId] ?? []),
+        event,
+      ].slice(-200);
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [sessionId]: nextSessionEvents,
+      };
+      setLiveEvents(liveEventsRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<PolicyBlockDecisionRequest>(
+      AGENT_POLICY_BLOCK_DECISION_EVENT,
+      (event) => {
+        const request = event.payload;
+        const sessionId = selectedHermesSessionIdRef.current;
+        if (!request || !sessionId) return;
+        policyBlockSessionIdsRef.current[request.decisionId] = sessionId;
+        appendPolicyBlockLiveEvent(sessionId, {
+          type: "policy_block.request",
+          receivedAt: new Date().toISOString(),
+          payload: {
+            decision_id: request.decisionId,
+            model: request.model,
+            message: request.message,
+          },
+        });
+      },
+    ).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+        return;
+      }
+      unlisten = cleanup;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [appendPolicyBlockLiveEvent]);
+
+  async function answerPolicyBlock(
+    part: Extract<AgentChatPart, { type: "policyBlock" }>,
+    action: PolicyBlockDecisionAction,
+  ) {
+    const sessionId =
+      policyBlockSessionIdsRef.current[part.id] ?? selectedHermesSessionId;
+    if (!sessionId || policyBlockSubmitting[part.id]) return;
+    setPolicyBlockSubmitting((current) => ({ ...current, [part.id]: action }));
+    try {
+      await hermesBridgePolicyBlockDecision({
+        decisionId: part.id,
+        action,
+      });
+      appendPolicyBlockLiveEvent(sessionId, {
+        type: "policy_block.decision",
+        receivedAt: new Date().toISOString(),
+        payload: {
+          decision_id: part.id,
+          action,
+        },
+      });
+      if (action === "continue") {
+        setDirectPolicySessionIds((current) => {
+          const next = new Set(current);
+          next.add(sessionId);
+          return next;
+        });
+      } else {
+        setRejectedPolicySessionIds((current) => {
+          const next = new Set(current);
+          next.add(sessionId);
+          return next;
+        });
+        const activityCounts = clearSessionActivity(sessionId);
+        dispatchAgentSessionStatus({
+          sessionId,
+          status: "failed",
+          summary: "The prompt was blocked.",
+          ...activityCounts,
+        });
+      }
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setPolicyBlockSubmitting((current) => {
+        const next = { ...current };
+        delete next[part.id];
+        return next;
+      });
+    }
+  }
+
   // Shared teardown for a session that is going away: its messages, pending
   // sends, working/waiting flags, live gateway listener, and buffered live
   // events. Both delete paths (sidebar event and session-bar menu) run this so
@@ -1106,6 +1239,18 @@ export function AgentWorkspace({
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
+      setDirectPolicySessionIds((current) => {
+        if (!current.has(sessionId)) return current;
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      setRejectedPolicySessionIds((current) => {
+        if (!current.has(sessionId)) return current;
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
       // A deleted session must not be the restore target on the next mount.
       forgetLastOpenSessionId(sessionId);
     },
@@ -1780,6 +1925,8 @@ export function AgentWorkspace({
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
+        directPolicySessionIds: directPolicySessionIdsRef.current,
+        rejectedPolicySessionIds: rejectedPolicySessionIdsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -1872,6 +2019,13 @@ export function AgentWorkspace({
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (
+      selectedHermesSessionId &&
+      rejectedPolicySessionIds.has(selectedHermesSessionId)
+    ) {
+      setBusyNotice("This session was blocked. Start a new session to continue.");
+      return;
+    }
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
@@ -3464,6 +3618,15 @@ export function AgentWorkspace({
     );
   });
 
+  const selectedSessionDirectPolicy =
+    !newSessionMode &&
+    selectedHermesSessionId !== undefined &&
+    directPolicySessionIds.has(selectedHermesSessionId);
+  const selectedSessionRejectedPolicy =
+    !newSessionMode &&
+    selectedHermesSessionId !== undefined &&
+    rejectedPolicySessionIds.has(selectedHermesSessionId);
+
   const composer =
     activePanel === "chat" ? (
       <form
@@ -3477,7 +3640,39 @@ export function AgentWorkspace({
         onDrop={handleComposerDrop}
       >
         <AnimatePresence>
-          {busyNotice || galleryErrors ? (
+          {selectedSessionRejectedPolicy ? (
+            <motion.div
+              key="policy-rejected-notice"
+              className="agent-composer-notice agent-composer-notice-action"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span>This session was blocked. Start a new session to continue.</span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void startNewTask()}
+              >
+                Start new session
+              </button>
+            </motion.div>
+          ) : selectedSessionDirectPolicy ? (
+            <motion.p
+              key="policy-direct-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              This session is running directly on Venice without OS Guard
+              protection.
+            </motion.p>
+          ) : busyNotice || galleryErrors ? (
             // Same fade as the recording-consent note, so the pill dissolves
             // when the turn finishes instead of vanishing.
             <motion.p
@@ -3540,6 +3735,7 @@ export function AgentWorkspace({
           ) : null}
           <ComposerEditor
             ref={composerEditorRef}
+            disabled={selectedSessionRejectedPolicy}
             placeholder={
               importingFiles
                 ? "Attaching file…"
@@ -3565,6 +3761,7 @@ export function AgentWorkspace({
               aria-haspopup="menu"
               aria-expanded={attachMenuOpen}
               data-open={attachMenuOpen || undefined}
+              disabled={selectedSessionRejectedPolicy}
               onClick={() => setAttachMenuOpen((open) => !open)}
             >
               <IconPlusMedium size={18} />
@@ -3611,6 +3808,7 @@ export function AgentWorkspace({
                 className="agent-composer-mic"
                 aria-label="Dictate"
                 title="Start dictation"
+                disabled={selectedSessionRejectedPolicy}
                 onClick={() => void startDictation()}
               >
                 <IconMicrophone size={18} />
@@ -3637,6 +3835,7 @@ export function AgentWorkspace({
                   className="agent-composer-send"
                   disabled={
                     submitting ||
+                    selectedSessionRejectedPolicy ||
                     importingFiles ||
                     (!draft.trim() && !attachments.length)
                   }
@@ -3814,6 +4013,7 @@ export function AgentWorkspace({
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
+          policyBlockSubmitting={policyBlockSubmitting}
           cliAccess={{
             enabled: cliAccessEnabled,
             submitting: cliAccessSubmitting,
@@ -3836,6 +4036,9 @@ export function AgentWorkspace({
             void osAccountsTopUp().catch((err: unknown) =>
               setError(messageFromError(err)),
             )
+          }
+          onPolicyBlock={(part, action) =>
+            void answerPolicyBlock(part, action)
           }
           onClarify={(part, answer) =>
             void respondToClarify(
@@ -3899,6 +4102,7 @@ export function AgentWorkspace({
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
+            policyBlockSubmitting={{}}
             cliAccess={{
               enabled: cliAccessEnabled,
               submitting: cliAccessSubmitting,
@@ -3913,6 +4117,7 @@ export function AgentWorkspace({
                 setError(messageFromError(err)),
               )
             }
+            onPolicyBlock={galleryNoop}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -5906,10 +6111,12 @@ function AgentResponseGallery({
               artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
+              policyBlockSubmitting={{}}
               thinkingOpen={(key) => thinkingOpenByKey[key] ?? false}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onPolicyBlock={galleryNoop}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
             />
@@ -5926,11 +6133,13 @@ function AgentChatTurnRow({
   artifacts,
   clarifySubmitting,
   cliAccess,
+  policyBlockSubmitting,
   thinkingOpen,
   onApproval,
   onClarify,
   onDownloadArtifact,
   onOpenArtifact,
+  onPolicyBlock,
   onThinkingOpenChange,
   onTopUp,
   turn,
@@ -5939,6 +6148,7 @@ function AgentChatTurnRow({
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
+  policyBlockSubmitting: Record<string, PolicyBlockDecisionAction>;
   /** State + handler for June's in-chat Agent CLI access request card.
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
@@ -5950,6 +6160,10 @@ function AgentChatTurnRow({
   onClarify: (
     part: Extract<AgentChatPart, { type: "clarify" }>,
     answer: string,
+  ) => void;
+  onPolicyBlock: (
+    part: Extract<AgentChatPart, { type: "policyBlock" }>,
+    action: PolicyBlockDecisionAction,
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
@@ -6112,6 +6326,13 @@ function AgentChatTurnRow({
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
+          ) : part.type === "policyBlock" ? (
+            <PolicyBlockPart
+              key={`${turn.id}:policy-block:${part.id}`}
+              part={part}
+              submitting={policyBlockSubmitting[part.id]}
+              onPolicyBlock={onPolicyBlock}
+            />
           ) : part.type === "notice" ? (
             <CreditsNoticePart
               key={`${turn.id}:notice:${index}`}
@@ -6205,6 +6426,59 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
             Add funds
           </button>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function PolicyBlockPart({
+  onPolicyBlock,
+  part,
+  submitting,
+}: {
+  onPolicyBlock: (
+    part: Extract<AgentChatPart, { type: "policyBlock" }>,
+    action: PolicyBlockDecisionAction,
+  ) => void;
+  part: Extract<AgentChatPart, { type: "policyBlock" }>;
+  submitting?: PolicyBlockDecisionAction;
+}) {
+  const pending = part.status === "pending";
+  const body =
+    part.status === "continued"
+      ? "This session is running directly on Venice without OS Guard protection."
+      : part.status === "rejected"
+        ? "The prompt was blocked. Start a new session to continue."
+        : "OS Guard blocked this prompt because malicious content was detected. Continuing sends this session directly to Venice without OS Guard protection.";
+  return (
+    <InlineNotice
+      className="agent-policy-block-notice"
+      tone="destructive"
+      role="alert"
+      icon={<IconShieldCrossed size={14} aria-hidden />}
+      eyebrow="Prompt blocked"
+      body={body}
+      actions={
+        pending ? (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={Boolean(submitting)}
+              onClick={() => onPolicyBlock(part, "reject")}
+            >
+              {submitting === "reject" ? "Rejecting" : "Reject"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={Boolean(submitting)}
+              onClick={() => onPolicyBlock(part, "continue")}
+            >
+              {submitting === "continue" ? "Continuing" : "Continue"}
+            </button>
+          </>
         ) : undefined
       }
     />

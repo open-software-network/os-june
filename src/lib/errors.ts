@@ -36,3 +36,10 @@ export function isInsufficientCreditsMessage(message?: string) {
     message,
   );
 }
+
+export function isPolicyBlockedMessage(message?: string) {
+  if (!message) return false;
+  return /policy_blocked|error_code['"]?\s*:\s*4031|Error code:\s*403/i.test(
+    message,
+  );
+}

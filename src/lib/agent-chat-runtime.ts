@@ -5,7 +5,7 @@ import type {
   HermesSessionMessage,
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
-import { isInsufficientCreditsMessage } from "./errors";
+import { isInsufficientCreditsMessage, isPolicyBlockedMessage } from "./errors";
 import {
   isScheduledRunPreamble,
   stripScheduledRunPreamble,
@@ -73,6 +73,12 @@ export type AgentChatNoticePart = {
   text: string;
 };
 
+export type AgentChatPolicyBlockPart = {
+  type: "policyBlock";
+  id: string;
+  status: "pending" | "continued" | "rejected";
+};
+
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
@@ -80,7 +86,8 @@ export type AgentChatPart =
   | AgentChatToolPart
   | AgentChatApprovalPart
   | AgentChatClarifyPart
-  | AgentChatNoticePart;
+  | AgentChatNoticePart
+  | AgentChatPolicyBlockPart;
 
 export type AgentChatTurn = {
   id: string;
@@ -182,14 +189,21 @@ export function buildHermesSessionChatTurns(
       }
 
       if (content) {
-        turn.parts.push(
-          (turn.role === "assistant"
+        const policyBlock =
+          turn.role === "assistant"
+            ? policyBlockPartFromTurnText(message.id, content)
+            : undefined;
+        const notice =
+          turn.role === "assistant"
             ? creditsNoticeFromTurnText(content)
-            : undefined) ?? {
-            type: "text",
-            text: content,
-            status: "complete",
-          },
+            : undefined;
+        turn.parts.push(
+          policyBlock ??
+            notice ?? {
+              type: "text",
+              text: content,
+              status: "complete",
+            },
         );
       }
     }
@@ -263,10 +277,23 @@ function creditsNoticeFromTurnText(
   return /^\s*error\b/i.test(text) ? creditsNotice(text) : undefined;
 }
 
+function policyBlockPartFromTurnText(
+  id: string,
+  text: string,
+): AgentChatPolicyBlockPart | undefined {
+  return /^\s*error\b/i.test(text) && isPolicyBlockedMessage(text)
+    ? { type: "policyBlock", id, status: "rejected" }
+    : undefined;
+}
+
 function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   const notice =
     message.role === "assistant"
       ? creditsNoticeFromTurnText(message.content)
+      : undefined;
+  const policyBlock =
+    message.role === "assistant"
+      ? policyBlockPartFromTurnText(message.id, message.content)
       : undefined;
   return {
     id: message.id,
@@ -279,7 +306,8 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
     createdAt: message.createdAt,
     status: "complete",
     parts: [
-      notice ?? { type: "text", text: message.content, status: "complete" },
+      policyBlock ??
+        notice ?? { type: "text", text: message.content, status: "complete" },
     ],
   };
 }
@@ -359,8 +387,21 @@ function appendLiveHermesEvents(
 
     if (event.type === "message.complete") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+      const policyBlock =
+        text && isPolicyBlockedMessage(text)
+          ? ({
+              type: "policyBlock",
+              id: `policy-block:${event.receivedAt}`,
+              status: "rejected",
+            } satisfies AgentChatPolicyBlockPart)
+          : undefined;
       const notice = text ? creditsNoticeFromTurnText(text) : undefined;
-      if (notice) {
+      if (policyBlock) {
+        currentAssistant.parts = currentAssistant.parts.filter(
+          (part) => part.type !== "text",
+        );
+        currentAssistant.parts.push(policyBlock);
+      } else if (notice) {
         // The complete text is authoritative for the turn (see
         // completeAssistantTextPart); when it's a billing failure, any
         // partially streamed text is superseded along with it.
@@ -571,10 +612,54 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (event.type === "policy_block.request") {
+      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+      currentAssistant.status = "running";
+      const payload = event.payload as Record<string, unknown> | undefined;
+      upsertPolicyBlockPart(currentAssistant.parts, {
+        id:
+          stringValue(payload?.decision_id) ??
+          stringValue(payload?.decisionId) ??
+          `policy-block:${event.receivedAt}`,
+        status: "pending",
+      });
+      continue;
+    }
+
+    if (event.type === "policy_block.decision") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const action =
+        stringValue(payload?.action) === "continue" ? "continued" : "rejected";
+      const turn = currentAssistant ?? lastAssistantTurn(turns);
+      upsertPolicyBlockPart(turn?.parts ?? [], {
+        id:
+          stringValue(payload?.decision_id) ??
+          stringValue(payload?.decisionId) ??
+          `policy-block:${event.receivedAt}`,
+        status: action,
+      });
+      if (turn && action === "rejected") {
+        turn.status = "complete";
+        completeRunningParts(turn.parts);
+        if (turn === currentAssistant) currentAssistant = null;
+      }
+      continue;
+    }
+
     if (event.type === "error") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNotice(text) : undefined;
-      if (notice) {
+      const policyBlock =
+        text && isPolicyBlockedMessage(text)
+          ? ({
+              type: "policyBlock",
+              id: `policy-block:${event.receivedAt}`,
+              status: "rejected",
+            } satisfies AgentChatPolicyBlockPart)
+          : undefined;
+      if (policyBlock) {
+        currentAssistant.parts.push(policyBlock);
+      } else if (notice) {
         currentAssistant.parts.push(notice);
       } else {
         upsertToolPart(currentAssistant.parts, {
@@ -715,6 +800,8 @@ function completeRunningParts(parts: AgentChatPart[]) {
       part.status = "resolved";
     if (part.type === "clarify" && part.status === "pending")
       part.status = "resolved";
+    if (part.type === "policyBlock" && part.status === "pending")
+      part.status = "rejected";
   }
 }
 
@@ -774,6 +861,25 @@ function upsertApprovalPart(
     description: next.description,
     allowPermanent: next.allowPermanent,
     choice: next.choice,
+    status: next.status,
+  });
+}
+
+function upsertPolicyBlockPart(
+  parts: AgentChatPart[],
+  next: Pick<AgentChatPolicyBlockPart, "id" | "status">,
+) {
+  const existing = parts.find(
+    (part): part is AgentChatPolicyBlockPart =>
+      part.type === "policyBlock" && part.id === next.id,
+  );
+  if (existing) {
+    existing.status = next.status;
+    return;
+  }
+  parts.push({
+    type: "policyBlock",
+    id: next.id,
     status: next.status,
   });
 }
@@ -1054,6 +1160,7 @@ function partText(part: AgentChatPart) {
   if (part.type === "clarify")
     return [part.question, part.answer ?? ""].join(" ");
   if (part.type === "context") return part.preview || part.text;
+  if (part.type === "policyBlock") return "OS Guard blocked this prompt.";
   return part.text;
 }
 

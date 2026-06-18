@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
+  hermesBridgePolicyBlockDecision: vi.fn(),
   invoke: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -97,6 +98,8 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
+  hermesBridgePolicyBlockDecision: mocks.hermesBridgePolicyBlockDecision,
+  AGENT_POLICY_BLOCK_DECISION_EVENT: "agent-policy-block-decision-request",
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -189,6 +192,7 @@ describe("AgentWorkspace", () => {
     vi.clearAllMocks();
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    mocks.eventHandlers.clear();
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
@@ -234,6 +238,7 @@ describe("AgentWorkspace", () => {
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
     });
     mocks.invoke.mockResolvedValue(undefined);
+    mocks.hermesBridgePolicyBlockDecision.mockResolvedValue(undefined);
     // Mirrors the backend: starting a mode yields a status that contains
     // that mode's connection (alongside any other live mode).
     mocks.startHermesBridge.mockImplementation(
@@ -3060,6 +3065,78 @@ describe("AgentWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Add funds" }));
     expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+  });
+
+  it("shows a policy block card and marks the session direct after Continue", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
+        payload: {
+          decisionId: "decision-1",
+          conversationFingerprint: "fingerprint-1",
+          model: "zai-org-glm-5-2",
+          message: "policy_blocked",
+        },
+      });
+    });
+
+    expect(await screen.findByText("Prompt blocked")).toBeInTheDocument();
+    expect(
+      screen.getByText(/OS Guard blocked this prompt because malicious content was detected/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() =>
+      expect(mocks.hermesBridgePolicyBlockDecision).toHaveBeenCalledWith({
+        decisionId: "decision-1",
+        action: "continue",
+      }),
+    );
+    expect(
+      await screen.findAllByText(
+        /This session is running directly on Venice without OS Guard protection/,
+      ),
+    ).not.toHaveLength(0);
+  });
+
+  it("keeps a rejected policy block visible and makes the session read-only", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
+        payload: {
+          decisionId: "decision-2",
+          conversationFingerprint: "fingerprint-2",
+          model: "zai-org-glm-5-2",
+          message: "policy_blocked",
+        },
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Reject" }));
+
+    await waitFor(() =>
+      expect(mocks.hermesBridgePolicyBlockDecision).toHaveBeenCalledWith({
+        decisionId: "decision-2",
+        action: "reject",
+      }),
+    );
+    expect(
+      screen.getByText("The prompt was blocked. Start a new session to continue."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("This session was blocked. Start a new session to continue."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {

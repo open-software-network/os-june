@@ -2845,6 +2845,16 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+.agent-composer-notice-action {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.agent-composer-notice-action .btn {
+  min-height: 28px;
+  padding: 0 var(--sp-2);
+}
+
 .app-shell[data-sidebar="collapsed"] .agent-composer:not([data-hero="true"]) {
   left: calc(var(--sp-3) + var(--sp-8));
 }
@@ -7495,6 +7505,14 @@ input:focus-visible,
 
 .agent-credits-notice .inline-notice-body {
   display: inline;
+}
+
+.agent-policy-block-notice {
+  align-items: flex-start;
+}
+
+.agent-policy-block-notice .inline-notice-actions {
+  padding-top: 1px;
 }
 
 /* Inline notice — shared shape used by NoteRecoveryPrompt and the

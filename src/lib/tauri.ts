@@ -408,6 +408,8 @@ export type HermesBridgeStatus = {
 };
 
 export const TOOL_GUARD_DECISION_EVENT = "tool-guard-decision-request";
+export const AGENT_POLICY_BLOCK_DECISION_EVENT =
+  "agent-policy-block-decision-request";
 
 export type ToolGuardDecisionKind = "toolCall" | "toolResult";
 
@@ -449,6 +451,20 @@ export type ToolGuardDecisionResponse = {
   decisionId: string;
   action: ToolGuardDecisionAction;
   selectedFindingIds?: string[];
+};
+
+export type PolicyBlockDecisionAction = "continue" | "reject";
+
+export type PolicyBlockDecisionRequest = {
+  decisionId: string;
+  conversationFingerprint: string;
+  model?: string | null;
+  message: string;
+};
+
+export type PolicyBlockDecisionResponse = {
+  decisionId: string;
+  action: PolicyBlockDecisionAction;
 };
 
 export type HermesFilesystemEntry = {
@@ -915,6 +931,12 @@ export async function hermesBridgeToolGuardDecision(
   response: ToolGuardDecisionResponse,
 ) {
   return invoke<void>("hermes_bridge_tool_guard_decision", { response });
+}
+
+export async function hermesBridgePolicyBlockDecision(
+  response: PolicyBlockDecisionResponse,
+) {
+  return invoke<void>("hermes_bridge_policy_block_decision", { response });
 }
 
 export async function hermesBridgeSkills() {

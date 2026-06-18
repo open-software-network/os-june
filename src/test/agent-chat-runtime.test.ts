@@ -921,6 +921,64 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  const POLICY_BLOCKED_ERROR =
+    "Error: Error code: 403 - {'data': None, 'success': False, 'error_code': 4031, 'message': 'policy_blocked'}";
+
+  it("folds a live policy block request into an actionable card", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "policy_block.request",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { decision_id: "decision-1" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "policyBlock", id: "decision-1", status: "pending" },
+    ]);
+    expect(turns[0]?.status).toBe("running");
+  });
+
+  it("marks a policy block card continued from a live decision event", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "policy_block.request",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { decision_id: "decision-1" },
+        },
+        {
+          type: "policy_block.decision",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: { decision_id: "decision-1", action: "continue" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "policyBlock", id: "decision-1", status: "continued" },
+    ]);
+  });
+
+  it("folds a persisted policy_blocked error into a rejected policy card", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "assistant",
+        content: POLICY_BLOCKED_ERROR,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "policyBlock", id: "1", status: "rejected" },
+    ]);
+  });
+
   it("renders delegated subagents as live tool rows (regression: silently dropped)", () => {
     const turns = buildAgentChatTurns(
       [],

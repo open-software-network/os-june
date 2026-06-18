@@ -31,6 +31,7 @@ export type ComposerEditorHandle = {
 
 type ComposerEditorProps = {
   placeholder: string;
+  disabled?: boolean;
   onChange: (text: string, category: ReportCategory | null) => void;
   onSubmit: () => void;
   /** Hands the live editor up to the parent (e.g. so the composer box can read
@@ -93,18 +94,20 @@ function buildDoc(text: string, category?: ReportCategory | null) {
 export const ComposerEditor = forwardRef<
   ComposerEditorHandle,
   ComposerEditorProps
->(({ placeholder, onChange, onSubmit, onReady }, ref) => {
+>(({ placeholder, disabled = false, onChange, onSubmit, onReady }, ref) => {
   const frameRef = useRef<HTMLDivElement | null>(null);
   // Latest callbacks behind refs so the editor (created once) never closes
   // over a stale handler.
   const onChangeRef = useRef(onChange);
   const onSubmitRef = useRef(onSubmit);
   const onReadyRef = useRef(onReady);
+  const disabledRef = useRef(disabled);
   useEffect(() => {
     onChangeRef.current = onChange;
     onSubmitRef.current = onSubmit;
     onReadyRef.current = onReady;
-  }, [onChange, onSubmit, onReady]);
+    disabledRef.current = disabled;
+  }, [disabled, onChange, onSubmit, onReady]);
 
   function updateScrollFades(nextEditor: Editor | null) {
     const frame = frameRef.current;
@@ -157,8 +160,13 @@ export const ComposerEditor = forwardRef<
         role: "textbox",
         "aria-label": "Message June",
         "aria-multiline": "true",
+        "aria-disabled": disabled ? "true" : "false",
       },
       handleKeyDown: (_view, event) => {
+        if (disabledRef.current) {
+          event.preventDefault();
+          return true;
+        }
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
           return false;
         }
@@ -184,6 +192,13 @@ export const ComposerEditor = forwardRef<
       requestAnimationFrame(() => updateScrollFades(editor));
     },
   });
+
+  useEffect(() => {
+    editor?.setEditable(!disabled);
+    if (editor) {
+      editor.view.dom.setAttribute("aria-disabled", disabled ? "true" : "false");
+    }
+  }, [disabled, editor]);
 
   useEffect(() => {
     if (!editor) return;
