@@ -481,28 +481,22 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", {
       name: "You're good to go",
     });
+    // The privacy reassurance moved from a section heading into the card
+    // subtitle; the recap below is now a labelled row of points.
     expect(
-      screen.getByRole("heading", {
-        name: "And remember, June keeps it all private",
-      }),
+      screen.getByText("Your trial is live, and June keeps it all private."),
     ).toBeInTheDocument();
     expect(screen.getByText("Local first")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Your app state, recordings, transcripts, files, sessions, and memory stay on your device by default.",
-      ),
+      screen.getByText("Your data stays on your device by default."),
     ).toBeInTheDocument();
     expect(screen.getByText("Private AI models")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Prompts leave your device only for inference, using private models with zero data retention and no training by default.",
-      ),
+      screen.getByText("Inference runs on private, zero-retention models."),
     ).toBeInTheDocument();
     expect(screen.getByText("Minimal data retention")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "June keeps only what's needed to maintain your account. Everything else is stored locally on your device.",
-      ),
+      screen.getByText("June keeps only what runs your account."),
     ).toBeInTheDocument();
     expect(mocks.focusMainWindow).toHaveBeenCalledOnce();
 
