@@ -880,13 +880,15 @@ where
     T: for<'de> Deserialize<'de>,
 {
     let status = response.status();
+    let retry_after_ms = response_retry_after_ms(&response);
     let body = response.text().await.map_err(network_error)?;
-    parse_response_body(path, status, &body)
+    parse_response_body(path, status, retry_after_ms, &body)
 }
 
 fn parse_response_body<T>(
     path: &str,
     status: reqwest::StatusCode,
+    retry_after_ms: Option<u64>,
     body: &str,
 ) -> Result<T, AppError>
 where
@@ -921,12 +923,25 @@ where
         ));
     }
     let _ = path;
-    Err(AppError::new(
+    let mut error = AppError::new(
         "scribe_request_failed",
         envelope
             .message
             .unwrap_or_else(|| "Couldn't reach Scribe.".to_string()),
-    ))
+    );
+    if let Some(retry_after_ms) = retry_after_ms {
+        error.details = Some(serde_json::json!({ "retryAfterMs": retry_after_ms }));
+    }
+    Err(error)
+}
+
+fn response_retry_after_ms(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1_000))
 }
 
 fn http_client() -> &'static reqwest::Client {
@@ -1071,6 +1086,7 @@ mod tests {
         let result = parse_response_body::<GenerateResponse>(
             "/v1/notes/generate",
             reqwest::StatusCode::BAD_GATEWAY,
+            None,
             "",
         );
 
@@ -1079,6 +1095,28 @@ mod tests {
         assert_eq!(error.code, "scribe_api_response_invalid");
         assert_eq!(error.message, INVALID_SCRIBE_RESPONSE_MESSAGE);
         assert!(!error.message.contains("expected value"));
+    }
+
+    #[test]
+    fn retry_after_header_is_preserved_on_scribe_failures() {
+        let result = parse_response_body::<GenerateResponse>(
+            "/v1/notes/generate",
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            Some(2_000),
+            r#"{"data":null,"success":false,"error_code":4401,"message":"authorization_denied"}"#,
+        );
+
+        assert!(result.is_err());
+        let error = result.err().expect("authorization denial should fail");
+        assert_eq!(error.code, "scribe_request_failed");
+        assert_eq!(error.message, "authorization_denied");
+        assert_eq!(
+            error
+                .details
+                .and_then(|details| details.get("retryAfterMs").cloned())
+                .and_then(|value| value.as_u64()),
+            Some(2_000)
+        );
     }
 
     #[test]

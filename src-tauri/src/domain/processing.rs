@@ -28,7 +28,16 @@ const TRANSCRIPT_COHERENCE_GAP_MS: i64 = 2_500;
 const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
-const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 4;
+const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 2;
+const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
+#[cfg(not(test))]
+const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 300;
+#[cfg(test)]
+const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 1;
+#[cfg(not(test))]
+const TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS: u64 = 200;
+#[cfg(test)]
+const TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS: u64 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTranscriptInput {
@@ -836,15 +845,18 @@ async fn transcribe_prepared_audio(
         vec![request.audio_path.clone()]
     };
     if audio_paths.len() == 1 {
-        return transcriber(TranscriptionRequest {
-            provider: request.provider,
-            audio_path: audio_paths.into_iter().next().unwrap_or(request.audio_path),
-            title: request.title,
-            context: request.base_context,
-            language: request_language,
-            operation_id: Some(request.operation_id),
-            preview: false,
-        })
+        return transcribe_with_transient_retries(
+            &transcriber,
+            TranscriptionRequest {
+                provider: request.provider,
+                audio_path: audio_paths.into_iter().next().unwrap_or(request.audio_path),
+                title: request.title,
+                context: request.base_context,
+                language: request_language,
+                operation_id: Some(request.operation_id),
+                preview: false,
+            },
+        )
         .await;
     }
 
@@ -857,15 +869,18 @@ async fn transcribe_prepared_audio(
             request.base_context.as_deref(),
             build_transcription_context(&previous).as_deref(),
         );
-        let transcript = transcriber(TranscriptionRequest {
-            provider: request.provider.clone(),
-            audio_path,
-            title: request.title.clone(),
-            context,
-            language: request_language.clone(),
-            operation_id: Some(format!("{}-chunk-{index}", request.operation_id)),
-            preview: false,
-        })
+        let transcript = transcribe_with_transient_retries(
+            &transcriber,
+            TranscriptionRequest {
+                provider: request.provider.clone(),
+                audio_path,
+                title: request.title.clone(),
+                context,
+                language: request_language.clone(),
+                operation_id: Some(format!("{}-chunk-{index}", request.operation_id)),
+                preview: false,
+            },
+        )
         .await?;
         if language.is_none() {
             language = transcript.language.clone();
@@ -897,6 +912,79 @@ async fn transcribe_prepared_audio(
         language,
         provider: provider_name,
     })
+}
+
+async fn transcribe_with_transient_retries(
+    transcriber: &TurnTranscriber,
+    request: TranscriptionRequest,
+) -> Result<TranscriptionProviderResult, AppError> {
+    let operation_id = request.operation_id();
+    for attempt in 0..TRANSIENT_TRANSCRIPTION_ATTEMPTS {
+        match transcriber(request.clone()).await {
+            Ok(transcript) => return Ok(transcript),
+            Err(error) => {
+                if attempt + 1 < TRANSIENT_TRANSCRIPTION_ATTEMPTS
+                    && is_retryable_transcription_error(&error)
+                {
+                    let retry_delay = transient_retry_delay(&operation_id, attempt, &error);
+                    tracing::warn!(
+                        operation_id = %operation_id,
+                        code = %error.code,
+                        attempt = attempt + 1,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "transient transcription request failed; retrying"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+    unreachable!("transcription retry loop always returns")
+}
+
+fn is_retryable_transcription_error(error: &AppError) -> bool {
+    let code = error.code.trim().to_ascii_lowercase();
+    let message = error.message.trim().to_ascii_lowercase();
+    code == "scribe_api_response_invalid"
+        || code == "empty_response"
+        || (code == "scribe_request_failed"
+            && (message == "authorization_denied"
+                || message.contains("timed out")
+                || message.contains("timeout")
+                || message.contains("connection")
+                || message.contains("error sending request")))
+}
+
+fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
+    if let Some(retry_after_ms) = retry_after_ms(error) {
+        return Duration::from_millis(retry_after_ms);
+    }
+    let backoff_multiplier = 1_u64 << attempt.min(8);
+    let backoff_ms =
+        TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS.saturating_mul(backoff_multiplier);
+    Duration::from_millis(backoff_ms.saturating_add(retry_jitter_ms(operation_id, attempt)))
+}
+
+fn retry_after_ms(error: &AppError) -> Option<u64> {
+    error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("retryAfterMs"))
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn retry_jitter_ms(operation_id: &str, attempt: usize) -> u64 {
+    if TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS == 0 {
+        return 0;
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64 ^ attempt as u64;
+    for byte in operation_id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash % (TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS + 1)
 }
 
 #[cfg(test)]
@@ -1354,7 +1442,10 @@ fn drop_silent_system_sources(
 /// transcript. Everything else — including system failures that aren't
 /// no_speech, and the all-sources-failed case — is still recorded.
 fn should_record_source_failure(source: &str, warning: &str, has_valid_transcript: bool) -> bool {
-    !(has_valid_transcript && source == "system" && is_no_speech_message(warning))
+    if !has_valid_transcript {
+        return true;
+    }
+    !(source == "system" && is_no_speech_message(warning))
 }
 
 fn is_no_speech_message(message: &str) -> bool {
@@ -1776,6 +1867,97 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn transient_invalid_turn_response_retries_before_failing() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let attempts = Arc::clone(&attempts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return Err(AppError::new(
+                            "scribe_api_response_invalid",
+                            "The processing service returned an invalid response.",
+                        ));
+                    }
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_by_source_lane(
+            vec![test_job("m0", "microphone", 0)],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("transient invalid response should be retried");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.failures.len(), 0);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.candidates[0].input.text, "m0");
+    }
+
+    #[tokio::test]
+    async fn exhausted_invalid_tail_turn_stays_visible_as_failure() {
+        let tail_attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let tail_attempts = Arc::clone(&tail_attempts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let tail_attempts = Arc::clone(&tail_attempts);
+                Box::pin(async move {
+                    if request.audio_path == std::path::Path::new("tail") {
+                        tail_attempts.fetch_add(1, Ordering::SeqCst);
+                        return Err(AppError::new(
+                            "scribe_api_response_invalid",
+                            "The processing service returned an invalid response.",
+                        ));
+                    }
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_by_source_lane(
+            vec![
+                test_job("intro", "microphone", 0),
+                test_job("tail", "microphone", 1),
+            ],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("source lanes should complete despite a failed tail turn");
+
+        assert_eq!(
+            tail_attempts.load(Ordering::SeqCst),
+            TRANSIENT_TRANSCRIPTION_ATTEMPTS
+        );
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.candidates[0].input.text, "intro");
+        assert_eq!(outcome.failures[0].input.source, "microphone");
+        assert_eq!(outcome.failures[0].input.turn_index, Some(1));
+        assert_eq!(
+            outcome.failures[0].input.warning.as_deref(),
+            Some("The processing service returned an invalid response.")
+        );
+    }
+
     #[test]
     fn turn_operation_id_includes_source_when_turn_indices_match() {
         let mic = test_job("m0", "microphone", 0);
@@ -1897,6 +2079,24 @@ mod tests {
             "system",
             "No speech detected. Try speaking louder or moving closer to the microphone.",
             true,
+        ));
+    }
+
+    #[test]
+    fn keeps_invalid_service_response_failure_once_a_source_succeeded() {
+        assert!(should_record_source_failure(
+            "microphone",
+            "The processing service returned an invalid response.",
+            true,
+        ));
+    }
+
+    #[test]
+    fn keeps_invalid_service_response_failure_when_nothing_succeeded() {
+        assert!(should_record_source_failure(
+            "microphone",
+            "The processing service returned an invalid response.",
+            false,
         ));
     }
 

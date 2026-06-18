@@ -340,6 +340,47 @@ describe("NoteEditor", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("renders exhausted invalid service responses as transcript gaps", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "Usable transcript text",
+              source: "microphone",
+              startMs: 1000,
+              endMs: 14_000,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+            {
+              id: "turn-2",
+              text: "",
+              source: "system",
+              startMs: 15_000,
+              endMs: 18_000,
+              turnIndex: 1,
+              status: "failed",
+              lastError: "The processing service returned an invalid response.",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Usable transcript text")).toBeInTheDocument();
+    expect(
+      screen.getByText("Audio for this part could not be transcribed."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/processing service returned an invalid response/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
+  });
+
   it("does not render whole-note failures as transcript turns", () => {
     render(
       <NoteEditor

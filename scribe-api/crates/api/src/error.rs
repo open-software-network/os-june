@@ -1,6 +1,7 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
+    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    TRANSIENT_RETRY_AFTER_SECS, error_response, error_response_with_retry_after,
 };
 use axum::{http::StatusCode, response::IntoResponse};
 use scribe_domain::AuthError;
@@ -75,10 +76,11 @@ impl IntoResponse for ApiError {
             // Transient metering denial (e.g. a concurrency cap): the user is
             // funded and the upstream providers are fine — tell the client to
             // retry shortly instead of pretending the provider failed.
-            Self::AuthorizationDenied => error_response(
+            Self::AuthorizationDenied => error_response_with_retry_after(
                 StatusCode::TOO_MANY_REQUESTS,
                 ERR_AUTHORIZATION_DENIED,
                 "authorization_denied",
+                TRANSIENT_RETRY_AFTER_SECS,
             ),
             Self::Upstream => error_response(
                 StatusCode::BAD_GATEWAY,
@@ -118,7 +120,10 @@ pub(crate) fn from_auth_error(error: &AuthError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::ApiError;
-    use axum::{http::StatusCode, response::IntoResponse};
+    use axum::{
+        http::{StatusCode, header},
+        response::IntoResponse,
+    };
     use pretty_assertions::assert_eq;
     use scribe_services::ServiceError;
 
@@ -138,6 +143,13 @@ mod tests {
         let response = ApiError::from(ServiceError::AuthorizationDenied).into_response();
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("2")
+        );
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 4401);
         assert_eq!(body["message"], "authorization_denied");
