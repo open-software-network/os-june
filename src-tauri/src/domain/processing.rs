@@ -37,7 +37,7 @@ const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 1;
 #[cfg(not(test))]
 const TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS: u64 = 200;
 #[cfg(test)]
-const TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS: u64 = 0;
+const TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTranscriptInput {
@@ -959,7 +959,9 @@ fn is_retryable_transcription_error(error: &AppError) -> bool {
 
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
     if let Some(retry_after_ms) = retry_after_ms(error) {
-        return Duration::from_millis(retry_after_ms);
+        return Duration::from_millis(
+            retry_after_ms.saturating_add(retry_jitter_ms(operation_id, attempt)),
+        );
     }
     let backoff_multiplier = 1_u64 << attempt.min(8);
     let backoff_ms =
@@ -1955,6 +1957,21 @@ mod tests {
         assert_eq!(
             outcome.failures[0].input.warning.as_deref(),
             Some("The processing service returned an invalid response.")
+        );
+    }
+
+    #[test]
+    fn retry_after_delay_keeps_server_floor_and_adds_jitter() {
+        let operation_id = (0..100)
+            .map(|index| format!("retry-after-jitter-{index}"))
+            .find(|operation_id| retry_jitter_ms(operation_id, 0) > 0)
+            .expect("test jitter should produce a non-zero candidate");
+        let mut error = AppError::new("scribe_request_failed", "authorization_denied");
+        error.details = Some(serde_json::json!({ "retryAfterMs": 2_000 }));
+
+        assert_eq!(
+            transient_retry_delay(&operation_id, 0, &error),
+            Duration::from_millis(2_000 + retry_jitter_ms(&operation_id, 0))
         );
     }
 

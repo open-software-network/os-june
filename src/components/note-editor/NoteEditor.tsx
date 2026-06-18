@@ -29,6 +29,7 @@ import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
 import {
+  isInvalidScribeResponseMessage,
   NoteFailureBanner,
   userFacingFailureMessage,
 } from "./NoteFailureBanner";
@@ -1009,17 +1010,10 @@ function TranscriptTurn({
 }
 
 function sourceTurnFailureMessage(message?: string) {
-  const friendly = userFacingFailureMessage(message) ?? "";
-  if (isInvalidProcessingServiceResponse(friendly)) {
+  if (message && isInvalidScribeResponseMessage(message)) {
     return "Audio for this part could not be transcribed.";
   }
-  return friendly;
-}
-
-function isInvalidProcessingServiceResponse(message: string) {
-  return message
-    .toLowerCase()
-    .includes("processing service returned an invalid response");
+  return userFacingFailureMessage(message) ?? "";
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {

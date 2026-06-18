@@ -48,7 +48,7 @@ function friendlyFailureSegment(message: string) {
   return source ? `${source}: ${friendly}` : friendly;
 }
 
-function isInvalidScribeResponseMessage(message: string) {
+export function isInvalidScribeResponseMessage(message: string) {
   const normalized = message.trim().toLowerCase();
   return (
     normalized.includes("scribe_api_response_invalid") ||

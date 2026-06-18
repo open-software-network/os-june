@@ -364,7 +364,7 @@ describe("NoteEditor", () => {
               endMs: 18_000,
               turnIndex: 1,
               status: "failed",
-              lastError: "The processing service returned an invalid response.",
+              lastError: "scribe_api_response_invalid",
             },
           ],
         })}
@@ -378,6 +378,7 @@ describe("NoteEditor", () => {
     expect(
       screen.queryByText(/processing service returned an invalid response/i),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/scribe_api_response_invalid/i)).not.toBeInTheDocument();
     expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
   });
 
