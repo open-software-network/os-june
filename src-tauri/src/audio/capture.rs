@@ -537,7 +537,9 @@ fn write_input_data<I>(
     let mut preview_samples = preview.map(|_| Vec::new());
     {
         let mut callback_peak = 0.0_f32;
+        let mut saw_sample = false;
         for sample in data {
+            saw_sample = true;
             let clamped = sample.clamp(-1.0, 1.0);
             let pcm_sample = (clamped * i16::MAX as f32) as i16;
             let normalized = clamped.abs();
@@ -551,7 +553,7 @@ fn write_input_data<I>(
                 samples.push(pcm_sample);
             }
         }
-        if callback_peak > 0.0 {
+        if saw_sample {
             if stats.recent_peaks.len() == 24 {
                 stats.recent_peaks.pop_front();
             }

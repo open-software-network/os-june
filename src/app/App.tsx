@@ -121,6 +121,17 @@ import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
 import {
+  RECORDING_INACTIVITY_RESPONSE_MS,
+  RECORDING_INACTIVITY_SNOOZE_MS,
+  nextRecordingInactivityDecision,
+  recordingHasActivity,
+  type RecordingInactivityTracker,
+} from "../lib/recording-inactivity";
+import {
+  notifyRecordingAutoPaused,
+  notifyRecordingStillMeetingPrompt,
+} from "../lib/recording-notifications";
+import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
   AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
@@ -198,6 +209,11 @@ function sidebarMaxWidth() {
 }
 
 const TAB_ICON_SIZE = 14;
+
+type RecordingInactivityPrompt = {
+  sessionId: string;
+  expiresAt: number;
+};
 
 // The icon + label a tab shows for a snapshot. Titles for entity views (note,
 // project, agent session) are looked up live from the loaded data, so a tab's
@@ -418,6 +434,12 @@ export function App() {
     string | undefined
   >(undefined);
   const recordingStatusRef = useRef(state.recordingStatus);
+  const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
+  const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
+    useState<RecordingInactivityPrompt | null>(null);
+  const [recordingInactivityNow, setRecordingInactivityNow] = useState(() =>
+    Date.now(),
+  );
   const recordingStartInFlightRef = useRef(false);
   const [liveTranscriptEvents, setLiveTranscriptEvents] = useState<
     LiveTranscriptEventDto[]
@@ -2334,8 +2356,10 @@ export function App() {
       const status = await pauseRecording(sessionId);
       dispatch({ type: "recordingStatusChanged", status });
       playRecordingSound("pause");
+      return true;
     } catch (err) {
       setError(messageFromError(err));
+      return false;
     }
   }
 
@@ -2348,6 +2372,101 @@ export function App() {
       setError(messageFromError(err));
     }
   }
+
+  useEffect(() => {
+    const status = state.recordingStatus;
+    const now = Date.now();
+    const decision = nextRecordingInactivityDecision(
+      recordingInactivityTrackerRef.current,
+      status,
+      now,
+    );
+    recordingInactivityTrackerRef.current = decision.tracker;
+
+    if (
+      recordingInactivityPrompt &&
+      (!status ||
+        status.sessionId !== recordingInactivityPrompt.sessionId ||
+        status.state !== "recording" ||
+        recordingHasActivity(status))
+    ) {
+      setRecordingInactivityPrompt(null);
+      return;
+    }
+
+    if (
+      !status ||
+      !decision.shouldPrompt ||
+      recordingInactivityPrompt?.sessionId === status.sessionId
+    ) {
+      return;
+    }
+
+    const prompt = {
+      sessionId: status.sessionId,
+      expiresAt: now + RECORDING_INACTIVITY_RESPONSE_MS,
+    };
+    setRecordingInactivityNow(now);
+    setRecordingInactivityPrompt(prompt);
+    void notifyRecordingStillMeetingPrompt(status.sessionId);
+  }, [recordingInactivityPrompt, state.recordingStatus]);
+
+  useEffect(() => {
+    if (!recordingInactivityPrompt) return;
+
+    setRecordingInactivityNow(Date.now());
+    const tick = window.setInterval(() => {
+      setRecordingInactivityNow(Date.now());
+    }, 1000);
+    const timeout = window.setTimeout(() => {
+      const currentStatus = recordingStatusRef.current;
+      const sessionId = recordingInactivityPrompt.sessionId;
+      recordingInactivityTrackerRef.current = { sessionId };
+      setRecordingInactivityPrompt(null);
+      if (
+        currentStatus?.sessionId !== sessionId ||
+        currentStatus.state !== "recording"
+      ) {
+        return;
+      }
+      void handlePauseRecording(sessionId).then((paused) => {
+        if (paused) void notifyRecordingAutoPaused(sessionId);
+      });
+    }, Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()));
+
+    return () => {
+      window.clearInterval(tick);
+      window.clearTimeout(timeout);
+    };
+  }, [recordingInactivityPrompt]);
+
+  function handleKeepRecordingAfterInactivityPrompt() {
+    const sessionId = recordingInactivityPrompt?.sessionId;
+    if (sessionId) {
+      recordingInactivityTrackerRef.current = {
+        sessionId,
+        snoozedUntil: Date.now() + RECORDING_INACTIVITY_SNOOZE_MS,
+      };
+    }
+    setRecordingInactivityPrompt(null);
+  }
+
+  function handlePauseRecordingAfterInactivityPrompt() {
+    const sessionId = recordingInactivityPrompt?.sessionId;
+    if (!sessionId) return;
+    recordingInactivityTrackerRef.current = { sessionId };
+    setRecordingInactivityPrompt(null);
+    void handlePauseRecording(sessionId);
+  }
+
+  const recordingInactivitySecondsRemaining = recordingInactivityPrompt
+    ? Math.max(
+        0,
+        Math.ceil(
+          (recordingInactivityPrompt.expiresAt - recordingInactivityNow) / 1000,
+        ),
+      )
+    : 0;
 
   if (accountLoading) {
     return (
@@ -3081,6 +3200,38 @@ export function App() {
           </AnimatePresence>
         </section>
       </div>
+      <Dialog
+        open={recordingInactivityPrompt !== null}
+        onClose={handleKeepRecordingAfterInactivityPrompt}
+        title="Still in a meeting?"
+        description="June has not heard meeting audio for a while."
+        width={420}
+        footer={
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={handlePauseRecordingAfterInactivityPrompt}
+            >
+              Pause recording
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={handleKeepRecordingAfterInactivityPrompt}
+            >
+              Keep recording
+            </button>
+          </>
+        }
+      >
+        <div className="dialog-body">
+          <p className="recording-inactivity-copy">
+            June will pause this recording in{" "}
+            {recordingInactivitySecondsRemaining} seconds if you do not answer.
+          </p>
+        </div>
+      </Dialog>
       <MoveNoteToFolderDialog
         open={moveDialogNoteIds !== null}
         onClose={() => setMoveDialogNoteIds(null)}
