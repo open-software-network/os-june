@@ -1374,6 +1374,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_chat_direct_403_maps_to_upstream_not_policy_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let agent = VeniceAgentChat::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+            },
+            false,
+        );
+
+        let completion = agent
+            .complete(AgentChatRequest {
+                body: json!({
+                    "model": "text-model",
+                    "messages": [{ "role": "user", "content": "hi" }],
+                }),
+                model: ModelId("text-model".to_string()),
+            })
+            .await;
+
+        assert_eq!(
+            completion.map(|_| ()),
+            Err(scribe_domain::DomainError::UpstreamProvider)
+        );
+    }
+
+    #[tokio::test]
     async fn transcriber_retries_transient_503_then_succeeds() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

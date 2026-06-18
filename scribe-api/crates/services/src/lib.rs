@@ -10,7 +10,9 @@ mod pricing;
 mod prompts;
 mod util;
 
-pub use agent_chat::{AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps};
+pub use agent_chat::{
+    AgentChatOutput, AgentChatParams, AgentChatRoute, AgentChatService, AgentChatServiceDeps,
+};
 pub use dictate::{
     DictateCleanupOutput, DictateCleanupParams, DictateService, DictateServiceDeps,
     DictateTranscribeOutput, DictateTranscribeParams,
@@ -27,6 +29,7 @@ pub use pricing::{PricingError, PricingTable};
 #[cfg(test)]
 mod tests {
     use super::{
+        AgentChatParams, AgentChatRoute, AgentChatService, AgentChatServiceDeps,
         DictateCleanupParams, DictateService, DictateServiceDeps, DictateTranscribeParams,
         NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeParams,
         NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, ServiceError,
@@ -35,8 +38,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
     use scribe_domain::{
-        AudioDurationProbe, Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner,
-        CleanupRequest, Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
+        AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe,
+        Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner, CleanupRequest,
+        Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
         OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest,
         UserId,
     };
@@ -111,6 +115,97 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn agent_chat_direct_authorizes_then_charges_actual_usage() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                2,
+                ModelType::Text,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            guarded_chat_completer: Arc::new(FixedAgentChatCompleter {
+                provider: "guarded",
+            }),
+            direct_chat_completer: Arc::new(FixedAgentChatCompleter { provider: "direct" }),
+            hold_ttl_seconds: 300,
+            flat_estimate_credits: 8200,
+        });
+
+        let output = service
+            .complete(AgentChatParams {
+                user_id: UserId("usr_123".to_string()),
+                model_id: ModelId("text-model".to_string()),
+                body: serde_json::json!({
+                    "model": "text-model",
+                    "messages": [{ "role": "user", "content": "hello" }],
+                }),
+                route: AgentChatRoute::Direct,
+            })
+            .await
+            .expect("direct agent chat succeeds");
+
+        assert_eq!(output.completion.provider, "direct");
+        assert_eq!(output.receipt.credits_charged.0, 60);
+        let events = os_accounts.events();
+        assert!(matches!(
+            events.first(),
+            Some(RecordedCall::Authorize { user_id, action, estimate, hold_ttl })
+                if user_id == "usr_123"
+                    && action == "agent_chat"
+                    && *estimate == 8200
+                    && *hold_ttl == 300
+        ));
+        assert!(matches!(
+            events.get(1),
+            Some(RecordedCall::Charge { action_token, credits, idempotency_key })
+                if action_token == "agt_test"
+                    && *credits == 60
+                    && idempotency_key.starts_with("agent_chat:usr_123:text-model:")
+        ));
+    }
+
+    #[tokio::test]
+    async fn agent_chat_direct_provider_failure_does_not_charge() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                2,
+                ModelType::Text,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            guarded_chat_completer: Arc::new(FixedAgentChatCompleter {
+                provider: "guarded",
+            }),
+            direct_chat_completer: Arc::new(FailingAgentChatCompleter),
+            hold_ttl_seconds: 300,
+            flat_estimate_credits: 8200,
+        });
+
+        let result = service
+            .complete(AgentChatParams {
+                user_id: UserId("usr_123".to_string()),
+                model_id: ModelId("text-model".to_string()),
+                body: serde_json::json!({
+                    "model": "text-model",
+                    "messages": [{ "role": "user", "content": "hello" }],
+                }),
+                route: AgentChatRoute::Direct,
+            })
+            .await;
+
+        assert_eq!(result.err(), Some(ServiceError::UpstreamProvider));
+        assert_eq!(os_accounts.events().len(), 1);
+        assert!(matches!(
+            os_accounts.events().first(),
+            Some(RecordedCall::Authorize { action, .. }) if action == "agent_chat"
+        ));
     }
 
     #[tokio::test]
@@ -798,6 +893,40 @@ mod tests {
     }
 
     struct FixedGenerator;
+
+    struct FixedAgentChatCompleter {
+        provider: &'static str,
+    }
+
+    #[async_trait]
+    impl AgentChatCompleter for FixedAgentChatCompleter {
+        async fn complete(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatCompletion, DomainError> {
+            Ok(AgentChatCompletion {
+                body: br#"{"ok":true}"#.to_vec(),
+                content_type: "application/json".to_string(),
+                provider: self.provider.to_string(),
+                usage: TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                },
+            })
+        }
+    }
+
+    struct FailingAgentChatCompleter;
+
+    #[async_trait]
+    impl AgentChatCompleter for FailingAgentChatCompleter {
+        async fn complete(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatCompletion, DomainError> {
+            Err(DomainError::UpstreamProvider)
+        }
+    }
 
     #[async_trait]
     impl Generator for FixedGenerator {

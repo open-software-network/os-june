@@ -15,7 +15,8 @@ use std::sync::Arc;
 pub struct AgentChatServiceDeps {
     pub pricing: Arc<PricingTable>,
     pub os_accounts: Arc<dyn OsAccountsClient>,
-    pub chat_completer: Arc<dyn AgentChatCompleter>,
+    pub guarded_chat_completer: Arc<dyn AgentChatCompleter>,
+    pub direct_chat_completer: Arc<dyn AgentChatCompleter>,
     pub hold_ttl_seconds: u64,
     pub flat_estimate_credits: u64,
 }
@@ -23,7 +24,8 @@ pub struct AgentChatServiceDeps {
 pub struct AgentChatService {
     pricing: Arc<PricingTable>,
     os_accounts: Arc<dyn OsAccountsClient>,
-    chat_completer: Arc<dyn AgentChatCompleter>,
+    guarded_chat_completer: Arc<dyn AgentChatCompleter>,
+    direct_chat_completer: Arc<dyn AgentChatCompleter>,
     hold_ttl_seconds: u64,
     flat_estimate_credits: u64,
 }
@@ -33,7 +35,8 @@ impl AgentChatService {
         Self {
             pricing: deps.pricing,
             os_accounts: deps.os_accounts,
-            chat_completer: deps.chat_completer,
+            guarded_chat_completer: deps.guarded_chat_completer,
+            direct_chat_completer: deps.direct_chat_completer,
             hold_ttl_seconds: deps.hold_ttl_seconds,
             flat_estimate_credits: deps.flat_estimate_credits,
         }
@@ -53,7 +56,7 @@ impl AgentChatService {
         .await?;
         let body_digest = body_digest(&params.body);
         let completion = self
-            .chat_completer
+            .chat_completer(params.route)
             .complete(AgentChatRequest {
                 body: params.body,
                 model: params.model_id.clone(),
@@ -84,6 +87,13 @@ impl AgentChatService {
             receipt,
         })
     }
+
+    fn chat_completer(&self, route: AgentChatRoute) -> &dyn AgentChatCompleter {
+        match route {
+            AgentChatRoute::Guarded => self.guarded_chat_completer.as_ref(),
+            AgentChatRoute::Direct => self.direct_chat_completer.as_ref(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +101,13 @@ pub struct AgentChatParams {
     pub user_id: UserId,
     pub model_id: ModelId,
     pub body: serde_json::Value,
+    pub route: AgentChatRoute,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentChatRoute {
+    Guarded,
+    Direct,
 }
 
 #[derive(Clone, Debug)]

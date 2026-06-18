@@ -112,8 +112,11 @@ fn build_router(
         chat_upstream,
         chat_via_osguard,
     ));
-    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
+    let guarded_agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
         VeniceAgentChat::from_config(http.clone(), chat_upstream, chat_via_osguard),
+    );
+    let direct_agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
+        VeniceAgentChat::from_config(http.clone(), &config.upstreams.venice, false),
     );
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
@@ -142,7 +145,8 @@ fn build_router(
     let agent_chat = Arc::new(AgentChatService::new(AgentChatServiceDeps {
         pricing: pricing.clone(),
         os_accounts: os_accounts.clone(),
-        chat_completer: agent_chat_completer,
+        guarded_chat_completer: guarded_agent_chat_completer,
+        direct_chat_completer: direct_agent_chat_completer,
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_note_generate_secs,
         flat_estimate_credits,
     }));

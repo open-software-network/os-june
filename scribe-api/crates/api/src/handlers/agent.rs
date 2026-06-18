@@ -9,12 +9,29 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use scribe_domain::{ModelId, ModelKind};
-use scribe_services::AgentChatParams;
+use scribe_services::{AgentChatParams, AgentChatRoute};
 
 pub(crate) async fn chat_completions(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(mut body): Json<serde_json::Value>,
+) -> Result<Response, ApiError> {
+    chat_completions_with_route(state, headers, &mut body, AgentChatRoute::Guarded).await
+}
+
+pub(crate) async fn chat_completions_direct(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(mut body): Json<serde_json::Value>,
+) -> Result<Response, ApiError> {
+    chat_completions_with_route(state, headers, &mut body, AgentChatRoute::Direct).await
+}
+
+async fn chat_completions_with_route(
+    state: ApiState,
+    headers: HeaderMap,
+    body: &mut serde_json::Value,
+    route: AgentChatRoute,
 ) -> Result<Response, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
     let model_id = body
@@ -25,7 +42,7 @@ pub(crate) async fn chat_completions(
         .ok_or_else(|| ApiError::bad_request("model_required"))?
         .to_string();
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    validation::validate_agent_chat_body(&body)?;
+    validation::validate_agent_chat_body(body)?;
     require_priced_model(&state, &model_id, ModelKind::Text)?;
     if let Some(object) = body.as_object_mut() {
         object.insert(
@@ -38,7 +55,8 @@ pub(crate) async fn chat_completions(
         .complete(AgentChatParams {
             user_id,
             model_id: ModelId(model_id),
-            body,
+            body: body.clone(),
+            route,
         })
         .await?;
     Ok((

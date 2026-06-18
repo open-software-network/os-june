@@ -101,6 +101,42 @@ async fn integration_note_generate_rejects_wrong_model_kind() -> Result<(), Box<
 }
 
 #[tokio::test]
+async fn integration_agent_chat_uses_guarded_route() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/chat/completions",
+        &serde_json::json!({
+            "model": "text-model",
+            "messages": [{ "role": "user", "content": "Hello" }]
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["provider"], "fake-guarded-chat");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_direct_uses_direct_route() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/chat/completions/direct",
+        &serde_json::json!({
+            "model": "text-model",
+            "messages": [{ "role": "user", "content": "Hello" }]
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["provider"], "fake-direct-chat");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_issue_report_requires_auth() -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request_with_auth(
         "/v1/issue-reports",
@@ -523,7 +559,8 @@ fn test_state_with_sinks(
     let generator = Arc::new(FakeGenerator);
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
-    let chat_completer = Arc::new(FakeChatCompleter);
+    let guarded_chat_completer = Arc::new(FakeChatCompleter::new("fake-guarded-chat"));
+    let direct_chat_completer = Arc::new(FakeChatCompleter::new("fake-direct-chat"));
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
@@ -547,7 +584,8 @@ fn test_state_with_sinks(
         agent_chat: Arc::new(AgentChatService::new(AgentChatServiceDeps {
             pricing: pricing.clone(),
             os_accounts: os_accounts.clone(),
-            chat_completer,
+            guarded_chat_completer,
+            direct_chat_completer,
             hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
         })),
@@ -914,7 +952,15 @@ impl ToolGuardAnalyzer for RecordingToolGuard {
     }
 }
 
-struct FakeChatCompleter;
+struct FakeChatCompleter {
+    provider: &'static str,
+}
+
+impl FakeChatCompleter {
+    const fn new(provider: &'static str) -> Self {
+        Self { provider }
+    }
+}
 
 #[async_trait]
 impl AgentChatCompleter for FakeChatCompleter {
@@ -923,9 +969,10 @@ impl AgentChatCompleter for FakeChatCompleter {
         _request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
         Ok(AgentChatCompletion {
-            body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
+            body: format!(r#"{{"id":"chatcmpl_test","provider":"{}"}}"#, self.provider)
+                .into_bytes(),
             content_type: "application/json".to_string(),
-            provider: "fake-chat".to_string(),
+            provider: self.provider.to_string(),
             usage: TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 100,
