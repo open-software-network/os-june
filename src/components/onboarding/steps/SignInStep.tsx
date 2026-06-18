@@ -27,14 +27,13 @@ const JUNE_POINTS = [
   {
     icon: IconCalendar1,
     title: "Effortlessly capture meetings",
-    detail:
-      "June takes notes without having to join the meeting. It detects your meetings and writes for you.",
+    detail: "June takes the notes without ever joining the meeting.",
   },
   {
     icon: IconLock,
     title: "Private by default",
     detail:
-      "Prompts leave your device only for inference, using zero data retention private models by default.",
+      "Prompts leave your device only for inference, on zero-retention private models.",
   },
 ];
 
@@ -69,7 +68,8 @@ export function SignInStep({
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  const points = isMacLikePlatform() ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
+  const isMac = isMacLikePlatform();
+  const points = isMac ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
 
   const cancelInFlight = useCallback(async () => {
     try {
@@ -110,6 +110,7 @@ export function SignInStep({
       subtitle="Private AI for everyday life and work."
       mark
       wide
+      className={isMac ? "welcome-card-intro" : undefined}
     >
       <ul className="onboarding-points">
         {points.map(({ icon: Icon, title, detail }) => (
