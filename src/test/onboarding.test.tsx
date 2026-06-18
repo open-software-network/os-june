@@ -492,11 +492,13 @@ describe("OnboardingFlow", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Private AI models")).toBeInTheDocument();
     expect(
-      screen.getByText("Inference runs on private, zero-retention models."),
+      screen.getByText(
+        "Inference runs on private, zero-retention models by default.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("Minimal data retention")).toBeInTheDocument();
     expect(
-      screen.getByText("June keeps only what runs your account."),
+      screen.getByText("June keeps only what's needed for your account."),
     ).toBeInTheDocument();
     expect(mocks.focusMainWindow).toHaveBeenCalledOnce();
 

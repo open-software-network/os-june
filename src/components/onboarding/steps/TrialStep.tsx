@@ -24,12 +24,12 @@ const PRIVACY_RECAP_ITEMS = [
   {
     icon: IconLock,
     label: "Private AI models",
-    detail: "Inference runs on private, zero-retention models.",
+    detail: "Inference runs on private, zero-retention models by default.",
   },
   {
     icon: IconShieldCheck,
     label: "Minimal data retention",
-    detail: "June keeps only what runs your account.",
+    detail: "June keeps only what's needed for your account.",
   },
 ];
 
