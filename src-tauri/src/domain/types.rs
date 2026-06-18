@@ -887,6 +887,25 @@ pub enum RecordingState {
     Recoverable,
 }
 
+impl RecordingState {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::PermissionDenied => "permission_denied",
+            Self::Starting => "starting",
+            Self::Recording => "recording",
+            Self::Paused => "paused",
+            Self::Finalizing => "finalizing",
+            Self::Validating => "validating",
+            Self::PartiallyValid => "partially_valid",
+            Self::Invalid => "invalid",
+            Self::Ready => "valid",
+            Self::Failed => "failed",
+            Self::Recoverable => "recoverable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SourceState {

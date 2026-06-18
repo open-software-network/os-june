@@ -28,6 +28,7 @@ use std::{
 use uuid::Uuid;
 
 pub const DEFAULT_SILENCE_THRESHOLD: f32 = 0.012;
+const RECOVERY_SNAPSHOT_INTERVAL_MS: i64 = 500;
 
 static ACTIVE_RECORDING: LazyLock<Mutex<Option<ActiveRecording>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -65,6 +66,11 @@ pub struct FinishedSource {
     pub elapsed_ms: i64,
 }
 
+pub struct CaptureRecoverySnapshot {
+    pub status: RecordingStatusDto,
+    pub should_persist: bool,
+}
+
 struct ActiveRecording {
     session_id: String,
     note_id: String,
@@ -80,6 +86,7 @@ struct ActiveRecording {
     paused_flag: Arc<AtomicBool>,
     writer: Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>,
     stats: Arc<Mutex<CaptureStats>>,
+    last_recovery_snapshot_elapsed_ms: i64,
     live_preview: Option<LivePreviewController>,
     system_live_preview: Option<SystemLivePreviewController>,
     live_preview_enabled: bool,
@@ -333,6 +340,7 @@ pub fn start_capture(
         paused_flag,
         writer,
         stats,
+        last_recovery_snapshot_elapsed_ms: 0,
         live_preview,
         system_live_preview,
         live_preview_enabled,
@@ -351,7 +359,7 @@ pub fn start_capture(
     })
 }
 
-pub fn pause_capture(session_id: &str) -> Result<RecordingStatusDto, AppError> {
+pub fn pause_capture(session_id: &str) -> Result<CaptureRecoverySnapshot, AppError> {
     let mut active = lock_active()?;
     let recording = active_for_session(active.as_mut(), session_id)?;
     if !recording.paused {
@@ -364,10 +372,10 @@ pub fn pause_capture(session_id: &str) -> Result<RecordingStatusDto, AppError> {
             system.pause();
         }
     }
-    Ok(recording.status())
+    Ok(recording.recovery_snapshot(RecoverySnapshotMode::Force))
 }
 
-pub fn resume_capture(session_id: &str) -> Result<RecordingStatusDto, AppError> {
+pub fn resume_capture(session_id: &str) -> Result<CaptureRecoverySnapshot, AppError> {
     let mut active = lock_active()?;
     let recording = active_for_session(active.as_mut(), session_id)?;
     if recording.paused {
@@ -378,13 +386,19 @@ pub fn resume_capture(session_id: &str) -> Result<RecordingStatusDto, AppError> 
             system.resume();
         }
     }
-    Ok(recording.status())
+    Ok(recording.recovery_snapshot(RecoverySnapshotMode::Force))
 }
 
 pub fn capture_status(session_id: &str) -> Result<RecordingStatusDto, AppError> {
     let active = lock_active()?;
     let recording = active_for_session(active.as_ref(), session_id)?;
     Ok(recording.status())
+}
+
+pub fn capture_status_for_recovery(session_id: &str) -> Result<CaptureRecoverySnapshot, AppError> {
+    let mut active = lock_active()?;
+    let recording = active_for_session(active.as_mut(), session_id)?;
+    Ok(recording.recovery_snapshot(RecoverySnapshotMode::Throttled))
 }
 
 pub fn is_capture_active() -> bool {
@@ -673,6 +687,39 @@ impl ActiveRecording {
             ),
             warnings: Vec::new(),
         }
+    }
+
+    fn recovery_snapshot(&mut self, mode: RecoverySnapshotMode) -> CaptureRecoverySnapshot {
+        let status = self.status();
+        let should_persist = match mode {
+            RecoverySnapshotMode::Force => true,
+            RecoverySnapshotMode::Throttled => {
+                status.elapsed_ms - self.last_recovery_snapshot_elapsed_ms
+                    >= RECOVERY_SNAPSHOT_INTERVAL_MS
+            }
+        };
+        if should_persist {
+            self.last_recovery_snapshot_elapsed_ms = status.elapsed_ms;
+            flush_microphone_writer_for_recovery(&self.writer);
+        }
+        CaptureRecoverySnapshot {
+            status,
+            should_persist,
+        }
+    }
+}
+
+enum RecoverySnapshotMode {
+    Throttled,
+    Force,
+}
+
+fn flush_microphone_writer_for_recovery(writer: &Arc<Mutex<Option<WavWriter<BufWriter<File>>>>>) {
+    let Ok(mut writer_guard) = writer.lock() else {
+        return;
+    };
+    if let Some(writer) = writer_guard.as_mut() {
+        let _ = writer.flush();
     }
 }
 

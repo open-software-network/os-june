@@ -3,7 +3,7 @@ use crate::domain::types::{
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     DictationHistoryItemDto, DictionaryEntryDto, FolderDto, ListDictationHistoryResponse,
     ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus, RecordingSourceMode,
-    SessionFolderDto, TranscriptDto,
+    RecordingState, SessionFolderDto, TranscriptDto,
 };
 use chrono::{Duration, SecondsFormat, Utc};
 use sqlx::{Row, SqlitePool};
@@ -1341,6 +1341,95 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn update_recording_recovery_snapshot(
+        &self,
+        session_id: &str,
+        state: RecordingState,
+        elapsed_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let status = state.as_db();
+        sqlx::query(
+            "UPDATE recording_sessions
+             SET status = ?, expected_elapsed_ms = max(expected_elapsed_ms, ?)
+             WHERE id = ?
+               AND status IN ('recording', 'paused')",
+        )
+        .bind(status)
+        .bind(elapsed_ms)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE audio_artifacts
+             SET status = ?, expected_duration_ms = max(expected_duration_ms, ?)
+             WHERE recording_session_id = ?
+               AND status IN ('recording', 'paused')",
+        )
+        .bind(status)
+        .bind(elapsed_ms)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_recording_recoverable(
+        &self,
+        session_id: &str,
+        note_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = timestamp();
+        let message = "Recording interrupted before it could be finished.";
+        sqlx::query(
+            "UPDATE recording_sessions
+             SET status = 'recoverable',
+                 last_error = COALESCE(last_error, ?),
+                 ended_at = COALESCE(ended_at, ?)
+             WHERE id = ?
+               AND status IN (
+                 'recording',
+                 'paused',
+                 'finalizing',
+                 'validating',
+                 'transcribing',
+                 'generating',
+                 'failed',
+                 'recoverable'
+               )",
+        )
+        .bind(message)
+        .bind(&now)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE audio_artifacts
+             SET status = 'recoverable',
+                 last_error = COALESCE(last_error, ?)
+             WHERE recording_session_id = ?
+               AND status IN (
+                 'recording',
+                 'paused',
+                 'finalizing',
+                 'validating',
+                 'transcribing',
+                 'generating',
+                 'failed',
+                 'recoverable'
+               )",
+        )
+        .bind(message)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        self.set_note_status(
+            note_id,
+            ProcessingStatus::Recoverable,
+            Some("Recording interrupted. Review recovery options.".to_string()),
+        )
+        .await
     }
 
     pub async fn add_checkpoint(
