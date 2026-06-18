@@ -33,7 +33,7 @@ const JUNE_POINTS = [
     icon: IconLock,
     title: "Private by default",
     detail:
-      "Prompts leave only for inference, on zero-retention private models.",
+      "Prompts leave your device only for inference, on zero-retention private models.",
   },
 ];
 
@@ -106,7 +106,7 @@ export function SignInStep({
   return (
     <StepCard
       title="Welcome to June"
-      subtitle="Private AI for every day life and work."
+      subtitle="Private AI for everyday life and work."
       mark
       wide
       className="welcome-card-intro"
