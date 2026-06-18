@@ -2351,7 +2351,7 @@ export function App() {
     }
   }
 
-  async function handlePauseRecording(sessionId: string) {
+  const handlePauseRecording = useCallback(async (sessionId: string) => {
     try {
       const status = await pauseRecording(sessionId);
       dispatch({ type: "recordingStatusChanged", status });
@@ -2361,7 +2361,7 @@ export function App() {
       setError(messageFromError(err));
       return false;
     }
-  }
+  }, []);
 
   async function handleResumeRecording(sessionId: string) {
     playRecordingSound("start");
@@ -2438,7 +2438,7 @@ export function App() {
       window.clearInterval(tick);
       window.clearTimeout(timeout);
     };
-  }, [recordingInactivityPrompt]);
+  }, [handlePauseRecording, recordingInactivityPrompt]);
 
   function handleKeepRecordingAfterInactivityPrompt() {
     const sessionId = recordingInactivityPrompt?.sessionId;
