@@ -15,6 +15,7 @@ import { IconZap } from "central-icons/IconZap";
 import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  isReplaceableScheduledRunTitle,
   listScheduledRunSessions,
   scheduledRunJobId,
 } from "../../lib/hermes-adapter";
@@ -174,7 +175,10 @@ export function RoutinesView({
     (run: HermesSessionInfo) => {
       const jobId = scheduledRunJobId(run.id);
       const routine = jobId ? routinesById.get(jobId) : undefined;
-      return routine?.name || run.title?.trim() || "Routine run";
+      const sessionTitle = isReplaceableScheduledRunTitle(run.title)
+        ? ""
+        : run.title?.trim();
+      return routine?.name || sessionTitle || "Routine run";
     },
     [routinesById],
   );

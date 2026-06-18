@@ -502,6 +502,24 @@ describe("RoutinesView detail", () => {
     expect(onOpenRun).toHaveBeenCalledWith(mine);
   });
 
+  it("labels untitled detail runs with the routine name", async () => {
+    mocks.listRoutines.mockResolvedValue([job({ name: "Morning brief" })]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      run({
+        title: "Untitled session",
+        preview:
+          "[IMPORTANT: You are running as a scheduled cron job. DELIVER...]",
+      }),
+    ]);
+    renderView();
+    await openDetail("Morning brief");
+    await userEvent.click(screen.getByRole("tab", { name: "Run history" }));
+
+    const history = screen.getByRole("tabpanel", { name: "Run history" });
+    expect(within(history).getByText("Morning brief")).toBeInTheDocument();
+    expect(within(history).queryByText("Untitled session")).toBeNull();
+  });
+
   it("surfaces the last run failure", async () => {
     mocks.listRoutines.mockResolvedValue([
       job({ last_status: "error", last_error: "Model quota exhausted" }),
@@ -669,6 +687,22 @@ describe("RoutinesView run history", () => {
     expect(
       within(history).getByText("Weekly Metrics Digest"),
     ).toBeInTheDocument();
+  });
+
+  it("labels orphaned placeholder-title runs generically", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      run({
+        id: "cron_gone99_20260609_080000",
+        title: "Untitled session",
+        preview: "",
+      }),
+    ]);
+    renderView();
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    expect(within(history).getByText("Routine run")).toBeInTheDocument();
+    expect(within(history).queryByText("Untitled session")).toBeNull();
   });
 
   it("filters run history with the search query", async () => {

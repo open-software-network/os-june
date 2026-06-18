@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isRunningScheduledRunSession,
+  isReplaceableScheduledRunTitle,
   isScheduledRunPreamble,
   isScheduledRunSession,
   listHermesSessions,
@@ -76,6 +77,21 @@ describe("scheduled-run helpers", () => {
     expect(sessions[0]?.title).toBe("Post the Weekly Metrics Digest");
   });
 
+  it("derives the title when the cron session still has the placeholder title", () => {
+    const sessions = normalizeHermesSessionsResponse({
+      sessions: [
+        {
+          id: "cron-3",
+          source: "cron",
+          title: "Untitled session",
+          preview: `${SCHEDULED_PREAMBLE}\n\nPrepare the morning brief for today.`,
+          last_active: "2026-06-11T12:00:00Z",
+        },
+      ],
+    });
+    expect(sessions[0]?.title).toBe("Prepare the Morning Brief for Today");
+  });
+
   it("extracts the routine job id from a cron run session id", () => {
     // The scheduler mints run ids as cron_<job id>_<YYYYMMDD_HHMMSS>.
     expect(scheduledRunJobId("cron_a1b2c3d4e5f6_20260611_093045")).toBe(
@@ -85,6 +101,15 @@ describe("scheduled-run helpers", () => {
     expect(scheduledRunJobId("cron_my_job_20260611_093045")).toBe("my_job");
     expect(scheduledRunJobId("ordinary-session-id")).toBeUndefined();
     expect(scheduledRunJobId("cron_missing_timestamp")).toBeUndefined();
+  });
+
+  it("treats empty, placeholder, and cron-scaffolded titles as replaceable", () => {
+    expect(isReplaceableScheduledRunTitle("")).toBe(true);
+    expect(isReplaceableScheduledRunTitle("Untitled session")).toBe(true);
+    expect(
+      isReplaceableScheduledRunTitle("[IMPORTANT: You are running as"),
+    ).toBe(true);
+    expect(isReplaceableScheduledRunTitle("Morning brief")).toBe(false);
   });
 });
 

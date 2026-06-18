@@ -71,6 +71,7 @@ export function scheduledRunJobId(sessionId: string) {
  * activity; runs older than the window age out of the history view. */
 const SCHEDULED_RUN_FETCH_LIMIT = 200;
 const PENDING_SCHEDULED_RUN_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+const UNTITLED_SESSION_TITLE = "Untitled session";
 
 export type ScheduledRunListOptions = {
   includeActive?: boolean;
@@ -135,7 +136,8 @@ function hasSessionEnded(session: HermesSessionInfo) {
 
 function hasScheduledRunContent(session: HermesSessionInfo) {
   return (
-    Boolean(session.preview?.trim()) || session.title !== "Untitled session"
+    Boolean(session.preview?.trim()) ||
+    !isReplaceableScheduledRunTitle(session.title)
   );
 }
 
@@ -176,6 +178,15 @@ export function stripScheduledRunPreamble(content: string) {
     .trim();
 }
 
+export function isReplaceableScheduledRunTitle(title: unknown) {
+  const value = typeof title === "string" ? title.trim() : "";
+  return (
+    !value ||
+    value.toLowerCase() === UNTITLED_SESSION_TITLE.toLowerCase() ||
+    /^\[IMPORTANT\b/i.test(value)
+  );
+}
+
 /** Gives a scheduled-run session a readable title and a clean preview when the
  * stored ones are empty or still the raw delivery preamble, so every list
  * surface stops showing "[IMPORTANT…". Non-cron sessions pass through. */
@@ -189,8 +200,9 @@ function withScheduledRunDisplay(
   // stored title is often truncated ("[IMPORTANT: You are running as"), so a
   // leading "[IMPORTANT" is enough to treat it as raw here, where we already
   // know this is a cron session.
-  const looksRaw = !storedTitle || /^\[IMPORTANT\b/i.test(storedTitle);
-  const title = looksRaw ? titleFromPrompt(cleanedPreview) : storedTitle;
+  const title = isReplaceableScheduledRunTitle(storedTitle)
+    ? titleFromPrompt(cleanedPreview)
+    : storedTitle;
   return { ...session, title, preview: cleanedPreview || session.preview };
 }
 
@@ -213,7 +225,7 @@ export function sessionTimestamp(session: HermesSessionInfo) {
 
 export function titleFromPrompt(prompt: string) {
   const source = promptTitleSource(prompt);
-  if (!source) return "Untitled session";
+  if (!source) return UNTITLED_SESSION_TITLE;
   const stripped = stripRequestPrefix(source) || source;
   const firstClause = stripped
     .split(/(?:[.!?;:]|\s+-\s+|\s+--\s+)/)
@@ -225,7 +237,7 @@ export function titleFromPrompt(prompt: string) {
     .filter(Boolean)
     .slice(0, 6);
   const title = titleCaseSessionTitle(words.join(" "));
-  if (title.length <= 72) return title || "Untitled session";
+  if (title.length <= 72) return title || UNTITLED_SESSION_TITLE;
   return `${title.slice(0, 69).trim()}...`;
 }
 
