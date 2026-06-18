@@ -42,6 +42,21 @@ struct FellowIssue {
     number_in_org: i64,
 }
 
+#[derive(Clone, Copy)]
+enum IssueCreateDestination {
+    Project,
+    OrgFallback,
+}
+
+impl IssueCreateDestination {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::OrgFallback => "org_fallback",
+        }
+    }
+}
+
 impl OsPlatformIssueReportSink {
     /// `None` when the tracker isn't configured — the caller falls through
     /// to the structured log sink.
@@ -180,14 +195,8 @@ impl OsPlatformIssueReportSink {
         .await
     }
 
-    async fn fallback_to_log(&self, report: IssueReport, reason: &str) -> Result<(), DomainError> {
-        tracing::warn!(
-            reason,
-            target_org = %self.org,
-            target_project = %self.project,
-            "issue_reports: falling back to structured log"
-        );
-        LogIssueReportSink.deliver(report).await
+    fn fallback_to_log(&self, report: &IssueReport, reason: &str) {
+        log_issue_report_delivery_failed(report, reason, &self.org, &self.project);
     }
 
     /// Attaches the configured label via the labels PUT (set-replace; a
@@ -246,18 +255,33 @@ impl OsPlatformIssueReportSink {
     /// Project: the label won't exist yet, so the missing-label rejection
     /// creates it and retries once. Failure here never fails the delivery —
     /// the Issue is already filed (and carries `type: bug` regardless).
-    async fn tag_issue(&self, number_in_org: i64) {
+    async fn tag_issue(&self, number_in_org: i64, destination: IssueCreateDestination) {
         if self.label.is_empty() {
             return;
         }
         let attached = match self.put_label(number_in_org).await {
             Some(envelope) if envelope.success => true,
             Some(envelope) if envelope.message.as_deref().is_some_and(is_missing_label) => {
-                self.ensure_label().await
-                    && self
-                        .put_label(number_in_org)
-                        .await
-                        .is_some_and(|retry| retry.success)
+                match destination {
+                    IssueCreateDestination::Project => {
+                        self.ensure_label().await
+                            && self
+                                .put_label(number_in_org)
+                                .await
+                                .is_some_and(|retry| retry.success)
+                    }
+                    IssueCreateDestination::OrgFallback => {
+                        tracing::warn!(
+                            number_in_org,
+                            label = %self.label,
+                            target_org = %self.org,
+                            target_project = %self.project,
+                            destination = destination.as_str(),
+                            "issue_reports: org-fallback issue filed without label because the configured project label is unavailable"
+                        );
+                        return;
+                    }
+                }
             }
             _ => false,
         };
@@ -265,6 +289,7 @@ impl OsPlatformIssueReportSink {
             tracing::warn!(
                 number_in_org,
                 label = %self.label,
+                destination = destination.as_str(),
                 "issue_reports: issue filed but the label could not be attached"
             );
         }
@@ -318,12 +343,11 @@ impl IssueReportSink for OsPlatformIssueReportSink {
         let file_ids = self.upload_attachments(&report).await;
 
         let Ok(project_envelope) = self.create_project_issue(&report, &file_ids).await else {
-            return self
-                .fallback_to_log(report, "project_create_transport_or_envelope_error")
-                .await;
+            self.fallback_to_log(&report, "project_create_transport_or_envelope_error");
+            return Ok(());
         };
-        let envelope = if project_envelope.success {
-            project_envelope
+        let (envelope, destination) = if project_envelope.success {
+            (project_envelope, IssueCreateDestination::Project)
         } else {
             let project_message = project_envelope.message.as_deref().unwrap_or("");
             tracing::warn!(
@@ -333,32 +357,31 @@ impl IssueReportSink for OsPlatformIssueReportSink {
                 "issue_reports: os-platform rejected the project-scoped issue; retrying at org scope"
             );
             match self.create_org_issue(&report, &file_ids).await {
-                Ok(envelope) if envelope.success => envelope,
+                Ok(envelope) if envelope.success => (envelope, IssueCreateDestination::OrgFallback),
                 Ok(envelope) => {
                     tracing::error!(
                         project_message,
                         org_message = envelope.message.as_deref().unwrap_or(""),
                         "issue_reports: os-platform rejected both project and org issue creates"
                     );
-                    return self
-                        .fallback_to_log(report, "project_and_org_create_rejected")
-                        .await;
+                    self.fallback_to_log(&report, "project_and_org_create_rejected");
+                    return Ok(());
                 }
                 Err(_) => {
-                    return self
-                        .fallback_to_log(report, "org_create_transport_or_envelope_error")
-                        .await;
+                    self.fallback_to_log(&report, "org_create_transport_or_envelope_error");
+                    return Ok(());
                 }
             }
         };
         let issue = envelope.data.as_ref();
         if let Some(issue) = issue {
-            self.tag_issue(issue.number_in_org).await;
+            self.tag_issue(issue.number_in_org, destination).await;
         }
         tracing::info!(
             issue = issue.map_or("", |issue| issue.external_id.as_str()),
             user_id = %report.user_id.0,
             attachments = file_ids.len(),
+            destination = destination.as_str(),
             "issue_reports: report filed as an os-platform issue"
         );
         Ok(())
@@ -451,22 +474,43 @@ fn issue_body(report: &IssueReport) -> String {
 /// structured log line, so it still reaches whoever reads the service logs.
 pub struct LogIssueReportSink;
 
+fn log_issue_report_delivery_failed(report: &IssueReport, reason: &str, org: &str, project: &str) {
+    tracing::warn!(
+        reason,
+        target_org = %org,
+        target_project = %project,
+        user_id = %report.user_id.0,
+        description = %report.description,
+        agent_diagnosis = report.agent_diagnosis.as_deref().unwrap_or(""),
+        attachment_names = ?report.attachment_names,
+        attachments = ?report.attachments,
+        session_id = report.session_id.as_deref().unwrap_or(""),
+        app_version = report.app_version.as_deref().unwrap_or(""),
+        platform = report.platform.as_deref().unwrap_or(""),
+        "issue_reports: delivery failed; report logged only"
+    );
+}
+
+fn log_issue_report_without_sink(report: &IssueReport) {
+    tracing::warn!(
+        user_id = %report.user_id.0,
+        description = %report.description,
+        agent_diagnosis = report.agent_diagnosis.as_deref().unwrap_or(""),
+        attachment_names = ?report.attachment_names,
+        // The Debug impl reports name/type/length only — uploaded bytes
+        // never reach the logs.
+        attachments = ?report.attachments,
+        session_id = report.session_id.as_deref().unwrap_or(""),
+        app_version = report.app_version.as_deref().unwrap_or(""),
+        platform = report.platform.as_deref().unwrap_or(""),
+        "issue_reports: no delivery sink configured; report logged only"
+    );
+}
+
 #[async_trait]
 impl IssueReportSink for LogIssueReportSink {
     async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
-        tracing::warn!(
-            user_id = %report.user_id.0,
-            description = %report.description,
-            agent_diagnosis = report.agent_diagnosis.as_deref().unwrap_or(""),
-            attachment_names = ?report.attachment_names,
-            // The Debug impl reports name/type/length only — uploaded bytes
-            // never reach the logs.
-            attachments = ?report.attachments,
-            session_id = report.session_id.as_deref().unwrap_or(""),
-            app_version = report.app_version.as_deref().unwrap_or(""),
-            platform = report.platform.as_deref().unwrap_or(""),
-            "issue_reports: no delivery sink configured; report logged only"
-        );
+        log_issue_report_without_sink(&report);
         Ok(())
     }
 }
@@ -818,6 +862,42 @@ mod os_platform_tests {
             .and(path("/v1/orgs/open-software/bounties/7/labels"))
             .respond_with(labels_set())
             .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_does_not_create_project_label_after_org_fallback() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .respond_with(issue_rejected("project 'open-software/june' not found"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/bounties"))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .respond_with(label_missing())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/labels"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
             .mount(&server)
             .await;
 
