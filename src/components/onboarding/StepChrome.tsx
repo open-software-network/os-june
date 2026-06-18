@@ -14,6 +14,7 @@ export function StepCard({
   subtitle,
   mark,
   wide,
+  className,
   children,
 }: {
   title: string;
@@ -22,11 +23,15 @@ export function StepCard({
   mark?: boolean;
   /** Steps with a demo card or timeline get a little more room. */
   wide?: boolean;
+  /** Extra class on the card for step-specific layout (e.g. the welcome grid). */
+  className?: string;
   children?: ReactNode;
 }) {
   return (
     <section
-      className={`welcome-card onboarding-card${wide ? " trial-card" : ""}`}
+      className={`welcome-card onboarding-card${wide ? " trial-card" : ""}${
+        className ? ` ${className}` : ""
+      }`}
     >
       {mark ? (
         <span className="welcome-mark" aria-hidden>

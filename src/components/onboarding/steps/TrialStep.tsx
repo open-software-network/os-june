@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { IconDevices } from "central-icons/IconDevices";
+import { IconLock } from "central-icons/IconLock";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import {
   isSubscriptionActive,
   useTrialCheckout,
@@ -14,19 +17,19 @@ import { StepActions, StepCard } from "../StepChrome";
 
 const PRIVACY_RECAP_ITEMS = [
   {
+    icon: IconDevices,
     label: "Local first",
-    detail:
-      "Your app state, recordings, transcripts, files, sessions, and memory stay on your device by default.",
+    detail: "Your data stays on your device by default.",
   },
   {
+    icon: IconLock,
     label: "Private AI models",
-    detail:
-      "Prompts leave your device only for inference, using private models with zero data retention and no training by default.",
+    detail: "Inference runs on private, zero-retention models.",
   },
   {
+    icon: IconShieldCheck,
     label: "Minimal data retention",
-    detail:
-      "June keeps only what's needed to maintain your account. Everything else is stored locally on your device.",
+    detail: "June keeps only what runs your account.",
   },
 ];
 
@@ -82,21 +85,22 @@ export function TrialStep({
     return (
       <StepCard
         title="You're good to go"
-        subtitle="Your trial is live. Try talking to June."
+        subtitle="Your trial is live, and June keeps it all private."
         wide
+        className="trial-card-done"
       >
         <section
           className="trial-privacy-recap"
-          aria-labelledby="trial-privacy-title"
+          aria-label="How June keeps your data private"
         >
-          <h2 id="trial-privacy-title">
-            And remember, June keeps it all private
-          </h2>
           <ul>
-            {PRIVACY_RECAP_ITEMS.map((item) => (
-              <li key={item.label}>
-                <span className="trial-privacy-label">{item.label}</span>
-                <span className="trial-privacy-detail">{item.detail}</span>
+            {PRIVACY_RECAP_ITEMS.map(({ icon: Icon, label, detail }) => (
+              <li key={label}>
+                <span className="trial-privacy-icon" aria-hidden>
+                  <Icon size={15} />
+                </span>
+                <span className="trial-privacy-label">{label}</span>
+                <span className="trial-privacy-detail">{detail}</span>
               </li>
             ))}
           </ul>
