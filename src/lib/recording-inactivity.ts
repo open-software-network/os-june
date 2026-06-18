@@ -52,10 +52,11 @@ export function nextRecordingInactivityDecision(
   }
 
   if (baseTracker.snoozedUntil && now < baseTracker.snoozedUntil) {
+    const quietStartedAt = baseTracker.quietStartedAt ?? now;
     return {
       tracker: {
         ...baseTracker,
-        quietStartedAt: undefined,
+        quietStartedAt,
       },
       shouldPrompt: false,
     };

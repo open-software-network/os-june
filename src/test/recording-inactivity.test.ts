@@ -108,7 +108,23 @@ describe("recording inactivity", () => {
     );
 
     expect(decision.shouldPrompt).toBe(false);
-    expect(decision.tracker.quietStartedAt).toBeUndefined();
+    expect(decision.tracker.quietStartedAt).toBe(1_000);
+  });
+
+  it("prompts immediately after the snooze expires when audio stayed quiet", () => {
+    const tracker: RecordingInactivityTracker = {
+      sessionId: "session-1",
+      quietStartedAt: 1_000,
+      snoozedUntil: 1_000 + RECORDING_INACTIVITY_SNOOZE_MS,
+    };
+
+    const decision = nextRecordingInactivityDecision(
+      tracker,
+      status(),
+      1_000 + RECORDING_INACTIVITY_SNOOZE_MS,
+    );
+
+    expect(decision.shouldPrompt).toBe(true);
   });
 
   it("resets when the recording is no longer active", () => {

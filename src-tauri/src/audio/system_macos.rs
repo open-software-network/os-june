@@ -134,25 +134,7 @@ impl SystemAudioCapture {
     pub fn status(&self) -> (AudioLevelDto, i64, Option<String>) {
         if let Ok(status) = read_status(&self.status_path) {
             if let Ok(mut stats) = self.stats.lock() {
-                if let Some(level) = status.level {
-                    stats.max_level = stats.max_level.max(status.max_level.unwrap_or(level));
-                    stats.level = AudioLevelDto {
-                        peak: level,
-                        rms: level,
-                        recent_peaks: vec![level],
-                    };
-                }
-                if status.event == "error" {
-                    stats.last_error = Some(
-                        status
-                            .message
-                            .unwrap_or_else(|| "System audio capture failed.".to_string()),
-                    );
-                } else if status.message.is_some() {
-                    stats.last_error = status.message;
-                } else if status.event == "ready" || status.event == "level" {
-                    stats.last_error = None;
-                }
+                apply_helper_status(&mut stats, &status);
                 if stats
                     .last_debug_log
                     .map(|logged| logged.elapsed() >= Duration::from_secs(2))
@@ -200,6 +182,32 @@ impl SystemAudioCapture {
             self.log_path.display()
         ));
         Ok(self.final_path)
+    }
+}
+
+fn apply_helper_status(stats: &mut SystemAudioStats, status: &HelperStatus) {
+    if let Some(level) = status.level {
+        stats.max_level = stats.max_level.max(status.max_level.unwrap_or(level));
+        stats.level = AudioLevelDto {
+            peak: level,
+            rms: level,
+            recent_peaks: vec![level],
+        };
+    } else {
+        stats.level = AudioLevelDto::default();
+    }
+
+    if status.event == "error" {
+        stats.last_error = Some(
+            status
+                .message
+                .clone()
+                .unwrap_or_else(|| "System audio capture failed.".to_string()),
+        );
+    } else if status.message.is_some() {
+        stats.last_error = status.message.clone();
+    } else if status.event == "ready" || status.event == "level" {
+        stats.last_error = None;
     }
 }
 
@@ -597,7 +605,10 @@ fn dump_helper_log(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_version_string_supports_system_audio, system_audio_min_macos_version_label};
+    use super::{
+        apply_helper_status, macos_version_string_supports_system_audio,
+        system_audio_min_macos_version_label, HelperStatus, SystemAudioStats,
+    };
 
     #[test]
     fn system_audio_support_label_uses_shared_minimum_version() {
@@ -619,5 +630,56 @@ mod tests {
         assert!(!macos_version_string_supports_system_audio(""));
         assert!(!macos_version_string_supports_system_audio("14.beta"));
         assert!(!macos_version_string_supports_system_audio("not-a-version"));
+    }
+
+    #[test]
+    fn helper_level_status_updates_recent_activity() {
+        let mut stats = SystemAudioStats::default();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "level".to_string(),
+                level: Some(0.42),
+                max_level: Some(0.55),
+                message: None,
+            },
+        );
+
+        assert_eq!(stats.level.peak, 0.42);
+        assert_eq!(stats.level.rms, 0.42);
+        assert_eq!(stats.level.recent_peaks, vec![0.42]);
+        assert_eq!(stats.max_level, 0.55);
+        assert_eq!(stats.last_error, None);
+    }
+
+    #[test]
+    fn helper_non_level_status_clears_stale_recent_activity() {
+        let mut stats = SystemAudioStats {
+            level: crate::domain::types::AudioLevelDto {
+                peak: 0.8,
+                rms: 0.8,
+                recent_peaks: vec![0.8],
+            },
+            max_level: 0.8,
+            last_error: None,
+            last_debug_log: None,
+        };
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stalled".to_string(),
+                level: None,
+                max_level: None,
+                message: Some("System audio stalled.".to_string()),
+            },
+        );
+
+        assert_eq!(stats.level.peak, 0.0);
+        assert_eq!(stats.level.rms, 0.0);
+        assert!(stats.level.recent_peaks.is_empty());
+        assert_eq!(stats.max_level, 0.8);
+        assert_eq!(stats.last_error, Some("System audio stalled.".to_string()));
     }
 }
