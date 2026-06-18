@@ -491,15 +491,30 @@ describe("RoutinesView detail", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Run history" }));
 
     const history = screen.getByRole("tabpanel", { name: "Run history" });
-    expect(
-      within(history).getByText("Morning Summary Digest"),
-    ).toBeInTheDocument();
+    expect(within(history).getByText("Morning summary")).toBeInTheDocument();
     expect(within(history).queryByText("Someone else's run")).toBeNull();
 
     await userEvent.click(
-      within(history).getByRole("button", { name: /morning summary digest/i }),
+      within(history).getByRole("button", { name: /morning summary/i }),
     );
     expect(onOpenRun).toHaveBeenCalledWith(mine);
+  });
+
+  it("labels normalized detail runs with the routine name", async () => {
+    mocks.listRoutines.mockResolvedValue([job({ name: "Morning brief" })]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      run({
+        title: "Deliver the Morning Brief",
+        preview: "Send today's important updates.",
+      }),
+    ]);
+    renderView();
+    await openDetail("Morning brief");
+    await userEvent.click(screen.getByRole("tab", { name: "Run history" }));
+
+    const history = screen.getByRole("tabpanel", { name: "Run history" });
+    expect(within(history).getByText("Morning brief")).toBeInTheDocument();
+    expect(within(history).queryByText("Deliver the Morning Brief")).toBeNull();
   });
 
   it("surfaces the last run failure", async () => {
@@ -669,6 +684,22 @@ describe("RoutinesView run history", () => {
     expect(
       within(history).getByText("Weekly Metrics Digest"),
     ).toBeInTheDocument();
+  });
+
+  it("labels orphaned placeholder-title runs generically", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      run({
+        id: "cron_gone99_20260609_080000",
+        title: "Untitled session",
+        preview: "",
+      }),
+    ]);
+    renderView();
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    expect(within(history).getByText("Routine run")).toBeInTheDocument();
+    expect(within(history).queryByText("Untitled session")).toBeNull();
   });
 
   it("filters run history with the search query", async () => {

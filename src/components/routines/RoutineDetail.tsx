@@ -394,7 +394,7 @@ export function RoutineDetail({
               <div className="settings-card routines-runs-card">
                 <RoutineRunList
                   runs={runs}
-                  label={(run) => run.title?.trim() || routine.name}
+                  label={() => routine.name}
                   onOpen={onOpenRun}
                 />
               </div>
