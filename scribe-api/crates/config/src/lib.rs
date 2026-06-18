@@ -43,14 +43,14 @@ impl Debug for AppConfig {
 }
 
 /// Where user-submitted issue reports get forwarded. The destination defaults
-/// to the June project in os-platform; only the bot API key is environment
-/// specific. Without that key, reports land in structured logs only.
+/// to the June bug reports project in os-platform; only the bot API key is
+/// environment specific. Without that key, reports land in structured logs only.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct IssueReportsConfig {
     /// Base URL of the os-platform (fellow) API.
     #[serde(default = "default_issue_report_api_url")]
     pub os_platform_api_url: String,
-    /// fellow API key (`osk_…`) of the reporting bot user — that user
+    /// os-platform API key of the reporting bot user — that user
     /// must be a member of the target Org/Project. Redacted Debug.
     /// `SCRIBE__ISSUE_REPORTS__OS_PLATFORM_API_KEY`.
     #[serde(default)]
@@ -77,11 +77,11 @@ fn default_issue_report_api_url() -> String {
 }
 
 fn default_issue_report_org() -> String {
-    "open-software".to_string()
+    "june".to_string()
 }
 
 fn default_issue_report_project() -> String {
-    "june".to_string()
+    "bug-reports".to_string()
 }
 
 fn default_issue_report_label() -> String {

@@ -334,6 +334,17 @@ fn normalize_destination(org: &str, project: &str) -> Option<(String, String)> {
         );
     }
 
+    if org == "open-software" && normalized_project == "june" {
+        tracing::warn!(
+            configured_org = %org,
+            configured_project = %project,
+            normalized_org = "june",
+            normalized_project = "bug-reports",
+            "issue_reports: remapped legacy June issue report destination"
+        );
+        return Some(("june".to_string(), "bug-reports".to_string()));
+    }
+
     Some((org.to_string(), normalized_project.to_string()))
 }
 
@@ -575,16 +586,31 @@ mod os_platform_tests {
         IssueReportsConfig {
             os_platform_api_url: api_url.to_string(),
             os_platform_api_key: "osk_test".to_string(),
-            os_platform_org: "open-software".to_string(),
-            os_platform_project: "june".to_string(),
+            os_platform_org: "june".to_string(),
+            os_platform_project: "bug-reports".to_string(),
             os_platform_reward_asset: "POINTS".to_string(),
             ..Default::default()
         }
     }
 
-    fn sink(server: &MockServer) -> OsPlatformIssueReportSink {
-        OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config(&server.uri()))
+    fn missing_project_config(api_url: &str) -> IssueReportsConfig {
+        IssueReportsConfig {
+            os_platform_project: "missing-project".to_string(),
+            ..config(api_url)
+        }
+    }
+
+    fn sink_with_config(config: &IssueReportsConfig) -> OsPlatformIssueReportSink {
+        OsPlatformIssueReportSink::from_config(reqwest::Client::new(), config)
             .expect("configured sink")
+    }
+
+    fn sink(server: &MockServer) -> OsPlatformIssueReportSink {
+        sink_with_config(&config(&server.uri()))
+    }
+
+    fn missing_project_sink(server: &MockServer) -> OsPlatformIssueReportSink {
+        sink_with_config(&missing_project_config(&server.uri()))
     }
 
     fn issue_created() -> ResponseTemplate {
@@ -636,7 +662,7 @@ mod os_platform_tests {
     }
 
     #[test]
-    fn os_platform_sink_uses_default_june_destination_with_api_key() {
+    fn os_platform_sink_uses_default_june_bug_reports_destination_with_api_key() {
         let config = IssueReportsConfig {
             os_platform_api_key: "osk_test".to_string(),
             ..Default::default()
@@ -645,24 +671,27 @@ mod os_platform_tests {
             .expect("default June issue report destination plus API key is configured");
 
         assert_eq!(sink.api_url, "https://app.opensoftware.co/api");
-        assert_eq!(sink.org, "open-software");
-        assert_eq!(sink.project, "june");
+        assert_eq!(sink.org, "june");
+        assert_eq!(sink.project, "bug-reports");
         assert_eq!(sink.label, "bug");
         assert_eq!(sink.reward_asset, "POINTS");
     }
 
     #[test]
-    fn os_platform_sink_accepts_legacy_org_project_destination() {
-        let config = IssueReportsConfig {
-            os_platform_api_key: "osk_test".to_string(),
-            os_platform_project: "open-software/june".to_string(),
-            ..Default::default()
-        };
-        let sink = OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config)
-            .expect("legacy org/project destination should normalize");
+    fn os_platform_sink_remaps_legacy_open_software_june_destination() {
+        for project in ["june", "open-software/june"] {
+            let config = IssueReportsConfig {
+                os_platform_api_key: "osk_test".to_string(),
+                os_platform_org: "open-software".to_string(),
+                os_platform_project: project.to_string(),
+                ..Default::default()
+            };
+            let sink = OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config)
+                .expect("legacy June issue report destination should remap");
 
-        assert_eq!(sink.org, "open-software");
-        assert_eq!(sink.project, "june");
+            assert_eq!(sink.org, "june");
+            assert_eq!(sink.project, "bug-reports");
+        }
     }
 
     #[test]
@@ -684,7 +713,7 @@ mod os_platform_tests {
     fn os_platform_sink_rejects_malformed_project_destination() {
         let config = IssueReportsConfig {
             os_platform_api_key: "osk_test".to_string(),
-            os_platform_project: "open-software/june/issues".to_string(),
+            os_platform_project: "june/bug-reports/issues".to_string(),
             ..Default::default()
         };
 
@@ -695,7 +724,7 @@ mod os_platform_tests {
     fn os_platform_sink_rejects_incomplete_legacy_project_destination() {
         let config = IssueReportsConfig {
             os_platform_api_key: "osk_test".to_string(),
-            os_platform_project: "open-software/".to_string(),
+            os_platform_project: "june/".to_string(),
             ..Default::default()
         };
 
@@ -706,7 +735,7 @@ mod os_platform_tests {
     fn os_platform_sink_rejects_other_org_project_destination() {
         let config = IssueReportsConfig {
             os_platform_api_key: "osk_test".to_string(),
-            os_platform_project: "other-org/june".to_string(),
+            os_platform_project: "other-org/bug-reports".to_string(),
             ..Default::default()
         };
 
@@ -726,7 +755,7 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({
                 "title": "June report: The recorder freezes",
                 "reward_amount_units": "0",
@@ -740,7 +769,7 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
             .and(body_partial_json(serde_json::json!({
                 "label_slugs": ["bug"],
             })))
@@ -763,7 +792,7 @@ mod os_platform_tests {
         // The attachment-upload failure above never blocks the report —
         // file_ids just ends up empty.
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({ "file_ids": [] })))
             .respond_with(issue_created())
             .expect(1)
@@ -772,13 +801,13 @@ mod os_platform_tests {
         // First labels PUT: the label doesn't exist in the Project yet.
         // After the label create, the retried PUT lands.
         Mock::given(method("PUT"))
-            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
             .respond_with(label_missing())
             .up_to_n_times(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/labels"))
+            .and(path("/v1/orgs/june/projects/bug-reports/labels"))
             .and(body_partial_json(serde_json::json!({
                 "name": "Bug",
                 "slug": "bug",
@@ -791,7 +820,7 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
             .respond_with(labels_set())
             .expect(1)
             .mount(&server)
@@ -809,18 +838,18 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .respond_with(issue_created())
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
             .respond_with(label_missing())
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/labels"))
+            .and(path("/v1/orgs/june/projects/bug-reports/labels"))
             .respond_with(ResponseTemplate::new(403))
             .mount(&server)
             .await;
@@ -839,13 +868,13 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
-            .respond_with(issue_rejected("project 'open-software/june' not found"))
+            .and(path("/v1/orgs/june/projects/missing-project/bounties"))
+            .respond_with(issue_rejected("project 'june/missing-project' not found"))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/bounties"))
+            .and(path("/v1/orgs/june/bounties"))
             .and(body_partial_json(serde_json::json!({
                 "title": "June report: The recorder freezes",
                 "reward_amount_units": "0",
@@ -859,13 +888,18 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
             .respond_with(labels_set())
             .expect(1)
             .mount(&server)
             .await;
 
-        assert!(sink(&server).deliver(report()).await.is_ok());
+        assert!(
+            missing_project_sink(&server)
+                .deliver(report())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -877,31 +911,36 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
-            .respond_with(issue_rejected("project 'open-software/june' not found"))
+            .and(path("/v1/orgs/june/projects/missing-project/bounties"))
+            .respond_with(issue_rejected("project 'june/missing-project' not found"))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/bounties"))
+            .and(path("/v1/orgs/june/bounties"))
             .respond_with(issue_created())
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
             .respond_with(label_missing())
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/labels"))
+            .and(path("/v1/orgs/june/projects/missing-project/labels"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
             .mount(&server)
             .await;
 
-        assert!(sink(&server).deliver(report()).await.is_ok());
+        assert!(
+            missing_project_sink(&server)
+                .deliver(report())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -913,13 +952,13 @@ mod os_platform_tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
-            .respond_with(issue_rejected("project 'open-software/june' not found"))
+            .and(path("/v1/orgs/june/projects/missing-project/bounties"))
+            .respond_with(issue_rejected("project 'june/missing-project' not found"))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/bounties"))
+            .and(path("/v1/orgs/june/bounties"))
             .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
                 "data": null,
                 "success": false,
@@ -930,7 +969,7 @@ mod os_platform_tests {
             .mount(&server)
             .await;
 
-        let result = sink(&server).deliver(report()).await;
+        let result = missing_project_sink(&server).deliver(report()).await;
         assert!(result.is_ok());
     }
 }
