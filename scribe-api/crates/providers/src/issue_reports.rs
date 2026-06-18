@@ -195,6 +195,30 @@ impl OsPlatformIssueReportSink {
         .await
     }
 
+    async fn create_org_issue_or_log(
+        &self,
+        report: &IssueReport,
+        file_ids: &[String],
+        project_message: &str,
+    ) -> Option<FellowEnvelope<FellowIssue>> {
+        match self.create_org_issue(report, file_ids).await {
+            Ok(envelope) if envelope.success => Some(envelope),
+            Ok(envelope) => {
+                tracing::error!(
+                    project_message,
+                    org_message = envelope.message.as_deref().unwrap_or(""),
+                    "issue_reports: os-platform rejected both project and org issue creates"
+                );
+                self.fallback_to_log(report, "project_and_org_create_rejected");
+                None
+            }
+            Err(_) => {
+                self.fallback_to_log(report, "org_create_transport_or_envelope_error");
+                None
+            }
+        }
+    }
+
     fn fallback_to_log(&self, report: &IssueReport, reason: &str) {
         log_issue_report_delivery_failed(report, reason, &self.org, &self.project);
     }
@@ -311,6 +335,17 @@ fn normalize_destination(org: &str, project: &str) -> Option<(String, String)> {
         return None;
     }
 
+    if (org == "open-software" && project == "june") || project == "open-software/june" {
+        tracing::warn!(
+            configured_org = %org,
+            configured_project = %project,
+            normalized_org = "june",
+            normalized_project = "bug-reports",
+            "issue_reports: remapped legacy June issue report destination"
+        );
+        return Some(("june".to_string(), "bug-reports".to_string()));
+    }
+
     let normalized_project = match project_parts.as_slice() {
         [project_slug] => *project_slug,
         [project_org, project_slug] if *project_org == org => *project_slug,
@@ -334,17 +369,6 @@ fn normalize_destination(org: &str, project: &str) -> Option<(String, String)> {
         );
     }
 
-    if org == "open-software" && normalized_project == "june" {
-        tracing::warn!(
-            configured_org = %org,
-            configured_project = %project,
-            normalized_org = "june",
-            normalized_project = "bug-reports",
-            "issue_reports: remapped legacy June issue report destination"
-        );
-        return Some(("june".to_string(), "bug-reports".to_string()));
-    }
-
     Some((org.to_string(), normalized_project.to_string()))
 }
 
@@ -353,35 +377,41 @@ impl IssueReportSink for OsPlatformIssueReportSink {
     async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
         let file_ids = self.upload_attachments(&report).await;
 
-        let Ok(project_envelope) = self.create_project_issue(&report, &file_ids).await else {
-            self.fallback_to_log(&report, "project_create_transport_or_envelope_error");
-            return Ok(());
-        };
-        let (envelope, destination) = if project_envelope.success {
-            (project_envelope, IssueCreateDestination::Project)
-        } else {
-            let project_message = project_envelope.message.as_deref().unwrap_or("");
-            tracing::warn!(
-                message = project_message,
-                target_org = %self.org,
-                target_project = %self.project,
-                "issue_reports: os-platform rejected the project-scoped issue; retrying at org scope"
-            );
-            match self.create_org_issue(&report, &file_ids).await {
-                Ok(envelope) if envelope.success => (envelope, IssueCreateDestination::OrgFallback),
-                Ok(envelope) => {
-                    tracing::error!(
-                        project_message,
-                        org_message = envelope.message.as_deref().unwrap_or(""),
-                        "issue_reports: os-platform rejected both project and org issue creates"
-                    );
-                    self.fallback_to_log(&report, "project_and_org_create_rejected");
+        let (envelope, destination) = match self.create_project_issue(&report, &file_ids).await {
+            Ok(project_envelope) if project_envelope.success => {
+                (project_envelope, IssueCreateDestination::Project)
+            }
+            Ok(project_envelope) => {
+                let project_message = project_envelope.message.as_deref().unwrap_or("");
+                tracing::warn!(
+                    message = project_message,
+                    target_org = %self.org,
+                    target_project = %self.project,
+                    "issue_reports: os-platform rejected the project-scoped issue; retrying at org scope"
+                );
+                let Some(envelope) = self
+                    .create_org_issue_or_log(&report, &file_ids, project_message)
+                    .await
+                else {
                     return Ok(());
-                }
-                Err(_) => {
-                    self.fallback_to_log(&report, "org_create_transport_or_envelope_error");
+                };
+                (envelope, IssueCreateDestination::OrgFallback)
+            }
+            Err(_) => {
+                let project_message = "project_create_transport_or_envelope_error";
+                tracing::warn!(
+                    message = project_message,
+                    target_org = %self.org,
+                    target_project = %self.project,
+                    "issue_reports: project-scoped issue create failed before envelope; retrying at org scope"
+                );
+                let Some(envelope) = self
+                    .create_org_issue_or_log(&report, &file_ids, project_message)
+                    .await
+                else {
                     return Ok(());
-                }
+                };
+                (envelope, IssueCreateDestination::OrgFallback)
             }
         };
         let issue = envelope.data.as_ref();
@@ -679,10 +709,14 @@ mod os_platform_tests {
 
     #[test]
     fn os_platform_sink_remaps_legacy_open_software_june_destination() {
-        for project in ["june", "open-software/june"] {
+        for (org, project) in [
+            ("open-software", "june"),
+            ("open-software", "open-software/june"),
+            ("june", "open-software/june"),
+        ] {
             let config = IssueReportsConfig {
                 os_platform_api_key: "osk_test".to_string(),
-                os_platform_org: "open-software".to_string(),
+                os_platform_org: org.to_string(),
                 os_platform_project: project.to_string(),
                 ..Default::default()
             };
@@ -883,6 +917,41 @@ mod os_platform_tests {
                 "status": "todo",
                 "file_ids": [],
             })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
+            .respond_with(labels_set())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(
+            missing_project_sink(&server)
+                .deliver(report())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_retries_at_org_scope_when_project_create_has_bad_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/projects/missing-project/bounties"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/bounties"))
             .respond_with(issue_created())
             .expect(1)
             .mount(&server)
