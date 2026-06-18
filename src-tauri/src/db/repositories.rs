@@ -1592,6 +1592,7 @@ impl Repositories {
     pub async fn finalize_source_artifact(
         &self,
         artifact_id: &str,
+        path: &str,
         status: &str,
         duration_ms: i64,
         size_bytes: i64,
@@ -1602,10 +1603,11 @@ impl Repositories {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE audio_artifacts
-             SET status = ?, duration_ms = ?, size_bytes = ?, checksum = ?, expected_duration_ms = ?,
+             SET path = ?, status = ?, duration_ms = ?, size_bytes = ?, checksum = ?, expected_duration_ms = ?,
                  validation_summary = ?, last_error = ?
              WHERE id = ?",
         )
+        .bind(path)
         .bind(status)
         .bind(duration_ms)
         .bind(size_bytes)

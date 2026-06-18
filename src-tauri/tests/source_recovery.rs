@@ -112,3 +112,72 @@ async fn scan_ignores_recovery_after_session_is_marked_valid() {
 
     assert!(recoveries.is_empty());
 }
+
+#[tokio::test]
+async fn recovered_partial_source_path_remains_retryable_after_session_is_marked_valid() {
+    let repos = repos().await;
+    let dir = tempdir().expect("tempdir");
+    let note = repos.create_note(None).await.expect("note");
+    let mic_partial = dir.path().join("microphone.partial.wav");
+    let mic_final = dir.path().join("microphone.wav");
+    let mic_partial_str = mic_partial.to_string_lossy().into_owned();
+    let mic_final_str = mic_final.to_string_lossy().into_owned();
+    std::fs::write(&mic_partial, b"mic bytes").expect("mic bytes");
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-1",
+            RecordingSourceMode::MicrophonePlusSystem,
+            &mic_partial_str,
+            &mic_final_str,
+            None,
+        )
+        .await
+        .expect("session");
+    let artifact = repos
+        .create_pending_source_artifact(
+            &note.id,
+            "session-1",
+            "microphone",
+            &mic_partial_str,
+            &mic_final_str,
+        )
+        .await
+        .expect("mic artifact");
+    repos
+        .mark_recording_recoverable("session-1", &note.id)
+        .await
+        .expect("mark recoverable");
+
+    repos
+        .finalize_source_artifact(
+            &artifact.id,
+            &mic_partial_str,
+            "valid",
+            1_000,
+            9,
+            "checksum",
+            1_000,
+            None,
+            None,
+        )
+        .await
+        .expect("finalize source");
+    repos
+        .mark_recording_recovery_valid("session-1")
+        .await
+        .expect("mark valid");
+
+    let sources = repos
+        .latest_valid_audio_artifact_paths(&note.id)
+        .await
+        .expect("retry sources");
+    let recoveries = scan_recoverable_recordings(&repos.pool)
+        .await
+        .expect("recoveries");
+
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].1, "microphone");
+    assert_eq!(sources[0].2, mic_partial_str);
+    assert!(recoveries.is_empty());
+}

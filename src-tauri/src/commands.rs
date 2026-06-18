@@ -835,9 +835,11 @@ async fn finish_recording_session(
             .iter()
             .find(|artifact| artifact.source == source.source.as_db())
         {
+            let final_path = source.final_path.to_string_lossy().into_owned();
             repos
                 .finalize_source_artifact(
                     &artifact.id,
+                    &final_path,
                     if valid { "valid" } else { "invalid" },
                     validation.actual_duration_ms,
                     file_size,
@@ -1256,11 +1258,13 @@ pub async fn recover_recording(
             let file_size = std::fs::metadata(&path)
                 .map(|metadata| metadata.len() as i64)
                 .unwrap_or_default();
+            let recovered_path = path.to_string_lossy().into_owned();
             let source = RecordingSource::from(artifact.source.as_str());
             let valid = source_audio_passes_validation(source, &validation);
             repos
                 .finalize_source_artifact(
                     &artifact.id,
+                    &recovered_path,
                     if valid { "valid" } else { "invalid" },
                     validation.actual_duration_ms,
                     file_size,
