@@ -4,6 +4,7 @@ use crate::{
 };
 use axum::{
     Json,
+    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
@@ -50,15 +51,31 @@ async fn chat_completions_with_route(
             serde_json::Value::String(model_id.clone()),
         );
     }
-    let output = state
-        .agent_chat()
-        .complete(AgentChatParams {
-            user_id,
-            model_id: ModelId(model_id),
-            body: body.clone(),
-            route,
-        })
-        .await?;
+    let streaming = body
+        .get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let params = AgentChatParams {
+        user_id,
+        model_id: ModelId(model_id),
+        body: body.clone(),
+        route,
+    };
+
+    // A streaming caller gets the provider response forwarded as it arrives, so
+    // a slow reasoning model does not stall behind a fully buffered response (a
+    // non-streaming caller still gets a single buffered JSON body).
+    if streaming {
+        let output = state.agent_chat().complete_streaming(params).await?;
+        return Ok((
+            StatusCode::OK,
+            [(CONTENT_TYPE, output.content_type)],
+            Body::from_stream(output.body),
+        )
+            .into_response());
+    }
+
+    let output = state.agent_chat().complete(params).await?;
     Ok((
         StatusCode::OK,
         [(CONTENT_TYPE, output.completion.content_type)],

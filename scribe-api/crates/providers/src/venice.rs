@@ -14,6 +14,15 @@ use std::collections::BTreeMap;
 pub const PROVIDER_NAME: &str = "venice";
 
 const CREDITS_PER_USD: f64 = 1_000.0;
+
+/// Trailing SSE bytes retained from a streamed response — enough to contain the
+/// final usage frame without buffering the whole (possibly multi-MB) body.
+const MAX_USAGE_TAIL_BYTES: usize = 64 * 1024;
+
+/// Whether `haystack` contains the byte sequence `needle`.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.len() <= haystack.len() && haystack.windows(needle.len()).any(|w| w == needle)
+}
 const RATE_SCALE: f64 = 1_000_000.0;
 
 /// Standing safety policy injected as the leading system message on every
@@ -318,6 +327,15 @@ impl AgentChatCompleter for VeniceAgentChat {
     ) -> Result<AgentChatCompletion, DomainError> {
         self.chat.complete_raw(request.body, request.model).await
     }
+
+    async fn complete_streaming(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<scribe_domain::AgentChatStream, DomainError> {
+        self.chat
+            .complete_raw_streaming(request.body, request.model)
+            .await
+    }
 }
 
 impl VeniceCleaner {
@@ -471,43 +489,8 @@ impl VeniceChat {
         mut body: serde_json::Value,
         model: scribe_domain::ModelId,
     ) -> Result<AgentChatCompletion, DomainError> {
-        let Some(object) = body.as_object_mut() else {
-            return Err(DomainError::InvalidInput {
-                reason: "invalid_chat_completion_body".to_string(),
-            });
-        };
-        object.insert(
-            "model".to_string(),
-            serde_json::Value::String(model.0.clone()),
-        );
-        inject_safety_context(object);
-        if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
-            let stream_options = object
-                .entry("stream_options")
-                .or_insert_with(|| serde_json::json!({}));
-            // Replace a non-object `stream_options` instead of leaving it:
-            // without `include_usage` the stream carries no usage frame, so
-            // metering fails after the upstream call has already been made.
-            if !stream_options.is_object() {
-                *stream_options = serde_json::json!({});
-            }
-            if let Some(options) = stream_options.as_object_mut() {
-                options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
-            }
-        }
-        let url = format!("{}/chat/completions", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, %url, model = %model.0, "chat: agent transport error");
-                DomainError::UpstreamProvider
-            })?;
-        let status = response.status();
+        prepare_agent_chat_body(&mut body, &model)?;
+        let response = self.send_agent_request_with_retry(&body, &model).await?;
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -515,19 +498,9 @@ impl VeniceChat {
             .unwrap_or("application/json")
             .to_string();
         let body = response.bytes().await.map_err(|error| {
-            tracing::error!(%error, %url, model = %model.0, "chat: agent body read failed");
+            tracing::error!(%error, model = %model.0, "chat: agent body read failed");
             DomainError::UpstreamProvider
         })?;
-        if !status.is_success() {
-            tracing::error!(
-                %status,
-                %url,
-                model = %model.0,
-                body_bytes = body.len(),
-                "chat: agent non-success response"
-            );
-            return Err(self.status_error(status));
-        }
         let usage = usage_from_chat_body(&body, &content_type)?;
         Ok(AgentChatCompletion {
             body: body.to_vec(),
@@ -536,6 +509,201 @@ impl VeniceChat {
             usage,
         })
     }
+
+    /// Send the agent chat request with a bounded retry on transient failures
+    /// (connection reset, 429, 5xx) — the same policy the note/dictation paths
+    /// use. The agent chat path previously had none, so a single transient 5xx
+    /// from the gateway (e.g. a flaky reasoning model upstream) surfaced as a
+    /// hard 502. Metering settles only after success, so a replayed attempt can
+    /// never double-charge. Returns a response whose status is already success.
+    async fn send_agent_request_with_retry(
+        &self,
+        body: &serde_json::Value,
+        model: &scribe_domain::ModelId,
+    ) -> Result<reqwest::Response, DomainError> {
+        let url = format!("{}/chat/completions", self.base_url);
+        for attempt in 0..retry::UPSTREAM_ATTEMPTS {
+            let attempt_error = match self.send_agent_once(&url, body, model).await {
+                Ok(response) => return Ok(response),
+                Err(error) => error,
+            };
+            if attempt_error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
+                tracing::warn!(
+                    %url,
+                    model = %model.0,
+                    attempt,
+                    "chat: agent transient failure, retrying"
+                );
+                tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
+                continue;
+            }
+            return Err(attempt_error.error);
+        }
+        Err(DomainError::UpstreamProvider)
+    }
+
+    /// One agent chat upstream attempt: send and validate the status, classifying
+    /// the failure as retryable or not. The body is left unread so the caller can
+    /// buffer or stream it.
+    async fn send_agent_once(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        model: &scribe_domain::ModelId,
+    ) -> Result<reqwest::Response, UpstreamAttemptError> {
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| {
+                let retryable = retry::is_retryable_transport_error(&error);
+                tracing::error!(%error, %url, model = %model.0, retryable, "chat: agent transport error");
+                UpstreamAttemptError {
+                    error: DomainError::UpstreamProvider,
+                    retryable,
+                }
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let error = self.status_error(status);
+            let retryable =
+                error == DomainError::UpstreamProvider && retry::is_retryable_status(status);
+            tracing::error!(
+                %status,
+                %url,
+                model = %model.0,
+                retryable,
+                "chat: agent non-success response"
+            );
+            return Err(UpstreamAttemptError { error, retryable });
+        }
+        Ok(response)
+    }
+
+    /// Streaming counterpart of `complete_raw`: forwards the upstream response
+    /// body to the caller as it arrives instead of buffering it. The status is
+    /// validated before any byte is streamed (so a policy block / error still
+    /// surfaces as an error response). Only a bounded trailing window of the SSE
+    /// is retained (enough to hold the terminal usage frame), and the usage is
+    /// captured into the returned handle as soon as that frame streams — before
+    /// `[DONE]` — so a caller can settle billing even if the client disconnects
+    /// immediately after the terminal frame.
+    async fn complete_raw_streaming(
+        &self,
+        mut body: serde_json::Value,
+        model: scribe_domain::ModelId,
+    ) -> Result<scribe_domain::AgentChatStream, DomainError> {
+        prepare_agent_chat_body(&mut body, &model)?;
+        // Retry the establish phase (send + status) on transient failures before
+        // any byte is streamed; once streaming starts a retry is impossible.
+        let response = self.send_agent_request_with_retry(&body, &model).await?;
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+
+        let usage = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let usage_for_stream = usage.clone();
+        let content_type_for_usage = content_type.clone();
+        let model_id = model.0.clone();
+        let upstream = response.bytes_stream();
+        let stream = async_stream::stream! {
+            use futures_util::StreamExt;
+            // Retain only a bounded trailing window — large enough to hold the
+            // final usage frame, not the whole (potentially multi-MB) response.
+            let mut tail: Vec<u8> = Vec::new();
+            let mut usage_captured = false;
+            futures_util::pin_mut!(upstream);
+            while let Some(item) = upstream.next().await {
+                match item {
+                    Ok(chunk) => {
+                        tail.extend_from_slice(&chunk);
+                        if tail.len() > MAX_USAGE_TAIL_BYTES {
+                            let trim = tail.len() - MAX_USAGE_TAIL_BYTES;
+                            tail.drain(..trim);
+                        }
+                        // Capture usage the moment its frame (or the terminal
+                        // [DONE]) appears, before forwarding it onward, so the
+                        // handle is populated even if the client drops the
+                        // connection right after the last frame.
+                        if !usage_captured
+                            && (contains(&chunk, b"\"usage\"") || contains(&chunk, b"[DONE]"))
+                            && let Ok(parsed) = usage_from_chat_body(&tail, &content_type_for_usage)
+                            && let Ok(mut guard) = usage_for_stream.lock()
+                        {
+                            *guard = Some(parsed);
+                            usage_captured = true;
+                        }
+                        yield Ok(chunk);
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, model = %model_id, "chat: agent stream read failed");
+                        yield Err(DomainError::UpstreamProvider);
+                        return;
+                    }
+                }
+            }
+            if !usage_captured {
+                tracing::warn!(
+                    model = %model_id,
+                    "chat: no usage frame in streamed agent response; billing skipped"
+                );
+            }
+        };
+
+        Ok(scribe_domain::AgentChatStream {
+            content_type,
+            provider: PROVIDER_NAME.to_string(),
+            usage,
+            body: Box::pin(stream),
+        })
+    }
+}
+
+/// Apply the gateway-bound mutations every agent chat body needs: pin the model,
+/// prepend the standing safety policy, and (when streaming) force
+/// `stream_options.include_usage` so the response carries a usage frame for
+/// metering. Shared by the buffered and streaming provider paths.
+fn prepare_agent_chat_body(
+    body: &mut serde_json::Value,
+    model: &scribe_domain::ModelId,
+) -> Result<(), DomainError> {
+    let Some(object) = body.as_object_mut() else {
+        return Err(DomainError::InvalidInput {
+            reason: "invalid_chat_completion_body".to_string(),
+        });
+    };
+    object.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.0.clone()),
+    );
+    inject_safety_context(object);
+    if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+        let stream_options = object
+            .entry("stream_options")
+            .or_insert_with(|| serde_json::json!({}));
+        // Replace a non-object `stream_options` instead of leaving it: without
+        // `include_usage` the stream carries no usage frame, so metering fails
+        // after the upstream call has already been made.
+        if !stream_options.is_object() {
+            *stream_options = serde_json::json!({});
+        }
+        if let Some(options) = stream_options.as_object_mut() {
+            options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
+        }
+    } else {
+        // `stream_options` is only valid alongside `stream: true`; Venice rejects
+        // the request with a 400 otherwise (which surfaces here as a 502). Some
+        // clients (e.g. the Hermes agent runtime) send it even on a buffered
+        // request, so strip it for non-streaming calls.
+        object.remove("stream_options");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]

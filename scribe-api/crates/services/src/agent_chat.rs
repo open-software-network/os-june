@@ -1,16 +1,17 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        AsyncChargeParams, AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, spawn_charge,
     },
     error::ServiceError,
     pricing::PricingTable,
 };
 use scribe_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
-    ModelKind, OsAccountsClient, Receipt, UserId,
+    ModelKind, OsAccountsClient, Receipt, TokenUsage, UserId,
 };
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct AgentChatServiceDeps {
     pub pricing: Arc<PricingTable>,
@@ -88,12 +89,147 @@ impl AgentChatService {
         })
     }
 
+    /// Streaming counterpart of `complete`: holds credits up front, forwards the
+    /// provider response body to the caller as it arrives, and settles billing
+    /// once the stream completes (from the usage frame captured at end of
+    /// stream). A post-stream charge failure is logged and the hold expires by
+    /// TTL — it can never double-charge because the idempotency key is stable.
+    pub async fn complete_streaming(
+        &self,
+        params: AgentChatParams,
+    ) -> Result<AgentChatStreamOutput, ServiceError> {
+        self.pricing
+            .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let estimate = Credits(self.flat_estimate_credits);
+        let authorization = authorize_or_deny(AuthorizeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::AgentChat,
+            estimate,
+            hold_ttl_seconds: self.hold_ttl_seconds,
+        })
+        .await?;
+        let body_digest = body_digest(&params.body);
+        let stream = self
+            .chat_completer(params.route)
+            .complete_streaming(AgentChatRequest {
+                body: params.body,
+                model: params.model_id.clone(),
+            })
+            .await?;
+
+        // Settlement is owned by a guard that fires when the response body is
+        // dropped — whether it streamed to completion or the client disconnected
+        // after the final frame. The charge is spawned detached so it cannot be
+        // cancelled by the connection closing (the provider captures usage when
+        // its frame streams, before [DONE], so it is available at drop time).
+        let billing = StreamBilling {
+            os_accounts: self.os_accounts.clone(),
+            pricing: self.pricing.clone(),
+            user_id: params.user_id.clone(),
+            model_id: params.model_id.clone(),
+            cap_credits: authorization.cap_credits,
+            idempotency_key: format!(
+                "agent_chat:{}:{}:{}",
+                params.user_id.0, params.model_id.0, body_digest
+            ),
+            usage: stream.usage.clone(),
+            action_token: Some(authorization.action_token),
+        };
+        let content_type = stream.content_type.clone();
+        let upstream = stream.body;
+
+        let billed = async_stream::stream! {
+            use futures_util::StreamExt;
+            // Held for the lifetime of the body; its Drop settles billing.
+            let _billing = billing;
+            futures_util::pin_mut!(upstream);
+            while let Some(item) = upstream.next().await {
+                yield item;
+            }
+        };
+
+        Ok(AgentChatStreamOutput {
+            content_type,
+            body: Box::pin(billed),
+        })
+    }
+
     fn chat_completer(&self, route: AgentChatRoute) -> &dyn AgentChatCompleter {
         match route {
             AgentChatRoute::Guarded => self.guarded_chat_completer.as_ref(),
             AgentChatRoute::Direct => self.direct_chat_completer.as_ref(),
         }
     }
+}
+
+/// Settles billing for a streamed agent chat when the response body is dropped.
+/// Dropping happens whether the stream completed or the client disconnected, so
+/// settlement is never lost to a connection close after the final frame. The
+/// charge is spawned detached so the connection lifetime cannot cancel it.
+struct StreamBilling {
+    os_accounts: Arc<dyn OsAccountsClient>,
+    pricing: Arc<PricingTable>,
+    user_id: UserId,
+    model_id: ModelId,
+    cap_credits: Option<Credits>,
+    idempotency_key: String,
+    usage: Arc<Mutex<Option<TokenUsage>>>,
+    action_token: Option<String>,
+}
+
+impl Drop for StreamBilling {
+    fn drop(&mut self) {
+        let Some(action_token) = self.action_token.take() else {
+            return;
+        };
+        // Outside a Tokio runtime (e.g. dropped in a sync test) there is nothing
+        // to spawn onto; skip rather than panic.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let usage = self.usage.lock().ok().and_then(|mut guard| guard.take());
+        let Some(usage) = usage else {
+            tracing::warn!(
+                user_id = %self.user_id.0,
+                model = %self.model_id.0,
+                "agent chat: stream ended without usage; not charging (hold expires)"
+            );
+            return;
+        };
+        let actual = match self.pricing.price_token_usage(&self.model_id.0, usage) {
+            Ok(actual) => actual,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    model = %self.model_id.0,
+                    "agent chat: post-stream pricing failed; not charging"
+                );
+                return;
+            }
+        };
+        spawn_charge(AsyncChargeParams {
+            os_accounts: self.os_accounts.clone(),
+            user_id: self.user_id.clone(),
+            action: ActionSlug::AgentChat,
+            model_id: Some(self.model_id.0.clone()),
+            action_token,
+            credits: clamp_to_cap(actual, self.cap_credits),
+            idempotency_key: self.idempotency_key.clone(),
+        });
+    }
+}
+
+/// A streamed agent-chat response: the content type plus the body stream that
+/// forwards the provider response and settles billing when it ends.
+pub struct AgentChatStreamOutput {
+    pub content_type: String,
+    pub body: std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<Item = Result<bytes::Bytes, scribe_domain::DomainError>>
+                + Send,
+        >,
+    >,
 }
 
 #[derive(Clone, Debug)]

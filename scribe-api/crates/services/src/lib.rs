@@ -12,6 +12,7 @@ mod util;
 
 pub use agent_chat::{
     AgentChatOutput, AgentChatParams, AgentChatRoute, AgentChatService, AgentChatServiceDeps,
+    AgentChatStreamOutput,
 };
 pub use dictate::{
     DictateCleanupOutput, DictateCleanupParams, DictateService, DictateServiceDeps,

@@ -82,6 +82,19 @@ pub struct AgentChatCompletion {
     pub usage: TokenUsage,
 }
 
+/// A streamed agent-chat completion: the provider response body forwarded to the
+/// caller as it arrives, instead of buffered. `usage` is filled in once the
+/// terminal usage frame is seen (end of stream), so billing can settle after the
+/// body has been forwarded rather than before the response starts.
+pub struct AgentChatStream {
+    pub content_type: String,
+    pub provider: String,
+    pub usage: std::sync::Arc<std::sync::Mutex<Option<TokenUsage>>>,
+    pub body: std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, DomainError>> + Send>,
+    >,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
@@ -387,6 +400,26 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+
+    /// Stream the completion body as it arrives. The default buffers via
+    /// `complete` and emits the whole body as a single chunk, so existing
+    /// (non-streaming) implementations keep working unchanged; streaming
+    /// providers override this to forward the upstream response incrementally.
+    async fn complete_streaming(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        let completion = self.complete(request).await?;
+        let usage = std::sync::Arc::new(std::sync::Mutex::new(Some(completion.usage)));
+        let chunk = bytes::Bytes::from(completion.body);
+        let body = Box::pin(futures_util::stream::once(async move { Ok(chunk) }));
+        Ok(AgentChatStream {
+            content_type: completion.content_type,
+            provider: completion.provider,
+            usage,
+            body,
+        })
+    }
 }
 
 #[async_trait]
