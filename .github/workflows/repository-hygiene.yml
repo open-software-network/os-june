@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! find .github/actions .github/workflows \( -name '*.yml' -o -name '*.yaml' \) -print0 |
-            xargs -0 perl -ne 'if (/uses:\s+[^.\/\s][^@\s]+@(?![0-9a-f]{40}(?:\s|$))/) { print "$ARGV:$.:$_"; $bad = 1 } END { exit($bad ? 1 : 0) }'; then
+            xargs -0 perl -ne 'next if /^\s*#/; if (/uses:\s+[^.\/\s][^@\s]+@(?![0-9a-f]{40}(?:\s|$))/) { print "$ARGV:$.:$_"; $bad = 1 } END { exit($bad ? 1 : 0) }'; then
             echo "External GitHub Actions must be pinned to full-length commit SHAs." >&2
             exit 1
           fi
