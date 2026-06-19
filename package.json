@@ -24,7 +24,7 @@
     "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"src-tauri/tauri*.conf.json\" \"package.json\" \"tsconfig.json\" \"vite.config.ts\" \"index.html\" \"README.md\""
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "^2",
@@ -45,7 +45,7 @@
     "unicode-animations": "^1.0.3"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.9.0",
+    "@tauri-apps/cli": "^2.11.3",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
