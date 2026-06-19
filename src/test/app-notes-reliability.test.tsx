@@ -390,7 +390,10 @@ describe("notes recording reliability", () => {
 
   it("does not overlap active recording status polls", async () => {
     const pendingStatus = deferred<RecordingStatusDto>();
-    mocks.getRecordingStatus.mockReturnValue(pendingStatus.promise);
+    const resumedStatus = deferred<RecordingStatusDto>();
+    mocks.getRecordingStatus
+      .mockReturnValueOnce(pendingStatus.promise)
+      .mockReturnValue(resumedStatus.promise);
 
     await startRecordingOnFirstNote();
     await screen.findByRole("button", { name: "Done" });
@@ -412,6 +415,17 @@ describe("notes recording reliability", () => {
         bytesWritten: 2048,
       });
       await pendingStatus.promise;
+    });
+    await waitFor(() =>
+      expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(2),
+    );
+    resumedStatus.resolve({
+      sessionId: "rec-1",
+      state: "recording",
+      elapsedMs: 550,
+      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+      silenceWarning: false,
+      bytesWritten: 2048,
     });
   });
 
