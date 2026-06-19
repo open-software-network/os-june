@@ -35,7 +35,7 @@ sha2 = "0.10"
 # sqlx-sqlite does not expose a public runtime-tokio feature in SQLx 0.8.x, so
 # the direct sqlx-core dependency intentionally enables its runtime hook.
 sqlx = { package = "sqlx-core", version = "0.8", default-features = false, features = ["_rt-tokio", "chrono", "uuid"] }
-sqlx-sqlite = { version = "0.8", default-features = false, features = ["bundled", "chrono", "uuid"] }
+sqlx-sqlite = { version = "0.9", default-features = false, features = ["bundled", "chrono", "uuid"] }
 tauri = { version = "2.8.0", features = ["protocol-asset", "macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-notification = "2"
