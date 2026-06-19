@@ -39,7 +39,7 @@ jobs:
           )"
           key_files="$(
             git ls-files |
-              grep -Ei '(^|/)(id_rsa|id_ed25519|.*\.(pem|p8|p12|key))$' || true
+              grep -Ei '(^|/)(id_rsa|id_dsa|id_ecdsa|id_ecdsa_sk|id_ed25519|id_ed25519_sk|.*\.(pem|p8|p12|key))$' || true
           )"
           private_key_matches="$(
             git grep -I -n -E -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . || true
