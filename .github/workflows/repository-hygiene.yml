@@ -3,24 +3,8 @@ name: repository hygiene
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/**"
-      - ".env*"
-      - "**/.env*"
-      - "**/*.key"
-      - "**/*.p12"
-      - "**/*.p8"
-      - "**/*.pem"
   push:
     branches: [main]
-    paths:
-      - ".github/**"
-      - ".env*"
-      - "**/.env*"
-      - "**/*.key"
-      - "**/*.p12"
-      - "**/*.p8"
-      - "**/*.pem"
 
 permissions:
   contents: read
