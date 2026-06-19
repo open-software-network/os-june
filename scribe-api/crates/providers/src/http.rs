@@ -6,7 +6,7 @@ use std::time::Duration;
 // client timeout cuts those off and surfaces as upstream 502s with retries.
 // Match the OS-Guard request deadline (180s) so a slow-but-valid reasoning
 // turn completes instead of being killed mid-generation.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
+const DEFAULT_TIMEOUT: Duration = Duration::from_mins(3);
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub fn default_client() -> Client {

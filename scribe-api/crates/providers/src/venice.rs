@@ -14,6 +14,15 @@ use std::collections::BTreeMap;
 pub const PROVIDER_NAME: &str = "venice";
 
 const CREDITS_PER_USD: f64 = 1_000.0;
+
+/// Trailing SSE bytes retained from a streamed response — enough to contain the
+/// final usage frame without buffering the whole (possibly multi-MB) body.
+const MAX_USAGE_TAIL_BYTES: usize = 64 * 1024;
+
+/// Whether `haystack` contains the byte sequence `needle`.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.len() <= haystack.len() && haystack.windows(needle.len()).any(|w| w == needle)
+}
 const RATE_SCALE: f64 = 1_000_000.0;
 
 /// Standing safety policy injected as the leading system message on every
@@ -577,9 +586,11 @@ impl VeniceChat {
     /// Streaming counterpart of `complete_raw`: forwards the upstream response
     /// body to the caller as it arrives instead of buffering it. The status is
     /// validated before any byte is streamed (so a policy block / error still
-    /// surfaces as an error response). The terminal usage frame is parsed at end
-    /// of stream into the returned `usage` handle so the caller can settle
-    /// billing once forwarding completes.
+    /// surfaces as an error response). Only a bounded trailing window of the SSE
+    /// is retained (enough to hold the terminal usage frame), and the usage is
+    /// captured into the returned handle as soon as that frame streams — before
+    /// `[DONE]` — so a caller can settle billing even if the client disconnects
+    /// immediately after the terminal frame.
     async fn complete_raw_streaming(
         &self,
         mut body: serde_json::Value,
@@ -603,12 +614,31 @@ impl VeniceChat {
         let upstream = response.bytes_stream();
         let stream = async_stream::stream! {
             use futures_util::StreamExt;
-            let mut accumulated: Vec<u8> = Vec::new();
+            // Retain only a bounded trailing window — large enough to hold the
+            // final usage frame, not the whole (potentially multi-MB) response.
+            let mut tail: Vec<u8> = Vec::new();
+            let mut usage_captured = false;
             futures_util::pin_mut!(upstream);
             while let Some(item) = upstream.next().await {
                 match item {
                     Ok(chunk) => {
-                        accumulated.extend_from_slice(&chunk);
+                        tail.extend_from_slice(&chunk);
+                        if tail.len() > MAX_USAGE_TAIL_BYTES {
+                            let trim = tail.len() - MAX_USAGE_TAIL_BYTES;
+                            tail.drain(..trim);
+                        }
+                        // Capture usage the moment its frame (or the terminal
+                        // [DONE]) appears, before forwarding it onward, so the
+                        // handle is populated even if the client drops the
+                        // connection right after the last frame.
+                        if !usage_captured
+                            && (contains(&chunk, b"\"usage\"") || contains(&chunk, b"[DONE]"))
+                            && let Ok(parsed) = usage_from_chat_body(&tail, &content_type_for_usage)
+                            && let Ok(mut guard) = usage_for_stream.lock()
+                        {
+                            *guard = Some(parsed);
+                            usage_captured = true;
+                        }
                         yield Ok(chunk);
                     }
                     Err(error) => {
@@ -618,12 +648,7 @@ impl VeniceChat {
                     }
                 }
             }
-            // Stream complete: extract the usage frame so the caller can settle.
-            if let Ok(parsed) = usage_from_chat_body(&accumulated, &content_type_for_usage) {
-                if let Ok(mut guard) = usage_for_stream.lock() {
-                    *guard = Some(parsed);
-                }
-            } else {
+            if !usage_captured {
                 tracing::warn!(
                     model = %model_id,
                     "chat: no usage frame in streamed agent response; billing skipped"

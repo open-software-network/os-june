@@ -1,16 +1,17 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        AsyncChargeParams, AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, spawn_charge,
     },
     error::ServiceError,
     pricing::PricingTable,
 };
 use scribe_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
-    ModelKind, OsAccountsClient, Receipt, UserId,
+    ModelKind, OsAccountsClient, Receipt, TokenUsage, UserId,
 };
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct AgentChatServiceDeps {
     pub pricing: Arc<PricingTable>,
@@ -117,57 +118,34 @@ impl AgentChatService {
             })
             .await?;
 
-        // Billing context moved into the forwarding stream; settled at its end.
-        let os_accounts = self.os_accounts.clone();
-        let pricing = self.pricing.clone();
-        let user_id = params.user_id.clone();
-        let model_id = params.model_id.clone();
-        let action_token = authorization.action_token;
-        let cap_credits = authorization.cap_credits;
-        let usage_handle = stream.usage.clone();
+        // Settlement is owned by a guard that fires when the response body is
+        // dropped — whether it streamed to completion or the client disconnected
+        // after the final frame. The charge is spawned detached so it cannot be
+        // cancelled by the connection closing (the provider captures usage when
+        // its frame streams, before [DONE], so it is available at drop time).
+        let billing = StreamBilling {
+            os_accounts: self.os_accounts.clone(),
+            pricing: self.pricing.clone(),
+            user_id: params.user_id.clone(),
+            model_id: params.model_id.clone(),
+            cap_credits: authorization.cap_credits,
+            idempotency_key: format!(
+                "agent_chat:{}:{}:{}",
+                params.user_id.0, params.model_id.0, body_digest
+            ),
+            usage: stream.usage.clone(),
+            action_token: Some(authorization.action_token),
+        };
         let content_type = stream.content_type.clone();
         let upstream = stream.body;
 
         let billed = async_stream::stream! {
             use futures_util::StreamExt;
+            // Held for the lifetime of the body; its Drop settles billing.
+            let _billing = billing;
             futures_util::pin_mut!(upstream);
             while let Some(item) = upstream.next().await {
                 yield item;
-            }
-            // Stream fully forwarded: settle from the captured usage frame.
-            let usage = usage_handle.lock().ok().and_then(|mut guard| guard.take());
-            let Some(usage) = usage else {
-                tracing::warn!(
-                    user_id = %user_id.0,
-                    model = %model_id.0,
-                    "agent chat: no usage captured from stream; not charging (hold expires)"
-                );
-                return;
-            };
-            let actual = match pricing.price_token_usage(&model_id.0, usage) {
-                Ok(actual) => actual,
-                Err(error) => {
-                    tracing::error!(%error, model = %model_id.0, "agent chat: post-stream pricing failed; not charging");
-                    return;
-                }
-            };
-            let charge_credits = clamp_to_cap(actual, cap_credits);
-            let idempotency_key =
-                format!("agent_chat:{}:{}:{}", user_id.0, model_id.0, body_digest);
-            match charge(ChargeParams {
-                os_accounts: os_accounts.as_ref(),
-                action_token,
-                credits: charge_credits,
-                idempotency_key,
-            })
-            .await
-            {
-                Ok(receipt) => log_settled(ActionSlug::AgentChat, &user_id, &model_id.0, &receipt),
-                Err(error) => tracing::error!(
-                    %error,
-                    user_id = %user_id.0,
-                    "agent chat: post-stream charge failed; hold will expire"
-                ),
             }
         };
 
@@ -182,6 +160,63 @@ impl AgentChatService {
             AgentChatRoute::Guarded => self.guarded_chat_completer.as_ref(),
             AgentChatRoute::Direct => self.direct_chat_completer.as_ref(),
         }
+    }
+}
+
+/// Settles billing for a streamed agent chat when the response body is dropped.
+/// Dropping happens whether the stream completed or the client disconnected, so
+/// settlement is never lost to a connection close after the final frame. The
+/// charge is spawned detached so the connection lifetime cannot cancel it.
+struct StreamBilling {
+    os_accounts: Arc<dyn OsAccountsClient>,
+    pricing: Arc<PricingTable>,
+    user_id: UserId,
+    model_id: ModelId,
+    cap_credits: Option<Credits>,
+    idempotency_key: String,
+    usage: Arc<Mutex<Option<TokenUsage>>>,
+    action_token: Option<String>,
+}
+
+impl Drop for StreamBilling {
+    fn drop(&mut self) {
+        let Some(action_token) = self.action_token.take() else {
+            return;
+        };
+        // Outside a Tokio runtime (e.g. dropped in a sync test) there is nothing
+        // to spawn onto; skip rather than panic.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let usage = self.usage.lock().ok().and_then(|mut guard| guard.take());
+        let Some(usage) = usage else {
+            tracing::warn!(
+                user_id = %self.user_id.0,
+                model = %self.model_id.0,
+                "agent chat: stream ended without usage; not charging (hold expires)"
+            );
+            return;
+        };
+        let actual = match self.pricing.price_token_usage(&self.model_id.0, usage) {
+            Ok(actual) => actual,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    model = %self.model_id.0,
+                    "agent chat: post-stream pricing failed; not charging"
+                );
+                return;
+            }
+        };
+        spawn_charge(AsyncChargeParams {
+            os_accounts: self.os_accounts.clone(),
+            user_id: self.user_id.clone(),
+            action: ActionSlug::AgentChat,
+            model_id: Some(self.model_id.0.clone()),
+            action_token,
+            credits: clamp_to_cap(actual, self.cap_credits),
+            idempotency_key: self.idempotency_key.clone(),
+        });
     }
 }
 
