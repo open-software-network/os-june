@@ -32,6 +32,8 @@ serde_json = "1.0"
 sha2 = "0.10"
 # Avoid the SQLx umbrella crate here. Its optional macro/database dependencies
 # put unused MySQL/Postgres packages into Cargo.lock and cargo-audit.
+# sqlx-sqlite does not expose a public runtime-tokio feature in SQLx 0.8.x, so
+# the direct sqlx-core dependency intentionally enables its runtime hook.
 sqlx = { package = "sqlx-core", version = "0.8", default-features = false, features = ["_rt-tokio", "chrono", "uuid"] }
 sqlx-sqlite = { version = "0.8", default-features = false, features = ["bundled", "chrono", "uuid"] }
 tauri = { version = "2.8.0", features = ["protocol-asset", "macos-private-api", "tray-icon", "image-png"] }
