@@ -481,19 +481,7 @@ impl VeniceChat {
         model: scribe_domain::ModelId,
     ) -> Result<AgentChatCompletion, DomainError> {
         prepare_agent_chat_body(&mut body, &model)?;
-        let url = format!("{}/chat/completions", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, %url, model = %model.0, "chat: agent transport error");
-                DomainError::UpstreamProvider
-            })?;
-        let status = response.status();
+        let response = self.send_agent_request_with_retry(&body, &model).await?;
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -501,19 +489,9 @@ impl VeniceChat {
             .unwrap_or("application/json")
             .to_string();
         let body = response.bytes().await.map_err(|error| {
-            tracing::error!(%error, %url, model = %model.0, "chat: agent body read failed");
+            tracing::error!(%error, model = %model.0, "chat: agent body read failed");
             DomainError::UpstreamProvider
         })?;
-        if !status.is_success() {
-            tracing::error!(
-                %status,
-                %url,
-                model = %model.0,
-                body_bytes = body.len(),
-                "chat: agent non-success response"
-            );
-            return Err(self.status_error(status));
-        }
         let usage = usage_from_chat_body(&body, &content_type)?;
         Ok(AgentChatCompletion {
             body: body.to_vec(),
@@ -521,6 +499,79 @@ impl VeniceChat {
             provider: PROVIDER_NAME.to_string(),
             usage,
         })
+    }
+
+    /// Send the agent chat request with a bounded retry on transient failures
+    /// (connection reset, 429, 5xx) — the same policy the note/dictation paths
+    /// use. The agent chat path previously had none, so a single transient 5xx
+    /// from the gateway (e.g. a flaky reasoning model upstream) surfaced as a
+    /// hard 502. Metering settles only after success, so a replayed attempt can
+    /// never double-charge. Returns a response whose status is already success.
+    async fn send_agent_request_with_retry(
+        &self,
+        body: &serde_json::Value,
+        model: &scribe_domain::ModelId,
+    ) -> Result<reqwest::Response, DomainError> {
+        let url = format!("{}/chat/completions", self.base_url);
+        for attempt in 0..retry::UPSTREAM_ATTEMPTS {
+            let attempt_error = match self.send_agent_once(&url, body, model).await {
+                Ok(response) => return Ok(response),
+                Err(error) => error,
+            };
+            if attempt_error.retryable && attempt + 1 < retry::UPSTREAM_ATTEMPTS {
+                tracing::warn!(
+                    %url,
+                    model = %model.0,
+                    attempt,
+                    "chat: agent transient failure, retrying"
+                );
+                tokio::time::sleep(retry::UPSTREAM_RETRY_BACKOFF).await;
+                continue;
+            }
+            return Err(attempt_error.error);
+        }
+        Err(DomainError::UpstreamProvider)
+    }
+
+    /// One agent chat upstream attempt: send and validate the status, classifying
+    /// the failure as retryable or not. The body is left unread so the caller can
+    /// buffer or stream it.
+    async fn send_agent_once(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        model: &scribe_domain::ModelId,
+    ) -> Result<reqwest::Response, UpstreamAttemptError> {
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| {
+                let retryable = retry::is_retryable_transport_error(&error);
+                tracing::error!(%error, %url, model = %model.0, retryable, "chat: agent transport error");
+                UpstreamAttemptError {
+                    error: DomainError::UpstreamProvider,
+                    retryable,
+                }
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let error = self.status_error(status);
+            let retryable =
+                error == DomainError::UpstreamProvider && retry::is_retryable_status(status);
+            tracing::error!(
+                %status,
+                %url,
+                model = %model.0,
+                retryable,
+                "chat: agent non-success response"
+            );
+            return Err(UpstreamAttemptError { error, retryable });
+        }
+        Ok(response)
     }
 
     /// Streaming counterpart of `complete_raw`: forwards the upstream response
@@ -535,36 +586,15 @@ impl VeniceChat {
         model: scribe_domain::ModelId,
     ) -> Result<scribe_domain::AgentChatStream, DomainError> {
         prepare_agent_chat_body(&mut body, &model)?;
-        let url = format!("{}/chat/completions", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, %url, model = %model.0, "chat: agent transport error");
-                DomainError::UpstreamProvider
-            })?;
-        let status = response.status();
+        // Retry the establish phase (send + status) on transient failures before
+        // any byte is streamed; once streaming starts a retry is impossible.
+        let response = self.send_agent_request_with_retry(&body, &model).await?;
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("application/json")
             .to_string();
-        if !status.is_success() {
-            let body = response.bytes().await.unwrap_or_default();
-            tracing::error!(
-                %status,
-                %url,
-                model = %model.0,
-                body_bytes = body.len(),
-                "chat: agent non-success response"
-            );
-            return Err(self.status_error(status));
-        }
 
         let usage = std::sync::Arc::new(std::sync::Mutex::new(None));
         let usage_for_stream = usage.clone();
@@ -641,6 +671,12 @@ fn prepare_agent_chat_body(
         if let Some(options) = stream_options.as_object_mut() {
             options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
         }
+    } else {
+        // `stream_options` is only valid alongside `stream: true`; Venice rejects
+        // the request with a 400 otherwise (which surfaces here as a 502). Some
+        // clients (e.g. the Hermes agent runtime) send it even on a buffered
+        // request, so strip it for non-streaming calls.
+        object.remove("stream_options");
     }
     Ok(())
 }
