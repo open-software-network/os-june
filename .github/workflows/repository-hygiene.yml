@@ -41,8 +41,11 @@ jobs:
             git ls-files |
               grep -Ei '(^|/)(id_rsa|id_ed25519|.*\.(pem|p8|p12|key))$' || true
           )"
-          if [[ -n "$env_files$key_files" ]]; then
-            printf '%s\n%s\n' "$env_files" "$key_files" | sed '/^$/d' >&2
+          private_key_matches="$(
+            git grep -I -n -E -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' -- . || true
+          )"
+          if [[ -n "$env_files$key_files$private_key_matches" ]]; then
+            printf '%s\n%s\n%s\n' "$env_files" "$key_files" "$private_key_matches" | sed '/^$/d' >&2
             echo "Tracked env files or private key material are not allowed." >&2
             exit 1
           fi
