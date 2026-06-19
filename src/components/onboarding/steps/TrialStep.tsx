@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { IconDevices } from "central-icons/IconDevices";
+import { IconLock } from "central-icons/IconLock";
+import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import {
   isSubscriptionActive,
   useTrialCheckout,
@@ -11,6 +14,24 @@ import {
 } from "../../account/TrialGate";
 import { Spinner } from "../../ui/Spinner";
 import { StepActions, StepCard } from "../StepChrome";
+
+const PRIVACY_RECAP_ITEMS = [
+  {
+    icon: IconDevices,
+    label: "Local first",
+    detail: "Your data stays on your device by default.",
+  },
+  {
+    icon: IconLock,
+    label: "Private AI models",
+    detail: "Inference runs on private, zero-retention models by default.",
+  },
+  {
+    icon: IconShieldCheck,
+    label: "Minimal data retention",
+    detail: "June keeps only what's needed for your account.",
+  },
+];
 
 /**
  * The free-trial step, deliberately placed after permissions (the user has
@@ -64,8 +85,26 @@ export function TrialStep({
     return (
       <StepCard
         title="You're good to go"
-        subtitle="Your trial is live. Try talking to June."
+        subtitle="Your trial is live, and June keeps it all private."
+        wide
+        className="trial-card-done"
       >
+        <section
+          className="trial-privacy-recap"
+          aria-label="How June keeps your data private"
+        >
+          <ul>
+            {PRIVACY_RECAP_ITEMS.map(({ icon: Icon, label, detail }) => (
+              <li key={label}>
+                <span className="trial-privacy-icon" aria-hidden>
+                  <Icon size={15} />
+                </span>
+                <span className="trial-privacy-label">{label}</span>
+                <span className="trial-privacy-detail">{detail}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
         <StepActions onContinue={onContinue} />
       </StepCard>
     );

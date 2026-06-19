@@ -12870,6 +12870,43 @@ input:focus-visible,
   width: min(100%, 360px);
 }
 
+/* Welcome step lays its four what-is-June points out as a 2x2 grid rather
+ * than a tall single column, so the card needs a touch more width. Cells
+ * top-align (align-items: start in .onboarding-points li) so uneven body
+ * lengths sit cleanly rather than centering against each other. */
+.welcome-card-intro {
+  width: min(100%, 500px);
+}
+
+.welcome-card-intro .onboarding-points {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-6) var(--sp-6);
+}
+
+/* The 2x2 grid wants the full card width, but the sign-in button and footer
+ * shouldn't stretch with it — keep them in a centered, button-width column. */
+.welcome-card-intro .welcome-providers,
+.welcome-card-intro .welcome-status,
+.welcome-card-intro .welcome-terms {
+  width: 100%;
+  max-width: 320px;
+  margin-inline: auto;
+}
+
+/* The trial success step lays its privacy recap out as a 3-up row, so it
+ * needs more width than the 360px trial card — but, like the welcome step,
+ * the continue button stays in a centered, button-width column. */
+.trial-card-done {
+  width: min(100%, 540px);
+}
+
+.trial-card-done .welcome-providers {
+  width: 100%;
+  max-width: 320px;
+  margin-inline: auto;
+}
+
 .trial-timeline {
   display: flex;
   flex-direction: column;
@@ -12946,6 +12983,90 @@ input:focus-visible,
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   text-align: center;
+}
+
+/* Linear-style: three short, symmetric columns framed by faded-edge
+ * dividers. The privacy headline lives in the card subtitle instead of a
+ * third in-section heading, so the recap carries just two type styles
+ * (label + detail) rather than stacking heading/label/detail. Everything is
+ * centered, so it reads balanced under the hero. Static — no animation. */
+.trial-privacy-recap {
+  position: relative;
+  margin: var(--sp-1) 0;
+  padding: var(--sp-5) 0;
+  text-align: center;
+}
+
+/* Hairline dividers top and bottom, brightest in the middle and dissolving
+ * at both ends — frames the row without a hard boxed-in border. */
+.trial-privacy-recap::before,
+.trial-privacy-recap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--border) 50%,
+    transparent
+  );
+}
+
+.trial-privacy-recap::before {
+  top: 0;
+}
+
+.trial-privacy-recap::after {
+  bottom: 0;
+}
+
+.trial-privacy-recap ul {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trial-privacy-recap li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--sp-1);
+}
+
+/* Same 28px outlined chip as the welcome points and trial-timeline rows, so
+ * the icons read as one family across the flow. */
+.trial-privacy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-bottom: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--warm-strong);
+}
+
+.trial-privacy-label {
+  display: block;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.trial-privacy-detail {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-wrap: pretty;
 }
 
 .trial-gate-link {
