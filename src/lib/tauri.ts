@@ -1040,8 +1040,55 @@ export type HermesCronJobRecord = {
   no_agent?: boolean;
 };
 
+export type HermesCronBlueprintField = {
+  name: string;
+  type: "time" | "enum" | "text" | "weekdays" | string;
+  label: string;
+  default?: unknown;
+  options?: Array<string | number | boolean>;
+  optional?: boolean;
+  strict?: boolean;
+  help?: string;
+};
+
+export type HermesCronBlueprint = {
+  key: string;
+  title: string;
+  description: string;
+  category?: string;
+  fields: HermesCronBlueprintField[];
+  tags?: string[];
+  schedule?: string;
+  scheduleHuman?: string;
+  command?: string;
+  appUrl?: string;
+  app_url?: string;
+};
+
+export type HermesCronBlueprintsResponse = {
+  blueprints: HermesCronBlueprint[];
+};
+
 export async function hermesBridgeCronJobs() {
   return invoke<HermesCronJobRecord[]>("hermes_bridge_cron_jobs");
+}
+
+export async function hermesBridgeCronBlueprints() {
+  return invoke<HermesCronBlueprintsResponse>(
+    "hermes_bridge_cron_blueprints",
+  );
+}
+
+export async function instantiateHermesBridgeCronBlueprint(input: {
+  blueprint: string;
+  values?: Record<string, unknown>;
+}) {
+  return invoke<HermesCronJobRecord>(
+    "instantiate_hermes_bridge_cron_blueprint",
+    {
+      request: input,
+    },
+  );
 }
 
 export async function createHermesBridgeCronJob(input: {

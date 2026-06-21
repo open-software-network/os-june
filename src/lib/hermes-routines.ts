@@ -1,11 +1,14 @@
 import {
   createHermesBridgeCronJob,
   deleteHermesBridgeCronJob,
+  hermesBridgeCronBlueprints,
   hermesBridgeCronJobAction,
   hermesBridgeCronJobs,
   hermesBridgeStatus,
+  instantiateHermesBridgeCronBlueprint,
   startHermesBridge,
   updateHermesBridgeCronJob,
+  type HermesCronBlueprint,
   type HermesCronJobRecord,
 } from "./tauri";
 
@@ -45,6 +48,8 @@ export type RoutineJob = {
   /** True for script-only jobs (no agent run at all). Implies `script`. */
   no_agent?: boolean;
 };
+
+export type RoutineBlueprint = HermesCronBlueprint;
 
 /** The toolsets June puts on a routine the user opted into Unrestricted.
  * Hermes's full default set minus the toolsets its scheduler always strips
@@ -142,6 +147,11 @@ export async function listRoutines(): Promise<RoutineJob[]> {
   return records.map(routineFromRecord);
 }
 
+export async function listRoutineBlueprints(): Promise<RoutineBlueprint[]> {
+  const response = await withBridge(() => hermesBridgeCronBlueprints());
+  return response.blueprints;
+}
+
 /** Creates a routine directly through the dashboard API. The create endpoint
  * only takes prompt/schedule/name, so the unrestricted opt-in lands as an
  * immediate follow-up update; a failure there surfaces rather than silently
@@ -164,6 +174,16 @@ export async function createRoutine(input: {
     });
     return routineFromRecord(widened);
   });
+}
+
+export async function instantiateRoutineBlueprint(input: {
+  blueprint: string;
+  values: Record<string, unknown>;
+}): Promise<RoutineJob> {
+  const record = await withBridge(() =>
+    instantiateHermesBridgeCronBlueprint(input),
+  );
+  return routineFromRecord(record);
 }
 
 export type RoutineUpdates = {
