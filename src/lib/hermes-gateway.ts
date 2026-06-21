@@ -19,6 +19,7 @@ export type HermesGatewayEventName =
   | "subagent.progress"
   | "subagent.thinking"
   | "subagent.complete"
+  | "background.complete"
   | "error"
   | (string & {});
 

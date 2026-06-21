@@ -5028,6 +5028,16 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.agent-session-kind {
+  flex: 0 0 auto;
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
 .agent-session-status {
   line-height: 0;
 }

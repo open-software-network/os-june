@@ -50,6 +50,7 @@ import {
 } from "../../lib/agent-events";
 import {
   deleteHermesSession,
+  isChildHermesSession,
   listHermesSessions,
   sessionTimestamp,
 } from "../../lib/hermes-adapter";
@@ -706,7 +707,10 @@ export function Sidebar({
     let retryTimeout: number | undefined;
 
     function loadAgentSessions(attempt: number) {
-      listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT })
+      listHermesSessions({
+        limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT,
+        includeChildren: true,
+      })
         .then((sessions) => {
           if (!cancelled) {
             setAgentSessions((current) =>
@@ -1956,6 +1960,7 @@ function AgentSessionRow({
   onOpenMenu: (anchor: HTMLElement) => void;
 }) {
   const title = session.title || session.preview || "Untitled session";
+  const background = isChildHermesSession(session);
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
   const time = formatSessionTime(sessionTimestamp(session));
   const menuRef = useRef<HTMLButtonElement>(null);
@@ -1986,6 +1991,9 @@ function AgentSessionRow({
       >
         <span className="note-row-title">
           <span className="note-row-title-text">{title}</span>
+          {background ? (
+            <span className="agent-session-kind">Background</span>
+          ) : null}
         </span>
       </div>
       {waiting ? (

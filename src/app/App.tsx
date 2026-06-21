@@ -1167,7 +1167,10 @@ export function App() {
     let retryTimeout: number | undefined;
 
     function loadAgentMenuBarSessions(attempt: number) {
-      listHermesSessions({ limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT })
+      listHermesSessions({
+        limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT,
+        includeChildren: true,
+      })
         .then((sessions) => {
           if (cancelled) return;
           agentMenuBarSessionsRef.current = sessions;
@@ -1405,7 +1408,7 @@ export function App() {
           setActiveView("agent");
           return;
         }
-        void listHermesSessions({ limit: 100 })
+        void listHermesSessions({ limit: 100, includeChildren: true })
           .then((sessions) => {
             agentMenuBarSessionsRef.current = sessions;
             const session = sessions.find((item) => item.id === sessionId);

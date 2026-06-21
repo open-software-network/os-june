@@ -11,6 +11,7 @@ export type HermesSessionListOptions = {
   offset?: number;
   archived?: "exclude" | "include" | "only";
   minMessages?: number;
+  includeChildren?: boolean;
   order?: "created" | "recent" | string;
   query?: string;
 };
@@ -57,6 +58,18 @@ export const SCHEDULED_RUN_SOURCE = "cron";
 
 export function isScheduledRunSession(session: HermesSessionInfo) {
   return session.source === SCHEDULED_RUN_SOURCE;
+}
+
+export function parentHermesSessionId(
+  session: HermesSessionInfo,
+): string | undefined {
+  const snake = session.parent_session_id?.trim();
+  if (snake) return snake;
+  return session.parentSessionId?.trim() || undefined;
+}
+
+export function isChildHermesSession(session: HermesSessionInfo) {
+  return Boolean(parentHermesSessionId(session));
 }
 
 /** The cron scheduler mints run session ids as

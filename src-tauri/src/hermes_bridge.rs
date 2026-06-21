@@ -327,6 +327,7 @@ pub struct HermesSessionsRequest {
     pub offset: Option<u32>,
     pub archived: Option<String>,
     pub min_messages: Option<u32>,
+    pub include_children: Option<bool>,
     pub order: Option<String>,
     pub query: Option<String>,
 }
@@ -1150,6 +1151,9 @@ pub async fn hermes_bridge_sessions(
     }
     if let Some(min_messages) = request.min_messages {
         params.push(("min_messages", min_messages.to_string()));
+    }
+    if let Some(include_children) = request.include_children {
+        params.push(("include_children", include_children.to_string()));
     }
     if let Some(order) = request
         .order
