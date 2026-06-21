@@ -29,7 +29,7 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11"
 # Avoid the SQLx umbrella crate here. Its optional macro/database dependencies
 # put unused MySQL/Postgres packages into Cargo.lock and cargo-audit.
 # sqlx-sqlite does not expose a public runtime-tokio feature in SQLx 0.8.x, so
