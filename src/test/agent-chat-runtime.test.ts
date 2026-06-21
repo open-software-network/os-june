@@ -120,6 +120,28 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("renders content-free Raft wake hints as external activity", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "raft-wake",
+        role: "user",
+        content:
+          "Raft wake hint received. New Raft messages may be pending. " +
+          "If you have not read the Raft manual in this session, run " +
+          "`raft manual get raft-cli-overview` before using Raft commands.",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Raft messages may be pending.",
+        status: "complete",
+      },
+    ]);
+  });
+
   it("extracts text from Hermes structured content payloads", () => {
     const turns = buildHermesSessionChatTurns([
       {

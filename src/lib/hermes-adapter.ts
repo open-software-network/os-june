@@ -48,7 +48,7 @@ export async function deleteHermesSession(sessionId: string) {
 export function normalizeHermesSessionsResponse(response: unknown) {
   return extractList(response, "sessions")
     .filter(isHermesSessionInfo)
-    .map(withScheduledRunDisplay)
+    .map(withJuneSessionDisplay)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
 }
 
@@ -72,6 +72,10 @@ export function scheduledRunJobId(sessionId: string) {
 const SCHEDULED_RUN_FETCH_LIMIT = 200;
 const PENDING_SCHEDULED_RUN_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
 const UNTITLED_SESSION_TITLE = "Untitled session";
+const RAFT_WAKE_PROMPT_PREFIX =
+  "Raft wake hint received. New Raft messages may be pending.";
+export const RAFT_WAKE_DISPLAY_TITLE = "Raft channel update";
+export const RAFT_WAKE_DISPLAY_PREVIEW = "Raft messages may be pending.";
 
 export type ScheduledRunListOptions = {
   includeActive?: boolean;
@@ -145,6 +149,16 @@ function stringPresent(value: unknown) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+export function isRaftWakePrompt(content: string) {
+  return content.trim().startsWith(RAFT_WAKE_PROMPT_PREFIX);
+}
+
+export function displayTextForRaftWakePrompt(content: string) {
+  return isRaftWakePrompt(content)
+    ? RAFT_WAKE_DISPLAY_PREVIEW
+    : content.trim();
+}
+
 /** A scheduled run's first message is the routine prompt wrapped in a machine
  * delivery preamble the cron runner injects: `[IMPORTANT: You are running as a
  * scheduled cron job. … nothing more.]`. Recognized by that exact opener so a
@@ -206,6 +220,22 @@ function withScheduledRunDisplay(
   return { ...session, title, preview: cleanedPreview || session.preview };
 }
 
+function withJuneSessionDisplay(session: HermesSessionInfo): HermesSessionInfo {
+  return withRaftWakeDisplay(withScheduledRunDisplay(session));
+}
+
+function withRaftWakeDisplay(session: HermesSessionInfo): HermesSessionInfo {
+  if (session.source !== "raft") return session;
+  const title = session.title?.trim() ?? "";
+  const preview = session.preview?.trim() ?? "";
+  if (!isRaftWakePrompt(title) && !isRaftWakePrompt(preview)) return session;
+  return {
+    ...session,
+    title: RAFT_WAKE_DISPLAY_TITLE,
+    preview: RAFT_WAKE_DISPLAY_PREVIEW,
+  };
+}
+
 export function normalizeHermesSessionMessagesResponse(response: unknown) {
   return extractList(response, "messages").flatMap(
     normalizeHermesSessionMessage,
@@ -242,7 +272,11 @@ export function titleFromPrompt(prompt: string) {
 }
 
 function promptTitleSource(prompt: string) {
-  return stripScheduledRunPreamble(prompt)
+  const withoutDeliveryPreamble = stripScheduledRunPreamble(prompt);
+  const displayPrompt = isRaftWakePrompt(withoutDeliveryPreamble)
+    ? RAFT_WAKE_DISPLAY_TITLE
+    : withoutDeliveryPreamble;
+  return displayPrompt
     .replace(/\n*--- Attached Context ---[\s\S]*$/m, "")
     .replace(/\n*--- Context Warnings ---[\s\S]*$/m, "")
     .replace(/\n+Attached files copied into[\s\S]*$/i, "")

@@ -158,6 +158,7 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_ENVIRONMENT_HINT",
     "HERMES_MODEL",
     "HERMES_PROVIDER",
+    "RAFT_PROFILE",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "VENICE_API_KEY",
@@ -1116,7 +1117,8 @@ pub async fn update_hermes_bridge_messaging_platform(
     bridge: State<'_, HermesBridge>,
     request: UpdateHermesMessagingPlatformRequest,
 ) -> Result<serde_json::Value, AppError> {
-    hermes_api_json(
+    let restart_gateway = should_restart_gateway_after_messaging_update(&request);
+    let response = hermes_api_json(
         &bridge,
         reqwest::Method::PUT,
         &format!(
@@ -1128,7 +1130,14 @@ pub async fn update_hermes_bridge_messaging_platform(
             "env": request.env.unwrap_or_default(),
         })),
     )
-    .await
+    .await?;
+    if restart_gateway {
+        let connections = live_connections(&bridge)?;
+        if let Some(connection) = connections.first() {
+            spawn_hermes_gateway_restart(connection)?;
+        }
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1850,21 +1859,81 @@ fn spawn_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(),
     Ok(())
 }
 
+/// Restarts the gateway after platform settings that are read only at gateway
+/// adapter startup change. Raft needs this because its bridge is spawned when
+/// the gateway constructs the Raft adapter from RAFT_PROFILE.
+fn spawn_hermes_gateway_restart(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = build_hermes_gateway_restart_command(connection, &hermes_home);
+    match open_gateway_restart_log(&hermes_home) {
+        Some((log_for_stdout, log_for_stderr)) => {
+            cmd.stdout(log_for_stdout).stderr(log_for_stderr);
+        }
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
+    let mut child = cmd.spawn().map_err(|error| {
+        AppError::new(
+            "hermes_gateway_restart_failed",
+            format!("Could not run `hermes gateway restart`. {error}"),
+        )
+    })?;
+    tauri::async_runtime::spawn_blocking(move || match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("hermes gateway restart exited with {status}; see logs/gateway-restart.log");
+        }
+        Err(error) => {
+            eprintln!("could not reap hermes gateway restart: {error}");
+        }
+    });
+    Ok(())
+}
+
 /// Pure command construction so a test can assert the spawn is the bare hermes
 /// executable (no `sandbox-exec` wrapper) with the isolated environment.
 fn build_hermes_gateway_start_command(
     connection: &HermesBridgeConnection,
     hermes_home: &Path,
 ) -> Command {
+    build_hermes_gateway_lifecycle_command(connection, hermes_home, "start")
+}
+
+fn build_hermes_gateway_restart_command(
+    connection: &HermesBridgeConnection,
+    hermes_home: &Path,
+) -> Command {
+    build_hermes_gateway_lifecycle_command(connection, hermes_home, "restart")
+}
+
+fn build_hermes_gateway_lifecycle_command(
+    connection: &HermesBridgeConnection,
+    hermes_home: &Path,
+    action: &str,
+) -> Command {
     let mut cmd = Command::new(&connection.command);
-    cmd.args(["gateway", "start"]);
-    // No sandbox-status hint: `gateway start` is a helper invocation, not the
-    // agent runtime, so it never builds a system prompt.
+    cmd.args(["gateway", action]);
+    // No sandbox-status hint: gateway lifecycle commands are helper
+    // invocations, not the agent runtime, so they never build a system prompt.
     apply_isolated_hermes_env(&mut cmd, hermes_home, &connection.token, None);
     cmd.env("HERMES_NONINTERACTIVE", "1");
     cmd.current_dir(hermes_home);
     cmd.stdin(Stdio::null());
     cmd
+}
+
+fn should_restart_gateway_after_messaging_update(
+    request: &UpdateHermesMessagingPlatformRequest,
+) -> bool {
+    if request.platform_id != "raft" {
+        return false;
+    }
+    request.enabled.is_some()
+        || request
+            .env
+            .as_ref()
+            .is_some_and(|env| env.contains_key("RAFT_PROFILE"))
 }
 
 /// Opens `<hermes_home>/logs/gateway-start.log` for appending and writes the
@@ -1873,18 +1942,29 @@ fn build_hermes_gateway_start_command(
 /// `None` when the log can't be opened — the spawn then proceeds silenced
 /// rather than failing gateway startup over diagnostics.
 fn open_gateway_start_log(hermes_home: &Path) -> Option<(std::fs::File, std::fs::File)> {
+    open_gateway_action_log(hermes_home, "start")
+}
+
+fn open_gateway_restart_log(hermes_home: &Path) -> Option<(std::fs::File, std::fs::File)> {
+    open_gateway_action_log(hermes_home, "restart")
+}
+
+fn open_gateway_action_log(
+    hermes_home: &Path,
+    action: &str,
+) -> Option<(std::fs::File, std::fs::File)> {
     let log_dir = hermes_home.join("logs");
     fs::create_dir_all(&log_dir).ok()?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_dir.join("gateway-start.log"))
+        .open(log_dir.join(format!("gateway-{action}.log")))
         .ok()?;
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     use io::Write as _;
     let _ = writeln!(
         file,
-        "\n=== gateway-start started {timestamp} (spawned by June app, outside the sandbox) ==="
+        "\n=== gateway-{action} started {timestamp} (spawned by June app, outside the sandbox) ==="
     );
     let clone = file.try_clone().ok()?;
     Some((file, clone))
@@ -2584,6 +2664,12 @@ fn apply_isolated_hermes_env(
         .env("HERMES_DASHBOARD_SESSION_TOKEN", token)
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
         .env("no_proxy", "127.0.0.1,localhost,::1");
+    if let Ok(profile) = std::env::var("RAFT_PROFILE") {
+        let profile = profile.trim();
+        if !profile.is_empty() {
+            cmd.env("RAFT_PROFILE", profile);
+        }
+    }
     if let Some(hint) = environment_hint {
         cmd.env("HERMES_ENVIRONMENT_HINT", hint);
     }
@@ -3731,6 +3817,85 @@ mod tests {
             Some("1")
         );
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
+    }
+
+    #[test]
+    fn gateway_restart_spawns_bare_cli_with_raft_profile() {
+        let connection = HermesBridgeConnection {
+            base_url: "http://127.0.0.1:1".to_string(),
+            ws_url: "ws://127.0.0.1:1/api/ws".to_string(),
+            token: "session-token".to_string(),
+            port: 1,
+            command: "/opt/hermes/bin/hermes".to_string(),
+            hermes_home: "/tmp/hermes-home".to_string(),
+            cwd: None,
+            provider_proxy_port: 2,
+            pid: 3,
+            sandboxed: true,
+            full_mode: false,
+        };
+
+        std::env::set_var("RAFT_PROFILE", "june-raft-agent");
+        let cmd = build_hermes_gateway_restart_command(&connection, Path::new("/tmp/hermes-home"));
+        std::env::remove_var("RAFT_PROFILE");
+
+        assert_eq!(cmd.get_program(), "/opt/hermes/bin/hermes");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["gateway", "restart"]);
+        let envs: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            envs.get("RAFT_PROFILE").map(String::as_str),
+            Some("june-raft-agent")
+        );
+        assert_eq!(
+            envs.get("HERMES_NONINTERACTIVE").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
+    }
+
+    #[test]
+    fn raft_messaging_updates_request_gateway_restart() {
+        assert!(should_restart_gateway_after_messaging_update(
+            &UpdateHermesMessagingPlatformRequest {
+                platform_id: "raft".to_string(),
+                enabled: None,
+                env: Some(std::collections::HashMap::from([(
+                    "RAFT_PROFILE".to_string(),
+                    "june-raft-agent".to_string(),
+                )])),
+            }
+        ));
+        assert!(should_restart_gateway_after_messaging_update(
+            &UpdateHermesMessagingPlatformRequest {
+                platform_id: "raft".to_string(),
+                enabled: Some(true),
+                env: None,
+            }
+        ));
+        assert!(!should_restart_gateway_after_messaging_update(
+            &UpdateHermesMessagingPlatformRequest {
+                platform_id: "photon".to_string(),
+                enabled: Some(true),
+                env: Some(std::collections::HashMap::from([(
+                    "RAFT_PROFILE".to_string(),
+                    "ignored".to_string(),
+                )])),
+            }
+        ));
     }
 
     #[test]

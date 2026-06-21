@@ -118,6 +118,7 @@ import {
 } from "../../lib/tauri";
 import {
   deleteHermesSession,
+  displayTextForRaftWakePrompt,
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
@@ -7982,7 +7983,7 @@ function stripHermesVisibleContext(value: string) {
     marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   // Drop the scheduled-run delivery preamble so a routine's title and dedup
   // key come from its actual prompt, not the cron scaffolding.
-  return stripScheduledRunPreamble(visible.trim());
+  return displayTextForRaftWakePrompt(stripScheduledRunPreamble(visible.trim()));
 }
 
 function compactPath(path: string) {

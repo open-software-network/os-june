@@ -7,6 +7,7 @@ import type {
 import type { HermesGatewayEvent } from "./hermes-gateway";
 import { isInsufficientCreditsMessage } from "./errors";
 import {
+  displayTextForRaftWakePrompt,
   isScheduledRunPreamble,
   stripScheduledRunPreamble,
 } from "./hermes-adapter";
@@ -897,7 +898,9 @@ function displayContentForHermesMessage(message: HermesSessionMessage) {
   if (message.role !== "user") return content.trim();
   // Scheduled runs lead with the cron delivery preamble; show the routine's
   // own instructions, not the machine scaffolding.
-  return stripScheduledRunPreamble(stripHermesContextMarkers(content));
+  return displayTextForRaftWakePrompt(
+    stripScheduledRunPreamble(stripHermesContextMarkers(content)),
+  );
 }
 
 function isScheduledRunMessage(message: HermesSessionMessage) {

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  displayTextForRaftWakePrompt,
+  isRaftWakePrompt,
   isRunningScheduledRunSession,
   isReplaceableScheduledRunTitle,
   isScheduledRunPreamble,
@@ -20,6 +22,10 @@ const SCHEDULED_PREAMBLE =
   "your report as your final response. SILENT: if there is nothing new, " +
   'respond with exactly "[SILENT]" (nothing else). Never combine [SILENT] ' +
   "with content — either report normally, or say [SILENT] and nothing more.]";
+const RAFT_WAKE_PROMPT =
+  "Raft wake hint received. New Raft messages may be pending. " +
+  "If you have not read the Raft manual in this session, run " +
+  "`raft manual get raft-cli-overview` before using Raft commands.";
 
 describe("scheduled-run helpers", () => {
   it("recognizes the cron delivery preamble, not arbitrary bracketed text", () => {
@@ -299,6 +305,29 @@ describe("Hermes adapter", () => {
     expect(sessions.map((session) => session.id)).toEqual(["new", "old"]);
   });
 
+  it("maps content-free Raft wake sessions to product copy", () => {
+    const sessions = normalizeHermesSessionsResponse({
+      sessions: [
+        {
+          id: "raft-session",
+          source: "raft",
+          title: RAFT_WAKE_PROMPT,
+          preview: RAFT_WAKE_PROMPT,
+          last_active: "2026-06-11T12:00:00Z",
+        },
+      ],
+    });
+
+    expect(sessions[0]).toMatchObject({
+      title: "Raft channel update",
+      preview: "Raft messages may be pending.",
+    });
+    expect(isRaftWakePrompt(RAFT_WAKE_PROMPT)).toBe(true);
+    expect(displayTextForRaftWakePrompt(RAFT_WAKE_PROMPT)).toBe(
+      "Raft messages may be pending.",
+    );
+  });
+
   it("normalizes Hermes Desktop-style session lists", () => {
     const sessions = normalizeHermesSessionsResponse({
       sessions: [{ id: "session-1", preview: "Hello" }],
@@ -371,5 +400,6 @@ describe("Hermes adapter", () => {
       ),
     ).toBe("Summarize the Key Points from Today's");
     expect(titleFromPrompt("")).toBe("Untitled session");
+    expect(titleFromPrompt(RAFT_WAKE_PROMPT)).toBe("Raft Channel Update");
   });
 });
