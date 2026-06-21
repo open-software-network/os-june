@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
+  hermesPhotonSetupStatus: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
@@ -55,6 +56,7 @@ const mocks = vi.hoisted(() => ({
   saveAgentHermesSession: vi.fn(),
   sendAgentMessage: vi.fn(),
   startHermesBridge: vi.fn(),
+  startHermesPhotonSetup: vi.fn(),
   submitIssueReport: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
   explainAgentApproval: vi.fn(),
@@ -96,6 +98,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
+  hermesPhotonSetupStatus: mocks.hermesPhotonSetupStatus,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -114,6 +117,7 @@ vi.mock("../lib/tauri", () => ({
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
   startHermesBridge: mocks.startHermesBridge,
+  startHermesPhotonSetup: mocks.startHermesPhotonSetup,
   submitIssueReport: mocks.submitIssueReport,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
   explainAgentApproval: mocks.explainAgentApproval,
@@ -246,6 +250,17 @@ describe("AgentWorkspace", () => {
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.hermesBridgeFilePreview.mockResolvedValue(null);
     mocks.hermesBridgeFileText.mockResolvedValue(null);
+    mocks.hermesPhotonSetupStatus.mockResolvedValue({
+      running: false,
+      exitCode: null,
+      lines: [],
+    });
+    mocks.startHermesPhotonSetup.mockResolvedValue({
+      running: true,
+      exitCode: null,
+      pid: 1234,
+      lines: [],
+    });
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
       path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,

@@ -202,12 +202,22 @@ pub struct HermesBridge {
     /// per-process proxy would rewrite the file under the other process.
     /// Started lazily on the first spawn, lives until app shutdown.
     provider_proxy: Mutex<Option<SharedProviderProxy>>,
+    /// One foreground-managed Photon setup action. The setup command performs
+    /// device-code login, project provisioning, env/auth writes, and sidecar
+    /// dependency install, so June starts it outside the agent sandbox and
+    /// exposes its log for the settings UI.
+    photon_setup: Mutex<Option<HermesActionProcess>>,
 }
 
 struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
+}
+
+struct HermesActionProcess {
+    child: Child,
+    log_path: PathBuf,
 }
 
 struct SharedProviderProxy {
@@ -318,6 +328,21 @@ pub struct UpdateHermesMessagingPlatformRequest {
     pub platform_id: String,
     pub enabled: Option<bool>,
     pub env: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartHermesPhotonSetupRequest {
+    pub phone: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesPhotonSetupStatus {
+    pub running: bool,
+    pub exit_code: Option<i32>,
+    pub pid: Option<u32>,
+    pub lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1132,6 +1157,77 @@ pub async fn update_hermes_bridge_messaging_platform(
 }
 
 #[tauri::command]
+pub async fn start_hermes_photon_setup(
+    bridge: State<'_, HermesBridge>,
+    request: StartHermesPhotonSetupRequest,
+) -> Result<HermesPhotonSetupStatus, AppError> {
+    let phone = validate_e164_phone(&request.phone)?;
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections.first() else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running.",
+        ));
+    };
+    {
+        let mut guard = bridge.photon_setup.lock().map_err(|_| {
+            AppError::new("hermes_photon_setup_failed", "Photon setup lock failed.")
+        })?;
+        if let Some(action) = guard.as_mut() {
+            if action
+                .child
+                .try_wait()
+                .map_err(|error| AppError::new("hermes_photon_setup_failed", error.to_string()))?
+                .is_none()
+            {
+                return photon_setup_status_from_action(action);
+            }
+        }
+    }
+
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let (log_path, stdout, stderr) = open_photon_setup_log(&hermes_home)?;
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["photon", "setup", "--phone", phone.as_str()]);
+    apply_isolated_hermes_env(&mut cmd, &hermes_home, &connection.token, None);
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(&hermes_home)
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
+    let child = cmd.spawn().map_err(|error| {
+        AppError::new(
+            "hermes_photon_setup_failed",
+            format!("Could not start Photon setup. {error}"),
+        )
+    })?;
+    {
+        let mut guard = bridge.photon_setup.lock().map_err(|_| {
+            AppError::new("hermes_photon_setup_failed", "Photon setup lock failed.")
+        })?;
+        *guard = Some(HermesActionProcess { child, log_path });
+        if let Some(action) = guard.as_mut() {
+            return photon_setup_status_from_action(action);
+        }
+    }
+    Err(AppError::new(
+        "hermes_photon_setup_failed",
+        "Photon setup could not be tracked.",
+    ))
+}
+
+#[tauri::command]
+pub async fn hermes_photon_setup_status(
+    bridge: State<'_, HermesBridge>,
+) -> Result<HermesPhotonSetupStatus, AppError> {
+    let fallback_log_path = live_connections(&bridge)
+        .ok()
+        .and_then(|connections| connections.first().cloned())
+        .map(|connection| PathBuf::from(connection.hermes_home).join("logs/photon-setup.log"));
+    photon_setup_status_inner(&bridge, fallback_log_path)
+}
+
+#[tauri::command]
 pub async fn hermes_bridge_sessions(
     bridge: State<'_, HermesBridge>,
     request: HermesSessionsRequest,
@@ -1888,6 +1984,103 @@ fn open_gateway_start_log(hermes_home: &Path) -> Option<(std::fs::File, std::fs:
     );
     let clone = file.try_clone().ok()?;
     Some((file, clone))
+}
+
+fn validate_e164_phone(raw: &str) -> Result<String, AppError> {
+    let phone = raw.trim();
+    let digits = phone.strip_prefix('+').ok_or_else(|| {
+        AppError::new(
+            "hermes_photon_phone_invalid",
+            "Enter a phone number in E.164 format, like +15551234567.",
+        )
+    })?;
+    if !(7..=15).contains(&digits.len())
+        || digits.starts_with('0')
+        || !digits.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Err(AppError::new(
+            "hermes_photon_phone_invalid",
+            "Enter a phone number in E.164 format, like +15551234567.",
+        ));
+    }
+    Ok(phone.to_string())
+}
+
+fn open_photon_setup_log(
+    hermes_home: &Path,
+) -> Result<(PathBuf, std::fs::File, std::fs::File), AppError> {
+    let log_dir = hermes_home.join("logs");
+    fs::create_dir_all(&log_dir)
+        .map_err(|error| AppError::new("hermes_photon_setup_failed", error.to_string()))?;
+    let log_path = log_dir.join("photon-setup.log");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| AppError::new("hermes_photon_setup_failed", error.to_string()))?;
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let _ = writeln!(
+        file,
+        "\n=== photon-setup started {timestamp} (spawned by June app, outside the sandbox) ==="
+    );
+    let clone = file
+        .try_clone()
+        .map_err(|error| AppError::new("hermes_photon_setup_failed", error.to_string()))?;
+    Ok((log_path, file, clone))
+}
+
+fn photon_setup_status_inner(
+    bridge: &HermesBridge,
+    fallback_log_path: Option<PathBuf>,
+) -> Result<HermesPhotonSetupStatus, AppError> {
+    let mut guard = bridge.photon_setup.lock().map_err(|_| {
+        AppError::new("hermes_photon_setup_failed", "Photon setup lock failed.")
+    })?;
+    if let Some(action) = guard.as_mut() {
+        return photon_setup_status_from_action(action);
+    }
+    let lines = fallback_log_path
+        .as_deref()
+        .map(|path| tail_file_lines(path, 80))
+        .unwrap_or_default();
+    Ok(HermesPhotonSetupStatus {
+        running: false,
+        exit_code: None,
+        pid: None,
+        lines,
+    })
+}
+
+fn photon_setup_status_from_action(
+    action: &mut HermesActionProcess,
+) -> Result<HermesPhotonSetupStatus, AppError> {
+    let status = action
+        .child
+        .try_wait()
+        .map_err(|error| AppError::new("hermes_photon_setup_failed", error.to_string()))?;
+    Ok(HermesPhotonSetupStatus {
+        running: status.is_none(),
+        exit_code: status.and_then(|status| status.code()),
+        pid: Some(action.child.id()),
+        lines: tail_file_lines(&action.log_path, 80),
+    })
+}
+
+fn tail_file_lines(path: &Path, count: usize) -> Vec<String> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut lines = text
+        .lines()
+        .rev()
+        .take(count)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    lines
 }
 
 async fn hermes_connection_json(

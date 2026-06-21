@@ -499,6 +499,14 @@ export type HermesMessagingPlatformsResponse = {
   platforms: HermesMessagingPlatformInfo[];
 };
 
+export type HermesPhotonSetupStatus = {
+  running: boolean;
+  exitCode?: number | null;
+  exit_code?: number | null;
+  pid?: number | null;
+  lines: string[];
+};
+
 export type HermesSessionInfo = {
   id: string;
   active?: boolean;
@@ -934,6 +942,16 @@ export async function hermesBridgeMessagingPlatforms() {
   return invoke<HermesMessagingPlatformsResponse>(
     "hermes_bridge_messaging_platforms",
   );
+}
+
+export async function startHermesPhotonSetup(input: { phone: string }) {
+  return invoke<HermesPhotonSetupStatus>("start_hermes_photon_setup", {
+    request: input,
+  });
+}
+
+export async function hermesPhotonSetupStatus() {
+  return invoke<HermesPhotonSetupStatus>("hermes_photon_setup_status");
 }
 
 export async function hermesBridgeFilesystemSnapshot() {

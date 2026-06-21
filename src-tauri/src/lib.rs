@@ -156,6 +156,8 @@ pub fn run() {
             hermes_bridge::hermes_bridge_skills,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
+            hermes_bridge::start_hermes_photon_setup,
+            hermes_bridge::hermes_photon_setup_status,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
             hermes_bridge::download_hermes_bridge_file,
             hermes_bridge::hermes_bridge_file_preview,
