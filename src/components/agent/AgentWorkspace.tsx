@@ -7660,6 +7660,7 @@ function promptWithAttachments(
   attachments: AgentAttachment[],
 ): string {
   if (!attachments.length) return message;
+  const imageAttachments = attachments.filter(isImageAttachment);
   return [
     message || "Use the attached file(s).",
     "",
@@ -7668,9 +7669,28 @@ function promptWithAttachments(
       (attachment) =>
         `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,
     ),
+    ...(imageAttachments.length
+      ? [
+          "",
+          "Image edit workflow:",
+          ...imageAttachments.map(
+            (attachment) => `- Image source: ${attachment.path}`,
+          ),
+          "For image edit, transform, restyle, or generate-from-image requests, " +
+            "run vision_analyze on each image source first.",
+          "Then call image_generate with a text prompt that combines the " +
+            "visual analysis and the requested edits. image_generate does not " +
+            "accept image files directly in this Hermes version.",
+        ]
+      : []),
     "",
     "Use these workspace paths when inspecting or operating on the files.",
   ].join("\n");
+}
+
+function isImageAttachment(attachment: AgentAttachment) {
+  if (attachment.previewDataUrl?.startsWith("data:image/")) return true;
+  return /\.(?:avif|gif|heic|heif|jpe?g|png|webp)$/i.test(attachment.name);
 }
 
 function filesystemEntriesToArtifacts(

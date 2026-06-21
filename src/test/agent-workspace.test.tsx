@@ -2304,6 +2304,12 @@ describe("AgentWorkspace", () => {
         ),
       }),
     );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain("Image edit workflow:");
+    expect(submitted.text).toContain("vision_analyze");
+    expect(submitted.text).toContain("image_generate");
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
     );
