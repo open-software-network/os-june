@@ -31,12 +31,12 @@ const SCRIBE_HERMES_DISABLE_SANDBOX_ENV: &str = "SCRIBE_HERMES_DISABLE_SANDBOX";
 // Referenced by the spawn match arm on every target; only ever reached when
 // `prepare_sandbox` returns a profile, which it only does on macOS.
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
-// v2026.6.5 — see the bump PR for the audited pin→tag compatibility delta.
-const HERMES_AGENT_INSTALL_COMMIT: &str = "3c231eb3979ab9c57d5cd6d02f1d577a3b718b43";
+// v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
+const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
 const HERMES_SOURCE_TARBALL_URL: &str =
-    "https://github.com/NousResearch/hermes-agent/archive/3c231eb3979ab9c57d5cd6d02f1d577a3b718b43.tar.gz";
+    "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
-    "c36c4b4a205b09673a6bc742c2c4361bac6e92139e795378a4335422458c3a43";
+    "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
@@ -597,9 +597,9 @@ async fn start_hermes_bridge_inner(
         );
     }
     let port_string = port.to_string();
-    // No --tui: upstream removed the flag from the dashboard subcommand in
-    // v2026.6.5 (cae6b5486) — the embedded chat gateway (/api/ws) is always
-    // enabled now, and passing the flag is an argparse error.
+    // No --tui: upstream removed the flag from the dashboard subcommand before
+    // v2026.6.19, and the embedded chat gateway (/api/ws) is always enabled.
+    // Passing the flag is an argparse error.
     let hermes_args: [&str; 6] = [
         "dashboard",
         "--no-open",
@@ -2387,7 +2387,7 @@ if [ ! -f "$install_dir/pyproject.toml" ] || [ ! -f "$install_dir/scripts/instal
   mv "$unpacked_dir" "$install_dir"
 fi
 
-# Upstream's install.sh (v2026.6.5) runs $UV_CMD unquoted in the venv-create,
+# Upstream's install.sh (v2026.6.19) runs $UV_CMD unquoted in the venv-create,
 # uv-sync, and pip-install-tier calls. The managed uv it installs lives under
 # the app data dir — "Application Support" on macOS — so the space word-splits
 # the path and every one of those calls fails with "/Users/…/Library/
