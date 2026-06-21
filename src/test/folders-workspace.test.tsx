@@ -6,11 +6,19 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import { NOTE_DND_MIME } from "../lib/dnd";
 import type { FolderDto, NoteListItemDto } from "../lib/tauri";
+
+const mocks = vi.hoisted(() => ({
+  osAccountsReferralSummary: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", () => ({
+  osAccountsReferralSummary: mocks.osAccountsReferralSummary,
+}));
 
 const now = "2026-05-19T10:00:00Z";
 
@@ -95,6 +103,20 @@ function baseProps() {
     onOpenSessionMoveDialog: vi.fn(),
   };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.osAccountsReferralSummary.mockResolvedValue({
+    code: "JUNE-ALEX",
+    url: "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
+    referredCount: 3,
+    pendingCount: 1,
+    qualifiedCount: 2,
+    earnedMonths: 2,
+    appliedMonths: 1,
+    availableMonths: 1,
+  });
+});
 
 describe("Sidebar primary navigation", () => {
   it("shows Notes and Projects in primary navigation", async () => {
@@ -351,6 +373,89 @@ describe("Sidebar primary navigation", () => {
       screen.queryByRole("menuitem", { name: "Invite friends" }),
     ).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull();
+  });
+
+  it("opens the referral dialog and copies the invite link", async () => {
+    const user = userEvent.setup();
+    const clipboardWrite = vi.spyOn(navigator.clipboard, "writeText");
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        account={{
+          signedIn: true,
+          configured: true,
+          user: { id: "usr_123", handle: "alex", displayName: "Alex" },
+        }}
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /account menu/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Invite friends" }));
+
+    expect(mocks.osAccountsReferralSummary).toHaveBeenCalledOnce();
+    const dialog = await screen.findByRole("dialog", {
+      name: "Give a month, get a month",
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByLabelText("Invite link")).toHaveValue(
+      "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
+    );
+    expect(screen.getByText("Friends referred")).toBeInTheDocument();
+    expect(
+      screen.getByText("1 invited friend is waiting to subscribe."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
+    await waitFor(() =>
+      expect(clipboardWrite).toHaveBeenCalledWith(
+        "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
+      ),
+    );
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled();
+  });
+
+  it("handles unavailable referral links without retry noise", async () => {
+    mocks.osAccountsReferralSummary.mockRejectedValue({
+      code: "referrals_unavailable",
+      message: "Referral links are not available on this deployment yet.",
+    });
+    const user = userEvent.setup();
+    render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        account={{
+          signedIn: true,
+          configured: true,
+          user: { id: "usr_123", handle: "alex", displayName: "Alex" },
+        }}
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /account menu/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Invite friends" }));
+
+    expect(
+      await screen.findByText(
+        "Invite links aren't available yet. Check back soon.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 });
 

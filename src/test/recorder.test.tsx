@@ -33,6 +33,33 @@ describe("RecorderBar", () => {
     expect(screen.getByLabelText("Audio activity")).toBeInTheDocument();
   });
 
+  it("sends pause and finish actions with the active recording session", async () => {
+    const user = userEvent.setup();
+    const onPause = vi.fn();
+    const onDone = vi.fn();
+    render(
+      <RecorderBar
+        status={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 65_000,
+          level: { peak: 0.7, rms: 0.3, recentPeaks: [0.1, 0.4, 0.7] },
+          silenceWarning: false,
+          bytesWritten: 4096,
+        }}
+        onPause={onPause}
+        onResume={vi.fn()}
+        onDone={onDone}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
+
+    expect(onPause).toHaveBeenCalledWith("session-1");
+    expect(onDone).toHaveBeenCalledWith("session-1");
+  });
+
   it("uses resume action when paused", async () => {
     const user = userEvent.setup();
     const onResume = vi.fn();

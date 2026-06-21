@@ -378,7 +378,9 @@ describe("NoteEditor", () => {
     expect(
       screen.queryByText(/processing service returned an invalid response/i),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/scribe_api_response_invalid/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/scribe_api_response_invalid/i),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("0:15-0:18")).toBeInTheDocument();
   });
 
@@ -583,6 +585,72 @@ describe("NoteEditor", () => {
     expect(
       screen.queryByRole("status", { name: "Recording consent reminder" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("changes the note recording source mode from recording options", async () => {
+    const user = userEvent.setup();
+    const onSourceModeChange = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        sourceMode="microphonePlusSystem"
+        onSourceModeChange={onSourceModeChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+    await user.click(
+      screen.getByRole("switch", { name: "Capture system audio" }),
+    );
+
+    expect(onSourceModeChange).toHaveBeenCalledWith("microphoneOnly");
+  });
+
+  it("routes denied system audio setup from recording options", async () => {
+    const user = userEvent.setup();
+    const onEnableSystemAudio = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        sourceMode="microphonePlusSystem"
+        onEnableSystemAudio={onEnableSystemAudio}
+        sourceReadiness={{
+          sourceMode: "microphonePlusSystem",
+          ready: false,
+          checkedAt: now,
+          sources: [
+            {
+              source: "microphone",
+              required: true,
+              ready: true,
+              permissionState: "granted",
+              deviceAvailable: true,
+              captureAvailable: true,
+            },
+            {
+              source: "system",
+              required: true,
+              ready: false,
+              permissionState: "denied",
+              deviceAvailable: true,
+              captureAvailable: false,
+              recoveryAction: "openSystemAudioSettings",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+    const systemSwitch = screen.getByRole("switch", {
+      name: "Capture system audio",
+    });
+    expect(systemSwitch).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Enable" }));
+    expect(onEnableSystemAudio).toHaveBeenCalledOnce();
   });
 
   it("hides system audio recording options on Windows", () => {

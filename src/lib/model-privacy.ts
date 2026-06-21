@@ -39,7 +39,7 @@ export const E2EE_MODEL_DESCRIPTION =
 export const PRIVATE_MODEL_DESCRIPTION =
   "Private model with zero data retention. No prompt data is stored, shared with a third party, or trained on.";
 export const ANONYMOUS_MODEL_DESCRIPTION =
-  "The model provider may retain prompts, though they're anonymized — your identity is stripped before anything leaves June. For sensitive content, pick a Private or E2EE model.";
+  "The model provider may retain prompts, though they're anonymized. Your identity is stripped before anything leaves June. For sensitive content, pick a Private or E2EE model.";
 
 type ModelPrivacySignals = Pick<VeniceModelDto, "privacy" | "traits"> &
   Partial<Pick<VeniceModelDto, "capabilities">>;

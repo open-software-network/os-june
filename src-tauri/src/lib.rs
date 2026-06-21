@@ -87,14 +87,16 @@ pub fn run() {
     // both cold-launch and warm-launch cases.
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            use tauri::Manager;
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }));
+        if should_register_single_instance_plugin() {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }));
+        }
     }
 
     builder
@@ -260,6 +262,39 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });
+}
+
+#[cfg(desktop)]
+fn should_register_single_instance_plugin() -> bool {
+    single_instance_enabled_for_build(
+        cfg!(debug_assertions),
+        std::env::var_os("OS_SCRIBE_ENABLE_DEV_SINGLE_INSTANCE").is_some(),
+    )
+}
+
+#[cfg(desktop)]
+fn single_instance_enabled_for_build(debug_assertions: bool, force_dev: bool) -> bool {
+    !debug_assertions || force_dev
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::single_instance_enabled_for_build;
+
+    #[test]
+    fn single_instance_is_disabled_for_dev_builds_by_default() {
+        assert!(!single_instance_enabled_for_build(true, false));
+    }
+
+    #[test]
+    fn single_instance_can_be_forced_on_for_dev_builds() {
+        assert!(single_instance_enabled_for_build(true, true));
+    }
+
+    #[test]
+    fn single_instance_remains_enabled_for_release_builds() {
+        assert!(single_instance_enabled_for_build(false, false));
+    }
 }
 
 fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
