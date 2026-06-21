@@ -1,7 +1,8 @@
 //! Identity-only integration with OS Accounts (Login with Open Software).
 //!
-//! Tokens live in the OS keychain (never the webview). Metering goes through
-//! Scribe API, which holds the App API key — never this binary.
+//! Tokens live in the OS keychain (never the webview). Debug builds use a
+//! separate keychain service by default. Metering goes through Scribe API,
+//! which holds the App API key — never this binary.
 //!
 //! Debug builds can opt into a plaintext token file for local development via
 //! `OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE=1`; release builds always use Keychain.
@@ -37,6 +38,7 @@ const OAUTH_SCOPES: &str = "profile:read billing:read billing:write credits:spen
 // Scribe's OS Accounts token store. Keep this app-scoped so Scribe does not
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
+const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe-dev.accounts";
 const KEYCHAIN_USER: &str = "tokens";
 const LOCAL_DEV_ENV: &str = "OS_SCRIBE_LOCAL_DEV";
 const LOCAL_DEV_BEARER_TOKEN_ENV: &str = "OS_SCRIBE_LOCAL_DEV_BEARER_TOKEN";
@@ -47,6 +49,7 @@ const DEFAULT_LOCAL_DEV_USER_ID: &str = "usr_local_dev";
 const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_SCRIBE_DEV_PLAINTEXT_TOKEN_STORE";
 #[cfg(debug_assertions)]
 const DEV_PLAINTEXT_TOKEN_FILE: &str = "dev-os-accounts-tokens.json";
+const USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_SCRIBE_USE_PROD_ACCOUNTS_TOKENS";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(debug_assertions)]
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1373,9 +1376,9 @@ async fn store_tokens(pair: &TokenPair) -> Result<(), AppError> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn store_platform_tokens(json: String) -> Result<(), AppError> {
+    let service = keychain_service().to_string();
     tokio::task::spawn_blocking(move || {
-        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
-            .and_then(|entry| entry.set_password(&json))
+        keyring::Entry::new(&service, KEYCHAIN_USER).and_then(|entry| entry.set_password(&json))
     })
     .await
     .map_err(|e| AppError::new("keychain_write_failed", e.to_string()))?
@@ -1400,8 +1403,9 @@ async fn load_tokens() -> Option<TokenPair> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn load_platform_tokens() -> Option<TokenPair> {
-    let raw = tokio::task::spawn_blocking(|| {
-        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
+    let service = keychain_service().to_string();
+    let raw = tokio::task::spawn_blocking(move || {
+        keyring::Entry::new(&service, KEYCHAIN_USER)
             .ok()
             .and_then(|entry| entry.get_password().ok())
     })
@@ -1429,8 +1433,9 @@ async fn clear_tokens() {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn clear_platform_tokens() {
-    let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
+    let service = keychain_service().to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(entry) = keyring::Entry::new(&service, KEYCHAIN_USER) {
             let _ = entry.delete_credential();
         }
     })
@@ -1439,6 +1444,23 @@ async fn clear_platform_tokens() {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn clear_platform_tokens() {}
+
+fn keychain_service() -> &'static str {
+    keychain_service_for_build(cfg!(debug_assertions), use_prod_accounts_tokens())
+}
+
+fn keychain_service_for_build(debug_assertions: bool, use_prod: bool) -> &'static str {
+    if debug_assertions && !use_prod {
+        DEV_KEYCHAIN_SERVICE
+    } else {
+        KEYCHAIN_SERVICE
+    }
+}
+
+fn use_prod_accounts_tokens() -> bool {
+    load_local_env();
+    cfg!(debug_assertions) && env_truthy(USE_PROD_ACCOUNTS_TOKENS_ENV)
+}
 
 #[cfg(debug_assertions)]
 fn use_dev_plaintext_token_store() -> bool {
@@ -1619,5 +1641,23 @@ mod tests {
             normalize_local_dev_user_id("  usr_custom_local  "),
             "usr_custom_local"
         );
+    }
+
+    #[test]
+    fn release_builds_use_the_production_keychain_service() {
+        assert_eq!(keychain_service_for_build(false, false), KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn debug_builds_use_a_separate_keychain_service_by_default() {
+        assert_eq!(
+            keychain_service_for_build(true, false),
+            DEV_KEYCHAIN_SERVICE
+        );
+    }
+
+    #[test]
+    fn debug_builds_can_opt_into_the_production_keychain_service() {
+        assert_eq!(keychain_service_for_build(true, true), KEYCHAIN_SERVICE);
     }
 }
