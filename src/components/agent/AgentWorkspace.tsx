@@ -5332,6 +5332,7 @@ export function MessagingPanel({
   onQueryChange,
   onRefresh,
   onSaveEnv,
+  onOpenWhatsAppSetup,
   onSelectPlatform,
   onToggle,
 }: {
@@ -5345,6 +5346,7 @@ export function MessagingPanel({
   onQueryChange: (query: string) => void;
   onRefresh: () => void;
   onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
+  onOpenWhatsAppSetup?: () => void;
   onSelectPlatform: (platform: HermesMessagingPlatformInfo) => void;
   onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
 }) {
@@ -5417,6 +5419,7 @@ export function MessagingPanel({
             saving={saving}
             onEditEnv={onEditEnv}
             onSaveEnv={onSaveEnv}
+            onOpenWhatsAppSetup={onOpenWhatsAppSetup}
             onToggle={onToggle}
           />
         </div>
@@ -5557,6 +5560,7 @@ function MessagingPlatformDetail({
   saving,
   onEditEnv,
   onSaveEnv,
+  onOpenWhatsAppSetup,
   onToggle,
 }: {
   envEdits: Record<string, string>;
@@ -5564,6 +5568,7 @@ function MessagingPlatformDetail({
   saving: string | null;
   onEditEnv: (key: string, value: string) => void;
   onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
+  onOpenWhatsAppSetup?: () => void;
   onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -5624,6 +5629,12 @@ function MessagingPlatformDetail({
             Open setup guide
           </a>
         ) : null}
+        {platform.id === "whatsapp" ? (
+          <WhatsAppSetupGuide
+            disabled={saving === "messaging:whatsapp:setup"}
+            onOpenSetup={onOpenWhatsAppSetup}
+          />
+        ) : null}
         <MessagingFieldGroup
           title="Required"
           fields={required}
@@ -5677,6 +5688,43 @@ function MessagingPlatformDetail({
         </button>
       </footer>
     </div>
+  );
+}
+
+function WhatsAppSetupGuide({
+  disabled,
+  onOpenSetup,
+}: {
+  disabled: boolean;
+  onOpenSetup?: () => void;
+}) {
+  return (
+    <section className="agent-messaging-setup-guide">
+      <div>
+        <h4>Pair WhatsApp</h4>
+        <p>
+          WhatsApp pairing shows a QR code in Terminal. Choose bot mode for a
+          dedicated number or self-chat mode for testing.
+        </p>
+      </div>
+      <ol>
+        <li>Set allowed users below using phone numbers without spaces.</li>
+        <li>Open pairing and scan the QR code from Linked Devices.</li>
+        <li>Enable WhatsApp here, then keep the messaging gateway running.</li>
+      </ol>
+      <div className="agent-messaging-setup-actions">
+        <button
+          type="button"
+          disabled={disabled || !onOpenSetup}
+          onClick={onOpenSetup}
+        >
+          {disabled ? "Opening..." : "Open pairing"}
+        </button>
+        <span>
+          Use <code>whatsapp:+15551234567</code> with send message targets.
+        </span>
+      </div>
+    </section>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   getHermesBridgeSkill,
   agentHudHide,
   agentHudShow,
+  openHermesWhatsAppSetupTerminal,
   setHermesAgentCliAccess,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
@@ -295,6 +296,18 @@ export function AgentSettingsSection() {
     }
   }
 
+  async function openWhatsAppSetup() {
+    setSaving("messaging:whatsapp:setup");
+    try {
+      await openHermesWhatsAppSetupTerminal();
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setSaving(null);
+    }
+  }
+
   return (
     <section className="settings-group" aria-labelledby="agent-heading">
       <h2 id="agent-heading" className="settings-group-heading">
@@ -423,6 +436,7 @@ export function AgentSettingsSection() {
               setEnvEdits((current) => ({ ...current, [key]: value }))
             }
             onSaveEnv={(platform) => void saveMessagingPlatformEnv(platform)}
+            onOpenWhatsAppSetup={() => void openWhatsAppSetup()}
             onToggle={(platform, enabled) =>
               void setMessagingPlatformEnabled(platform, enabled)
             }

@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
+  openHermesWhatsAppSetupTerminal: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
@@ -75,6 +76,7 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
     mocks.updateHermesBridgeMessagingPlatform,
+  openHermesWhatsAppSetupTerminal: mocks.openHermesWhatsAppSetupTerminal,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -344,6 +346,7 @@ describe("AppSettings", () => {
     mocks.hermesBridgeSkills.mockResolvedValue([]);
     mocks.hermesBridgeToolsets.mockResolvedValue([]);
     mocks.hermesBridgeMessagingPlatforms.mockResolvedValue({ platforms: [] });
+    mocks.openHermesWhatsAppSetupTerminal.mockResolvedValue(undefined);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -1733,6 +1736,56 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("opens the WhatsApp pairing flow from messaging settings", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        {
+          id: "whatsapp",
+          name: "WhatsApp",
+          description: "Use June through the bundled WhatsApp bridge.",
+          enabled: false,
+          configured: false,
+          gatewayRunning: true,
+          state: "disabled",
+          envVars: [
+            {
+              key: "WHATSAPP_ALLOWED_USERS",
+              prompt: "Allowed WhatsApp users",
+              description:
+                "Comma-separated phone numbers allowed to use the bot",
+            },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    await user.click(screen.getByRole("button", { name: "Messaging" }));
+
+    expect(await screen.findByText("Pair WhatsApp")).toBeInTheDocument();
+    expect(
+      screen.getByText("whatsapp:+15551234567"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open pairing" }));
+
+    expect(mocks.openHermesWhatsAppSetupTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("toggles the agent HUD from Agent settings", async () => {
