@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const TRACKER_PATH = "docs/qa/feature-user-stories.tsv";
 const REQUIRED_COLUMNS = [
@@ -28,12 +28,19 @@ function isCommandRef(ref) {
 }
 
 describe("feature user-story tracker", () => {
-  const lines = readFileSync(TRACKER_PATH, "utf8").trimEnd().split("\n");
-  const header = lines[0].split("\t");
-  const rows = lines.slice(1).map((line) => line.split("\t"));
-  const columnIndex = Object.fromEntries(
-    header.map((column, index) => [column, index]),
-  );
+  let lines;
+  let header;
+  let rows;
+  let columnIndex;
+
+  beforeAll(() => {
+    lines = readFileSync(TRACKER_PATH, "utf8").trimEnd().split("\n");
+    header = lines[0].split("\t");
+    rows = lines.slice(1).map((line) => line.split("\t"));
+    columnIndex = Object.fromEntries(
+      header.map((column, index) => [column, index]),
+    );
+  });
 
   it("keeps the canonical TSV schema intact", () => {
     expect(header).toEqual(REQUIRED_COLUMNS);

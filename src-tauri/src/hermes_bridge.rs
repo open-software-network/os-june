@@ -2067,9 +2067,7 @@ fn bundled_hermes_command_candidates(resource_dir: &Path) -> Vec<PathBuf> {
 }
 
 fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
-    Ok(app
-        .path()
-        .app_data_dir()
+    Ok(crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("hermes_runtime_home_failed", error.to_string()))?
         .join("hermes-runtime"))
 }
@@ -2614,7 +2612,7 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
     let profile = build_sandbox_profile(&home, &write_roots, agent_cli_access);
-    let app_data_dir = app.path().app_data_dir().ok()?;
+    let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
     if std::fs::create_dir_all(&app_data_dir).is_err() {
         return None;
     }
@@ -2638,8 +2636,7 @@ fn prepare_sandbox(
 }
 
 fn agent_cli_access_flag_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
+    crate::app_paths::app_data_dir(app)
         .ok()
         .map(|dir| dir.join(AGENT_CLI_ACCESS_FLAG_FILE))
 }
@@ -2855,9 +2852,7 @@ fn sbpl_regex_escape(value: &str) -> String {
 }
 
 fn resolve_scribe_hermes_home(app: &AppHandle) -> Result<PathBuf, AppError> {
-    let path = app
-        .path()
-        .app_data_dir()
+    let path = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("hermes_bridge_home_failed", error.to_string()))?
         .join("hermes");
     std::fs::create_dir_all(&path)

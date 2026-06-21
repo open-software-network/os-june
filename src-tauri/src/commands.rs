@@ -1725,9 +1725,7 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
 }
 
 fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
+    let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
     AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))

@@ -2657,7 +2657,7 @@ fn append_dictation_event_log(
         return;
     }
     let entry = dictation_event_log_entry(event_type, event);
-    let Ok(directory) = app.path().app_data_dir() else {
+    let Ok(directory) = crate::app_paths::app_data_dir(app) else {
         return;
     };
     if fs::create_dir_all(&directory).is_err() {

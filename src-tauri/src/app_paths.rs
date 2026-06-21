@@ -2,6 +2,9 @@ use std::{
     io::{Error, ErrorKind},
     path::{Component, Path, PathBuf},
 };
+use tauri::{AppHandle, Manager};
+
+const USE_PROD_DATA_DIR_ENV: &str = "OS_SCRIBE_USE_PROD_DATA_DIR";
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -55,6 +58,31 @@ impl AppPaths {
     }
 }
 
+pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
+    app.path().app_data_dir().map(|data_dir| {
+        app_data_dir_for_build(data_dir, cfg!(debug_assertions), use_prod_data_dir())
+    })
+}
+
+fn use_prod_data_dir() -> bool {
+    std::env::var_os(USE_PROD_DATA_DIR_ENV).is_some()
+}
+
+fn app_data_dir_for_build(data_dir: PathBuf, debug_assertions: bool, use_prod: bool) -> PathBuf {
+    if !debug_assertions || use_prod {
+        return data_dir;
+    }
+
+    data_dir
+        .file_name()
+        .map(|name| {
+            let mut dev_name = name.to_os_string();
+            dev_name.push("-dev");
+            data_dir.with_file_name(dev_name)
+        })
+        .unwrap_or_else(|| data_dir.join("dev"))
+}
+
 fn validate_recording_component(field: &'static str, value: &str) -> std::io::Result<()> {
     if value.is_empty()
         || value.len() > 128
@@ -75,7 +103,8 @@ fn validate_recording_component(field: &'static str, value: &str) -> std::io::Re
 
 #[cfg(test)]
 mod tests {
-    use super::AppPaths;
+    use super::{app_data_dir_for_build, AppPaths};
+    use std::path::PathBuf;
 
     #[test]
     fn recording_session_dir_rejects_path_traversal_components() {
@@ -106,5 +135,35 @@ mod tests {
             std::os::unix::fs::symlink(&outside, &inside_link).expect("symlink");
             assert!(paths.contained_recording_file(&inside_link).is_err());
         }
+    }
+
+    #[test]
+    fn release_builds_use_the_configured_data_dir() {
+        let data_dir = PathBuf::from("/tmp/co.opensoftware.scribe");
+
+        assert_eq!(
+            app_data_dir_for_build(data_dir.clone(), false, false),
+            data_dir
+        );
+    }
+
+    #[test]
+    fn debug_builds_use_a_separate_dev_data_dir_by_default() {
+        let data_dir = PathBuf::from("/tmp/co.opensoftware.scribe");
+
+        assert_eq!(
+            app_data_dir_for_build(data_dir, true, false),
+            PathBuf::from("/tmp/co.opensoftware.scribe-dev")
+        );
+    }
+
+    #[test]
+    fn debug_builds_can_opt_into_the_configured_data_dir() {
+        let data_dir = PathBuf::from("/tmp/co.opensoftware.scribe");
+
+        assert_eq!(
+            app_data_dir_for_build(data_dir.clone(), true, true),
+            data_dir
+        );
     }
 }

@@ -16,9 +16,14 @@ const mocks = vi.hoisted(() => ({
   osAccountsReferralSummary: vi.fn(),
 }));
 
-vi.mock("../lib/tauri", () => ({
-  osAccountsReferralSummary: mocks.osAccountsReferralSummary,
-}));
+vi.mock("../lib/tauri", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/tauri")>();
+
+  return {
+    ...actual,
+    osAccountsReferralSummary: mocks.osAccountsReferralSummary,
+  };
+});
 
 const now = "2026-05-19T10:00:00Z";
 
