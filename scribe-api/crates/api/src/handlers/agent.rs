@@ -80,7 +80,10 @@ async fn chat_completions_with_route(
         let output = match state.agent_chat().complete_streaming(params).await {
             Ok(output) => output,
             Err(error) => {
-                return agent_chat_error_response(&state, &user_id, body, route, error);
+                if route == AgentChatRoute::Guarded {
+                    return agent_chat_error_response(&state, &user_id, body, error);
+                }
+                return Err(ApiError::from(error));
             }
         };
         return Ok((
@@ -93,7 +96,12 @@ async fn chat_completions_with_route(
 
     let output = match state.agent_chat().complete(params).await {
         Ok(output) => output,
-        Err(error) => return agent_chat_error_response(&state, &user_id, body, route, error),
+        Err(error) => {
+            if route == AgentChatRoute::Guarded {
+                return agent_chat_error_response(&state, &user_id, body, error);
+            }
+            return Err(ApiError::from(error));
+        }
     };
     if let Some(token) = direct_token {
         state.remember_direct_chat_session_key(&token, body, &output.completion.body);
@@ -120,10 +128,9 @@ fn agent_chat_error_response(
     state: &ApiState,
     user_id: &scribe_domain::UserId,
     body: &serde_json::Value,
-    route: AgentChatRoute,
     error: ServiceError,
 ) -> Result<Response, ApiError> {
-    if route == AgentChatRoute::Guarded && matches!(error, ServiceError::PolicyBlocked) {
+    if matches!(error, ServiceError::PolicyBlocked) {
         return policy_blocked_response_with_direct_grant(state, user_id, body);
     }
     Err(ApiError::from(error))

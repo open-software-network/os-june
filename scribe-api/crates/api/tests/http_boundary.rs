@@ -687,13 +687,13 @@ fn test_state_with_chat_completers(
     guarded_chat_completer: Arc<dyn AgentChatCompleter>,
     direct_chat_completer: Arc<dyn AgentChatCompleter>,
 ) -> ApiState {
-    test_state_with_parts(
-        Arc::new(RecordingIssueReportSink::default()),
-        None,
+    test_state_with_parts(TestStateParts {
+        issue_reports: Arc::new(RecordingIssueReportSink::default()),
+        tool_guard: None,
         guarded_chat_completer,
         direct_chat_completer,
-        test_attestation(),
-    )
+        attestation: test_attestation(),
+    })
 }
 
 fn test_state_with_sinks(
@@ -701,22 +701,31 @@ fn test_state_with_sinks(
     tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
     attestation: AttestationInfo,
 ) -> ApiState {
-    test_state_with_parts(
+    test_state_with_parts(TestStateParts {
         issue_reports,
         tool_guard,
-        Arc::new(FakeChatCompleter::new("fake-guarded-chat")),
-        Arc::new(FakeChatCompleter::new("fake-direct-chat")),
+        guarded_chat_completer: Arc::new(FakeChatCompleter::new("fake-guarded-chat")),
+        direct_chat_completer: Arc::new(FakeChatCompleter::new("fake-direct-chat")),
         attestation,
-    )
+    })
 }
 
-fn test_state_with_parts(
+struct TestStateParts {
     issue_reports: Arc<dyn IssueReportSink>,
     tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
     guarded_chat_completer: Arc<dyn AgentChatCompleter>,
     direct_chat_completer: Arc<dyn AgentChatCompleter>,
     attestation: AttestationInfo,
-) -> ApiState {
+}
+
+fn test_state_with_parts(parts: TestStateParts) -> ApiState {
+    let TestStateParts {
+        issue_reports,
+        tool_guard,
+        guarded_chat_completer,
+        direct_chat_completer,
+        attestation,
+    } = parts;
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
     let transcriber = Arc::new(FakeTranscriber);

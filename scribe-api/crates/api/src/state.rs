@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DIRECT_CHAT_GRANT_TTL: Duration = Duration::from_secs(15 * 60);
+const DIRECT_CHAT_GRANT_TTL: Duration = Duration::from_mins(15);
 const MAX_DIRECT_CHAT_GRANTS: usize = 1024;
 
 #[derive(Clone)]
@@ -312,7 +312,7 @@ fn next_assistant_message_fingerprint(messages: &[Value]) -> Option<String> {
         match message.get("role").and_then(Value::as_str) {
             Some("assistant") => return assistant_message_fingerprint(message),
             Some("user") => return None,
-            _ => continue,
+            _ => {}
         }
     }
     None
