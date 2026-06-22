@@ -74,8 +74,8 @@ Configure local Scribe with OS Guard as the guarded chat upstream and Venice as
 the direct upstream:
 
 ```sh
-SCRIBE__UPSTREAMS__OSGUARD__BASE_URL=http://34.155.254.65:8080/v1
-SCRIBE__UPSTREAMS__OSGUARD__API_KEY=local-test-token
+SCRIBE__UPSTREAMS__OSGUARD__BASE_URL=http://<os-guard-host>:8080/v1
+SCRIBE__UPSTREAMS__OSGUARD__API_KEY=<os-guard-gateway-token>
 SCRIBE__UPSTREAMS__VENICE__API_KEY=<venice-api-key>
 ```
 

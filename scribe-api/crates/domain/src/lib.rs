@@ -407,8 +407,15 @@ pub trait AgentChatCompleter: Send + Sync {
     /// providers override this to forward the upstream response incrementally.
     async fn complete_streaming(
         &self,
-        request: AgentChatRequest,
+        mut request: AgentChatRequest,
     ) -> Result<AgentChatStream, DomainError> {
+        // This default buffers the whole completion, so the upstream call must be
+        // non-streaming regardless of what the caller requested; force it off so
+        // a provider using the default never receives an SSE body it would then
+        // (incorrectly) treat as a single buffered completion.
+        if let Some(object) = request.body.as_object_mut() {
+            object.insert("stream".to_string(), serde_json::Value::Bool(false));
+        }
         let completion = self.complete(request).await?;
         let usage = std::sync::Arc::new(std::sync::Mutex::new(Some(completion.usage)));
         let chunk = bytes::Bytes::from(completion.body);
