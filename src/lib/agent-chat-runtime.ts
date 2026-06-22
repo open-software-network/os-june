@@ -225,22 +225,15 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => {
-      // Pending turns carry a client-clock timestamp; persisted turns carry the
-      // server clock. Comparing the two across a clock skew used to reorder an
-      // unpersisted prompt ahead of an already-persisted one, swapping which
-      // bubble a policy-block card landed on. Pending turns are always the
-      // newest, so force them after persisted ones and only compare timestamps
-      // within the same clock.
-      const aPending = a.id.startsWith("pending:") ? 1 : 0;
-      const bPending = b.id.startsWith("pending:") ? 1 : 0;
-      if (aPending !== bPending) return aPending - bPending;
-      return a.createdAt.localeCompare(b.createdAt);
-    });
+  // Keep insertion order: persisted messages arrive already ordered, pending
+  // messages follow in send order, and live event turns are appended last as
+  // they stream. That sequence is chronological by construction. A sort by
+  // `createdAt` only broke it — pending/live turns carry a client clock and
+  // persisted ones a server clock, so any skew reordered an in-flight prompt
+  // (and its streaming "thinking" turn) around the persisted history.
+  return turns.filter((turn) =>
+    turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
+  );
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
