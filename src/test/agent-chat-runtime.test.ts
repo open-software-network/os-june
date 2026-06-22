@@ -253,6 +253,42 @@ describe("Agent chat runtime", () => {
     });
   });
 
+  it("never renders the streamed policy_blocked notice as raw text", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "policy_block.request",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { decision_id: "decision-1" },
+        },
+        {
+          type: "policy_block.decision",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { decision_id: "decision-1", action: "reject" },
+        },
+        {
+          // The proxy streams the block notice as content; it must not surface
+          // as a text part even for a frame.
+          type: "message.delta",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.100Z",
+          payload: {
+            content: "Error: policy_blocked - the prompt was blocked by OS Guard.",
+          },
+        },
+      ],
+    );
+
+    const textParts = turns.flatMap((turn) =>
+      turn.parts.filter((part) => part.type === "text"),
+    );
+    expect(textParts).toHaveLength(0);
+  });
+
   it("renders live clarify requests as answerable chat parts", () => {
     const turns = buildAgentChatTurns(
       [],

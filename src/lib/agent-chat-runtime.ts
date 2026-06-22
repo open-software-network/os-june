@@ -375,6 +375,14 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "message.delta") {
+      // The proxy re-streams a rejected prompt as assistant content; never show
+      // that raw policy_blocked notice as streaming text — the block card
+      // (decision flow / message.complete) is the only thing that should render.
+      if (isPolicyBlockedMessage(deltaEventText(event))) {
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        currentAssistant.status = "running";
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
       appendAssistantTextPart(
@@ -397,6 +405,11 @@ function appendLiveHermesEvents(
         turnsHavePolicyBlockPart(turns)
       ) {
         if (currentAssistant) {
+          // Drop any partially streamed block text so it never lingers next to
+          // the card.
+          currentAssistant.parts = currentAssistant.parts.filter(
+            (part) => part.type !== "text",
+          );
           currentAssistant.status = "complete";
           completeRunningParts(currentAssistant.parts);
           currentAssistant = null;
@@ -672,6 +685,11 @@ function appendLiveHermesEvents(
         turnsHavePolicyBlockPart(turns)
       ) {
         if (currentAssistant) {
+          // Drop any partially streamed block text so it never lingers next to
+          // the card.
+          currentAssistant.parts = currentAssistant.parts.filter(
+            (part) => part.type !== "text",
+          );
           currentAssistant.status = "complete";
           completeRunningParts(currentAssistant.parts);
           currentAssistant = null;
