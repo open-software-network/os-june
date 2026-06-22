@@ -84,6 +84,7 @@ import {
   hermesAgentCliAccess,
   hermesBridgeSkills,
   hermesBridgeStatus,
+  hermesBridgeClearDirectPolicy,
   hermesBridgePolicyBlockDecision,
   hermesBridgeToolsets,
   importHermesBridgeFile,
@@ -1184,18 +1185,21 @@ export function AgentWorkspace({
       policyBlockSessionIdsRef.current[part.id] ?? selectedHermesSessionId;
     if (!sessionId || policyBlockSubmitting[part.id]) return;
     setPolicyBlockSubmitting((current) => ({ ...current, [part.id]: action }));
+    // Reflect the decision on the card immediately, before the backend
+    // round-trip — otherwise the card lingers on the pending prompt and then
+    // visibly swaps to its final state once the call returns.
+    appendPolicyBlockLiveEvent(sessionId, {
+      type: "policy_block.decision",
+      receivedAt: new Date().toISOString(),
+      payload: {
+        decision_id: part.id,
+        action,
+      },
+    });
     try {
       await hermesBridgePolicyBlockDecision({
         decisionId: part.id,
         action,
-      });
-      appendPolicyBlockLiveEvent(sessionId, {
-        type: "policy_block.decision",
-        receivedAt: new Date().toISOString(),
-        payload: {
-          decision_id: part.id,
-          action,
-        },
       });
       if (action === "continue") {
         setDirectPolicySessionIds((current) => {
@@ -1229,6 +1233,34 @@ export function AgentWorkspace({
         delete next[part.id];
         return next;
       });
+    }
+  }
+
+  // Re-enable OS Guard for a session the user previously continued past a
+  // block: drop it from the direct set, clear the inline approval card from the
+  // live timeline, and tell the proxy to forget the remembered "continue"
+  // fingerprints so the next turn is scanned again.
+  async function reactivateOsGuard(sessionId: string | undefined) {
+    if (!sessionId) return;
+    setDirectPolicySessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    liveEventsRef.current = {
+      ...liveEventsRef.current,
+      [sessionId]: (liveEventsRef.current[sessionId] ?? []).filter(
+        (event) =>
+          event.type !== "policy_block.request" &&
+          event.type !== "policy_block.decision",
+      ),
+    };
+    setLiveEvents(liveEventsRef.current);
+    try {
+      await hermesBridgeClearDirectPolicy();
+    } catch (err) {
+      setError(messageFromError(err));
     }
   }
 
@@ -1862,7 +1894,9 @@ export function AgentWorkspace({
           }
           liveEventsRef.current = {
             ...liveEventsRef.current,
-            [selectedHermesSessionId]: [],
+            [selectedHermesSessionId]: retainPolicyBlockLiveEvents(
+              liveEventsRef.current[selectedHermesSessionId],
+            ),
           };
           setLiveEvents(liveEventsRef.current);
         }
@@ -2798,7 +2832,12 @@ export function AgentWorkspace({
             ...activityCounts,
           });
         }
-        liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
+        liveEventsRef.current = {
+          ...liveEventsRef.current,
+          [sessionId]: retainPolicyBlockLiveEvents(
+            liveEventsRef.current[sessionId],
+          ),
+        };
         setLiveEvents(liveEventsRef.current);
       }
       await loadHermesSessions();
@@ -3669,18 +3708,27 @@ export function AgentWorkspace({
               </button>
             </motion.div>
           ) : selectedSessionDirectPolicy ? (
-            <motion.p
+            <motion.div
               key="policy-direct-notice"
-              className="agent-composer-notice"
+              className="agent-composer-notice agent-composer-notice-action"
               role="status"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
-              This session is running directly on Venice without OS Guard
-              protection.
-            </motion.p>
+              <span>
+                This session is running directly on Venice without OS Guard
+                protection.
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void reactivateOsGuard(selectedHermesSessionId)}
+              >
+                Re-enable OS Guard
+              </button>
+            </motion.div>
           ) : busyNotice || galleryErrors ? (
             // Same fade as the recording-consent note, so the pill dissolves
             // when the turn finishes instead of vanishing.
@@ -6016,6 +6064,20 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
 // Collapse runs of "thinking-only" assistant turns (reasoning/tool, no answer
 // text) into the next answer turn, so a back-to-back chain of thoughts shows as
 // a single "Thought" disclosure rather than several stacked in a row.
+// When a finished turn's live events are dropped in favour of the persisted
+// messages, keep the policy-block decision events. A continued ("approved")
+// block has no persisted marker — only these events render its card — so
+// without this the approval card vanishes the moment the model's answer lands.
+function retainPolicyBlockLiveEvents(
+  events: LiveHermesEvent[] | undefined,
+): LiveHermesEvent[] {
+  return (events ?? []).filter(
+    (event) =>
+      event.type === "policy_block.request" ||
+      event.type === "policy_block.decision",
+  );
+}
+
 function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
   const isThinkingOnly = (turn: AgentChatTurn): boolean =>
     turn.role === "assistant" &&
@@ -6454,19 +6516,19 @@ function PolicyBlockPart({
   submitting?: PolicyBlockDecisionAction;
 }) {
   const pending = part.status === "pending";
-  const body =
-    part.status === "continued"
-      ? "This session is running directly on Venice without OS Guard protection."
-      : part.status === "rejected"
-        ? "The prompt was blocked. Start a new session to continue."
-        : "OS Guard blocked this prompt because malicious content was detected. Continuing sends this session directly to Venice without OS Guard protection.";
+  const continued = part.status === "continued";
+  const body = continued
+    ? "You approved this prompt. OS Guard is off for the rest of this session — it runs directly on Venice."
+    : part.status === "rejected"
+      ? "The prompt was blocked. Start a new session to continue."
+      : "OS Guard blocked this prompt because malicious content was detected. Continuing sends this session directly to Venice without OS Guard protection.";
   return (
     <InlineNotice
       className="agent-policy-block-notice"
-      tone="destructive"
+      tone={continued ? "warning" : "destructive"}
       role="alert"
       icon={<IconShieldCrossed size={14} aria-hidden />}
-      eyebrow="Prompt blocked"
+      eyebrow={continued ? "Prompt approved" : "Prompt blocked"}
       body={body}
       actions={
         pending ? (

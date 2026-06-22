@@ -939,6 +939,10 @@ export async function hermesBridgePolicyBlockDecision(
   return invoke<void>("hermes_bridge_policy_block_decision", { response });
 }
 
+export async function hermesBridgeClearDirectPolicy() {
+  return invoke<void>("hermes_bridge_clear_direct_policy");
+}
+
 export async function hermesBridgeSkills() {
   return invoke<HermesSkillInfo[]>("hermes_bridge_skills");
 }

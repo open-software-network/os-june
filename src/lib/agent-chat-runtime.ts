@@ -108,7 +108,7 @@ export function buildAgentChatTurns(
   const turns = messages.map(messageToTurn);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
+  return dedupePolicyBlockParts(turns)
     .filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
     )
@@ -214,7 +214,7 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
+  return dedupePolicyBlockParts(turns)
     .filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
     )
@@ -751,6 +751,36 @@ function turnsHavePolicyBlockPart(turns: AgentChatTurn[]): boolean {
   return turns.some((turn) =>
     turn.parts.some((part) => part.type === "policyBlock"),
   );
+}
+
+// A single prompt block can surface from several sources at once — the live
+// decision flow, the re-streamed block message, and the persisted message —
+// each a separate part. Collapse them to one card so the conversation never
+// shows two, even for a frame. A decided card (continued/rejected) wins over a
+// pending one; the latest such is kept.
+function dedupePolicyBlockParts(turns: AgentChatTurn[]): AgentChatTurn[] {
+  const blocks = turns.flatMap((turn) =>
+    turn.parts.filter((part) => part.type === "policyBlock"),
+  );
+  if (blocks.length <= 1) {
+    return turns;
+  }
+  const decided = blocks.filter((part) => part.status !== "pending");
+  const keep = (decided.length ? decided : blocks).at(-1);
+  let kept = false;
+  return turns
+    .map((turn) => {
+      const parts = turn.parts.filter((part) => {
+        if (part.type !== "policyBlock") return true;
+        if (part === keep && !kept) {
+          kept = true;
+          return true;
+        }
+        return false;
+      });
+      return parts.length === turn.parts.length ? turn : { ...turn, parts };
+    })
+    .filter((turn) => turn.parts.length > 0);
 }
 
 function appendAssistantTextPart(
