@@ -1471,6 +1471,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "futures-util",
  "pretty_assertions",
  "scribe-config",
  "scribe-domain",

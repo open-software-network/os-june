@@ -8,12 +8,12 @@ use pretty_assertions::assert_eq;
 use scribe_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
 use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use scribe_domain::{
-    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
-    Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, ToolGuardAnalysis, ToolGuardAnalyzer, ToolGuardCallAnalysisRequest,
-    ToolGuardRedactionPlan, ToolGuardResultAnalysisRequest, Transcriber, Transcript,
-    TranscriptionRequest, UserId,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, AudioDurationProbe,
+    AuthError, Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits,
+    DomainError, GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink,
+    OsAccountsClient, Receipt, TokenUsage, ToolGuardAnalysis, ToolGuardAnalyzer,
+    ToolGuardCallAnalysisRequest, ToolGuardRedactionPlan, ToolGuardResultAnalysisRequest,
+    Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -268,6 +268,77 @@ async fn integration_agent_chat_direct_grant_extends_to_same_live_session()
     assert_eq!(follow_up.status(), StatusCode::OK);
     let body = response_json(follow_up).await?;
     assert_eq!(body["provider"], "fake-direct-chat");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_direct_stream_extends_to_same_live_session()
+-> Result<(), Box<dyn Error>> {
+    let router = router(test_state_with_chat_completers(
+        Arc::new(BlockingChatCompleter),
+        Arc::new(StreamingDirectChatCompleter),
+    ));
+    let blocked_body = serde_json::json!({
+        "model": "text-model",
+        "messages": [
+            { "role": "system", "content": "You are June." },
+            { "role": "user", "content": "Hello" }
+        ],
+        "stream": true
+    });
+    let blocked = oneshot(
+        &router,
+        json_request("/v1/chat/completions", &blocked_body, Some(AUTHORIZATION))?,
+    )
+    .await;
+    let direct_token = blocked
+        .headers()
+        .get(DIRECT_CHAT_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| std::io::Error::other("missing direct chat token"))?
+        .to_string();
+    let first_direct = oneshot(
+        &router,
+        json_request_with_direct_token(
+            "/v1/chat/completions/direct",
+            &blocked_body,
+            Some(AUTHORIZATION),
+            &direct_token,
+        )?,
+    )
+    .await;
+    assert_eq!(first_direct.status(), StatusCode::OK);
+    let first_body = response_text(first_direct).await?;
+    assert!(first_body.contains("streamed"));
+    assert!(first_body.contains("direct response"));
+    assert!(first_body.contains("[DONE]"));
+
+    let follow_up = oneshot(
+        &router,
+        json_request_with_direct_token(
+            "/v1/chat/completions/direct",
+            &serde_json::json!({
+                "model": "text-model",
+                "messages": [
+                    { "role": "system", "content": "You are June." },
+                    { "role": "user", "content": "Hello" },
+                    {
+                        "role": "assistant",
+                        "content": "streamed direct response"
+                    },
+                    { "role": "user", "content": "Follow up" }
+                ],
+                "stream": true
+            }),
+            Some(AUTHORIZATION),
+            &direct_token,
+        )?,
+    )
+    .await;
+
+    assert_eq!(follow_up.status(), StatusCode::OK);
+    let body = response_text(follow_up).await?;
+    assert!(body.contains("direct response"));
     Ok(())
 }
 
@@ -1191,5 +1262,41 @@ impl AgentChatCompleter for BlockingChatCompleter {
         _request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
         Err(DomainError::PolicyBlocked)
+    }
+}
+
+struct StreamingDirectChatCompleter;
+
+#[async_trait]
+impl AgentChatCompleter for StreamingDirectChatCompleter {
+    async fn complete(
+        &self,
+        _request: AgentChatRequest,
+    ) -> Result<AgentChatCompletion, DomainError> {
+        Err(DomainError::UpstreamProvider)
+    }
+
+    async fn complete_streaming(
+        &self,
+        _request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        let usage = Arc::new(Mutex::new(Some(TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 100,
+        })));
+        let chunks = [
+            r#"data: {"choices":[{"delta":{"role":"assistant","content":"streamed "}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"direct response"}}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n")
+        .into_bytes();
+        Ok(AgentChatStream {
+            content_type: "text/event-stream".to_string(),
+            provider: "streaming-direct-chat".to_string(),
+            usage,
+            body: Box::pin(futures_util::stream::iter([Ok(bytes::Bytes::from(chunks))])),
+        })
     }
 }
