@@ -223,6 +223,8 @@ struct HermesProcess {
 const AGENT_POLICY_BLOCK_DECISION_EVENT: &str = "agent-policy-block-decision-request";
 const POLICY_BLOCK_DECISION_TIMEOUT: Duration = Duration::from_secs(300);
 const POLICY_BLOCKED_ERROR_CODE: i64 = 4031;
+const DIRECT_POLICY_SESSION_TTL: Duration = Duration::from_secs(900);
+const MAX_DIRECT_POLICY_SESSION_KEYS: usize = 128;
 
 #[derive(Default)]
 pub struct PolicyBlockDecisionHub {
@@ -3267,6 +3269,7 @@ struct ScribeProviderProxyState {
 struct DirectPolicySession {
     key: String,
     direct_chat_token: String,
+    expires_at: Instant,
 }
 
 struct RunningScribeProviderProxy {
@@ -3404,6 +3407,8 @@ async fn handle_scribe_provider_connection(
                                                     &state,
                                                     key,
                                                     direct_chat_token,
+                                                    collected.received_at
+                                                        + DIRECT_POLICY_SESSION_TTL,
                                                 );
                                             }
                                         }
@@ -3483,12 +3488,14 @@ struct CollectedAgentProxyResponse {
     status: u16,
     content_type: String,
     direct_chat_token: Option<String>,
+    received_at: Instant,
     body: Vec<u8>,
 }
 
 async fn collect_agent_proxy_response(
     response: crate::scribe_api::AgentChatCompletionsResponse,
 ) -> CollectedAgentProxyResponse {
+    let received_at = Instant::now();
     let status = response.status;
     let content_type = response.content_type.clone();
     let direct_chat_token = response.direct_chat_token.clone();
@@ -3497,6 +3504,7 @@ async fn collect_agent_proxy_response(
         status,
         content_type,
         direct_chat_token,
+        received_at,
         body,
     }
 }
@@ -3668,9 +3676,19 @@ fn direct_policy_session_token(
     if candidates.is_empty() {
         return None;
     }
-    let Ok(sessions) = state.direct_policy_sessions.lock() else {
+    let Ok(mut sessions) = state.direct_policy_sessions.lock() else {
         return None;
     };
+    direct_policy_session_token_from_sessions(&mut sessions, body, Instant::now())
+}
+
+fn direct_policy_session_token_from_sessions(
+    sessions: &mut Vec<DirectPolicySession>,
+    body: &serde_json::Value,
+    now: Instant,
+) -> Option<String> {
+    prune_expired_direct_policy_sessions(sessions, now);
+    let candidates = policy_block_direct_session_keys(body);
     candidates.iter().find_map(|candidate| {
         sessions
             .iter()
@@ -3683,22 +3701,48 @@ fn remember_direct_policy_session(
     state: &Arc<ScribeProviderProxyState>,
     key: String,
     direct_chat_token: String,
+    expires_at: Instant,
 ) {
     if let Ok(mut sessions) = state.direct_policy_sessions.lock() {
-        if let Some(session) = sessions.iter_mut().find(|session| session.key == key) {
-            session.direct_chat_token = direct_chat_token;
-        } else {
-            sessions.push(DirectPolicySession {
-                key,
-                direct_chat_token,
-            });
-        }
-        const MAX_DIRECT_POLICY_SESSION_KEYS: usize = 128;
-        if sessions.len() > MAX_DIRECT_POLICY_SESSION_KEYS {
-            let excess = sessions.len() - MAX_DIRECT_POLICY_SESSION_KEYS;
-            sessions.drain(0..excess);
-        }
+        remember_direct_policy_session_in_sessions(
+            &mut sessions,
+            key,
+            direct_chat_token,
+            expires_at,
+            Instant::now(),
+        );
     }
+}
+
+fn remember_direct_policy_session_in_sessions(
+    sessions: &mut Vec<DirectPolicySession>,
+    key: String,
+    direct_chat_token: String,
+    expires_at: Instant,
+    now: Instant,
+) {
+    prune_expired_direct_policy_sessions(sessions, now);
+    if expires_at <= now {
+        return;
+    }
+    if let Some(session) = sessions.iter_mut().find(|session| session.key == key) {
+        session.direct_chat_token = direct_chat_token;
+        session.expires_at = expires_at;
+    } else {
+        sessions.push(DirectPolicySession {
+            key,
+            direct_chat_token,
+            expires_at,
+        });
+    }
+    if sessions.len() > MAX_DIRECT_POLICY_SESSION_KEYS {
+        let excess = sessions.len() - MAX_DIRECT_POLICY_SESSION_KEYS;
+        sessions.drain(0..excess);
+    }
+}
+
+fn prune_expired_direct_policy_sessions(sessions: &mut Vec<DirectPolicySession>, now: Instant) {
+    sessions.retain(|session| session.expires_at > now);
 }
 
 fn policy_block_conversation_fingerprint(body: &serde_json::Value) -> Option<String> {
@@ -4787,6 +4831,97 @@ mod tests {
 
         assert!(is_policy_blocked_response(403, body));
         assert!(!is_policy_blocked_response(502, body));
+    }
+
+    fn direct_policy_session_cache_fixture() -> (String, serde_json::Value) {
+        let blocked = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Describe an apple" }
+            ]
+        });
+        let direct_response = br#"{
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "An apple is a crisp fruit."
+                    }
+                }
+            ]
+        }"#;
+        let follow_up = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Describe an apple" },
+                { "role": "assistant", "content": "An apple is a crisp fruit." },
+                { "role": "user", "content": "Try again" }
+            ]
+        });
+
+        (
+            policy_block_direct_session_key(&blocked, direct_response).expect("direct route key"),
+            follow_up,
+        )
+    }
+
+    #[test]
+    fn direct_policy_session_cache_reuses_unexpired_token() {
+        let (key, follow_up) = direct_policy_session_cache_fixture();
+        let now = Instant::now();
+        let mut sessions = Vec::new();
+
+        remember_direct_policy_session_in_sessions(
+            &mut sessions,
+            key,
+            "direct-token".to_string(),
+            now + DIRECT_POLICY_SESSION_TTL,
+            now,
+        );
+
+        assert_eq!(
+            direct_policy_session_token_from_sessions(
+                &mut sessions,
+                &follow_up,
+                now + Duration::from_secs(60),
+            ),
+            Some("direct-token".to_string())
+        );
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn direct_policy_session_cache_prunes_expired_token_before_reuse() {
+        let (key, follow_up) = direct_policy_session_cache_fixture();
+        let now = Instant::now();
+        let mut sessions = vec![DirectPolicySession {
+            key,
+            direct_chat_token: "expired-token".to_string(),
+            expires_at: now,
+        }];
+
+        assert_eq!(
+            direct_policy_session_token_from_sessions(&mut sessions, &follow_up, now),
+            None
+        );
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn direct_policy_session_cache_does_not_remember_expired_grant() {
+        let (key, _) = direct_policy_session_cache_fixture();
+        let now = Instant::now();
+        let mut sessions = Vec::new();
+
+        remember_direct_policy_session_in_sessions(
+            &mut sessions,
+            key,
+            "expired-token".to_string(),
+            now,
+            now,
+        );
+
+        assert!(sessions.is_empty());
     }
 
     #[test]
