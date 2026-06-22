@@ -215,7 +215,6 @@ pub fn run() {
             agent_hud::agent_hud_show,
             agent_hud::agent_hud_hide,
             agent_hud::agent_hud_set_layout,
-            agent_hud::agent_hud_focus_reply,
             agent_hud::agent_hud_open_agent,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,

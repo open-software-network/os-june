@@ -36,9 +36,10 @@
    * separate window and locally redefines the tokens it needs. The brand
    * terracotta (--brand in tokens.css), lifted for legibility on dark glass. */
   --attention: oklch(0.74 0.13 42);
-  /* The shimmer highlight. Warmer, brighter, and high-chroma so the tiny
-   * masked glyph has enough contrast to read without washing out to white. */
-  --attention-bright: oklch(0.91 0.2 72);
+  /* The shimmer highlight. A lifted, dull terracotta rather than a bright
+   * yellow, so the sweep stays in the brand family instead of reading as gold,
+   * while staying light enough for the tiny masked glyph to keep contrast. */
+  --attention-bright: oklch(0.82 0.12 48);
 
   color: var(--foreground);
   background: transparent;

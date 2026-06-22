@@ -40,9 +40,9 @@ type DemoState =
 const HELP = [
   "Agent HUD demo states:",
   '  __agentHud("running", n?)  n sessions working (default 1)',
-  '  __agentHud("waiting")      one session needs input (expands, reply testable)',
+  '  __agentHud("waiting")      one session needs input (expands)',
   '  __agentHud("mixed")        two running + one needing input',
-  '  __agentHud("done")         a session just finished (fades out after ~2s)',
+  '  __agentHud("done")         a session just finished (fades out after ~6s)',
   '  __agentHud("failed")       a session hit a problem (lingers ~8s)',
   '  __agentHud("stopped")      a session was cancelled',
   '  __agentHud("demo")         scripted lifecycle: start, run, need input, finish',
@@ -227,7 +227,7 @@ export function registerAgentHudDemo({ local }: AgentHudDemoOptions) {
         return `${count} running. __agentHud("clear") to reset.`;
       case "waiting":
         park(0, 1);
-        return 'Needs input: the HUD expands itself; try the reply. __agentHud("clear") to reset.';
+        return 'Needs input: the HUD expands itself. __agentHud("clear") to reset.';
       case "mixed":
         park(2, 1);
         return 'Two running, one needs input. __agentHud("clear") to reset.';

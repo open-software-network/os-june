@@ -24,7 +24,6 @@ static AGENT_HUD_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new(
 pub struct AgentHudLayoutRequest {
     expanded: bool,
     card_count: Option<u32>,
-    replying: Option<bool>,
     context_menu_open: Option<bool>,
 }
 
@@ -61,7 +60,6 @@ pub fn agent_hud_set_layout(app: AppHandle, request: AgentHudLayoutRequest) -> R
     let (width, height) = agent_hud_window_size(
         request.expanded,
         request.card_count.unwrap_or(0),
-        request.replying.unwrap_or(false),
         request.context_menu_open.unwrap_or(false),
     );
     // The HUD is top-right anchored with a fixed native width, so resizing
@@ -71,25 +69,6 @@ pub fn agent_hud_set_layout(app: AppHandle, request: AgentHudLayoutRequest) -> R
     window
         .set_size(Size::Logical(LogicalSize::new(width, height)))
         .map_err(|error| error.to_string())
-}
-
-/// Lets the HUD accept keystrokes for its inline reply field. The panel is
-/// non-activating, so becoming key does not bring the app forward or steal
-/// focus from whatever the user is working in.
-#[tauri::command]
-pub fn agent_hud_focus_reply(app: AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(AGENT_HUD_WINDOW_LABEL) else {
-        return Ok(());
-    };
-    #[cfg(target_os = "macos")]
-    {
-        let panel = window.clone();
-        window
-            .run_on_main_thread(move || make_agent_hud_key(&panel))
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    window.set_focus().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -109,19 +88,13 @@ pub fn agent_hud_open_agent(
 /// gutter for the top-right offset and shadow. Keep the native width constant
 /// so layout changes grow downward like a notification instead of resizing and
 /// re-anchoring horizontally.
-fn agent_hud_window_size(
-    expanded: bool,
-    card_count: u32,
-    replying: bool,
-    context_menu_open: bool,
-) -> (f64, f64) {
+fn agent_hud_window_size(expanded: bool, card_count: u32, context_menu_open: bool) -> (f64, f64) {
     let height: f64 = if !expanded || card_count == 0 {
         AGENT_HUD_COLLAPSED_WINDOW_HEIGHT
     } else {
         let rows = f64::from(card_count.min(3));
         let surface_height = 36.0 + rows * 46.0 + 6.0;
-        let reply_height = if replying { 32.0 } else { 0.0 };
-        8.0 + surface_height + reply_height + 14.0
+        8.0 + surface_height + 14.0
     };
 
     if context_menu_open {
@@ -229,10 +202,12 @@ fn make_agent_hud_nonactivating(window: &WebviewWindow) {
 }
 
 /// NSPanel subclass that can become the key window. A borderless panel
-/// answers NO to `canBecomeKeyWindow` by default, which silently drops
-/// every keystroke aimed at the reply field. It also overrides `sendEvent:`
-/// to intercept context-click events before WKWebView ever sees them; see
-/// `send_event` below.
+/// answers NO to `canBecomeKeyWindow` by default, so it never becomes key
+/// and the webview receives no keyboard events — Escape wouldn't dismiss the
+/// context menu and Enter/Space wouldn't toggle the pill. (Mouse clicks reach
+/// a non-activating panel regardless of key status; this is purely about
+/// keyboard delivery.) It also overrides `sendEvent:` to intercept
+/// context-click events before WKWebView ever sees them; see `send_event`.
 #[cfg(target_os = "macos")]
 fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
     use objc2::msg_send;
@@ -304,43 +279,26 @@ fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
     Some(builder.register())
 }
 
-#[cfg(target_os = "macos")]
-fn make_agent_hud_key(window: &WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-
-    let Ok(handle) = window.ns_window() else {
-        return;
-    };
-    if handle.is_null() {
-        return;
-    }
-    unsafe {
-        let panel = handle as *mut AnyObject;
-        let _: () = msg_send![panel, makeKeyWindow];
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn agent_hud_layout_keeps_width_stable_across_states() {
-        assert_eq!(agent_hud_window_size(false, 0, false, false).0, 304.0);
-        assert_eq!(agent_hud_window_size(true, 1, false, false).0, 304.0);
-        assert_eq!(agent_hud_window_size(true, 3, true, false).0, 304.0);
-        assert_eq!(agent_hud_window_size(false, 0, false, true).0, 304.0);
+        assert_eq!(agent_hud_window_size(false, 0, false).0, 304.0);
+        assert_eq!(agent_hud_window_size(true, 1, false).0, 304.0);
+        assert_eq!(agent_hud_window_size(true, 3, false).0, 304.0);
+        assert_eq!(agent_hud_window_size(false, 0, true).0, 304.0);
     }
 
     #[test]
     fn agent_hud_layout_grows_downward_for_expanded_content() {
-        let collapsed = agent_hud_window_size(false, 0, false, false);
-        let expanded = agent_hud_window_size(true, 1, false, false);
-        let replying = agent_hud_window_size(true, 1, true, false);
+        let collapsed = agent_hud_window_size(false, 0, false);
+        let expanded = agent_hud_window_size(true, 1, false);
+        let expanded_more = agent_hud_window_size(true, 3, false);
 
         assert_eq!(collapsed.1, AGENT_HUD_COLLAPSED_WINDOW_HEIGHT);
         assert!(expanded.1 > collapsed.1);
-        assert!(replying.1 > expanded.1);
+        assert!(expanded_more.1 > expanded.1);
     }
 }
