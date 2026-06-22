@@ -4,7 +4,7 @@ use crate::{
     },
     error::ServiceError,
     pricing::PricingTable,
-    util::ceil_seconds,
+    util::{ceil_seconds, sha256_hex},
 };
 use scribe_domain::{
     ActionSlug, AudioDurationProbe, AudioFormat, Credits, ModelId, OsAccountsClient, Receipt,
@@ -128,6 +128,7 @@ impl NoteTranscribeService {
             estimate_credits = estimate.0,
             "note_transcribe: preview request authorized"
         );
+        let audio_digest = sha256_hex(&params.audio);
         let transcript_result = self
             .transcriber
             .transcribe(TranscriptionRequest {
@@ -140,8 +141,8 @@ impl NoteTranscribeService {
             .await;
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
-            "note_transcribe_preview:{}:{}",
-            params.user_id.0, params.note_id
+            "note_transcribe_preview:{}:{}:{}",
+            params.user_id.0, params.note_id, audio_digest
         );
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),

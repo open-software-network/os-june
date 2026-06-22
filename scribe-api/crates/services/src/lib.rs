@@ -457,8 +457,11 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 4,
-                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
-                        .to_string(),
+                    idempotency_key: concat!(
+                        "note_transcribe_preview:usr_123:live-preview-session-1:",
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                    )
+                    .to_string(),
                 },
             ]
         );
@@ -514,9 +517,74 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 4,
-                    idempotency_key: "note_transcribe_preview:usr_123:live-preview-session-1"
-                        .to_string(),
+                    idempotency_key: concat!(
+                        "note_transcribe_preview:usr_123:live-preview-session-1:",
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                    )
+                    .to_string(),
                 },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_idempotency_key_distinguishes_audio_chunks() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        for audio in [vec![1, 2, 3], vec![4, 5, 6]] {
+            service
+                .transcribe(NoteTranscribeParams {
+                    user_id: UserId("usr_123".to_string()),
+                    note_id: "legacy-preview-note-id".to_string(),
+                    audio,
+                    filename: "preview.wav".to_string(),
+                    context: None,
+                    language: None,
+                    model_id: ModelId("audio-model".to_string()),
+                    preview: true,
+                })
+                .await
+                .expect("preview transcription succeeds");
+        }
+
+        let charge_keys = os_accounts
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                RecordedCall::Charge {
+                    idempotency_key, ..
+                } => Some(idempotency_key),
+                RecordedCall::Authorize { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            charge_keys,
+            vec![
+                concat!(
+                    "note_transcribe_preview:usr_123:legacy-preview-note-id:",
+                    "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                )
+                .to_string(),
+                concat!(
+                    "note_transcribe_preview:usr_123:legacy-preview-note-id:",
+                    "787c798e39a5bc1910355bae6d0cd87a36b2e10fd0202a83e3bb6b005da83472",
+                )
+                .to_string(),
             ]
         );
     }

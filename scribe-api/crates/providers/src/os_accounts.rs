@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
-// OS Accounts returns this when a charge is replayed with the same
-// idempotency key. It means the note was already settled, so it is a
-// success signal — not a failure. Surface it as an idempotent replay so a
-// retry of an already-charged note returns its transcript instead of 502ing.
+// OS Accounts returns this when an idempotency key was already settled under
+// another action token. Scribe API is stateless, so a client retry reacquires
+// a fresh token for the same logical operation. Treat that as an idempotent
+// replay so an already-charged operation returns its result instead of 502ing.
 const ERR_IDEMPOTENCY_KEY_COLLISION: i64 = 4001;
 const CHARGE_RETRY_ATTEMPTS: u32 = 2;
 const CHARGE_RETRY_BACKOFF: Duration = Duration::from_millis(250);
@@ -142,8 +142,8 @@ impl OsAccountsHttpClient {
             return Err(ChargeError::Retryable);
         }
         let raw = response.text().await.map_err(|error| {
-            tracing::error!(%error, %url, "os_accounts: charge body read failed");
-            ChargeError::Domain(DomainError::UpstreamProvider)
+            tracing::error!(%error, %url, "os_accounts: charge body read failed (retryable)");
+            ChargeError::Retryable
         })?;
         let envelope: Envelope<ReceiptWire> = serde_json::from_str(&raw).map_err(|error| {
             tracing::error!(%error, %url, body_bytes = raw.len(), "os_accounts: charge JSON parse failed");
@@ -163,10 +163,10 @@ impl OsAccountsHttpClient {
             return Err(ChargeError::Domain(DomainError::InsufficientCredits));
         }
         if envelope.error_code == Some(ERR_IDEMPOTENCY_KEY_COLLISION) {
-            // The note was already charged under this key (e.g. an earlier
-            // attempt settled before a transient failure). Treat it as an
-            // idempotent replay: the user already paid, so return success and
-            // let the transcript through rather than failing the whole call.
+            // The operation was already charged under this key (e.g. an
+            // earlier request settled before a transient failure, then the
+            // client retried and received a new action token). Treat it as an
+            // idempotent replay: the user already paid, so return success.
             //
             // The 4001 reply carries `data: null`, so we cannot recover the
             // amount actually settled — we report this request's `credits` as
@@ -176,7 +176,7 @@ impl OsAccountsHttpClient {
                 %url,
                 body_bytes = raw.len(),
                 reported_credits = body.credits,
-                "os_accounts: charge replayed — idempotency key already settled; \
+                "os_accounts: charge replayed - idempotency key already settled; \
                  credits_charged reflects the requested estimate, not the settled amount"
             );
             return Ok(Receipt {
@@ -297,6 +297,10 @@ mod tests {
         ActionSlug, AuthorizeRequest, ChargeRequest, Credits, DomainError, OsAccountsClient, UserId,
     };
     use serde_json::json;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, header, method, path},
@@ -523,5 +527,63 @@ mod tests {
             .await;
 
         assert_eq!(receipt.map(|value| value.credits_charged.0), Ok(12));
+    }
+
+    #[tokio::test]
+    async fn charge_retries_on_body_read_failure() {
+        let api_url = start_charge_server_with_responses([
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: application/json\r\n",
+                "Content-Length: 128\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+                r#"{"success":true,"data":{"credits_settled""#,
+            )
+            .as_bytes()
+            .to_vec(),
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: application/json\r\n",
+                "Content-Length: 71\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+                r#"{"success":true,"data":{"credits_settled":12,"idempotent_replay":true}}"#,
+            )
+            .as_bytes()
+            .to_vec(),
+        ])
+        .await;
+        let client = OsAccountsHttpClient::new(http::default_client(), &api_url, "osk_test");
+
+        let receipt = client
+            .charge(ChargeRequest {
+                action_token: "agts_test".to_string(),
+                credits: Credits(12),
+                idempotency_key: "note_generate:usr_123:note_1:v7".to_string(),
+            })
+            .await;
+
+        assert_eq!(
+            receipt.map(|value| (value.credits_charged.0, value.idempotent_replay)),
+            Ok((12, true))
+        );
+    }
+
+    async fn start_charge_server_with_responses<const N: usize>(responses: [Vec<u8>; N]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("read local address");
+        tokio::spawn(async move {
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut buffer = vec![0_u8; 4096];
+                let _ = stream.read(&mut buffer).await.expect("read request");
+                stream.write_all(&response).await.expect("write response");
+                stream.shutdown().await.expect("close response");
+            }
+        });
+        format!("http://{addr}")
     }
 }

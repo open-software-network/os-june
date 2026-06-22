@@ -4,12 +4,12 @@ use crate::{
     },
     error::ServiceError,
     pricing::PricingTable,
+    util::sha256_hex,
 };
 use scribe_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
     ModelKind, OsAccountsClient, Receipt, UserId,
 };
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub struct AgentChatServiceDeps {
@@ -100,18 +100,7 @@ pub struct AgentChatOutput {
 }
 
 fn body_digest(body: &serde_json::Value) -> String {
-    let digest = Sha256::digest(body.to_string().as_bytes());
-    hex_lower(&digest)
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    sha256_hex(body.to_string().as_bytes())
 }
 
 #[cfg(test)]
