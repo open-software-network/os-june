@@ -10,7 +10,7 @@
  * layout the controller requests). Collapsed it is a single quiet pill:
  * the June mark, tinted by the aggregate state, plus "2 running". Click,
  * keyboard focus, or a session needing input expands it into a compact
- * list with open/reply actions.
+ * list of sessions, each opening its context in June when clicked.
  *
  * Forced dark regardless of system theme, like the dictation HUD: a
  * transient overlay has to read consistently against any wallpaper or
@@ -32,11 +32,12 @@
   /* The brand terracotta (--brand: #c25a33 ~ oklch(0.58 0.14 40) in
    * tokens.css), lifted for legibility on the dark glass. */
   --attention: oklch(0.74 0.13 42);
-  /* Shimmer highlight for the attention (needs-input) mark — warmer, brighter,
-   * and high-chroma so the tiny masked glyph has enough contrast to read.
-   * Keep in sync with meeting-hud.css. The neutral "running" shimmer uses
-   * --foreground (white) and is unaffected by this. */
-  --attention-bright: oklch(0.91 0.2 72);
+  /* Shimmer highlight for the attention (needs-input) mark — a lifted, dull
+   * terracotta rather than a bright yellow, so the sweep stays in the brand
+   * family instead of reading as gold. Still light enough that the tiny masked
+   * glyph keeps contrast. Keep in sync with meeting-hud.css. The neutral
+   * "running" shimmer uses --foreground (white) and is unaffected by this. */
+  --attention-bright: oklch(0.82 0.12 48);
 
   color: var(--foreground);
   background: transparent;
@@ -143,7 +144,10 @@ body {
   grid-template-columns: var(--hud-icon-col) 1fr auto;
   column-gap: var(--hud-col-gap);
   align-items: center;
-  height: 28px;
+  /* A touch taller than the content needs: the extra height gives the
+   * collapsed pill more presence. border-radius: 16px above is half of this,
+   * so the collapsed surface reads as a true pill. */
+  height: 32px;
   min-width: 88px;
   padding: 0 9px;
   border: 0;
@@ -204,6 +208,10 @@ body {
 
 .agent-hud-pill-label {
   overflow: hidden;
+  /* The label keeps a 1px optical nudge so the text ink sits on the pill's
+   * center line. The icons (mark, chevron) are symmetric glyphs and center
+   * geometrically, so they carry no nudge: matching them to the text would
+   * push them 1px low. Don't add translateY to the icons to "match" this. */
   padding-bottom: 1px;
   line-height: 1.18;
   transform: translateY(1px);
@@ -216,12 +224,11 @@ body {
   width: 14px;
   height: 14px;
   color: var(--muted-foreground);
-  transform: translateY(1px);
   transition: transform var(--t-med) var(--ease-out);
 }
 
 .agent-hud[data-expanded="true"] .agent-hud-chevron {
-  transform: translateY(1px) rotate(180deg);
+  transform: rotate(180deg);
 }
 
 /* June mark ------------------------------------------------------------- */
@@ -242,7 +249,6 @@ body {
   mask: var(--mark) center / 10px 12px no-repeat;
   -webkit-mask: var(--mark) center / 10px 12px no-repeat;
   background-color: var(--mark-base);
-  transform: translateY(1px);
   transition: background-color var(--t-med) var(--ease-out);
 }
 
@@ -346,7 +352,12 @@ body {
   display: block;
   min-height: 0;
   margin: 0;
-  padding: 0 0 var(--sp-1);
+  /* No bottom padding here: the stack's own padding sits outside the
+   * overflow-clipped region, so the reveal's 0fr collapse can't fold it
+   * away, and a collapsed pill would carry ~4px of dead surface below the
+   * content (pushing it visually high). The bottom breathing room lives on
+   * the last row instead, where it collapses with the rows it spaces. */
+  padding: 0;
   overflow: hidden;
   list-style: none;
   /* Hidden rows must not be clickable or tabbable; the delay keeps them
@@ -369,6 +380,13 @@ body {
   transition:
     opacity var(--t-med) var(--ease-out),
     transform var(--t-med) var(--ease-out);
+}
+
+/* Bottom breathing room before the surface's rounded corner. Lives on the
+ * last row (inside the clipped, collapsing region) rather than the stack's
+ * padding, so it folds to nothing when the panel collapses. */
+.agent-hud-row:last-child {
+  margin-bottom: var(--sp-1);
 }
 
 .agent-hud[data-expanded="true"] .agent-hud-row {
@@ -435,97 +453,6 @@ body {
   white-space: nowrap;
 }
 
-/* Reply ------------------------------------------------------------------ */
-
-.agent-hud-reply {
-  position: absolute;
-  top: 11px;
-  right: var(--sp-3);
-  display: grid;
-  place-items: center;
-  width: var(--control-xs);
-  height: var(--control-xs);
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  background: color-mix(in oklch, var(--foreground) 10%, transparent);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-medium);
-  letter-spacing: 0;
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.agent-hud-row:hover .agent-hud-reply,
-.agent-hud-row:focus-within .agent-hud-reply {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.agent-hud-row:has(.agent-hud-reply-form) .agent-hud-reply {
-  display: none;
-}
-
-.agent-hud-reply-form {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-3) var(--sp-2);
-  animation: agent-hud-reply-in var(--t-med) var(--ease-out);
-}
-
-/* One-shot entrance: the cached form node re-appends on every stack
- * rebuild while a draft is open, and must not replay it (agent-hud.ts
- * sets data-settled after the first run). */
-.agent-hud-reply-form[data-settled] {
-  animation: none;
-}
-
-.agent-hud-reply-input {
-  /* The body disables selection for the overlay; the input needs it back. */
-  user-select: text;
-  min-width: 0;
-  height: var(--control-sm);
-  padding: 0 var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  background: color-mix(in oklch, var(--background) 65%, transparent);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-sm);
-  letter-spacing: 0;
-  outline: none;
-}
-
-.agent-hud-reply-input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.agent-hud-reply-input:focus-visible {
-  border-color: var(--ring-focus);
-}
-
-.agent-hud-reply-send {
-  display: grid;
-  place-items: center;
-  width: var(--control-sm);
-  height: var(--control-sm);
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: var(--foreground);
-  color: var(--background);
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  letter-spacing: 0;
-  cursor: pointer;
-}
-
 /* Context menu ------------------------------------------------------------ */
 
 .agent-hud-menu {
@@ -567,9 +494,7 @@ body {
 }
 
 .agent-hud-pill:focus-visible,
-.agent-hud-row-body:focus-visible,
-.agent-hud-reply:focus-visible,
-.agent-hud-reply-send:focus-visible {
+.agent-hud-row-body:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
@@ -591,13 +516,6 @@ body {
   }
 }
 
-@keyframes agent-hud-reply-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .agent-hud-surface,
   .agent-hud-reveal,
@@ -607,8 +525,7 @@ body {
   }
 
   .agent-hud-mark,
-  .agent-hud-status,
-  .agent-hud-reply-form {
+  .agent-hud-status {
     animation: none;
   }
 }

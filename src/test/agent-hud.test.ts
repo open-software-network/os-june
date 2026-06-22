@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  AGENT_REPLY_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
 } from "../lib/agent-events";
@@ -60,7 +59,7 @@ describe("agent HUD", () => {
     expect(stackElement().querySelector(".dot-spinner > span")).toBeTruthy();
     expect(stackElement()).toHaveAttribute("aria-hidden", "true");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: false, cardCount: 0, replying: false },
+      request: { expanded: false, cardCount: 0 },
     });
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
   });
@@ -166,7 +165,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: true, cardCount: 1, replying: false },
+      request: { expanded: true, cardCount: 1 },
     });
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
   });
@@ -187,7 +186,6 @@ describe("agent HUD", () => {
     expect(stackElement()).toHaveTextContent("Need approval");
     expect(document.querySelector(".agent-hud-status svg")).toBeTruthy();
     expect(document.querySelector(".agent-hud-chevron svg")).toBeTruthy();
-    expect(document.querySelector(".agent-hud-reply svg")).toBeTruthy();
   });
 
   it("stays collapsed after an explicit collapse while a session still needs input", async () => {
@@ -376,75 +374,6 @@ describe("agent HUD", () => {
     expect(stackElement()).not.toHaveTextContent("June is working.");
   });
 
-  it("opens a reply form and requests the taller reply layout", async () => {
-    await loadAgentHud();
-
-    emitStatus({
-      status: "waitingForUser",
-      title: "Need approval",
-      summary: "Review this step.",
-    });
-    await flushPromises();
-
-    replyButton().click();
-    await flushPromises();
-
-    expect(document.querySelector(".agent-hud-reply-input")).toBeTruthy();
-    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: true, cardCount: 1, replying: true },
-    });
-  });
-
-  it("asks the native panel for key focus when a reply opens", async () => {
-    await loadAgentHud();
-
-    emitStatus({
-      status: "waitingForUser",
-      title: "Need approval",
-      summary: "Review this step.",
-    });
-    await flushPromises();
-
-    replyButton().click();
-    await flushPromises();
-
-    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_focus_reply");
-  });
-
-  it("keeps the reply draft when a status burst re-renders the rows", async () => {
-    await loadAgentHud();
-
-    emitStatus({
-      status: "waitingForUser",
-      title: "Need approval",
-      summary: "Review this step.",
-    });
-    await flushPromises();
-
-    replyButton().click();
-    await flushPromises();
-
-    const input = document.querySelector<HTMLInputElement>(
-      ".agent-hud-reply-input",
-    );
-    expect(input).toBeTruthy();
-    input!.value = "Working on it";
-
-    emitStatus({
-      status: "waitingForUser",
-      title: "Need approval",
-      summary: "Still waiting on you.",
-    });
-    await flushPromises();
-
-    const inputs = document.querySelectorAll<HTMLInputElement>(
-      ".agent-hud-reply-input",
-    );
-    expect(inputs).toHaveLength(1);
-    expect(inputs[0]).toBe(input);
-    expect(inputs[0].value).toBe("Working on it");
-  });
-
   it("keeps the panel open under the pointer after the work resolves", async () => {
     await loadAgentHud();
 
@@ -493,53 +422,9 @@ describe("agent HUD", () => {
     expect(pillLabelElement()).toHaveTextContent("Done");
 
     hudElement().dispatchEvent(new Event("pointerleave"));
-    await vi.advanceTimersByTimeAsync(2_450);
+    await vi.advanceTimersByTimeAsync(6_550);
 
     expect(hudElement().dataset.hasEntries).toBe("false");
-  });
-
-  it("sends the HUD reply to the row session", async () => {
-    await loadAgentHud();
-
-    const session = {
-      id: "session-1",
-      title: "Need approval",
-      preview: "Review this step.",
-      started_at: new Date().toISOString(),
-      last_active: new Date().toISOString(),
-      message_count: 2,
-    };
-
-    emitSessionsChanged({
-      sessions: [session],
-      workingSessionIds: [],
-      waitingSessionIds: ["session-1"],
-    });
-    await flushPromises();
-
-    replyButton().click();
-    await flushPromises();
-
-    const input = document.querySelector<HTMLInputElement>(
-      ".agent-hud-reply-input",
-    );
-    expect(input).toBeTruthy();
-    input!.value = "Approved.";
-    document
-      .querySelector<HTMLFormElement>(".agent-hud-reply-form")
-      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await flushPromises();
-
-    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_open_agent", {
-      session,
-    });
-    expect(mocks.emit).toHaveBeenCalledWith(
-      AGENT_REPLY_EVENT,
-      expect.objectContaining({
-        session,
-        text: "Approved.",
-      }),
-    );
   });
 
   it("briefly shows Done before hiding when the agent completes", async () => {
@@ -567,7 +452,7 @@ describe("agent HUD", () => {
     expect(markElement().dataset.status).toBe("completed");
 
     mocks.invoke.mockClear();
-    await vi.advanceTimersByTimeAsync(2250);
+    await vi.advanceTimersByTimeAsync(6550);
 
     expect(hudElement().dataset.hasEntries).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
@@ -605,7 +490,7 @@ describe("agent HUD", () => {
 
     expect(pillLabelElement()).toHaveTextContent("Done");
 
-    await vi.advanceTimersByTimeAsync(2450);
+    await vi.advanceTimersByTimeAsync(6550);
 
     expect(hudElement().dataset.hasEntries).toBe("false");
   });
@@ -805,12 +690,6 @@ function stackElement() {
   const stack = document.querySelector<HTMLElement>("#agent-hud-stack");
   expect(stack).toBeTruthy();
   return stack as HTMLElement;
-}
-
-function replyButton() {
-  const reply = document.querySelector<HTMLButtonElement>(".agent-hud-reply");
-  expect(reply).toBeTruthy();
-  return reply as HTMLButtonElement;
 }
 
 function menuElement() {

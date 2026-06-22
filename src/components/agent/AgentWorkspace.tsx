@@ -133,7 +133,6 @@ import {
   dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
-  type AgentReplyDetail,
   type AgentSessionsChangedDetail,
   type AgentSessionStatusKind,
 } from "../../lib/agent-events";
@@ -706,14 +705,8 @@ export type AgentWorkspaceOrigin = {
 
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
-  pendingReply?: AgentReplyDetail;
   origin?: AgentWorkspaceOrigin;
 };
-
-// Module-scoped so a remount of AgentWorkspace (e.g. navigating away from the
-// agent view and back) does not re-submit an agent HUD reply that App still holds
-// in its pendingReply state.
-const handledHudReplyIds = new Set<string>();
 
 // Mid-run continuity across remounts. While June is working, a session has
 // state that exists nowhere outside this component: the optimistic list entry
@@ -781,7 +774,6 @@ export function resetAgentSessionContinuity() {
 
 export function AgentWorkspace({
   initialSession,
-  pendingReply,
   origin,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id;
@@ -1622,13 +1614,6 @@ export function AgentWorkspace({
   }, [selectedHermesSessionId]);
 
   useEffect(() => {
-    if (!pendingReply?.text.trim()) return;
-    if (handledHudReplyIds.has(pendingReply.requestId)) return;
-    handledHudReplyIds.add(pendingReply.requestId);
-    void submitHudReply(pendingReply);
-  }, [pendingReply]);
-
-  useEffect(() => {
     // The sidebar and App replace their session lists wholesale with this
     // payload, so an unhydrated broadcast (mount seed only) would collapse
     // the list they already fetched themselves and flicker it back once the
@@ -1984,55 +1969,6 @@ export function AgentWorkspace({
       // On success the hero is gone; on failure this fades the greeting and
       // suggestions back in behind the restored draft.
       setHeroLeaving(false);
-    }
-  }
-
-  async function submitHudReply(reply: AgentReplyDetail) {
-    const message = reply.text.trim();
-    if (!message) return;
-    if (submitting || importingFiles) {
-      // Another submission is in flight; keep the reply in the composer
-      // instead of dropping it silently.
-      composerEditorRef.current?.setContent(message);
-      return;
-    }
-    const targetSession = reply.session;
-    setActivePanel("chat");
-    setSelectedTaskId(undefined);
-    composerEditorRef.current?.clear();
-    setAttachments([]);
-    if (targetSession?.id) {
-      newSessionModeRef.current = false;
-      setNewSessionMode(false);
-      selectedHermesSessionIdRef.current = targetSession.id;
-      setSelectedHermesSessionId(targetSession.id);
-      setHermesSessionItems((current) =>
-        current.some((session) => session.id === targetSession.id)
-          ? current
-          : [targetSession, ...current],
-      );
-    }
-    setSubmitting(true);
-    try {
-      await submitHermesSession(message, targetSession);
-      setError(null);
-      setBusyNotice(null);
-    } catch (err) {
-      // Same merge-restore as submit(): don't clobber a draft the user
-      // started typing while the reply was in flight.
-      if (composerEditorRef.current?.isEmpty() ?? true) {
-        composerEditorRef.current?.setContent(message);
-      }
-      if (isSessionBusyError(err)) {
-        // Same as submit(): a 4009 proves the gateway is healthy, so a stale
-        // connection banner must not outlive it.
-        setError(null);
-        setBusyNotice(SESSION_BUSY_NOTICE);
-      } else {
-        setError(messageFromError(err));
-      }
-    } finally {
-      setSubmitting(false);
     }
   }
 

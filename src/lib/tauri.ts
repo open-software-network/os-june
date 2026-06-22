@@ -754,14 +754,9 @@ export async function agentHudHide() {
 export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
-  replying?: boolean;
   contextMenuOpen?: boolean;
 }) {
   return invoke<void>("agent_hud_set_layout", { request: input });
-}
-
-export async function agentHudFocusReply() {
-  return invoke<void>("agent_hud_focus_reply");
 }
 
 export async function agentHudOpenAgent(session?: HermesSessionInfo) {

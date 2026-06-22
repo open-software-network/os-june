@@ -108,11 +108,9 @@ import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
-  AGENT_REPLY_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
-  type AgentReplyDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
@@ -325,8 +323,6 @@ export function App() {
   const restoreTargetRef = useRef<TabNav | null>(null);
   const [activeAgentSession, setActiveAgentSession] =
     useState<HermesSessionInfo>();
-  const [pendingAgentReply, setPendingAgentReply] =
-    useState<AgentReplyDetail>();
   // Reactive copy of the known agent sessions for the "view all" list and
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
@@ -1112,36 +1108,6 @@ export function App() {
       aborted = true;
       unlisten?.();
       window.removeEventListener(AGENT_OPEN_EVENT, handleOpenEvent);
-    };
-  }, []);
-
-  useEffect(() => {
-    function handleReply(detail?: AgentReplyDetail) {
-      if (!detail?.text.trim()) return;
-      setAgentOrigin(undefined);
-      setActiveAgentSession(detail.session);
-      setPendingAgentReply(detail);
-      setActiveView("agent");
-    }
-
-    function handleReplyEvent(event: Event) {
-      handleReply((event as CustomEvent<AgentReplyDetail>).detail);
-    }
-
-    let aborted = false;
-    let unlisten: (() => void) | undefined;
-    window.addEventListener(AGENT_REPLY_EVENT, handleReplyEvent);
-    void listen<AgentReplyDetail>(AGENT_REPLY_EVENT, (event) => {
-      handleReply(event.payload);
-    }).then((cleanup) => {
-      if (aborted) cleanup();
-      else unlisten = cleanup;
-    });
-
-    return () => {
-      aborted = true;
-      unlisten?.();
-      window.removeEventListener(AGENT_REPLY_EVENT, handleReplyEvent);
     };
   }, []);
 
@@ -2817,7 +2783,6 @@ export function App() {
                 // session bar, so they persist while the chat scrolls beneath.
                 <AgentWorkspace
                   initialSession={activeAgentSession}
-                  pendingReply={pendingAgentReply}
                   origin={
                     agentOriginFolder
                       ? {

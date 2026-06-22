@@ -1,6 +1,4 @@
-import { emit, listen } from "@tauri-apps/api/event";
-import { IconArrowUp } from "central-icons/IconArrowUp";
-import { IconBubbleWide } from "central-icons/IconBubbleWide";
+import { listen } from "@tauri-apps/api/event";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
@@ -10,10 +8,8 @@ import { createElement, type ComponentType, type SVGProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   AGENT_OPEN_EVENT,
-  AGENT_REPLY_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
-  type AgentReplyDetail,
   type AgentSessionStatusDetail,
   type AgentSessionStatusKind,
   type AgentSessionsChangedDetail,
@@ -26,7 +22,6 @@ import {
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
 import {
-  agentHudFocusReply,
   agentHudHide,
   agentHudOpenAgent,
   agentHudSetLayout,
@@ -57,7 +52,9 @@ const EXPANDED_KEY = "scribe:agent-hud:expanded";
 // sync with AGENT_HUD_CONTEXT_MENU_EVENT in agent_hud.rs.
 const AGENT_HUD_CONTEXT_MENU_EVENT = "scribe:agent-hud:context-menu";
 const MAX_VISIBLE_ROWS = 3;
-const COMPLETED_STATUS_TTL_MS = 2200;
+// Keep a finished session on screen long enough to actually read the "Done"
+// row before it fades out, rather than blinking away the instant it lands.
+const COMPLETED_STATUS_TTL_MS = 6500;
 const FAILED_STATUS_TTL_MS = 8 * 1000;
 // Covers the surface's fade-out transition (--t-slow) before the native
 // window hides, plus a little slack for the compositor.
@@ -90,7 +87,6 @@ const state = {
   waitingSessionIds: new Set<string>(),
   statusBySessionId: new Map<string, StatusRecord>(),
   pendingStatuses: [] as StatusRecord[],
-  replyingEntryId: undefined as string | undefined,
   // Transient auto-expand triggered when an entry newly needs input. Unlike
   // `expanded` it is not persisted to EXPANDED_KEY: it grabs attention once,
   // then an explicit collapse (setExpanded(false)) must stick.
@@ -111,17 +107,6 @@ let hideTimer: number | undefined;
 let resizeTimer: number | undefined;
 let widthFlipTimer: number | undefined;
 let windowShown = false;
-// The reply form lives outside the rebuild cycle: status events arrive in
-// bursts while sessions work, and recreating the input on each one would
-// wipe whatever the user is typing.
-let replyForm:
-  | {
-      entryId: string;
-      entry: HudEntry;
-      form: HTMLFormElement;
-      input: HTMLInputElement;
-    }
-  | undefined;
 
 function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   if (!detail) return;
@@ -172,9 +157,6 @@ function applyStatus(detail?: AgentSessionStatusDetail) {
           ...state.pendingStatuses,
         ].slice(0, MAX_VISIBLE_ROWS);
       }
-      if (state.replyingEntryId === detail.sessionId) {
-        state.replyingEntryId = undefined;
-      }
       render();
       return;
     }
@@ -208,7 +190,6 @@ function applyVisibility(enabled: boolean) {
   if (!enabled) {
     state.focused = false;
     state.menuOpen = false;
-    state.replyingEntryId = undefined;
   }
   render();
 }
@@ -239,20 +220,12 @@ function render() {
   if (waitingEntryIds.size === 0) state.attentionExpanded = false;
   lastWaitingEntryIds = waitingEntryIds;
 
-  if (
-    state.replyingEntryId &&
-    !entries.some((entry) => entry.id === state.replyingEntryId)
-  ) {
-    state.replyingEntryId = undefined;
-  }
-  if (!state.replyingEntryId) replyForm = undefined;
   const expanded =
     state.enabled &&
     hasEntries &&
     (state.attentionExpanded ||
       state.expanded ||
       state.focused ||
-      Boolean(state.replyingEntryId) ||
       // Hovering holds the panel open: it must not collapse or fade out
       // under the pointer, even when the reason it expanded goes away.
       (state.hovered && lastRenderedExpanded));
@@ -295,25 +268,15 @@ function render() {
   // collapse reveal always has content to animate.
   const stackKey = entries
     .map((entry) =>
-      [
-        entry.id,
-        entry.title,
-        entry.summary,
-        entry.status,
-        state.replyingEntryId === entry.id ? "replying" : "",
-      ].join("\u0001"),
+      [entry.id, entry.title, entry.summary, entry.status].join("\u0001"),
     )
     .join("\u0002");
   if (stackKey !== lastStackKey) {
     lastStackKey = stackKey;
-    const inputHadFocus =
-      replyForm !== undefined && document.activeElement === replyForm.input;
     stack.replaceChildren();
     entries.forEach((entry, index) => {
       stack.appendChild(renderRow(entry, index));
     });
-    // replaceChildren re-homes the cached form node, which drops focus.
-    if (inputHadFocus && replyForm?.input.isConnected) replyForm.input.focus();
   }
   stack.setAttribute("aria-hidden", expanded ? "false" : "true");
   if (menu) {
@@ -460,83 +423,7 @@ function renderRow(entry: HudEntry, index: number) {
   body.appendChild(text);
   row.appendChild(body);
 
-  const reply = document.createElement("button");
-  reply.type = "button";
-  reply.className = "agent-hud-reply";
-  reply.setAttribute("aria-label", `Reply to ${entry.title}`);
-  reply.title = "Reply";
-  appendIcon(reply, IconBubbleWide, 14);
-  reply.addEventListener("click", (event) => {
-    event.stopPropagation();
-    state.replyingEntryId = entry.id;
-    render();
-    // The HUD is a non-activating panel; ask the native side to make it the
-    // key window so the input actually receives keystrokes.
-    void agentHudFocusReply().catch(() => {});
-    window.setTimeout(() => replyForm?.input.focus(), 0);
-  });
-  row.appendChild(reply);
-
-  if (state.replyingEntryId === entry.id) {
-    row.appendChild(ensureReplyForm(entry));
-  }
-
   return row;
-}
-
-function ensureReplyForm(entry: HudEntry) {
-  if (replyForm && replyForm.entryId === entry.id) {
-    replyForm.entry = entry;
-    return replyForm.form;
-  }
-
-  const form = document.createElement("form");
-  form.className = "agent-hud-reply-form";
-  // The entrance keyframes must run only on the first mount; the cached
-  // form node gets re-appended on every stack rebuild while a draft is
-  // open, and each re-append would restart them.
-  form.addEventListener(
-    "animationend",
-    () => form.setAttribute("data-settled", ""),
-    { once: true },
-  );
-
-  const input = document.createElement("input");
-  input.className = "agent-hud-reply-input";
-  input.type = "text";
-  input.placeholder = "Reply to June";
-  input.autocomplete = "off";
-  input.spellcheck = true;
-  input.addEventListener("click", (event) => event.stopPropagation());
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      state.replyingEntryId = undefined;
-      render();
-    }
-  });
-
-  const submit = document.createElement("button");
-  submit.type = "submit";
-  submit.className = "agent-hud-reply-send";
-  submit.setAttribute("aria-label", "Send reply");
-  submit.title = "Send reply";
-  appendIcon(submit, IconArrowUp, 14);
-
-  form.append(input, submit);
-  form.addEventListener("click", (event) => event.stopPropagation());
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    const target = replyForm?.entry ?? entry;
-    state.replyingEntryId = undefined;
-    render();
-    void sendReply(target, text);
-  });
-
-  replyForm = { entryId: entry.id, entry, form, input };
-  return form;
 }
 
 function buildEntries() {
@@ -850,10 +737,9 @@ async function syncWindowLayout(
   rowCount: number,
   hasEntries: boolean,
 ) {
-  const replying = Boolean(state.replyingEntryId);
   const menuOpen = state.menuOpen;
   const visible = state.enabled && hasEntries;
-  const key = `${visible}:${expanded}:${rowCount}:${replying}:${menuOpen}`;
+  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}`;
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
   if (!visible) {
@@ -863,12 +749,11 @@ async function syncWindowLayout(
   }
   cancelWindowHide();
   cancelPendingResize();
-  const height = nativeWindowHeight(expanded, rowCount, replying, menuOpen);
+  const height = nativeWindowHeight(expanded, rowCount, menuOpen);
   const apply = async () => {
     await agentHudSetLayout({
       expanded,
       cardCount: rowCount,
-      replying,
       ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
     }).catch(() => {});
     if (!windowShown) {
@@ -896,13 +781,12 @@ async function syncWindowLayout(
 function nativeWindowHeight(
   expanded: boolean,
   rowCount: number,
-  replying: boolean,
   menuOpen: boolean,
 ) {
   const height =
     !expanded || rowCount === 0
       ? 58
-      : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + (replying ? 32 : 0) + 14;
+      : 8 + 36 + Math.min(rowCount, 3) * 46 + 6 + 14;
   return menuOpen ? Math.max(height, 104) : height;
 }
 
@@ -939,7 +823,6 @@ function setExpanded(expanded: boolean) {
   if (!expanded) {
     state.focused = false;
     state.menuOpen = false;
-    state.replyingEntryId = undefined;
     // An explicit collapse clears the attention auto-expand; otherwise the
     // next render would immediately re-expand while a session still waits.
     state.attentionExpanded = false;
@@ -1021,20 +904,6 @@ async function openAgent(session?: HermesSessionInfo) {
       new CustomEvent(AGENT_OPEN_EVENT, {
         detail: { session },
       }),
-    );
-  });
-}
-
-async function sendReply(entry: HudEntry, text: string) {
-  await openAgent(entry.session);
-  const detail: AgentReplyDetail = {
-    requestId: `agent-hud:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-    session: entry.session,
-    text,
-  };
-  await emit(AGENT_REPLY_EVENT, detail).catch(() => {
-    window.dispatchEvent(
-      new CustomEvent<AgentReplyDetail>(AGENT_REPLY_EVENT, { detail }),
     );
   });
 }
