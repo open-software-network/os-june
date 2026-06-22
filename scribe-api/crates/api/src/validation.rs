@@ -18,7 +18,7 @@ pub(crate) const MAX_ISSUE_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const MAX_AGENT_STRING_CHARS: usize = 100_000;
 pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 240_000;
 pub(crate) const MAX_AGENT_JSON_DEPTH: usize = 16;
-pub(crate) const MAX_AGENT_OUTPUT_TOKENS: u64 = 8_192;
+pub(crate) const MAX_AGENT_OUTPUT_TOKENS: u64 = 32_768;
 
 pub(crate) fn validate_text_len(
     field: &str,
