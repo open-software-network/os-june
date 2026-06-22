@@ -3248,7 +3248,7 @@ async fn start_scribe_provider_proxy(
         decisions,
         policy_block_decisions,
         mappings: Arc::new(Mutex::new(Vec::new())),
-        direct_policy_session_keys: Arc::new(Mutex::new(Vec::new())),
+        direct_policy_sessions: Arc::new(Mutex::new(Vec::new())),
     });
     tauri::async_runtime::spawn(run_scribe_provider_proxy(listener, state, shutdown_rx));
     Ok(RunningScribeProviderProxy { port, shutdown })
@@ -3260,7 +3260,12 @@ struct ScribeProviderProxyState {
     decisions: Arc<crate::tool_guard::ToolGuardDecisionHub>,
     policy_block_decisions: Arc<PolicyBlockDecisionHub>,
     mappings: Arc<Mutex<Vec<crate::tool_guard::ToolGuardReplacementMapping>>>,
-    direct_policy_session_keys: Arc<Mutex<Vec<String>>>,
+    direct_policy_sessions: Arc<Mutex<Vec<DirectPolicySession>>>,
+}
+
+struct DirectPolicySession {
+    key: String,
+    direct_chat_token: String,
 }
 
 struct RunningScribeProviderProxy {
@@ -3342,9 +3347,11 @@ async fn handle_scribe_provider_connection(
                 return Ok(());
             }
             capture_hermes_chat_payload("forwarded", &body);
-            let direct_policy_route = body_matches_direct_policy_session_key(&state, &body);
-            let proxy_result = if direct_policy_route {
-                crate::scribe_api::proxy_agent_chat_completions_direct(body.clone()).await
+            let direct_policy_token = direct_policy_session_token(&state, &body);
+            let direct_policy_route = direct_policy_token.is_some();
+            let proxy_result = if let Some(token) = direct_policy_token.as_deref() {
+                crate::scribe_api::proxy_agent_chat_completions_direct(body.clone(), Some(token))
+                    .await
             } else {
                 crate::scribe_api::proxy_agent_chat_completions(body.clone()).await
             };
@@ -3361,8 +3368,21 @@ async fn handle_scribe_provider_connection(
                     {
                         match request_policy_block_decision(&state, &body, &collected.body).await {
                             Ok(PolicyBlockDecision::Continue) => {
+                                let Some(direct_chat_token) = collected.direct_chat_token.clone()
+                                else {
+                                    write_agent_proxy_error(
+                                        &mut stream,
+                                        AppError::new(
+                                            "scribe_direct_chat_token_missing",
+                                            "Scribe did not return a direct chat token for the policy block.",
+                                        ),
+                                    )
+                                    .await?;
+                                    return Ok(());
+                                };
                                 match crate::scribe_api::proxy_agent_chat_completions_direct(
                                     body.clone(),
+                                    Some(&direct_chat_token),
                                 )
                                 .await
                                 {
@@ -3372,7 +3392,11 @@ async fn handle_scribe_provider_connection(
                                             if let Some(key) =
                                                 policy_block_direct_session_key(&body, &direct.body)
                                             {
-                                                remember_direct_policy_session_key(&state, key);
+                                                remember_direct_policy_session(
+                                                    &state,
+                                                    key,
+                                                    direct_chat_token,
+                                                );
                                             }
                                         }
                                         write_collected_agent_response(
@@ -3450,6 +3474,7 @@ fn debug_capture_agent_chat_payloads_enabled() -> bool {
 struct CollectedAgentProxyResponse {
     status: u16,
     content_type: String,
+    direct_chat_token: Option<String>,
     body: Vec<u8>,
 }
 
@@ -3458,10 +3483,12 @@ async fn collect_agent_proxy_response(
 ) -> CollectedAgentProxyResponse {
     let status = response.status;
     let content_type = response.content_type.clone();
+    let direct_chat_token = response.direct_chat_token.clone();
     let body = response.collect_body().await.unwrap_or_default();
     CollectedAgentProxyResponse {
         status,
         content_type,
+        direct_chat_token,
         body,
     }
 }
@@ -3613,31 +3640,43 @@ fn find_json_string_field(value: &serde_json::Value, field: &str) -> Option<Stri
     }
 }
 
-fn body_matches_direct_policy_session_key(
+fn direct_policy_session_token(
     state: &Arc<ScribeProviderProxyState>,
     body: &serde_json::Value,
-) -> bool {
+) -> Option<String> {
     let candidates = policy_block_direct_session_keys(body);
     if candidates.is_empty() {
-        return false;
+        return None;
     }
-    let Ok(keys) = state.direct_policy_session_keys.lock() else {
-        return false;
+    let Ok(sessions) = state.direct_policy_sessions.lock() else {
+        return None;
     };
-    candidates
-        .iter()
-        .any(|candidate| keys.iter().any(|stored| stored == candidate))
+    candidates.iter().find_map(|candidate| {
+        sessions
+            .iter()
+            .find(|session| &session.key == candidate)
+            .map(|session| session.direct_chat_token.clone())
+    })
 }
 
-fn remember_direct_policy_session_key(state: &Arc<ScribeProviderProxyState>, key: String) {
-    if let Ok(mut keys) = state.direct_policy_session_keys.lock() {
-        if !keys.iter().any(|stored| stored == &key) {
-            keys.push(key);
+fn remember_direct_policy_session(
+    state: &Arc<ScribeProviderProxyState>,
+    key: String,
+    direct_chat_token: String,
+) {
+    if let Ok(mut sessions) = state.direct_policy_sessions.lock() {
+        if let Some(session) = sessions.iter_mut().find(|session| session.key == key) {
+            session.direct_chat_token = direct_chat_token;
+        } else {
+            sessions.push(DirectPolicySession {
+                key,
+                direct_chat_token,
+            });
         }
         const MAX_DIRECT_POLICY_SESSION_KEYS: usize = 128;
-        if keys.len() > MAX_DIRECT_POLICY_SESSION_KEYS {
-            let excess = keys.len() - MAX_DIRECT_POLICY_SESSION_KEYS;
-            keys.drain(0..excess);
+        if sessions.len() > MAX_DIRECT_POLICY_SESSION_KEYS {
+            let excess = sessions.len() - MAX_DIRECT_POLICY_SESSION_KEYS;
+            sessions.drain(0..excess);
         }
     }
 }

@@ -3,6 +3,7 @@ use serde::Serialize;
 
 pub const ERR_BAD_REQUEST: i32 = 2001;
 pub const ERR_UNAUTHORIZED: i32 = 3001;
+pub const ERR_FORBIDDEN: i32 = 3002;
 pub const ERR_UNPROCESSABLE: i32 = 4201;
 pub const ERR_INSUFFICIENT_CREDITS: i32 = 4301;
 pub const ERR_PAYLOAD_TOO_LARGE: i32 = 4131;

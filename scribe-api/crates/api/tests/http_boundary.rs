@@ -29,6 +29,7 @@ use std::{
 use tower::ServiceExt;
 
 const AUTHORIZATION: &str = "Bearer valid-token";
+const DIRECT_CHAT_TOKEN_HEADER: &str = "x-scribe-direct-chat-token";
 
 #[tokio::test]
 async fn integration_missing_auth_returns_unauthorized_envelope() -> Result<(), Box<dyn Error>> {
@@ -119,7 +120,7 @@ async fn integration_agent_chat_uses_guarded_route() -> Result<(), Box<dyn Error
 }
 
 #[tokio::test]
-async fn integration_agent_chat_direct_uses_direct_route() -> Result<(), Box<dyn Error>> {
+async fn integration_agent_chat_direct_requires_policy_block_grant() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/chat/completions/direct",
         &serde_json::json!({
@@ -130,8 +131,142 @@ async fn integration_agent_chat_direct_uses_direct_route() -> Result<(), Box<dyn
     )?)
     .await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "direct_chat_token_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_direct_uses_prior_policy_block_grant() -> Result<(), Box<dyn Error>>
+{
+    let router = router(test_state_with_chat_completers(
+        Arc::new(BlockingChatCompleter),
+        Arc::new(FakeChatCompleter::new("fake-direct-chat")),
+    ));
+    let blocked_body = serde_json::json!({
+        "model": "text-model",
+        "messages": [
+            { "role": "system", "content": "You are June." },
+            { "role": "user", "content": "Hello" }
+        ]
+    });
+
+    let blocked = oneshot(
+        &router,
+        json_request("/v1/chat/completions", &blocked_body, Some(AUTHORIZATION))?,
+    )
+    .await;
+
+    assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+    let direct_token = blocked
+        .headers()
+        .get(DIRECT_CHAT_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| std::io::Error::other("missing direct chat token"))?
+        .to_string();
+    let blocked_json = response_json(blocked).await?;
+    assert_eq!(blocked_json["message"], "policy_blocked");
+
+    let direct = oneshot(
+        &router,
+        json_request_with_direct_token(
+            "/v1/chat/completions/direct",
+            &blocked_body,
+            Some(AUTHORIZATION),
+            &direct_token,
+        )?,
+    )
+    .await;
+
+    assert_eq!(direct.status(), StatusCode::OK);
+    let body = response_json(direct).await?;
+    assert_eq!(body["provider"], "fake-direct-chat");
+
+    let unrelated = oneshot(
+        &router,
+        json_request_with_direct_token(
+            "/v1/chat/completions/direct",
+            &serde_json::json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": "Different prompt" }]
+            }),
+            Some(AUTHORIZATION),
+            &direct_token,
+        )?,
+    )
+    .await;
+
+    assert_eq!(unrelated.status(), StatusCode::FORBIDDEN);
+    let body = response_json(unrelated).await?;
+    assert_eq!(body["message"], "direct_chat_token_invalid");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_direct_grant_extends_to_same_live_session()
+-> Result<(), Box<dyn Error>> {
+    let router = router(test_state_with_chat_completers(
+        Arc::new(BlockingChatCompleter),
+        Arc::new(FakeChatCompleter::new("fake-direct-chat")),
+    ));
+    let blocked_body = serde_json::json!({
+        "model": "text-model",
+        "messages": [
+            { "role": "system", "content": "You are June." },
+            { "role": "user", "content": "Hello" }
+        ]
+    });
+    let blocked = oneshot(
+        &router,
+        json_request("/v1/chat/completions", &blocked_body, Some(AUTHORIZATION))?,
+    )
+    .await;
+    let direct_token = blocked
+        .headers()
+        .get(DIRECT_CHAT_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| std::io::Error::other("missing direct chat token"))?
+        .to_string();
+    let first_direct = oneshot(
+        &router,
+        json_request_with_direct_token(
+            "/v1/chat/completions/direct",
+            &blocked_body,
+            Some(AUTHORIZATION),
+            &direct_token,
+        )?,
+    )
+    .await;
+    assert_eq!(first_direct.status(), StatusCode::OK);
+    let _ = response_json(first_direct).await?;
+
+    let follow_up = oneshot(
+        &router,
+        json_request_with_direct_token(
+            "/v1/chat/completions/direct",
+            &serde_json::json!({
+                "model": "text-model",
+                "messages": [
+                    { "role": "system", "content": "You are June." },
+                    { "role": "user", "content": "Hello" },
+                    {
+                        "role": "assistant",
+                        "content": "fake-direct-chat response",
+                        "tool_calls": []
+                    },
+                    { "role": "user", "content": "Follow up" }
+                ]
+            }),
+            Some(AUTHORIZATION),
+            &direct_token,
+        )?,
+    )
+    .await;
+
+    assert_eq!(follow_up.status(), StatusCode::OK);
+    let body = response_json(follow_up).await?;
     assert_eq!(body["provider"], "fake-direct-chat");
     Ok(())
 }
@@ -548,9 +683,38 @@ fn test_state_with_tool_guard(tool_guard: Arc<dyn ToolGuardAnalyzer>) -> ApiStat
     )
 }
 
+fn test_state_with_chat_completers(
+    guarded_chat_completer: Arc<dyn AgentChatCompleter>,
+    direct_chat_completer: Arc<dyn AgentChatCompleter>,
+) -> ApiState {
+    test_state_with_parts(
+        Arc::new(RecordingIssueReportSink::default()),
+        None,
+        guarded_chat_completer,
+        direct_chat_completer,
+        test_attestation(),
+    )
+}
+
 fn test_state_with_sinks(
     issue_reports: Arc<dyn IssueReportSink>,
     tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
+    attestation: AttestationInfo,
+) -> ApiState {
+    test_state_with_parts(
+        issue_reports,
+        tool_guard,
+        Arc::new(FakeChatCompleter::new("fake-guarded-chat")),
+        Arc::new(FakeChatCompleter::new("fake-direct-chat")),
+        attestation,
+    )
+}
+
+fn test_state_with_parts(
+    issue_reports: Arc<dyn IssueReportSink>,
+    tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
+    guarded_chat_completer: Arc<dyn AgentChatCompleter>,
+    direct_chat_completer: Arc<dyn AgentChatCompleter>,
     attestation: AttestationInfo,
 ) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
@@ -559,8 +723,6 @@ fn test_state_with_sinks(
     let generator = Arc::new(FakeGenerator);
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
-    let guarded_chat_completer = Arc::new(FakeChatCompleter::new("fake-guarded-chat"));
-    let direct_chat_completer = Arc::new(FakeChatCompleter::new("fake-direct-chat"));
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
@@ -677,6 +839,23 @@ fn json_request(
         .method(Method::POST)
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/json");
+    if let Some(authorization) = authorization {
+        builder = builder.header(header::AUTHORIZATION, authorization);
+    }
+    builder.body(Body::from(value.to_string()))
+}
+
+fn json_request_with_direct_token(
+    uri: &str,
+    value: &serde_json::Value,
+    authorization: Option<&str>,
+    direct_token: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(DIRECT_CHAT_TOKEN_HEADER, direct_token);
     if let Some(authorization) = authorization {
         builder = builder.header(header::AUTHORIZATION, authorization);
     }
@@ -969,8 +1148,21 @@ impl AgentChatCompleter for FakeChatCompleter {
         _request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
         Ok(AgentChatCompletion {
-            body: format!(r#"{{"id":"chatcmpl_test","provider":"{}"}}"#, self.provider)
-                .into_bytes(),
+            body: format!(
+                r#"{{
+                    "id":"chatcmpl_test",
+                    "provider":"{}",
+                    "choices":[{{
+                        "message":{{
+                            "role":"assistant",
+                            "content":"{} response",
+                            "tool_calls":[]
+                        }}
+                    }}]
+                }}"#,
+                self.provider, self.provider
+            )
+            .into_bytes(),
             content_type: "application/json".to_string(),
             provider: self.provider.to_string(),
             usage: TokenUsage {
@@ -978,5 +1170,17 @@ impl AgentChatCompleter for FakeChatCompleter {
                 completion_tokens: 100,
             },
         })
+    }
+}
+
+struct BlockingChatCompleter;
+
+#[async_trait]
+impl AgentChatCompleter for BlockingChatCompleter {
+    async fn complete(
+        &self,
+        _request: AgentChatRequest,
+    ) -> Result<AgentChatCompletion, DomainError> {
+        Err(DomainError::PolicyBlocked)
     }
 }

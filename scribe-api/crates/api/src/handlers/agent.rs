@@ -6,11 +6,13 @@ use axum::{
     Json,
     body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use scribe_domain::{ModelId, ModelKind};
-use scribe_services::{AgentChatParams, AgentChatRoute};
+use scribe_services::{AgentChatParams, AgentChatRoute, ServiceError};
+
+pub(crate) const DIRECT_CHAT_TOKEN_HEADER: &str = "x-scribe-direct-chat-token";
 
 pub(crate) async fn chat_completions(
     State(state): State<ApiState>,
@@ -51,12 +53,21 @@ async fn chat_completions_with_route(
             serde_json::Value::String(model_id.clone()),
         );
     }
+    let direct_token = if route == AgentChatRoute::Direct {
+        let token = require_direct_chat_token(&headers)?;
+        if !state.direct_chat_grant_matches(&token, &user_id, body) {
+            return Err(ApiError::forbidden("direct_chat_token_invalid"));
+        }
+        Some(token)
+    } else {
+        None
+    };
     let streaming = body
         .get("stream")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let params = AgentChatParams {
-        user_id,
+        user_id: user_id.clone(),
         model_id: ModelId(model_id),
         body: body.clone(),
         route,
@@ -66,7 +77,12 @@ async fn chat_completions_with_route(
     // a slow reasoning model does not stall behind a fully buffered response (a
     // non-streaming caller still gets a single buffered JSON body).
     if streaming {
-        let output = state.agent_chat().complete_streaming(params).await?;
+        let output = match state.agent_chat().complete_streaming(params).await {
+            Ok(output) => output,
+            Err(error) => {
+                return agent_chat_error_response(&state, &user_id, body, route, error);
+            }
+        };
         return Ok((
             StatusCode::OK,
             [(CONTENT_TYPE, output.content_type)],
@@ -75,11 +91,55 @@ async fn chat_completions_with_route(
             .into_response());
     }
 
-    let output = state.agent_chat().complete(params).await?;
+    let output = match state.agent_chat().complete(params).await {
+        Ok(output) => output,
+        Err(error) => return agent_chat_error_response(&state, &user_id, body, route, error),
+    };
+    if let Some(token) = direct_token {
+        state.remember_direct_chat_session_key(&token, body, &output.completion.body);
+    }
     Ok((
         StatusCode::OK,
         [(CONTENT_TYPE, output.completion.content_type)],
         output.completion.body,
     )
         .into_response())
+}
+
+fn require_direct_chat_token(headers: &HeaderMap) -> Result<String, ApiError> {
+    headers
+        .get(DIRECT_CHAT_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::forbidden("direct_chat_token_required"))
+}
+
+fn agent_chat_error_response(
+    state: &ApiState,
+    user_id: &scribe_domain::UserId,
+    body: &serde_json::Value,
+    route: AgentChatRoute,
+    error: ServiceError,
+) -> Result<Response, ApiError> {
+    if route == AgentChatRoute::Guarded && matches!(error, ServiceError::PolicyBlocked) {
+        return policy_blocked_response_with_direct_grant(state, user_id, body);
+    }
+    Err(ApiError::from(error))
+}
+
+fn policy_blocked_response_with_direct_grant(
+    state: &ApiState,
+    user_id: &scribe_domain::UserId,
+    body: &serde_json::Value,
+) -> Result<Response, ApiError> {
+    let token = state
+        .issue_direct_chat_grant(user_id, body)
+        .ok_or(ApiError::Internal)?;
+    let mut response = ApiError::PolicyBlocked.into_response();
+    let header_name = HeaderName::from_static(DIRECT_CHAT_TOKEN_HEADER);
+    let header_value = HeaderValue::from_str(&token).map_err(|_| ApiError::Internal)?;
+    response.headers_mut().insert(header_name, header_value);
+    Ok(response)
 }

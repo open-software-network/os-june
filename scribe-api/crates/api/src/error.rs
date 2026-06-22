@@ -1,7 +1,7 @@
 use crate::envelope::{
-    ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_TOOL_GUARD_UNAVAILABLE, ERR_UNAUTHORIZED,
-    ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
+    ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_FORBIDDEN, ERR_INSUFFICIENT_CREDITS,
+    ERR_INTERNAL, ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_TOOL_GUARD_UNAVAILABLE,
+    ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM, error_response,
 };
 use axum::{http::StatusCode, response::IntoResponse};
 use scribe_domain::{AuthError, DomainError};
@@ -14,6 +14,8 @@ pub enum ApiError {
     BadRequest { code: i32, message: String },
     #[error("unauthorized")]
     Unauthorized { code: i32, message: String },
+    #[error("forbidden")]
+    Forbidden { code: i32, message: String },
     #[error("payload_too_large")]
     PayloadTooLarge,
     #[error("unprocessable")]
@@ -47,6 +49,13 @@ impl ApiError {
         }
     }
 
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::Forbidden {
+            code: ERR_FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
     pub fn unprocessable(message: impl Into<String>) -> Self {
         Self::Unprocessable {
             code: ERR_UNPROCESSABLE,
@@ -63,6 +72,9 @@ impl IntoResponse for ApiError {
             }
             Self::Unauthorized { code, message } => {
                 error_response(StatusCode::UNAUTHORIZED, code, &message)
+            }
+            Self::Forbidden { code, message } => {
+                error_response(StatusCode::FORBIDDEN, code, &message)
             }
             Self::PayloadTooLarge => error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,

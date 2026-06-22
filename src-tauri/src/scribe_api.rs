@@ -28,6 +28,7 @@ const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_SCRIBE_RESPONSE_MESSAGE: &str =
     "The processing service returned an invalid response.";
 const DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS_ENV: &str = "JUNE_CAPTURE_CHAT_PAYLOADS";
+const DIRECT_CHAT_TOKEN_HEADER: &str = "x-scribe-direct-chat-token";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -117,6 +118,7 @@ pub struct DictateCleanupRequestParams {
 pub struct AgentChatCompletionsResponse {
     pub status: u16,
     pub content_type: String,
+    pub direct_chat_token: Option<String>,
     upstream: reqwest::Response,
 }
 
@@ -383,18 +385,21 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
 pub async fn proxy_agent_chat_completions(
     body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
-    proxy_agent_chat_completions_to_path("/v1/chat/completions", body).await
+    proxy_agent_chat_completions_to_path("/v1/chat/completions", body, None).await
 }
 
 pub async fn proxy_agent_chat_completions_direct(
     body: serde_json::Value,
+    direct_chat_token: Option<&str>,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
-    proxy_agent_chat_completions_to_path("/v1/chat/completions/direct", body).await
+    proxy_agent_chat_completions_to_path("/v1/chat/completions/direct", body, direct_chat_token)
+        .await
 }
 
 async fn proxy_agent_chat_completions_to_path(
     path: &str,
     mut body: serde_json::Value,
+    direct_chat_token: Option<&str>,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
     limit_agent_chat_messages_for_proxy(&mut body);
     if let Some(object) = body.as_object_mut() {
@@ -407,13 +412,14 @@ async fn proxy_agent_chat_completions_to_path(
     let url = format!("{}{}", scribe_api_url(), path);
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
-        let response = agent_http_client()
+        let mut request = agent_http_client()
             .post(&url)
             .bearer_auth(&token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(network_error)?;
+            .json(&body);
+        if let Some(direct_chat_token) = direct_chat_token {
+            request = request.header(DIRECT_CHAT_TOKEN_HEADER, direct_chat_token);
+        }
+        let response = request.send().await.map_err(network_error)?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
             token = crate::os_accounts::refresh_access_token().await?;
             continue;
@@ -425,9 +431,15 @@ async fn proxy_agent_chat_completions_to_path(
             .and_then(|value| value.to_str().ok())
             .unwrap_or("application/json")
             .to_string();
+        let direct_chat_token = response
+            .headers()
+            .get(DIRECT_CHAT_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         return Ok(AgentChatCompletionsResponse {
             status,
             content_type,
+            direct_chat_token,
             upstream: response,
         });
     }
