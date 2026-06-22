@@ -233,6 +233,7 @@ pub struct PolicyBlockDecisionHub {
 #[serde(rename_all = "camelCase")]
 pub struct PolicyBlockDecisionRequest {
     pub decision_id: String,
+    pub session_id: String,
     pub conversation_fingerprint: String,
     pub model: Option<String>,
     pub message: String,
@@ -3366,7 +3367,14 @@ async fn handle_scribe_provider_connection(
                     if !direct_policy_route
                         && is_policy_blocked_response(collected.status, &collected.body)
                     {
-                        match request_policy_block_decision(&state, &body, &collected.body).await {
+                        match request_policy_block_decision(
+                            &state,
+                            &request,
+                            &body,
+                            &collected.body,
+                        )
+                        .await
+                        {
                             Ok(PolicyBlockDecision::Continue) => {
                                 let Some(direct_chat_token) = collected.direct_chat_token.clone()
                                 else {
@@ -3572,14 +3580,22 @@ async fn write_agent_proxy_error(
 
 async fn request_policy_block_decision(
     state: &Arc<ScribeProviderProxyState>,
+    http_request: &HttpRequest,
     body: &serde_json::Value,
     response_body: &[u8],
 ) -> Result<PolicyBlockDecision, AppError> {
     let decision_id = uuid::Uuid::new_v4().to_string();
+    let session_id = policy_block_session_id(http_request).ok_or_else(|| {
+        AppError::new(
+            "policy_block_session_missing",
+            "Policy block decision is missing the Hermes session id.",
+        )
+    })?;
     let conversation_fingerprint = policy_block_conversation_fingerprint(body)
         .unwrap_or_else(|| policy_block_body_fingerprint(body));
     let request = PolicyBlockDecisionRequest {
         decision_id,
+        session_id,
         conversation_fingerprint,
         model: body
             .get("model")
@@ -3616,6 +3632,10 @@ fn json_contains_policy_block(value: &serde_json::Value) -> bool {
         serde_json::Value::Array(items) => items.iter().any(json_contains_policy_block),
         _ => false,
     }
+}
+
+fn policy_block_session_id(request: &HttpRequest) -> Option<String> {
+    http_header(request, "x-hermes-session-id").and_then(non_empty_string)
 }
 
 fn policy_block_response_message(body: &[u8]) -> Option<String> {
@@ -4300,12 +4320,26 @@ fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_jso
 }
 
 fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
+    http_header(request, "authorization")
+        .and_then(|value| bearer_token(value))
+        .is_some_and(|candidate| constant_time_eq(candidate, token))
+}
+
+fn http_header<'a>(request: &'a HttpRequest, header_name: &str) -> Option<&'a str> {
     request
         .headers
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-        .and_then(|(_, value)| bearer_token(value))
-        .is_some_and(|candidate| constant_time_eq(candidate, token))
+        .find(|(name, _)| name.eq_ignore_ascii_case(header_name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn bearer_token(value: &str) -> Option<&str> {
@@ -4550,6 +4584,36 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn provider_proxy_reads_policy_block_session_id_from_hermes_header() {
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            headers: vec![(
+                "X-Hermes-Session-Id".to_string(),
+                "  session-1  ".to_string(),
+            )],
+            body: Vec::new(),
+        };
+
+        assert_eq!(
+            policy_block_session_id(&request).as_deref(),
+            Some("session-1"),
+        );
+    }
+
+    #[test]
+    fn provider_proxy_ignores_blank_policy_block_session_id() {
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            headers: vec![("X-Hermes-Session-Id".to_string(), "  ".to_string())],
+            body: Vec::new(),
+        };
+
+        assert_eq!(policy_block_session_id(&request), None);
     }
 
     #[test]

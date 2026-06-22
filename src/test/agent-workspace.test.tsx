@@ -3076,6 +3076,7 @@ describe("AgentWorkspace", () => {
       mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
         payload: {
           decisionId: "decision-1",
+          sessionId: "session-1",
           conversationFingerprint: "fingerprint-1",
           model: "zai-org-glm-5-2",
           message: "policy_blocked",
@@ -3085,7 +3086,9 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Prompt blocked")).toBeInTheDocument();
     expect(
-      screen.getByText(/OS Guard blocked this prompt because malicious content was detected/),
+      screen.getByText(
+        /OS Guard blocked this prompt because malicious content was detected/,
+      ),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -3111,6 +3114,7 @@ describe("AgentWorkspace", () => {
       mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
         payload: {
           decisionId: "decision-2",
+          sessionId: "session-1",
           conversationFingerprint: "fingerprint-2",
           model: "zai-org-glm-5-2",
           message: "policy_blocked",
@@ -3127,16 +3131,69 @@ describe("AgentWorkspace", () => {
       }),
     );
     expect(
-      screen.getByText("The prompt was blocked. Start a new session to continue."),
+      screen.getByText(
+        "The prompt was blocked. Start a new session to continue.",
+      ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("This session was blocked. Start a new session to continue."),
+      screen.getByText(
+        "This session was blocked. Start a new session to continue.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("textbox")).toHaveAttribute(
       "aria-disabled",
       "true",
     );
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("attaches a policy block card to the blocked session when another session is selected", async () => {
+    const user = userEvent.setup();
+    const selectedSession = {
+      id: "session-2",
+      title: "Selected session",
+      preview: "Selected preview",
+      last_active: "2026-06-05T12:00:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      selectedSession,
+      existingSession,
+    ]);
+
+    const view = render(<AgentWorkspace initialSession={selectedSession} />);
+    expect(await screen.findByText("Selected session")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
+        payload: {
+          decisionId: "decision-session-1",
+          sessionId: "session-1",
+          conversationFingerprint: "fingerprint-session-1",
+          model: "zai-org-glm-5-2",
+          message: "policy_blocked",
+        },
+      });
+    });
+
+    expect(screen.queryByText("Prompt blocked")).toBeNull();
+
+    view.rerender(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(await screen.findByText("Prompt blocked")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() =>
+      expect(mocks.hermesBridgePolicyBlockDecision).toHaveBeenCalledWith({
+        decisionId: "decision-session-1",
+        action: "continue",
+      }),
+    );
+    expect(
+      await screen.findAllByText(
+        /This session is running directly on Venice without OS Guard protection/,
+      ),
+    ).not.toHaveLength(0);
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {

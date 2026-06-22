@@ -1121,10 +1121,7 @@ export function AgentWorkspace({
   }, []);
 
   const appendPolicyBlockLiveEvent = useCallback(
-    (
-      sessionId: string,
-      event: HermesGatewayEvent & { receivedAt: string },
-    ) => {
+    (sessionId: string, event: HermesGatewayEvent & { receivedAt: string }) => {
       const nextSessionEvents = [
         ...(liveEventsRef.current[sessionId] ?? []),
         event,
@@ -1145,7 +1142,7 @@ export function AgentWorkspace({
       AGENT_POLICY_BLOCK_DECISION_EVENT,
       (event) => {
         const request = event.payload;
-        const sessionId = selectedHermesSessionIdRef.current;
+        const sessionId = request?.sessionId?.trim();
         if (!request || !sessionId) return;
         policyBlockSessionIdsRef.current[request.decisionId] = sessionId;
         appendPolicyBlockLiveEvent(sessionId, {
@@ -1175,8 +1172,7 @@ export function AgentWorkspace({
     part: Extract<AgentChatPart, { type: "policyBlock" }>,
     action: PolicyBlockDecisionAction,
   ) {
-    const sessionId =
-      policyBlockSessionIdsRef.current[part.id] ?? selectedHermesSessionId;
+    const sessionId = policyBlockSessionIdsRef.current[part.id];
     if (!sessionId || policyBlockSubmitting[part.id]) return;
     setPolicyBlockSubmitting((current) => ({ ...current, [part.id]: action }));
     try {
@@ -2023,7 +2019,9 @@ export function AgentWorkspace({
       selectedHermesSessionId &&
       rejectedPolicySessionIds.has(selectedHermesSessionId)
     ) {
-      setBusyNotice("This session was blocked. Start a new session to continue.");
+      setBusyNotice(
+        "This session was blocked. Start a new session to continue.",
+      );
       return;
     }
     const message = draft.trim();
@@ -3650,7 +3648,9 @@ export function AgentWorkspace({
               exit={{ opacity: 0 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
-              <span>This session was blocked. Start a new session to continue.</span>
+              <span>
+                This session was blocked. Start a new session to continue.
+              </span>
               <button
                 type="button"
                 className="btn btn-ghost"
@@ -4037,9 +4037,7 @@ export function AgentWorkspace({
               setError(messageFromError(err)),
             )
           }
-          onPolicyBlock={(part, action) =>
-            void answerPolicyBlock(part, action)
-          }
+          onPolicyBlock={(part, action) => void answerPolicyBlock(part, action)}
           onClarify={(part, answer) =>
             void respondToClarify(
               selectedHermesSessionId,

@@ -457,6 +457,7 @@ export type PolicyBlockDecisionAction = "continue" | "reject";
 
 export type PolicyBlockDecisionRequest = {
   decisionId: string;
+  sessionId: string;
   conversationFingerprint: string;
   model?: string | null;
   message: string;
