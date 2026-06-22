@@ -216,6 +216,13 @@ pub struct HermesBridge {
     /// of re-prompting. Shared with the provider proxy and cleared when the
     /// user re-enables OS Guard for the session.
     direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
+    /// Per-user-message fingerprints the user explicitly continued past. Unlike
+    /// `direct_policy_fingerprints`, this set is NOT cleared when OS Guard is
+    /// re-enabled: a message the user already approved must not re-block every
+    /// later turn just because it still sits in the conversation history. New
+    /// content is still scanned normally; only an approved historical message is
+    /// allowed to ride along.
+    approved_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 }
 
 struct HermesProcess {
@@ -929,6 +936,7 @@ async fn ensure_provider_proxy(
         bridge.tool_guard_decisions.clone(),
         bridge.policy_block_decisions.clone(),
         bridge.direct_policy_fingerprints.clone(),
+        bridge.approved_policy_fingerprints.clone(),
     )
     .await?;
     let mut guard = bridge
@@ -3291,6 +3299,7 @@ async fn start_scribe_provider_proxy(
     decisions: Arc<crate::tool_guard::ToolGuardDecisionHub>,
     policy_block_decisions: Arc<PolicyBlockDecisionHub>,
     direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
+    approved_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 ) -> Result<RunningScribeProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
@@ -3311,6 +3320,7 @@ async fn start_scribe_provider_proxy(
         policy_block_decisions,
         mappings: Arc::new(Mutex::new(Vec::new())),
         direct_policy_fingerprints,
+        approved_policy_fingerprints,
     });
     tauri::async_runtime::spawn(run_scribe_provider_proxy(listener, state, shutdown_rx));
     Ok(RunningScribeProviderProxy { port, shutdown })
@@ -3323,6 +3333,7 @@ struct ScribeProviderProxyState {
     policy_block_decisions: Arc<PolicyBlockDecisionHub>,
     mappings: Arc<Mutex<Vec<crate::tool_guard::ToolGuardReplacementMapping>>>,
     direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
+    approved_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 }
 
 struct RunningScribeProviderProxy {
@@ -3418,6 +3429,33 @@ async fn handle_scribe_provider_connection(
                     let collected = collect_agent_proxy_response(response).await;
                     if !direct_policy_route
                         && is_policy_blocked_response(collected.status, &collected.body)
+                        && block_attributable_only_to_approved_history(&state, &body).await
+                    {
+                        // The newest prompt scanned clean on its own, and every
+                        // user message ahead of it was already approved by the
+                        // user. The block is the gateway re-flagging an
+                        // already-approved historical message, not new danger —
+                        // route this turn direct so an approved message cannot
+                        // poison the session after OS Guard is re-enabled.
+                        match crate::scribe_api::proxy_agent_chat_completions_direct(body.clone())
+                            .await
+                        {
+                            Ok(response) => {
+                                let direct = collect_agent_proxy_response(response).await;
+                                write_collected_agent_response(
+                                    &mut stream,
+                                    &state,
+                                    requested_stream,
+                                    direct,
+                                )
+                                .await?;
+                            }
+                            Err(error) => {
+                                write_agent_proxy_error(&mut stream, error).await?;
+                            }
+                        }
+                    } else if !direct_policy_route
+                        && is_policy_blocked_response(collected.status, &collected.body)
                     {
                         match request_policy_block_decision(&state, &body, &collected.body).await {
                             Ok(PolicyBlockRequestOutcome::Decided(
@@ -3426,6 +3464,14 @@ async fn handle_scribe_provider_connection(
                                 if let Some(fingerprint) =
                                     policy_block_conversation_fingerprint(&body)
                                 {
+                                    // Remember the conversation so later turns
+                                    // route direct, and record the just-approved
+                                    // message so it never re-blocks the session
+                                    // after OS Guard is re-enabled.
+                                    remember_approved_policy_fingerprint(
+                                        &state,
+                                        fingerprint.clone(),
+                                    );
                                     remember_direct_policy_fingerprint(&state, fingerprint);
                                 }
                                 match crate::scribe_api::proxy_agent_chat_completions_direct(
@@ -3691,6 +3737,105 @@ fn remember_direct_policy_fingerprint(state: &Arc<ScribeProviderProxyState>, fin
             fingerprints.drain(0..excess);
         }
     }
+}
+
+fn remember_approved_policy_fingerprint(
+    state: &Arc<ScribeProviderProxyState>,
+    fingerprint: String,
+) {
+    if let Ok(mut fingerprints) = state.approved_policy_fingerprints.lock() {
+        if !fingerprints.iter().any(|stored| stored == &fingerprint) {
+            fingerprints.push(fingerprint);
+        }
+        const MAX_APPROVED_POLICY_FINGERPRINTS: usize = 128;
+        if fingerprints.len() > MAX_APPROVED_POLICY_FINGERPRINTS {
+            let excess = fingerprints.len() - MAX_APPROVED_POLICY_FINGERPRINTS;
+            fingerprints.drain(0..excess);
+        }
+    }
+}
+
+/// Decides whether a policy block is caused solely by historical user messages
+/// the user already approved (so it should ride through) rather than by genuinely
+/// new content (which must still be blocked).
+///
+/// Two conditions must both hold:
+/// 1. Every flagged user message ahead of the newest one is in the approved set.
+///    Without an approved match there is nothing to forgive, so the block stands.
+/// 2. The newest user message, scanned alone (system prefix + that message), is
+///    NOT itself blocked by OS Guard. This is the safety check: a brand-new
+///    dangerous prompt is still caught even when sitting behind approved history.
+///
+/// The extra OS Guard call only happens on a block that already cleared
+/// condition 1, so the common path (no approved history) pays nothing.
+async fn block_attributable_only_to_approved_history(
+    state: &Arc<ScribeProviderProxyState>,
+    body: &serde_json::Value,
+) -> bool {
+    let fingerprints = policy_block_conversation_fingerprints(body);
+    // Need at least one historical user message plus the newest one.
+    let Some((_, history)) = fingerprints.split_last() else {
+        return false;
+    };
+    if history.is_empty() {
+        return false;
+    }
+    // Every historical user message must be one the user already approved.
+    // A single unapproved historical message means the block could be its
+    // fault, so fall back to prompting the user. The lock is scoped so its
+    // guard is never held across the await below.
+    let all_history_approved = {
+        let approved = match state.approved_policy_fingerprints.lock() {
+            Ok(approved) => approved,
+            Err(_) => return false,
+        };
+        history
+            .iter()
+            .all(|candidate| approved.iter().any(|stored| stored == candidate))
+    };
+    if !all_history_approved {
+        return false;
+    }
+
+    let Some(recheck_body) = newest_user_message_only_body(body) else {
+        return false;
+    };
+    // Re-scan only the newest prompt. If it is blocked on its own, the new
+    // content is dangerous and must go through the normal decision flow.
+    match crate::scribe_api::proxy_agent_chat_completions(recheck_body).await {
+        Ok(response) => {
+            let collected = collect_agent_proxy_response(response).await;
+            !is_policy_blocked_response(collected.status, &collected.body)
+        }
+        // A failed recheck is inconclusive: do not silently bypass the block.
+        Err(_) => false,
+    }
+}
+
+/// Builds a chat-completions body that keeps the system prefix and only the
+/// newest user message, dropping all earlier turns. Used to scan the new prompt
+/// in isolation so a block can be attributed to it or to approved history.
+/// Returns `None` when there is no user message to scan.
+fn newest_user_message_only_body(body: &serde_json::Value) -> Option<serde_json::Value> {
+    let messages = body.get("messages").and_then(serde_json::Value::as_array)?;
+    let newest_user = messages
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(serde_json::Value::as_str) == Some("user"))?
+        .clone();
+    let mut trimmed: Vec<serde_json::Value> = messages
+        .iter()
+        .take_while(|message| {
+            message.get("role").and_then(serde_json::Value::as_str) == Some("system")
+        })
+        .cloned()
+        .collect();
+    trimmed.push(newest_user);
+    let mut recheck = body.clone();
+    if let Some(object) = recheck.as_object_mut() {
+        object.insert("messages".to_string(), serde_json::Value::Array(trimmed));
+    }
+    Some(recheck)
 }
 
 fn policy_block_conversation_fingerprint(body: &serde_json::Value) -> Option<String> {
@@ -4720,6 +4865,84 @@ mod tests {
         assert!(policy_block_conversation_fingerprints(&follow_up)
             .iter()
             .any(|candidate| candidate == &fingerprint));
+    }
+
+    #[test]
+    fn newest_user_message_only_body_keeps_system_prefix_and_last_prompt() {
+        let body = serde_json::json!({
+            "model": "june",
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Dangerous X" },
+                { "role": "assistant", "content": "..." },
+                { "role": "user", "content": "Benign Y" }
+            ]
+        });
+
+        let trimmed = newest_user_message_only_body(&body).expect("trimmed body");
+        let messages = trimmed["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are June.");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "Benign Y");
+        // Unrelated fields are preserved so the recheck mirrors the real request.
+        assert_eq!(trimmed["model"], "june");
+    }
+
+    #[test]
+    fn newest_user_message_only_body_none_without_user_message() {
+        let body = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." }
+            ]
+        });
+        assert!(newest_user_message_only_body(&body).is_none());
+    }
+
+    #[test]
+    fn historical_user_fingerprints_split_newest_from_history() {
+        // The newest user message is the one to be scanned in isolation; every
+        // earlier user message is history that must already be approved before a
+        // block is forgiven.
+        let body = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Dangerous X" },
+                { "role": "assistant", "content": "blocked" },
+                { "role": "user", "content": "Benign Y" }
+            ]
+        });
+
+        let fingerprints = policy_block_conversation_fingerprints(&body);
+        let (newest, history) = fingerprints
+            .split_last()
+            .expect("at least one user message");
+
+        let x_only = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Dangerous X" }
+            ]
+        });
+        let y_only = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Benign Y" }
+            ]
+        });
+        let x_fingerprint = policy_block_conversation_fingerprint(&x_only).expect("x fingerprint");
+        let y_fingerprint = policy_block_conversation_fingerprint(&y_only).expect("y fingerprint");
+
+        // History is the dangerous approved message; newest is the benign prompt.
+        assert_eq!(history, [x_fingerprint]);
+        assert_eq!(newest, &y_fingerprint);
+        // The trimmed recheck body fingerprints to the newest prompt alone.
+        let trimmed = newest_user_message_only_body(&body).expect("trimmed body");
+        assert_eq!(
+            policy_block_conversation_fingerprint(&trimmed).expect("trimmed fingerprint"),
+            y_fingerprint
+        );
     }
 
     #[test]
