@@ -626,9 +626,28 @@ pub async fn hermes_bridge_clear_direct_policy(
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
     if let Ok(mut fingerprints) = bridge.direct_policy_fingerprints.lock() {
+        policy_debug(&format!(
+            "clear_direct_policy: clearing {} fingerprints",
+            fingerprints.len()
+        ));
         fingerprints.clear();
+    } else {
+        policy_debug("clear_direct_policy: LOCK FAILED");
     }
     Ok(())
+}
+
+// Temporary diagnostics for the policy-block routing. Appends to a file so the
+// route a turn takes can be inspected without the runtime log.
+fn policy_debug(message: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/june-policy-debug.log")
+    {
+        let _ = writeln!(file, "{message}");
+    }
 }
 
 /// Reap-and-collect: drops map entries whose process has exited and returns
@@ -3414,6 +3433,23 @@ async fn handle_scribe_provider_connection(
                 return Ok(());
             }
             let direct_policy_route = body_matches_direct_policy_fingerprint(&state, &body);
+            {
+                let direct_count = state
+                    .direct_policy_fingerprints
+                    .lock()
+                    .map(|f| f.len())
+                    .unwrap_or(usize::MAX);
+                let approved_count = state
+                    .approved_policy_fingerprints
+                    .lock()
+                    .map(|f| f.len())
+                    .unwrap_or(usize::MAX);
+                let fps = policy_block_conversation_fingerprints(&body);
+                policy_debug(&format!(
+                    "POST /chat: direct_route={direct_policy_route} direct_set={direct_count} approved_set={approved_count} body_user_fps={}",
+                    fps.len()
+                ));
+            }
             let proxy_result = if direct_policy_route {
                 crate::scribe_api::proxy_agent_chat_completions_direct(body.clone()).await
             } else {
@@ -3427,10 +3463,16 @@ async fn handle_scribe_provider_connection(
                     // Guard can inspect proposed tool calls before Hermes
                     // receives them.
                     let collected = collect_agent_proxy_response(response).await;
-                    if !direct_policy_route
-                        && is_policy_blocked_response(collected.status, &collected.body)
-                        && block_attributable_only_to_approved_history(&state, &body).await
-                    {
+                    let is_blocked =
+                        is_policy_blocked_response(collected.status, &collected.body);
+                    let attributable = !direct_policy_route
+                        && is_blocked
+                        && block_attributable_only_to_approved_history(&state, &body).await;
+                    policy_debug(&format!(
+                        "POST /chat result: status={} is_blocked={is_blocked} attributable_bypass={attributable}",
+                        collected.status
+                    ));
+                    if attributable {
                         // The newest prompt scanned clean on its own, and every
                         // user message ahead of it was already approved by the
                         // user. The block is the gateway re-flagging an
