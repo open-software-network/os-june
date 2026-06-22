@@ -22,7 +22,7 @@ const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
 // Mirrors the public Scribe API validation cap. Hermes may request a larger
 // per-call output budget than the backend accepts, which otherwise trips a
 // validation error that it misclassifies as prompt context overflow.
-const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 8_192;
+const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
@@ -1199,7 +1199,7 @@ mod tests {
         let mut body = serde_json::json!({
             "model": "hermes-selected-model",
             "messages": [{ "role": "user", "content": "hello" }],
-            "max_tokens": 8193.0,
+            "max_tokens": 32769.0,
         });
 
         normalize_agent_chat_request_for_proxy(&mut body);
