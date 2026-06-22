@@ -386,6 +386,23 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "message.complete") {
+      // The decision flow (policy_block.request/.decision) already rendered the
+      // block card for this turn. The proxy also re-streams the block as the
+      // assistant message, which would add a second, identical card for a
+      // frame. Swallow it when a block card already exists; a reload still
+      // renders the card from the persisted message.
+      if (
+        text &&
+        isPolicyBlockedMessage(text) &&
+        turnsHavePolicyBlockPart(turns)
+      ) {
+        if (currentAssistant) {
+          currentAssistant.status = "complete";
+          completeRunningParts(currentAssistant.parts);
+          currentAssistant = null;
+        }
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const policyBlock =
         text && isPolicyBlockedMessage(text)
@@ -647,6 +664,20 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "error") {
+      // As with message.complete: don't add a second block card when the
+      // decision flow already rendered one for this turn.
+      if (
+        text &&
+        isPolicyBlockedMessage(text) &&
+        turnsHavePolicyBlockPart(turns)
+      ) {
+        if (currentAssistant) {
+          currentAssistant.status = "complete";
+          completeRunningParts(currentAssistant.parts);
+          currentAssistant = null;
+        }
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNotice(text) : undefined;
       const policyBlock =
@@ -696,6 +727,12 @@ function lastAssistantTurn(turns: AgentChatTurn[]) {
     if (turns[index]?.role === "assistant") return turns[index];
   }
   return undefined;
+}
+
+function turnsHavePolicyBlockPart(turns: AgentChatTurn[]): boolean {
+  return turns.some((turn) =>
+    turn.parts.some((part) => part.type === "policyBlock"),
+  );
 }
 
 function appendAssistantTextPart(

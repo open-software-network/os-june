@@ -213,6 +213,46 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("does not duplicate the block card when the decision flow already rendered it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "policy_block.request",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { decision_id: "decision-1" },
+        },
+        {
+          type: "policy_block.decision",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: { decision_id: "decision-1", action: "reject" },
+        },
+        {
+          // The proxy re-streams the block as the assistant message; it must
+          // not add a second card on top of the decision-flow card.
+          type: "message.complete",
+          session_id: "runtime-session",
+          receivedAt: "2026-06-04T10:00:01.200Z",
+          payload: {
+            content: "Error: policy_blocked - the prompt was blocked by OS Guard.",
+          },
+        },
+      ],
+    );
+
+    const policyBlockParts = turns.flatMap((turn) =>
+      turn.parts.filter((part) => part.type === "policyBlock"),
+    );
+    expect(policyBlockParts).toHaveLength(1);
+    expect(policyBlockParts[0]).toMatchObject({
+      id: "decision-1",
+      status: "rejected",
+    });
+  });
+
   it("renders live clarify requests as answerable chat parts", () => {
     const turns = buildAgentChatTurns(
       [],
