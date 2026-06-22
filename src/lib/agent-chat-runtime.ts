@@ -674,31 +674,23 @@ export type PolicyBlockDecision = {
   id: string;
   promptText: string;
   status: "pending" | "continued" | "rejected";
-  /** Id of the exact user turn this decision blocked, captured when the block
-   * fired. Anchors the card to that turn directly so two identical prompts can't
-   * swap cards through text-matching or turn re-sorting. Optional: falls back to
-   * `promptText` matching when the turn id isn't present (e.g. restored state or
-   * a prompt that re-persisted under a new id). */
-  blockedTurnId?: string | null;
+  /** Zero-based index of the user turn this decision blocked, among all user
+   * turns in chronological order. This is the only anchor that survives the
+   * pending→persisted transition: turn ids change when a prompt persists and
+   * timestamps mix client and server clocks, but the order of user turns never
+   * changes. The card renders right after this user turn. */
+  blockedUserTurnIndex: number;
 };
 
-/** A re-enable marker closing the span where OS Guard was off. `afterTurnId` is
- * the id of the last turn present when the user re-enabled, so the divider is
- * anchored by position — not by a wall-clock timestamp, which drifts against the
- * server-stamped message times and used to misplace the divider (and shove the
- * next prompt's card out of order) on any clock skew. */
+/** A re-enable marker closing the span where OS Guard was off. The divider
+ * renders right before the user turn at `beforeUserTurnIndex` — i.e. just before
+ * the next prompt the user sends after re-enabling — or at the end if no such
+ * prompt exists yet. Anchored by user-turn ordinal for the same reason as
+ * decisions: ids and timestamps are not stable, ordinals are. */
 export type OsGuardReenable = {
   id: string;
-  afterTurnId: string | null;
+  beforeUserTurnIndex: number;
 };
-
-function userTurnText(turn: AgentChatTurn): string {
-  return turn.parts
-    .filter((part): part is AgentChatTextPart => part.type === "text")
-    .map((part) => part.text)
-    .join("")
-    .trim();
-}
 
 /**
  * The single mechanism that places policy-block cards and OS-Guard re-enable
@@ -706,13 +698,14 @@ function userTurnText(turn: AgentChatTurn): string {
  * decision state and returns a new array with the cards/dividers spliced in by
  * position, so rendering is deterministic across live streaming and reconcile.
  *
- * Each decision becomes an assistant turn carrying one `policyBlock` part,
- * inserted immediately after the earliest user turn whose text matches the
- * decision's prompt and that no earlier decision already claimed — so an
- * identical prompt re-sent later gets its own card. With no match the card is
- * appended at the end. Each re-enable marker becomes a `divider` turn placed
- * immediately after its anchor turn (`afterTurnId`), or at the end if the
- * anchor is missing.
+ * Everything is anchored by user-turn ordinal — the position of a prompt among
+ * all user turns in chronological order. That ordinal is the only thing that
+ * survives the pending→persisted transition: a prompt's turn id changes when it
+ * persists and its timestamp mixes client and server clocks, but the order of
+ * user turns never changes. A decision's card renders right after the user turn
+ * at its `blockedUserTurnIndex`; a re-enable divider renders right before the
+ * user turn at its `beforeUserTurnIndex` (i.e. just before the next prompt), or
+ * at the end when that prompt doesn't exist yet.
  */
 export function applyPolicyBlockCards(
   turns: AgentChatTurn[],
@@ -720,47 +713,22 @@ export function applyPolicyBlockCards(
   reenables: OsGuardReenable[],
 ): AgentChatTurn[] {
   const out = [...turns];
-  const claimed = new Set<AgentChatTurn>();
-  const anchors = new Map<PolicyBlockDecision, AgentChatTurn | null>();
 
-  // Pass 1: anchor every decision that knows the exact turn it blocked. Done
-  // first so a text fallback below can't steal a turn another decision will
-  // claim by id — that swap is what put a re-sent prompt's card on the wrong
-  // bubble.
-  for (const decision of decisions) {
-    if (!decision.blockedTurnId) continue;
-    const turn = out.find(
-      (candidate) =>
-        candidate?.id === decision.blockedTurnId &&
-        candidate.role === "user" &&
-        !claimed.has(candidate),
-    );
-    if (turn) {
-      claimed.add(turn);
-      anchors.set(decision, turn);
+  // Array index of the nth user turn, recomputed each call because earlier
+  // splices shift positions. Cards (assistant) and dividers (system) are never
+  // user turns, so inserting them never changes any user-turn ordinal.
+  const userTurnIndex = (ordinal: number): number => {
+    let seen = 0;
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i]?.role !== "user") continue;
+      if (seen === ordinal) return i;
+      seen += 1;
     }
-  }
-
-  // Pass 2: earliest-unclaimed prompt with matching text for the rest (restored
-  // state, or a prompt that re-persisted under a new id).
-  for (const decision of decisions) {
-    if (anchors.has(decision)) continue;
-    const target = decision.promptText.trim();
-    const turn = target
-      ? out.find(
-          (candidate) =>
-            candidate?.role === "user" &&
-            !claimed.has(candidate) &&
-            userTurnText(candidate) === target,
-        )
-      : undefined;
-    if (turn) claimed.add(turn);
-    anchors.set(decision, turn ?? null);
-  }
+    return -1;
+  };
 
   for (const decision of decisions) {
-    const anchor = anchors.get(decision) ?? null;
-    const at = anchor ? out.indexOf(anchor) : -1;
+    const at = userTurnIndex(decision.blockedUserTurnIndex);
     const card: AgentChatTurn = {
       id: `policy-block:${decision.id}`,
       role: "assistant",
@@ -768,23 +736,16 @@ export function applyPolicyBlockCards(
       status: "complete",
       parts: [{ type: "policyBlock", id: decision.id, status: decision.status }],
     };
-    if (at >= 0) {
-      out.splice(at + 1, 0, card);
-    } else {
-      out.push(card);
-    }
+    if (at >= 0) out.splice(at + 1, 0, card);
+    else out.push(card);
   }
 
   for (const reenable of reenables) {
-    let index = out.length;
-    if (reenable.afterTurnId) {
-      const anchor = out.findIndex((turn) => turn?.id === reenable.afterTurnId);
-      if (anchor >= 0) index = anchor + 1;
-    }
-    out.splice(index, 0, {
+    const at = userTurnIndex(reenable.beforeUserTurnIndex);
+    const divider: AgentChatTurn = {
       id: `os-guard-reenabled:${reenable.id}`,
       role: "system",
-      createdAt: index > 0 ? (out[index - 1]?.createdAt ?? "") : "",
+      createdAt: at > 0 ? (out[at - 1]?.createdAt ?? "") : "",
       status: "complete",
       parts: [
         {
@@ -793,7 +754,9 @@ export function applyPolicyBlockCards(
           label: "OS Guard re-enabled",
         },
       ],
-    });
+    };
+    if (at >= 0) out.splice(at, 0, divider);
+    else out.push(divider);
   }
 
   return out;

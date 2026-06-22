@@ -914,6 +914,9 @@ export function AgentWorkspace({
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
+  const hermesSessionMessagesRef = useRef<
+    Record<string, HermesSessionMessage[]>
+  >(hermesSessionMessages);
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >(() => continuity?.pendingMessages ?? {});
@@ -1085,10 +1088,12 @@ export function AgentWorkspace({
     policyBlockDecisionsRef.current = policyBlockDecisions;
     osGuardReenabledAtRef.current = osGuardReenabledAt;
     pendingHermesMessagesRef.current = pendingHermesMessages;
+    hermesSessionMessagesRef.current = hermesSessionMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
     directPolicySessionIds,
     hermesSessionItems,
+    hermesSessionMessages,
     osGuardReenabledAt,
     pendingHermesMessages,
     policyBlockDecisions,
@@ -1130,6 +1135,22 @@ export function AgentWorkspace({
     [],
   );
 
+  // User-turn text contents for a session in the same chronological order the
+  // chat builds them (persisted first, then unpersisted pending). Used to anchor
+  // policy-block cards and re-enable dividers by user-turn ordinal.
+  const sessionUserTurnContents = useCallback((sessionId: string): string[] => {
+    const persisted = hermesSessionMessagesRef.current[sessionId] ?? [];
+    const pending = pendingHermesMessagesRef.current[sessionId] ?? [];
+    return [...persisted, ...pending]
+      .filter(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.trim().length > 0,
+      )
+      .map((message) => message.content as string);
+  }, []);
+
   const clearSessionActivity = useCallback((sessionId: string) => {
     const nextWorking = new Set(workingSessionIdsRef.current);
     nextWorking.delete(sessionId);
@@ -1157,19 +1178,13 @@ export function AgentWorkspace({
         const sessionId = selectedHermesSessionIdRef.current;
         if (!request || !sessionId) return;
         policyBlockSessionIdsRef.current[request.decisionId] = sessionId;
-        // Capture the prompt being blocked (the message the user just sent) so
-        // the card stays anchored to that exact prompt by array position,
-        // instead of drifting onto whatever the newest prompt happens to be.
-        const sessionPending =
-          pendingHermesMessagesRef.current[sessionId] ?? [];
-        const blockedMessage = [...sessionPending]
-          .reverse()
-          .find(
-            (message) =>
-              message.role === "user" && typeof message.content === "string",
-          );
-        const blockedPrompt = blockedMessage?.content;
-        const blockedTurnId = blockedMessage?.id ?? null;
+        // The blocked prompt is the latest user turn. Anchor the card to its
+        // ordinal position among all user turns (chronological), the one anchor
+        // that survives a prompt persisting under a new id or its timestamp
+        // crossing client/server clocks.
+        const sessionUserMessages = sessionUserTurnContents(sessionId);
+        const blockedPrompt = sessionUserMessages.at(-1) ?? "";
+        const blockedUserTurnIndex = Math.max(0, sessionUserMessages.length - 1);
         setPolicyBlockDecisions((current) => {
           const existing = current[sessionId] ?? [];
           // Ignore a repeat for a decision id we already track.
@@ -1178,9 +1193,9 @@ export function AgentWorkspace({
           }
           const added: PolicyBlockDecision = {
             id: request.decisionId,
-            promptText: typeof blockedPrompt === "string" ? blockedPrompt : "",
+            promptText: blockedPrompt,
             status: "pending",
-            blockedTurnId,
+            blockedUserTurnIndex,
           };
           const next = {
             ...current,
@@ -1287,23 +1302,17 @@ export function AgentWorkspace({
       return next;
     });
     // Keep the block/approval card and record a re-enable marker closing the
-    // span where OS Guard was off, instead of deleting that history. The marker
-    // is anchored to the id of the last message present right now (the answer
-    // the continued turn produced) so the divider sits there by position — not
-    // by a wall-clock timestamp, which drifts against server message times and
-    // misplaced the divider, disordering the next prompt's card.
-    const sessionMessages = [
-      ...(hermesSessionMessages[sessionId] ?? []),
-      ...(pendingHermesMessagesRef.current[sessionId] ?? []),
-    ];
-    const afterTurnId = sessionMessages.at(-1)?.id ?? null;
+    // span where OS Guard was off, instead of deleting that history. The divider
+    // is anchored before the next prompt the user will send (the user turn at
+    // the current count), by ordinal — the same stable anchor the cards use.
+    const beforeUserTurnIndex = sessionUserTurnContents(sessionId).length;
     setOsGuardReenabledAt((current) => {
       const existing = current[sessionId] ?? [];
       const next = {
         ...current,
         [sessionId]: [
           ...existing,
-          { id: `${existing.length}:${afterTurnId ?? "end"}`, afterTurnId },
+          { id: `${existing.length}:${beforeUserTurnIndex}`, beforeUserTurnIndex },
         ],
       };
       osGuardReenabledAtRef.current = next;
