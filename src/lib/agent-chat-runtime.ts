@@ -115,18 +115,14 @@ export function buildAgentChatTurns(
   toolEvents: AgentToolEventDto[],
   liveEvents: LiveHermesEvent[] = [],
 ): AgentChatTurn[] {
-  const turns = messages.map(messageToTurn);
+  const turns = messages.flatMap((message) => messageToTurn(message) ?? []);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return collapseAdjacentPolicyBlocks(
-    dedupePolicyBlockParts(turns)
-      .filter((turn) =>
-        turn.parts.some(
-          (part) => part.type === "tool" || partText(part).trim(),
-        ),
-      )
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-  );
+  return turns
+    .filter((turn) =>
+      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export function buildHermesSessionChatTurns(
@@ -203,21 +199,22 @@ export function buildHermesSessionChatTurns(
       }
 
       if (content) {
-        const policyBlock =
-          turn.role === "assistant"
-            ? policyBlockPartFromTurnText(message.id, content)
-            : undefined;
+        // The proxy persists a "policy_blocked" marker as the assistant reply
+        // on reject; the block card comes from decision state, so skip the
+        // marker rather than leaking it as raw text.
+        if (turn.role === "assistant" && isPolicyBlockedMessage(content)) {
+          continue;
+        }
         const notice =
           turn.role === "assistant"
             ? creditsNoticeFromTurnText(content)
             : undefined;
         turn.parts.push(
-          policyBlock ??
-            notice ?? {
-              type: "text",
-              text: content,
-              status: "complete",
-            },
+          notice ?? {
+            type: "text",
+            text: content,
+            status: "complete",
+          },
         );
       }
     }
@@ -228,15 +225,11 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return collapseAdjacentPolicyBlocks(
-    dedupePolicyBlockParts(turns)
-      .filter((turn) =>
-        turn.parts.some(
-          (part) => part.type === "tool" || partText(part).trim(),
-        ),
-      )
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-  );
+  return turns
+    .filter((turn) =>
+      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
@@ -295,23 +288,16 @@ function creditsNoticeFromTurnText(
   return /^\s*error\b/i.test(text) ? creditsNotice(text) : undefined;
 }
 
-function policyBlockPartFromTurnText(
-  id: string,
-  text: string,
-): AgentChatPolicyBlockPart | undefined {
-  return /^\s*error\b/i.test(text) && isPolicyBlockedMessage(text)
-    ? { type: "policyBlock", id, status: "rejected" }
-    : undefined;
-}
-
-function messageToTurn(message: AgentMessageDto): AgentChatTurn {
+function messageToTurn(message: AgentMessageDto): AgentChatTurn | undefined {
+  // The proxy persists a "policy_blocked" marker as the assistant reply on
+  // reject; the block card comes from decision state, so skip the marker
+  // rather than leaking it as raw text.
+  if (message.role === "assistant" && isPolicyBlockedMessage(message.content)) {
+    return undefined;
+  }
   const notice =
     message.role === "assistant"
       ? creditsNoticeFromTurnText(message.content)
-      : undefined;
-  const policyBlock =
-    message.role === "assistant"
-      ? policyBlockPartFromTurnText(message.id, message.content)
       : undefined;
   return {
     id: message.id,
@@ -324,8 +310,7 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
     createdAt: message.createdAt,
     status: "complete",
     parts: [
-      policyBlock ??
-        notice ?? { type: "text", text: message.content, status: "complete" },
+      notice ?? { type: "text", text: message.content, status: "complete" },
     ],
   };
 }
@@ -383,9 +368,6 @@ function appendLiveHermesEvents(
 ) {
   let currentAssistant: AgentChatTurn | null = null;
   const toolCreatedTurns = new Set<AgentChatTurn>();
-  // User turns already claimed by a policy-block card, so repeated identical
-  // prompts each anchor to their own turn instead of all matching the first.
-  const claimedPromptTurns = new Set<string>();
 
   for (const event of events) {
     const text = eventText(event);
@@ -397,8 +379,8 @@ function appendLiveHermesEvents(
 
     if (event.type === "message.delta") {
       // The proxy re-streams a rejected prompt as assistant content; never show
-      // that raw policy_blocked notice as streaming text — the block card
-      // (decision flow / message.complete) is the only thing that should render.
+      // that raw policy_blocked notice as streaming text — the block card comes
+      // from decision state, not from this stream.
       if (isPolicyBlockedMessage(deltaEventText(event))) {
         currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
         currentAssistant.status = "running";
@@ -415,19 +397,11 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "message.complete") {
-      // The decision flow (policy_block.request/.decision) already rendered the
-      // block card for this turn. The proxy also re-streams the block as the
-      // assistant message, which would add a second, identical card for a
-      // frame. Swallow it when a block card already exists; a reload still
-      // renders the card from the persisted message.
-      if (
-        text &&
-        isPolicyBlockedMessage(text) &&
-        turnsHavePolicyBlockPart(turns)
-      ) {
+      // The proxy re-streams a rejected prompt as the assistant message; the
+      // block card comes from decision state, so swallow the marker rather than
+      // rendering it as text.
+      if (text && isPolicyBlockedMessage(text)) {
         if (currentAssistant) {
-          // Drop any partially streamed block text so it never lingers next to
-          // the card.
           currentAssistant.parts = currentAssistant.parts.filter(
             (part) => part.type !== "text",
           );
@@ -438,21 +412,8 @@ function appendLiveHermesEvents(
         continue;
       }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-      const policyBlock =
-        text && isPolicyBlockedMessage(text)
-          ? ({
-              type: "policyBlock",
-              id: `policy-block:${event.receivedAt}`,
-              status: "rejected",
-            } satisfies AgentChatPolicyBlockPart)
-          : undefined;
       const notice = text ? creditsNoticeFromTurnText(text) : undefined;
-      if (policyBlock) {
-        currentAssistant.parts = currentAssistant.parts.filter(
-          (part) => part.type !== "text",
-        );
-        currentAssistant.parts.push(policyBlock);
-      } else if (notice) {
+      if (notice) {
         // The complete text is authoritative for the turn (see
         // completeAssistantTextPart); when it's a billing failure, any
         // partially streamed text is superseded along with it.
@@ -663,82 +624,11 @@ function appendLiveHermesEvents(
       continue;
     }
 
-    if (event.type === "os_guard.reactivated") {
-      // Standalone marker turn closing the span where OS Guard was off. It
-      // sits at its own timestamp between the block/approval card and the
-      // turns that follow, instead of deleting that history.
-      const turn = createAssistantTurn(turns, event.receivedAt);
-      turn.role = "system";
-      turn.status = "complete";
-      turn.parts.push({
-        type: "divider",
-        id: `os-guard-reactivated:${event.receivedAt}`,
-        label: "OS Guard re-enabled",
-      });
-      currentAssistant = null;
-      continue;
-    }
-
-    if (event.type === "policy_block.request") {
-      // Anchor the card just after the exact prompt it blocked, matched by the
-      // captured prompt text, so it never drifts onto a later prompt or sorts
-      // above its own (the block event's wall-clock time can land before the
-      // user message's persisted timestamp on reconcile). Repeated identical
-      // prompts each claim their own turn; fall back to the latest user turn
-      // when the text is unknown.
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const blockedPrompt = stringValue(payload?.blocked_prompt);
-      currentAssistant ??= createAssistantTurn(
-        turns,
-        afterBlockedPromptTurn(
-          turns,
-          blockedPrompt,
-          claimedPromptTurns,
-          event.receivedAt,
-        ),
-      );
-      currentAssistant.status = "running";
-      upsertPolicyBlockPart(currentAssistant.parts, {
-        id:
-          stringValue(payload?.decision_id) ??
-          stringValue(payload?.decisionId) ??
-          `policy-block:${event.receivedAt}`,
-        status: "pending",
-      });
-      continue;
-    }
-
-    if (event.type === "policy_block.decision") {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const action =
-        stringValue(payload?.action) === "continue" ? "continued" : "rejected";
-      const turn = currentAssistant ?? lastAssistantTurn(turns);
-      upsertPolicyBlockPart(turn?.parts ?? [], {
-        id:
-          stringValue(payload?.decision_id) ??
-          stringValue(payload?.decisionId) ??
-          `policy-block:${event.receivedAt}`,
-        status: action,
-      });
-      if (turn && action === "rejected") {
-        turn.status = "complete";
-        completeRunningParts(turn.parts);
-        if (turn === currentAssistant) currentAssistant = null;
-      }
-      continue;
-    }
-
     if (event.type === "error") {
-      // As with message.complete: don't add a second block card when the
-      // decision flow already rendered one for this turn.
-      if (
-        text &&
-        isPolicyBlockedMessage(text) &&
-        turnsHavePolicyBlockPart(turns)
-      ) {
+      // The proxy reports a rejected prompt as an error; the block card comes
+      // from decision state, so swallow the marker rather than rendering it.
+      if (text && isPolicyBlockedMessage(text)) {
         if (currentAssistant) {
-          // Drop any partially streamed block text so it never lingers next to
-          // the card.
           currentAssistant.parts = currentAssistant.parts.filter(
             (part) => part.type !== "text",
           );
@@ -750,17 +640,7 @@ function appendLiveHermesEvents(
       }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNotice(text) : undefined;
-      const policyBlock =
-        text && isPolicyBlockedMessage(text)
-          ? ({
-              type: "policyBlock",
-              id: `policy-block:${event.receivedAt}`,
-              status: "rejected",
-            } satisfies AgentChatPolicyBlockPart)
-          : undefined;
-      if (policyBlock) {
-        currentAssistant.parts.push(policyBlock);
-      } else if (notice) {
+      if (notice) {
         currentAssistant.parts.push(notice);
       } else {
         upsertToolPart(currentAssistant.parts, {
@@ -777,6 +657,14 @@ function appendLiveHermesEvents(
   }
 }
 
+/** A user's policy-block decision for one prompt, kept in per-session frontend
+ * state and the only source of the inline block/approval cards. */
+export type PolicyBlockDecision = {
+  id: string;
+  promptText: string;
+  status: "pending" | "continued" | "rejected";
+};
+
 function userTurnText(turn: AgentChatTurn): string {
   return turn.parts
     .filter((part): part is AgentChatTextPart => part.type === "text")
@@ -785,54 +673,77 @@ function userTurnText(turn: AgentChatTurn): string {
     .trim();
 }
 
-// 1ms past `createdAt`, so a turn created with it sorts directly after that
-// turn. Falls back to `fallback` if `createdAt` is unparseable.
-function bumpedTimestamp(createdAt: string, fallback: string): string {
-  const bumped = new Date(new Date(createdAt).getTime() + 1);
-  return Number.isNaN(bumped.getTime()) ? fallback : bumped.toISOString();
-}
-
-// Anchors the policy-block card directly after the prompt it blocked, matched
-// by the captured prompt text against the earliest unclaimed user turn (so two
-// identical prompts each keep their own card). Falls back to the latest user
-// turn when the prompt text is unknown.
-function afterBlockedPromptTurn(
+/**
+ * The single mechanism that places policy-block cards and OS-Guard re-enable
+ * dividers in the timeline. Pure: it takes the built turns plus the session's
+ * decision state and returns a new array with the cards/dividers spliced in by
+ * position, so rendering is deterministic across live streaming and reconcile.
+ *
+ * Each decision becomes an assistant turn carrying one `policyBlock` part,
+ * inserted immediately after the earliest user turn whose text matches the
+ * decision's prompt and that no earlier decision already claimed — so an
+ * identical prompt re-sent later gets its own card. With no match the card is
+ * appended at the end. Each re-enable timestamp becomes a `divider` turn placed
+ * after the last turn created at or before it.
+ */
+export function applyPolicyBlockCards(
   turns: AgentChatTurn[],
-  blockedPrompt: string | undefined,
-  claimed: Set<string>,
-  receivedAt: string,
-): string {
-  const target = blockedPrompt?.trim();
-  if (target) {
-    for (const turn of turns) {
-      if (turn.role !== "user" || claimed.has(turn.id)) continue;
-      if (userTurnText(turn) === target) {
-        claimed.add(turn.id);
-        return bumpedTimestamp(turn.createdAt, receivedAt);
+  decisions: PolicyBlockDecision[],
+  reenabledAt: string[],
+): AgentChatTurn[] {
+  const out = [...turns];
+  const claimed = new Set<AgentChatTurn>();
+
+  for (const decision of decisions) {
+    const target = decision.promptText.trim();
+    let index = -1;
+    if (target) {
+      for (let i = 0; i < out.length; i += 1) {
+        const turn = out[i];
+        if (!turn || turn.role !== "user" || claimed.has(turn)) continue;
+        if (userTurnText(turn) === target) {
+          claimed.add(turn);
+          index = i;
+          break;
+        }
       }
     }
-  }
-  return afterLatestUserTurn(turns, receivedAt);
-}
-
-// A timestamp that sorts the policy-block card right after the prompt it
-// blocks: 1ms past the latest USER turn. Anchoring to the prompt (not to every
-// turn) keeps the card between the prompt and whatever the turn produces next —
-// so on Continue the approval card sits above the reasoning/answer instead of
-// sinking below them once those persist. Falls back to `receivedAt` when there
-// is no user turn yet.
-function afterLatestUserTurn(turns: AgentChatTurn[], receivedAt: string): string {
-  let latestUser: string | undefined;
-  for (const turn of turns) {
-    if (
-      turn.role === "user" &&
-      (latestUser === undefined || turn.createdAt > latestUser)
-    ) {
-      latestUser = turn.createdAt;
+    const card: AgentChatTurn = {
+      id: `policy-block:${decision.id}`,
+      role: "assistant",
+      createdAt: index >= 0 ? (out[index]?.createdAt ?? "") : "",
+      status: "complete",
+      parts: [{ type: "policyBlock", id: decision.id, status: decision.status }],
+    };
+    if (index >= 0) {
+      out.splice(index + 1, 0, card);
+    } else {
+      out.push(card);
     }
   }
-  if (latestUser === undefined) return receivedAt;
-  return bumpedTimestamp(latestUser, receivedAt);
+
+  for (const ts of reenabledAt) {
+    let index = out.length;
+    for (let i = 0; i < out.length; i += 1) {
+      const turn = out[i];
+      if (turn && turn.createdAt && turn.createdAt <= ts) index = i + 1;
+    }
+    out.splice(index, 0, {
+      id: `os-guard-reenabled:${ts}`,
+      role: "system",
+      createdAt: ts,
+      status: "complete",
+      parts: [
+        {
+          type: "divider",
+          id: `os-guard-reenabled:${ts}`,
+          label: "OS Guard re-enabled",
+        },
+      ],
+    });
+  }
+
+  return out;
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
@@ -855,49 +766,6 @@ function lastAssistantTurn(turns: AgentChatTurn[]) {
     if (turns[index]?.role === "assistant") return turns[index];
   }
   return undefined;
-}
-
-function turnsHavePolicyBlockPart(turns: AgentChatTurn[]): boolean {
-  return turns.some((turn) =>
-    turn.parts.some((part) => part.type === "policyBlock"),
-  );
-}
-
-// The same block can surface twice with the same id (e.g. the retained live
-// decision plus a persisted copy). Keep only the first occurrence of each id so
-// a single block never renders twice — while distinct blocks (different ids,
-// e.g. an identical prompt re-sent in its own turn) are all preserved.
-function dedupePolicyBlockParts(turns: AgentChatTurn[]): AgentChatTurn[] {
-  const seen = new Set<string>();
-  return turns
-    .map((turn) => {
-      const parts = turn.parts.filter((part) => {
-        if (part.type !== "policyBlock") return true;
-        if (seen.has(part.id)) return false;
-        seen.add(part.id);
-        return true;
-      });
-      return parts.length === turn.parts.length ? turn : { ...turn, parts };
-    })
-    .filter((turn) => turn.parts.length > 0);
-}
-
-// One block can render as two adjacent cards: the live decision card and the
-// persisted card rebuilt from the proxy's "policy_blocked" reply (different
-// ids, same block). Drop a block-only turn that directly follows another, so a
-// single block shows once — while distinct blocks, separated by the prompt and
-// answer between them, are untouched.
-function collapseAdjacentPolicyBlocks(turns: AgentChatTurn[]): AgentChatTurn[] {
-  const isBlockOnly = (turn: AgentChatTurn) =>
-    turn.parts.length > 0 &&
-    turn.parts.every((part) => part.type === "policyBlock");
-  const out: AgentChatTurn[] = [];
-  for (const turn of turns) {
-    const prev = out.at(-1);
-    if (prev && isBlockOnly(prev) && isBlockOnly(turn)) continue;
-    out.push(turn);
-  }
-  return out;
 }
 
 function appendAssistantTextPart(
@@ -1063,25 +931,6 @@ function upsertApprovalPart(
     description: next.description,
     allowPermanent: next.allowPermanent,
     choice: next.choice,
-    status: next.status,
-  });
-}
-
-function upsertPolicyBlockPart(
-  parts: AgentChatPart[],
-  next: Pick<AgentChatPolicyBlockPart, "id" | "status">,
-) {
-  const existing = parts.find(
-    (part): part is AgentChatPolicyBlockPart =>
-      part.type === "policyBlock" && part.id === next.id,
-  );
-  if (existing) {
-    existing.status = next.status;
-    return;
-  }
-  parts.push({
-    type: "policyBlock",
-    id: next.id,
     status: next.status,
   });
 }

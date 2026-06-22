@@ -194,6 +194,7 @@ import {
   stripAgentCliAccessRequest,
 } from "../../lib/agent-cli-access";
 import {
+  applyPolicyBlockCards,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   repairContractionSpacing,
@@ -201,6 +202,7 @@ import {
   type AgentChatPart,
   type AgentChatTurn,
   type LiveHermesEvent,
+  type PolicyBlockDecision,
 } from "../../lib/agent-chat-runtime";
 import {
   buildAgentChatGallery,
@@ -722,6 +724,8 @@ type AgentSessionContinuity = {
   titleOverrides: Record<string, string>;
   directPolicySessionIds: string[];
   rejectedPolicySessionIds: string[];
+  policyBlockDecisions: Record<string, PolicyBlockDecision[]>;
+  osGuardReenabledAt: Record<string, string[]>;
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
@@ -736,6 +740,8 @@ function captureSessionContinuity(state: {
   titleOverrides: Record<string, string>;
   directPolicySessionIds: Set<string>;
   rejectedPolicySessionIds: Set<string>;
+  policyBlockDecisions: Record<string, PolicyBlockDecision[]>;
+  osGuardReenabledAt: Record<string, string[]>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
     ...state.workingSessionIds,
@@ -765,6 +771,8 @@ function captureSessionContinuity(state: {
     rejectedPolicySessionIds: [...state.rejectedPolicySessionIds].filter(
       (sessionId) => activeIds.has(sessionId),
     ),
+    policyBlockDecisions: pick(state.policyBlockDecisions),
+    osGuardReenabledAt: pick(state.osGuardReenabledAt),
   };
 }
 
@@ -822,6 +830,19 @@ export function AgentWorkspace({
     Set<string>
   >(() => new Set(continuity?.rejectedPolicySessionIds ?? []));
   const rejectedPolicySessionIdsRef = useRef(rejectedPolicySessionIds);
+  // Per-session policy-block decisions: the single source of the inline
+  // block/approval cards, rendered by array position so they never drift or
+  // duplicate across live streaming and reconcile.
+  const [policyBlockDecisions, setPolicyBlockDecisions] = useState<
+    Record<string, PolicyBlockDecision[]>
+  >(() => continuity?.policyBlockDecisions ?? {});
+  const policyBlockDecisionsRef = useRef(policyBlockDecisions);
+  // Per-session ISO timestamps of OS Guard re-enable clicks; each renders a
+  // divider in the timeline at its point in time.
+  const [osGuardReenabledAt, setOsGuardReenabledAt] = useState<
+    Record<string, string[]>
+  >(() => continuity?.osGuardReenabledAt ?? {});
+  const osGuardReenabledAtRef = useRef(osGuardReenabledAt);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1060,12 +1081,16 @@ export function AgentWorkspace({
     waitingSessionIdsRef.current = waitingSessionIds;
     directPolicySessionIdsRef.current = directPolicySessionIds;
     rejectedPolicySessionIdsRef.current = rejectedPolicySessionIds;
+    policyBlockDecisionsRef.current = policyBlockDecisions;
+    osGuardReenabledAtRef.current = osGuardReenabledAt;
     pendingHermesMessagesRef.current = pendingHermesMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
     directPolicySessionIds,
     hermesSessionItems,
+    osGuardReenabledAt,
     pendingHermesMessages,
+    policyBlockDecisions,
     rejectedPolicySessionIds,
     selectedHermesSessionId,
     waitingSessionIds,
@@ -1121,24 +1146,6 @@ export function AgentWorkspace({
     };
   }, []);
 
-  const appendPolicyBlockLiveEvent = useCallback(
-    (
-      sessionId: string,
-      event: HermesGatewayEvent & { receivedAt: string },
-    ) => {
-      const nextSessionEvents = [
-        ...(liveEventsRef.current[sessionId] ?? []),
-        event,
-      ].slice(-200);
-      liveEventsRef.current = {
-        ...liveEventsRef.current,
-        [sessionId]: nextSessionEvents,
-      };
-      setLiveEvents(liveEventsRef.current);
-    },
-    [],
-  );
-
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -1150,8 +1157,8 @@ export function AgentWorkspace({
         if (!request || !sessionId) return;
         policyBlockSessionIdsRef.current[request.decisionId] = sessionId;
         // Capture the prompt being blocked (the message the user just sent) so
-        // the card can stay anchored to that exact turn later, instead of
-        // drifting onto whatever the newest prompt happens to be.
+        // the card stays anchored to that exact prompt by array position,
+        // instead of drifting onto whatever the newest prompt happens to be.
         const sessionPending =
           pendingHermesMessagesRef.current[sessionId] ?? [];
         const blockedPrompt = [...sessionPending]
@@ -1160,15 +1167,23 @@ export function AgentWorkspace({
             (message) =>
               message.role === "user" && typeof message.content === "string",
           )?.content;
-        appendPolicyBlockLiveEvent(sessionId, {
-          type: "policy_block.request",
-          receivedAt: new Date().toISOString(),
-          payload: {
-            decision_id: request.decisionId,
-            model: request.model,
-            message: request.message,
-            blocked_prompt: blockedPrompt,
-          },
+        setPolicyBlockDecisions((current) => {
+          const existing = current[sessionId] ?? [];
+          // Ignore a repeat for a decision id we already track.
+          if (existing.some((decision) => decision.id === request.decisionId)) {
+            return current;
+          }
+          const added: PolicyBlockDecision = {
+            id: request.decisionId,
+            promptText: typeof blockedPrompt === "string" ? blockedPrompt : "",
+            status: "pending",
+          };
+          const next = {
+            ...current,
+            [sessionId]: [...existing, added],
+          };
+          policyBlockDecisionsRef.current = next;
+          return next;
         });
         // Surface the prompt as a "needs you" state: the agent HUD/menu-bar
         // shows the session as waitingForUser (its own colour + entry) until the
@@ -1187,7 +1202,7 @@ export function AgentWorkspace({
       disposed = true;
       unlisten?.();
     };
-  }, [appendPolicyBlockLiveEvent, setSessionWaiting, setSessionWorking]);
+  }, [setSessionWaiting, setSessionWorking]);
 
   async function answerPolicyBlock(
     part: Extract<AgentChatPart, { type: "policyBlock" }>,
@@ -1200,13 +1215,20 @@ export function AgentWorkspace({
     // Reflect the decision on the card immediately, before the backend
     // round-trip — otherwise the card lingers on the pending prompt and then
     // visibly swaps to its final state once the call returns.
-    appendPolicyBlockLiveEvent(sessionId, {
-      type: "policy_block.decision",
-      receivedAt: new Date().toISOString(),
-      payload: {
-        decision_id: part.id,
-        action,
-      },
+    const decisionStatus: PolicyBlockDecision["status"] =
+      action === "continue" ? "continued" : "rejected";
+    setPolicyBlockDecisions((current) => {
+      const existing = current[sessionId] ?? [];
+      const next = {
+        ...current,
+        [sessionId]: existing.map((decision) =>
+          decision.id === part.id
+            ? { ...decision, status: decisionStatus }
+            : decision,
+        ),
+      };
+      policyBlockDecisionsRef.current = next;
+      return next;
     });
     try {
       await hermesBridgePolicyBlockDecision({
@@ -1260,12 +1282,18 @@ export function AgentWorkspace({
       next.delete(sessionId);
       return next;
     });
-    // Keep the block/approval card and drop a marker closing the span where
-    // OS Guard was off, instead of deleting that history.
-    appendPolicyBlockLiveEvent(sessionId, {
-      type: "os_guard.reactivated",
-      receivedAt: new Date().toISOString(),
-      payload: {},
+    // Keep the block/approval card and record a re-enable marker closing the
+    // span where OS Guard was off, instead of deleting that history.
+    setOsGuardReenabledAt((current) => {
+      const next = {
+        ...current,
+        [sessionId]: [
+          ...(current[sessionId] ?? []),
+          new Date().toISOString(),
+        ],
+      };
+      osGuardReenabledAtRef.current = next;
+      return next;
     });
     try {
       await hermesBridgeClearDirectPolicy();
@@ -1300,6 +1328,18 @@ export function AgentWorkspace({
         if (!current.has(sessionId)) return current;
         const next = new Set(current);
         next.delete(sessionId);
+        return next;
+      });
+      setPolicyBlockDecisions((current) => {
+        if (!(sessionId in current)) return current;
+        const next = omitRecordKey(current, sessionId);
+        policyBlockDecisionsRef.current = next;
+        return next;
+      });
+      setOsGuardReenabledAt((current) => {
+        if (!(sessionId in current)) return current;
+        const next = omitRecordKey(current, sessionId);
+        osGuardReenabledAtRef.current = next;
         return next;
       });
       // A deleted session must not be the restore target on the next mount.
@@ -1902,12 +1942,13 @@ export function AgentWorkspace({
               ...activityCounts,
             });
           }
-          liveEventsRef.current = {
-            ...liveEventsRef.current,
-            [selectedHermesSessionId]: retainPolicyBlockLiveEvents(
-              liveEventsRef.current[selectedHermesSessionId],
-            ),
-          };
+          // The turn is reconciled from persisted messages now; drop its live
+          // events. Policy-block cards survive this because they render from
+          // decision state, not from live events.
+          liveEventsRef.current = omitRecordKey(
+            liveEventsRef.current,
+            selectedHermesSessionId,
+          );
           setLiveEvents(liveEventsRef.current);
         }
       })
@@ -1980,6 +2021,8 @@ export function AgentWorkspace({
         titleOverrides: sessionTitleOverridesRef.current,
         directPolicySessionIds: directPolicySessionIdsRef.current,
         rejectedPolicySessionIds: rejectedPolicySessionIdsRef.current,
+        policyBlockDecisions: policyBlockDecisionsRef.current,
+        osGuardReenabledAt: osGuardReenabledAtRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -2842,12 +2885,10 @@ export function AgentWorkspace({
             ...activityCounts,
           });
         }
-        liveEventsRef.current = {
-          ...liveEventsRef.current,
-          [sessionId]: retainPolicyBlockLiveEvents(
-            liveEventsRef.current[sessionId],
-          ),
-        };
+        // The turn is reconciled from persisted messages now; drop its live
+        // events. Policy-block cards survive this because they render from
+        // decision state, not from live events.
+        liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
         setLiveEvents(liveEventsRef.current);
       }
       await loadHermesSessions();
@@ -3445,11 +3486,15 @@ export function AgentWorkspace({
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
   const hermesTurns = selectedHermesSessionId
-    ? mergeThinkingTurns(
-        buildHermesSessionChatTurns(
-          selectedHermesMessages,
-          liveEvents[selectedHermesSessionId] ?? [],
+    ? applyPolicyBlockCards(
+        mergeThinkingTurns(
+          buildHermesSessionChatTurns(
+            selectedHermesMessages,
+            liveEvents[selectedHermesSessionId] ?? [],
+          ),
         ),
+        policyBlockDecisions[selectedHermesSessionId] ?? [],
+        osGuardReenabledAt[selectedHermesSessionId] ?? [],
       )
     : [];
   const taskTurns = selectedTask
@@ -6074,21 +6119,6 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
 // Collapse runs of "thinking-only" assistant turns (reasoning/tool, no answer
 // text) into the next answer turn, so a back-to-back chain of thoughts shows as
 // a single "Thought" disclosure rather than several stacked in a row.
-// When a finished turn's live events are dropped in favour of the persisted
-// messages, keep the policy-block decision events. A continued ("approved")
-// block has no persisted marker — only these events render its card — so
-// without this the approval card vanishes the moment the model's answer lands.
-function retainPolicyBlockLiveEvents(
-  events: LiveHermesEvent[] | undefined,
-): LiveHermesEvent[] {
-  return (events ?? []).filter(
-    (event) =>
-      event.type === "policy_block.request" ||
-      event.type === "policy_block.decision" ||
-      event.type === "os_guard.reactivated",
-  );
-}
-
 function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
   const isThinkingOnly = (turn: AgentChatTurn): boolean =>
     turn.role === "assistant" &&
