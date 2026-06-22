@@ -191,6 +191,15 @@ Saved audio is the source of truth for retry. If transcription or generation
 fails after capture, June keeps the audio and processing metadata so work can be
 retried without recording again.
 
+## Agent skills
+
+The agent loads skills from its managed `skills` folder and, when the folder
+exists, from `~/.agents/skills` in your home directory (the same location the
+`skills` CLI installs into). Drop a skill folder there and every agent session
+picks it up the next time it starts. Home-folder skills load read-only: the
+macOS write-jail grants writes only under June's own data directory, so the
+agent can use these skills but cannot modify them.
+
 ## Privacy and verification
 
 The production `scribe-api` backend runs in an Intel TDX confidential VM on

@@ -2891,7 +2891,38 @@ fn sync_hermes_config(
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
-    let config = format!(
+    let config = render_hermes_config(
+        &model,
+        &base_url,
+        provider_proxy_token,
+        &CRON_SANDBOXED_TOOLSETS.join(", "),
+        &external_skill_dirs(),
+    );
+    std::fs::write(hermes_home.join("config.yaml"), config)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
+}
+
+/// Renders the `config.yaml` June owns for every Hermes spawn. Pure so the
+/// rendered YAML (including the `skills.external_dirs` block) can be asserted in
+/// tests. Hermes deep-merges these keys over its own defaults, so June only
+/// writes the values it controls.
+fn render_hermes_config(
+    model: &str,
+    base_url: &str,
+    provider_proxy_token: &str,
+    cron_toolsets: &str,
+    external_skill_dirs: &[PathBuf],
+) -> String {
+    let skills_block = if external_skill_dirs.is_empty() {
+        "  external_dirs: []\n".to_string()
+    } else {
+        let mut block = String::from("  external_dirs:\n");
+        for dir in external_skill_dirs {
+            block.push_str(&format!("    - {}\n", yaml_string(&dir.to_string_lossy())));
+        }
+        block
+    };
+    format!(
         r#"model:
   default: {model}
   provider: custom
@@ -2904,14 +2935,29 @@ display:
   skin: mono
 platform_toolsets:
   cron: [{cron_toolsets}]
-"#,
-        model = yaml_string(&model),
-        base_url = yaml_string(&base_url),
+skills:
+{skills_block}"#,
+        model = yaml_string(model),
+        base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
-        cron_toolsets = CRON_SANDBOXED_TOOLSETS.join(", "),
-    );
-    std::fs::write(hermes_home.join("config.yaml"), config)
-        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
+    )
+}
+
+/// User-global skill directories Hermes loads in addition to its built-in
+/// `$HERMES_HOME/skills`. June advertises the conventional `~/.agents/skills`
+/// folder (where the `skills` CLI installs) when it exists, so a user or team
+/// can drop skills there and have every agent session pick them up. The
+/// Seatbelt write-jail only grants writes under the app's own roots, so these
+/// external skills load read-only. A missing folder is a silent no-op.
+fn external_skill_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for home in home_dir_candidates() {
+        let candidate = home.join(".agents").join("skills");
+        if candidate.is_dir() && !dirs.contains(&candidate) {
+            dirs.push(candidate);
+        }
+    }
+    dirs
 }
 
 /// Writes the June persona to `SOUL.md` in the Scribe-managed Hermes home.
@@ -3659,6 +3705,30 @@ mod tests {
         } else {
             assert_eq!(command, PathBuf::from("venv").join("bin").join("hermes"));
         }
+    }
+
+    #[test]
+    fn render_hermes_config_lists_external_skill_dirs() {
+        let dirs = vec![
+            PathBuf::from("/Users/dev/.agents/skills"),
+            PathBuf::from("/shared/team-skills"),
+        ];
+        let config =
+            render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web, memory", &dirs);
+
+        assert!(config.contains("model:\n  default: \"glm\""));
+        assert!(config.contains("  cron: [web, memory]"));
+        assert!(config.contains(
+            "skills:\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
+        ));
+    }
+
+    #[test]
+    fn render_hermes_config_emits_empty_external_dirs_when_none() {
+        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[]);
+
+        assert!(config.contains("skills:\n  external_dirs: []\n"));
+        assert!(!config.contains("    - "));
     }
 
     #[test]
