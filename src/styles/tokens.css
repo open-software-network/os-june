@@ -20,6 +20,10 @@
 @property --sidebar-w-current {
   syntax: "<length>";
   inherits: true;
+  /* Keep in sync with --sidebar-w (below). @property initial-value must be a
+   * literal — it can't reference another custom property — so if the default
+   * sidebar width changes, change this too, else the grid flashes the stale
+   * width on first paint before React sets the inline value. */
   initial-value: 240px;
 }
 
@@ -90,6 +94,8 @@
   --resize-grabber-h: 200px;
 
   /* Sidebar dimensions ---------------------------------------------- */
+  /* Default open width. Mirrored by the --sidebar-w-current @property
+   * initial-value above — keep the two in sync. */
   --sidebar-w: 240px;
   --sidebar-w-collapsed: 56px;
   --sidebar-section-title-h: 22px;
@@ -103,6 +109,9 @@
    * against the slightly-low native lights. */
   --titlebar-controls-end: 70px;
   --titlebar-controls-gap: var(--sp-4);
+  /* Gap between the sidebar toggle and the first tab once the sidebar is
+   * collapsed (so the pill clears the toggle glyph instead of overlapping it).
+   * Intentionally generous — this is the collapsed tab strip's resting offset. */
   --titlebar-tabs-clearance: var(--sp-8);
   --titlebar-controls-nudge: 2px;
 
