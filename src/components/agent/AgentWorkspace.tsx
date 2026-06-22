@@ -1162,12 +1162,14 @@ export function AgentWorkspace({
         // instead of drifting onto whatever the newest prompt happens to be.
         const sessionPending =
           pendingHermesMessagesRef.current[sessionId] ?? [];
-        const blockedPrompt = [...sessionPending]
+        const blockedMessage = [...sessionPending]
           .reverse()
           .find(
             (message) =>
               message.role === "user" && typeof message.content === "string",
-          )?.content;
+          );
+        const blockedPrompt = blockedMessage?.content;
+        const blockedTurnId = blockedMessage?.id ?? null;
         setPolicyBlockDecisions((current) => {
           const existing = current[sessionId] ?? [];
           // Ignore a repeat for a decision id we already track.
@@ -1178,6 +1180,7 @@ export function AgentWorkspace({
             id: request.decisionId,
             promptText: typeof blockedPrompt === "string" ? blockedPrompt : "",
             status: "pending",
+            blockedTurnId,
           };
           const next = {
             ...current,

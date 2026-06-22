@@ -153,6 +153,44 @@ describe("applyPolicyBlockCards", () => {
     ]);
   });
 
+  it("anchors each card to its exact blocked turn id, not by text", () => {
+    // Two identical prompts: the continued card stays on u1, the re-sent
+    // prompt's pending card must land on u2 even though their text is the same.
+    // The id anchor wins regardless of decision order or turn re-sorting.
+    const turns = [
+      userTurn("u1", "describe an apple", "2026-06-22T10:00:00.000Z"),
+      assistantTurn("a1", "An apple is a fruit.", "2026-06-22T10:00:05.000Z"),
+      userTurn("u2", "describe an apple", "2026-06-22T10:02:00.000Z"),
+    ];
+    const decisions: PolicyBlockDecision[] = [
+      {
+        id: "d1",
+        promptText: "describe an apple",
+        status: "continued",
+        blockedTurnId: "u1",
+      },
+      {
+        id: "d2",
+        promptText: "describe an apple",
+        status: "pending",
+        blockedTurnId: "u2",
+      },
+    ];
+
+    const result = applyPolicyBlockCards(turns, decisions, [
+      { id: "r1", afterTurnId: "a1" },
+    ]);
+
+    expect(result.map(kindOf)).toEqual([
+      "user",
+      "block:continued",
+      "assistant",
+      "divider",
+      "user",
+      "block:pending",
+    ]);
+  });
+
   it("appends the card at the end when no prompt matches", () => {
     const turns = [
       userTurn("u1", "describe an apple", "2026-06-22T10:00:00.000Z"),

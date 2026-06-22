@@ -663,6 +663,12 @@ export type PolicyBlockDecision = {
   id: string;
   promptText: string;
   status: "pending" | "continued" | "rejected";
+  /** Id of the exact user turn this decision blocked, captured when the block
+   * fired. Anchors the card to that turn directly so two identical prompts can't
+   * swap cards through text-matching or turn re-sorting. Optional: falls back to
+   * `promptText` matching when the turn id isn't present (e.g. restored state or
+   * a prompt that re-persisted under a new id). */
+  blockedTurnId?: string | null;
 };
 
 /** A re-enable marker closing the span where OS Guard was off. `afterTurnId` is
@@ -704,30 +710,55 @@ export function applyPolicyBlockCards(
 ): AgentChatTurn[] {
   const out = [...turns];
   const claimed = new Set<AgentChatTurn>();
+  const anchors = new Map<PolicyBlockDecision, AgentChatTurn | null>();
+
+  // Pass 1: anchor every decision that knows the exact turn it blocked. Done
+  // first so a text fallback below can't steal a turn another decision will
+  // claim by id — that swap is what put a re-sent prompt's card on the wrong
+  // bubble.
+  for (const decision of decisions) {
+    if (!decision.blockedTurnId) continue;
+    const turn = out.find(
+      (candidate) =>
+        candidate?.id === decision.blockedTurnId &&
+        candidate.role === "user" &&
+        !claimed.has(candidate),
+    );
+    if (turn) {
+      claimed.add(turn);
+      anchors.set(decision, turn);
+    }
+  }
+
+  // Pass 2: earliest-unclaimed prompt with matching text for the rest (restored
+  // state, or a prompt that re-persisted under a new id).
+  for (const decision of decisions) {
+    if (anchors.has(decision)) continue;
+    const target = decision.promptText.trim();
+    const turn = target
+      ? out.find(
+          (candidate) =>
+            candidate?.role === "user" &&
+            !claimed.has(candidate) &&
+            userTurnText(candidate) === target,
+        )
+      : undefined;
+    if (turn) claimed.add(turn);
+    anchors.set(decision, turn ?? null);
+  }
 
   for (const decision of decisions) {
-    const target = decision.promptText.trim();
-    let index = -1;
-    if (target) {
-      for (let i = 0; i < out.length; i += 1) {
-        const turn = out[i];
-        if (!turn || turn.role !== "user" || claimed.has(turn)) continue;
-        if (userTurnText(turn) === target) {
-          claimed.add(turn);
-          index = i;
-          break;
-        }
-      }
-    }
+    const anchor = anchors.get(decision) ?? null;
+    const at = anchor ? out.indexOf(anchor) : -1;
     const card: AgentChatTurn = {
       id: `policy-block:${decision.id}`,
       role: "assistant",
-      createdAt: index >= 0 ? (out[index]?.createdAt ?? "") : "",
+      createdAt: at >= 0 ? (out[at]?.createdAt ?? "") : "",
       status: "complete",
       parts: [{ type: "policyBlock", id: decision.id, status: decision.status }],
     };
-    if (index >= 0) {
-      out.splice(index + 1, 0, card);
+    if (at >= 0) {
+      out.splice(at + 1, 0, card);
     } else {
       out.push(card);
     }
