@@ -211,6 +211,11 @@ pub struct HermesBridge {
     /// The UI must explicitly choose whether a blocked session continues
     /// directly through Venice or stops.
     policy_block_decisions: Arc<PolicyBlockDecisionHub>,
+    /// Conversation fingerprints the user chose to continue past a policy
+    /// block: the proxy routes them straight to Venice on later turns instead
+    /// of re-prompting. Shared with the provider proxy and cleared when the
+    /// user re-enables OS Guard for the session.
+    direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 }
 
 struct HermesProcess {
@@ -606,6 +611,19 @@ pub async fn hermes_bridge_policy_block_decision(
     bridge.policy_block_decisions.respond(response)
 }
 
+/// Re-enable OS Guard after the user previously chose to continue past a block:
+/// forget the remembered "continue" fingerprints so subsequent turns are
+/// scanned by OS Guard again instead of going straight to Venice.
+#[tauri::command]
+pub async fn hermes_bridge_clear_direct_policy(
+    bridge: State<'_, HermesBridge>,
+) -> Result<(), AppError> {
+    if let Ok(mut fingerprints) = bridge.direct_policy_fingerprints.lock() {
+        fingerprints.clear();
+    }
+    Ok(())
+}
+
 /// Reap-and-collect: drops map entries whose process has exited and returns
 /// the connections that are still live, sandboxed first.
 fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>, AppError> {
@@ -910,6 +928,7 @@ async fn ensure_provider_proxy(
         token.clone(),
         bridge.tool_guard_decisions.clone(),
         bridge.policy_block_decisions.clone(),
+        bridge.direct_policy_fingerprints.clone(),
     )
     .await?;
     let mut guard = bridge
@@ -3271,6 +3290,7 @@ async fn start_scribe_provider_proxy(
     token: String,
     decisions: Arc<crate::tool_guard::ToolGuardDecisionHub>,
     policy_block_decisions: Arc<PolicyBlockDecisionHub>,
+    direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 ) -> Result<RunningScribeProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
@@ -3290,7 +3310,7 @@ async fn start_scribe_provider_proxy(
         decisions,
         policy_block_decisions,
         mappings: Arc::new(Mutex::new(Vec::new())),
-        direct_policy_fingerprints: Arc::new(Mutex::new(Vec::new())),
+        direct_policy_fingerprints,
     });
     tauri::async_runtime::spawn(run_scribe_provider_proxy(listener, state, shutdown_rx));
     Ok(RunningScribeProviderProxy { port, shutdown })

@@ -154,6 +154,7 @@ pub fn run() {
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::hermes_bridge_tool_guard_decision,
             hermes_bridge::hermes_bridge_policy_block_decision,
+            hermes_bridge::hermes_bridge_clear_direct_policy,
             hermes_bridge::hermes_bridge_skills,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
