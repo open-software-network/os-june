@@ -675,7 +675,7 @@ function appendLiveHermesEvents(
       // after the latest existing turn keeps prompt-then-card order.
       currentAssistant ??= createAssistantTurn(
         turns,
-        afterLatestTurn(turns, event.receivedAt),
+        afterLatestUserTurn(turns, event.receivedAt),
       );
       currentAssistant.status = "running";
       const payload = event.payload as Record<string, unknown> | undefined;
@@ -758,17 +758,24 @@ function appendLiveHermesEvents(
   }
 }
 
-// A timestamp guaranteed to sort at or after every existing turn, so a turn
-// created with it lands at the bottom regardless of clock skew between live
-// events and persisted message timestamps. Returns `receivedAt` when nothing
-// already sorts later, else the latest turn's timestamp plus 1ms.
-function afterLatestTurn(turns: AgentChatTurn[], receivedAt: string): string {
-  let latest = receivedAt;
+// A timestamp that sorts the policy-block card right after the prompt it
+// blocks: 1ms past the latest USER turn. Anchoring to the prompt (not to every
+// turn) keeps the card between the prompt and whatever the turn produces next —
+// so on Continue the approval card sits above the reasoning/answer instead of
+// sinking below them once those persist. Falls back to `receivedAt` when there
+// is no user turn yet.
+function afterLatestUserTurn(turns: AgentChatTurn[], receivedAt: string): string {
+  let latestUser: string | undefined;
   for (const turn of turns) {
-    if (turn.createdAt > latest) latest = turn.createdAt;
+    if (
+      turn.role === "user" &&
+      (latestUser === undefined || turn.createdAt > latestUser)
+    ) {
+      latestUser = turn.createdAt;
+    }
   }
-  if (latest === receivedAt) return receivedAt;
-  const bumped = new Date(new Date(latest).getTime() + 1);
+  if (latestUser === undefined) return receivedAt;
+  const bumped = new Date(new Date(latestUser).getTime() + 1);
   return Number.isNaN(bumped.getTime()) ? receivedAt : bumped.toISOString();
 }
 

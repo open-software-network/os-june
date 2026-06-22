@@ -50,6 +50,51 @@ describe("repairContractionSpacing", () => {
 });
 
 describe("Agent chat runtime", () => {
+  it("places the approval card between the prompt and the answer on continue", () => {
+    // Continue keeps the conversation going: the approval card must sit above
+    // the reasoning/answer the turn then produces, not sink below them once the
+    // assistant message persists with a later timestamp.
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "u1",
+          role: "user",
+          content: "describe an apple",
+          timestamp: "2026-06-22T10:00:00.000Z",
+        },
+        {
+          id: "a1",
+          role: "assistant",
+          content: "An apple is a fruit.",
+          reasoning: "thinking about apples",
+          timestamp: "2026-06-22T10:00:08.000Z",
+        },
+      ],
+      [
+        {
+          type: "policy_block.request",
+          session_id: "s1",
+          receivedAt: "2026-06-22T10:00:02.000Z",
+          payload: { decision_id: "d1" },
+        },
+        {
+          type: "policy_block.decision",
+          session_id: "s1",
+          receivedAt: "2026-06-22T10:00:04.000Z",
+          payload: { decision_id: "d1", action: "continue" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.role).toBe("user");
+    expect(
+      turns[1]?.parts.some(
+        (part) => part.type === "policyBlock" && part.status === "continued",
+      ),
+    ).toBe(true);
+    expect(turns[2]?.role).toBe("assistant");
+  });
+
   it("orders the policy-block card after the prompt it blocks", () => {
     // The block event's wall-clock time is earlier than the user message's
     // persisted timestamp (as happens on reconcile); the card must still sort
