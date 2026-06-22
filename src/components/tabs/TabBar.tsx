@@ -19,6 +19,7 @@ type TabBarProps = {
   onClose: (id: string) => void;
   onCloseOthers: (id: string) => void;
   onNew: () => void;
+  layoutFrozen?: boolean;
   onDragRegionPointerDown?: (event: PointerEvent<HTMLDivElement>) => void;
 };
 
@@ -92,23 +93,42 @@ export function TabBar({
   onClose,
   onCloseOthers,
   onNew,
+  layoutFrozen = false,
   onDragRegionPointerDown,
 }: TabBarProps) {
   const stripRef = useRef<HTMLDivElement>(null);
+  const layoutFrozenRef = useRef(layoutFrozen);
+  const pendingAvailableRef = useRef<number | null>(null);
   const [available, setAvailable] = useState(Number.POSITIVE_INFINITY);
   const [menu, setMenu] = useState<TabMenu | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const newTabShortcut = primaryShortcutLabel("T");
 
+  function setMeasuredAvailable(width: number) {
+    if (layoutFrozenRef.current) {
+      pendingAvailableRef.current = width;
+      return;
+    }
+    setAvailable(width);
+  }
+
+  useLayoutEffect(() => {
+    layoutFrozenRef.current = layoutFrozen;
+    if (layoutFrozen) return;
+    const width = pendingAvailableRef.current ?? stripRef.current?.clientWidth;
+    pendingAvailableRef.current = null;
+    if (typeof width === "number") setAvailable(width);
+  }, [layoutFrozen]);
+
   // Track the strip's content width so we know how many tabs fit.
   useLayoutEffect(() => {
     const el = stripRef.current;
     if (!el) return;
-    setAvailable(el.clientWidth);
+    setMeasuredAvailable(el.clientWidth);
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
-      if (typeof width === "number") setAvailable(width);
+      if (typeof width === "number") setMeasuredAvailable(width);
     });
     observer.observe(el);
     return () => observer.disconnect();

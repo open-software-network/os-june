@@ -29,17 +29,6 @@ export function handleSidebarResizeStart(
   onStart();
   const handle = event.currentTarget;
   const shell = handle.closest(".app-shell") as HTMLElement | null;
-  const mainPanel = shell?.querySelector(".main-panel") as HTMLElement | null;
-  // Fixed elements whose `left` rides the sidebar width. They must join the
-  // snap tween: with no transition of their own they teleport to the far
-  // offset at the threshold crossing while the grid is still mid-tween, which
-  // reads as a flash of misalignment.
-  const composer = shell?.querySelector(
-    '.agent-composer:not([data-hero="true"])',
-  ) as HTMLElement | null;
-  const editorFooter = shell?.querySelector(
-    ".editor-footer",
-  ) as HTMLElement | null;
   const startX = event.clientX;
   const startWidth = currentWidth;
   let latestWidth = currentWidth;
@@ -54,33 +43,42 @@ export function handleSidebarResizeStart(
   setPreview(collapsed ? "collapsed" : "expanded");
 
   // While dragging in the resizable range the panel tracks the cursor with no
-  // transition (snappy). But the snap between the min width and fully-closed
-  // is a discrete jump: animate that crossing so collapsing/reopening via drag
-  // tweens smoothly. The transient data-sidebar-preview attribute keeps fixed
-  // agent UI on the same collapsed/expanded rules as the grid before React's
+  // transition (snappy). But the snap between the min width and fully-closed is
+  // a discrete jump: animate that crossing so collapsing/reopening via drag
+  // tweens smoothly. We animate ONE value — --sidebar-w-current (a registered
+  // <length>, see tokens.css) — and let every element that reads it (the grid
+  // columns, the card gutter, the resize handle, the tab strip, the floating
+  // composer) ride that single clock. Animating each of them with its own
+  // transition instead let them drift apart a frame at a time, which flashed the
+  // tab strip during a held drag. The transient data-sidebar-preview attribute
+  // keeps fixed agent UI on the collapsed/expanded rules before React's
   // committed sidebar state catches up on pointer-up.
   function setSnapTransition(animate: boolean) {
     const timing = "var(--t-med) var(--ease-out)";
     if (shell)
       shell.style.transition = animate
-        ? `grid-template-columns ${timing}`
+        ? `--sidebar-w-current ${timing}`
         : "none";
-    handle.style.transition = animate ? `left ${timing}` : "none";
-    if (mainPanel)
-      mainPanel.style.transition = animate ? `margin ${timing}` : "none";
-    for (const el of [composer, editorFooter])
-      if (el) el.style.transition = animate ? `left ${timing}` : "none";
   }
 
-  // Snap tweens end on the shell's own grid transition (margin/left tweens on
-  // the other elements bubble through here too — hence the target check).
+  function beginSnapTransition() {
+    setSnapTransition(true);
+    // If the pointer is held far past the collapsed edge, the previous snap can
+    // finish and remove transitions before the user drags back. Flush the
+    // transition styles before changing preview/width so the first reopening
+    // frame interpolates from the current width instead of jumping.
+    void (shell ?? handle).offsetWidth;
+  }
+
+  // Snap tweens end on the shell's own --sidebar-w-current transition (the
+  // card's margin tween bubbles through here too — hence the target check).
   // While one is in flight, pointermoves retarget it instead of switching back
   // to transition-less tracking: killing it mid-flight teleports the sidebar
   // from the interpolated width to the cursor in a single frame.
   function onSnapTweenEnd(endEvent: TransitionEvent) {
     if (
       endEvent.target !== shell ||
-      endEvent.propertyName !== "grid-template-columns"
+      endEvent.propertyName !== "--sidebar-w-current"
     )
       return;
     snapTweening = false;
@@ -89,18 +87,12 @@ export function handleSidebarResizeStart(
   shell?.addEventListener("transitionend", onSnapTweenEnd);
 
   function applyWidth(width: number) {
+    // The single source of truth: the grid columns, the card's collapse gutter,
+    // the resize handle, the tab strip and the floating composer all derive
+    // their position from this one value in CSS (via max(width, gutter) calcs),
+    // so setting it here moves them all together — tweened when a transition is
+    // armed, instant otherwise.
     shell?.style.setProperty("--sidebar-w-current", `${width}px`);
-    // Expanded the card hugs grid column 2 (the sidebar supplies the gutter);
-    // collapsed it must carry its own left gutter. Drive it here so it tweens
-    // with the collapse rather than jumping when React commits on pointer-up.
-    // `--main-gutter` keeps the resize bar tracking the card's left edge (so it
-    // rides the white, not the gray) since the bar is positioned off it too.
-    if (mainPanel)
-      mainPanel.style.marginLeft = width === 0 ? "var(--sp-3)" : "0px";
-    shell?.style.setProperty(
-      "--main-gutter",
-      width === 0 ? "var(--sp-3)" : "0px",
-    );
     latestWidth = width;
   }
 
@@ -114,9 +106,9 @@ export function handleSidebarResizeStart(
       if (!collapsed) {
         collapsed = true;
         opening = false;
-        setPreview("collapsed");
-        setSnapTransition(true);
+        beginSnapTransition();
         snapTweening = true;
+        setPreview("collapsed");
         applyWidth(0);
       }
       return;
@@ -127,9 +119,9 @@ export function handleSidebarResizeStart(
       // Re-opening from collapsed: animate the 0 to min snap.
       collapsed = false;
       opening = true;
-      setPreview("opening");
-      setSnapTransition(true);
+      beginSnapTransition();
       snapTweening = true;
+      setPreview("opening");
       applyWidth(nextWidth);
       return;
     }
@@ -147,18 +139,12 @@ export function handleSidebarResizeStart(
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
     shell?.removeEventListener("transitionend", onSnapTweenEnd);
-    // Hand control back to React-driven styling. Commit synchronously so the
-    // collapsed/expanded class (and its matching left margin) is in the DOM
-    // before we drop the inline margin. Otherwise removing it would briefly
-    // expose the expanded margin and flash a jump.
+    // Hand control back to React-driven styling. Drop the inline snap transition
+    // and commit synchronously so the collapsed/expanded state (which pins
+    // --sidebar-w-current to its final value) lands in the DOM in the same
+    // frame, then drop the transient preview attribute.
     shell?.style.removeProperty("transition");
-    handle.style.removeProperty("transition");
-    mainPanel?.style.removeProperty("transition");
-    composer?.style.removeProperty("transition");
-    editorFooter?.style.removeProperty("transition");
     commit(() => onEnd(latestWidth));
-    mainPanel?.style.removeProperty("margin-left");
-    shell?.style.removeProperty("--main-gutter");
     shell?.removeAttribute("data-sidebar-preview");
   }
 

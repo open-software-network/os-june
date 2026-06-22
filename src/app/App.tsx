@@ -2586,7 +2586,10 @@ export function App() {
       data-sidebar-transition={sidebarTransition}
       style={
         {
-          "--sidebar-w-current": `${sidebarWidth}px`,
+          // The grid columns read this directly, so collapsed must pin it to 0
+          // (the stored width is preserved for the next expand). During a drag
+          // the resize logic overrides it imperatively.
+          "--sidebar-w-current": `${sidebarCollapsed ? 0 : sidebarWidth}px`,
         } as CSSProperties
       }
     >
@@ -2735,6 +2738,7 @@ export function App() {
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onNew={openNewChatTab}
+          layoutFrozen={sidebarResizing}
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TabBar } from "../components/tabs/TabBar";
 import appCss from "../styles/app.css?raw";
@@ -81,6 +81,11 @@ describe("TabBar", () => {
     expect(rule).not.toContain("padding-left: 0;");
   });
 
+  it("keeps collapsed tabs clear of the fixed sidebar toggle", () => {
+    expect(appCss).toContain("var(--titlebar-tabs-clearance)");
+    expect(appCss).not.toContain("var(--control-md) + var(--sp-2) -");
+  });
+
   it("starts a window drag from empty tab-strip space", () => {
     const { container, props } = renderTabBar();
     const strip = container.querySelector(".tab-strip");
@@ -98,5 +103,82 @@ describe("TabBar", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "New tab" }));
 
     expect(props.onDragRegionPointerDown).not.toHaveBeenCalled();
+  });
+
+  it("freezes adaptive layout while the sidebar is being resized", () => {
+    let observerCallback: ResizeObserverCallback | undefined;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        observerCallback = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    let tabStripWidth = 360;
+    const originalClientWidth = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientWidth",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        return this.classList?.contains("tab-strip") ? tabStripWidth : 0;
+      },
+    });
+
+    const manyTabs = Array.from({ length: 6 }, (_, index) => ({
+      id: `tab-${index + 1}`,
+      title: `Tab ${index + 1}`,
+      icon: <span aria-hidden />,
+    }));
+
+    try {
+      const { props, rerender } = renderTabBar({
+        tabs: manyTabs,
+        activeTabId: "tab-1",
+      });
+
+      expect(screen.getByRole("tab", { name: "Tab 6" })).toBeInTheDocument();
+
+      rerender(<TabBar {...props} layoutFrozen />);
+      tabStripWidth = 120;
+      act(() => {
+        observerCallback?.(
+          [{ contentRect: { width: tabStripWidth } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+      });
+
+      expect(screen.getByRole("tab", { name: "Tab 6" })).toBeInTheDocument();
+
+      rerender(<TabBar {...props} layoutFrozen={false} />);
+
+      expect(
+        screen.queryByRole("tab", { name: "Tab 6" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Show all 6 tabs" }),
+      ).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: OriginalResizeObserver,
+      });
+      if (originalClientWidth) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "clientWidth",
+          originalClientWidth,
+        );
+      } else {
+        delete (HTMLElement.prototype as unknown as { clientWidth?: number })
+          .clientWidth;
+      }
+    }
   });
 });

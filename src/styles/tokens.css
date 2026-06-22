@@ -11,6 +11,18 @@
  * case ("Notes"), never SHOUTY CAPS. See CLAUDE.md.
  */
 
+/* The live sidebar width. Registered as an animatable <length> (a plain custom
+ * property can't tween) so the collapse/reopen snap can interpolate this ONE
+ * value and have everything that reads it — the grid columns, the resize
+ * handle, the titlebar tab strip, the floating composer — move in lockstep.
+ * Driving each of those with its own transition instead lets them drift apart
+ * a frame at a time, which is what made the tabs flash during a held drag. */
+@property --sidebar-w-current {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 240px;
+}
+
 :root {
   /* Type ------------------------------------------------------------- */
   --font-sans:
@@ -91,6 +103,7 @@
    * against the slightly-low native lights. */
   --titlebar-controls-end: 70px;
   --titlebar-controls-gap: var(--sp-4);
+  --titlebar-tabs-clearance: var(--sp-8);
   --titlebar-controls-nudge: 2px;
 
   /* The tab strip rides in the titlebar row itself (right of the traffic
