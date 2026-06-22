@@ -202,10 +202,12 @@ fn make_agent_hud_nonactivating(window: &WebviewWindow) {
 }
 
 /// NSPanel subclass that can become the key window. A borderless panel
-/// answers NO to `canBecomeKeyWindow` by default, which silently drops
-/// the clicks aimed at the panel's own controls (e.g. the context menu).
-/// It also overrides `sendEvent:` to intercept context-click events before
-/// WKWebView ever sees them; see `send_event` below.
+/// answers NO to `canBecomeKeyWindow` by default, so it never becomes key
+/// and the webview receives no keyboard events — Escape wouldn't dismiss the
+/// context menu and Enter/Space wouldn't toggle the pill. (Mouse clicks reach
+/// a non-activating panel regardless of key status; this is purely about
+/// keyboard delivery.) It also overrides `sendEvent:` to intercept
+/// context-click events before WKWebView ever sees them; see `send_event`.
 #[cfg(target_os = "macos")]
 fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
     use objc2::msg_send;
