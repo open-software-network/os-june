@@ -72,6 +72,7 @@ vi.mock("../lib/recording-sounds", () => ({
 
 vi.mock("../lib/tauri", () => ({
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  AGENT_POLICY_BLOCK_DECISION_EVENT: "agent-policy-block-decision-request",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
