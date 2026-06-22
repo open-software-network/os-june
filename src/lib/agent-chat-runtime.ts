@@ -229,7 +229,18 @@ export function buildHermesSessionChatTurns(
     .filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
     )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort((a, b) => {
+      // Pending turns carry a client-clock timestamp; persisted turns carry the
+      // server clock. Comparing the two across a clock skew used to reorder an
+      // unpersisted prompt ahead of an already-persisted one, swapping which
+      // bubble a policy-block card landed on. Pending turns are always the
+      // newest, so force them after persisted ones and only compare timestamps
+      // within the same clock.
+      const aPending = a.id.startsWith("pending:") ? 1 : 0;
+      const bPending = b.id.startsWith("pending:") ? 1 : 0;
+      if (aPending !== bPending) return aPending - bPending;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
