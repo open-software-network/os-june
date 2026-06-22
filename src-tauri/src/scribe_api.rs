@@ -27,7 +27,7 @@ const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_SCRIBE_RESPONSE_MESSAGE: &str =
     "The processing service returned an invalid response.";
-const DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS_ENV: &str = "OS_SCRIBE_DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS";
+const DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS_ENV: &str = "JUNE_CAPTURE_CHAT_PAYLOADS";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();

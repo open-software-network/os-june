@@ -29,7 +29,7 @@ const SCRIBE_HERMES_COMMAND_ENV: &str = "SCRIBE_HERMES_COMMAND";
 // hatch for debugging a runtime that won't boot under the profile — leaving the
 // agent able to write anywhere the user can, so only flip it knowingly.
 const SCRIBE_HERMES_DISABLE_SANDBOX_ENV: &str = "SCRIBE_HERMES_DISABLE_SANDBOX";
-const DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS_ENV: &str = "OS_SCRIBE_DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS";
+const DEBUG_CAPTURE_AGENT_CHAT_PAYLOADS_ENV: &str = "JUNE_CAPTURE_CHAT_PAYLOADS";
 // Referenced by the spawn match arm on every target; only ever reached when
 // `prepare_sandbox` returns a profile, which it only does on macOS.
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
