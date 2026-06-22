@@ -118,11 +118,15 @@ export function buildAgentChatTurns(
   const turns = messages.map(messageToTurn);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return dedupePolicyBlockParts(turns)
-    .filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return collapseAdjacentPolicyBlocks(
+    dedupePolicyBlockParts(turns)
+      .filter((turn) =>
+        turn.parts.some(
+          (part) => part.type === "tool" || partText(part).trim(),
+        ),
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+  );
 }
 
 export function buildHermesSessionChatTurns(
@@ -224,11 +228,15 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return dedupePolicyBlockParts(turns)
-    .filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return collapseAdjacentPolicyBlocks(
+    dedupePolicyBlockParts(turns)
+      .filter((turn) =>
+        turn.parts.some(
+          (part) => part.type === "tool" || partText(part).trim(),
+        ),
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+  );
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
@@ -872,6 +880,24 @@ function dedupePolicyBlockParts(turns: AgentChatTurn[]): AgentChatTurn[] {
       return parts.length === turn.parts.length ? turn : { ...turn, parts };
     })
     .filter((turn) => turn.parts.length > 0);
+}
+
+// One block can render as two adjacent cards: the live decision card and the
+// persisted card rebuilt from the proxy's "policy_blocked" reply (different
+// ids, same block). Drop a block-only turn that directly follows another, so a
+// single block shows once — while distinct blocks, separated by the prompt and
+// answer between them, are untouched.
+function collapseAdjacentPolicyBlocks(turns: AgentChatTurn[]): AgentChatTurn[] {
+  const isBlockOnly = (turn: AgentChatTurn) =>
+    turn.parts.length > 0 &&
+    turn.parts.every((part) => part.type === "policyBlock");
+  const out: AgentChatTurn[] = [];
+  for (const turn of turns) {
+    const prev = out.at(-1);
+    if (prev && isBlockOnly(prev) && isBlockOnly(turn)) continue;
+    out.push(turn);
+  }
+  return out;
 }
 
 function appendAssistantTextPart(
