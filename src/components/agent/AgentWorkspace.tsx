@@ -1157,6 +1157,11 @@ export function AgentWorkspace({
             message: request.message,
           },
         });
+        // Surface the prompt as a "needs you" state: the agent HUD/menu-bar
+        // shows the session as waitingForUser (its own colour + entry) until the
+        // user accepts or rejects, instead of looking like it is still working.
+        setSessionWorking(sessionId, false);
+        setSessionWaiting(sessionId, true);
       },
     ).then((cleanup) => {
       if (disposed) {
@@ -1169,7 +1174,7 @@ export function AgentWorkspace({
       disposed = true;
       unlisten?.();
     };
-  }, [appendPolicyBlockLiveEvent]);
+  }, [appendPolicyBlockLiveEvent, setSessionWaiting, setSessionWorking]);
 
   async function answerPolicyBlock(
     part: Extract<AgentChatPart, { type: "policyBlock" }>,
@@ -1198,6 +1203,10 @@ export function AgentWorkspace({
           next.add(sessionId);
           return next;
         });
+        // Decision made: leave the waiting state and resume the working
+        // indicator while the turn re-runs through the direct route.
+        setSessionWaiting(sessionId, false);
+        setSessionWorking(sessionId, true);
       } else {
         setRejectedPolicySessionIds((current) => {
           const next = new Set(current);
