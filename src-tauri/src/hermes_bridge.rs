@@ -3291,7 +3291,6 @@ async fn start_scribe_provider_proxy(
         policy_block_decisions,
         mappings: Arc::new(Mutex::new(Vec::new())),
         direct_policy_fingerprints: Arc::new(Mutex::new(Vec::new())),
-        rejected_policy_fingerprints: Arc::new(Mutex::new(Vec::new())),
     });
     tauri::async_runtime::spawn(run_scribe_provider_proxy(listener, state, shutdown_rx));
     Ok(RunningScribeProviderProxy { port, shutdown })
@@ -3304,7 +3303,6 @@ struct ScribeProviderProxyState {
     policy_block_decisions: Arc<PolicyBlockDecisionHub>,
     mappings: Arc<Mutex<Vec<crate::tool_guard::ToolGuardReplacementMapping>>>,
     direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
-    rejected_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 }
 
 struct RunningScribeProviderProxy {
@@ -3384,13 +3382,6 @@ async fn handle_scribe_provider_connection(
                 write_tool_guard_blocked_response(&mut stream, &error).await?;
                 return Ok(());
             }
-            // A conversation the user already rejected stays rejected: short
-            // out before re-contacting OS-Guard so a retried turn neither
-            // re-prompts the user nor re-activates the session as "working".
-            if body_matches_rejected_policy_fingerprint(&state, &body) {
-                write_policy_block_rejected_response(&mut stream, requested_stream).await?;
-                return Ok(());
-            }
             let direct_policy_route = body_matches_direct_policy_fingerprint(&state, &body);
             let proxy_result = if direct_policy_route {
                 crate::scribe_api::proxy_agent_chat_completions_direct(body.clone()).await
@@ -3449,22 +3440,13 @@ async fn handle_scribe_provider_connection(
                                 )
                                 .await?;
                             }
-                            Ok(PolicyBlockRequestOutcome::Decided(PolicyBlockDecision::Reject)) => {
-                                // Remember the rejection so Hermes retrying the
-                                // same turn is denied immediately, without a
-                                // second prompt.
-                                if let Some(fingerprint) =
-                                    policy_block_conversation_fingerprint(&body)
-                                {
-                                    remember_rejected_policy_fingerprint(&state, fingerprint);
-                                }
-                                write_policy_block_rejected_response(&mut stream, requested_stream)
-                                    .await?;
-                            }
-                            // Timed out waiting for the user: reject this turn
-                            // but do not remember it, so a later attempt can ask
-                            // again.
-                            Err(_) => {
+                            // Reject, or a decision timeout: deny this turn. The
+                            // rejection is not remembered across turns or
+                            // sessions — the block notice is a valid completion
+                            // that ends the turn cleanly, and a fresh session
+                            // with the same prompt must be asked again.
+                            Ok(PolicyBlockRequestOutcome::Decided(PolicyBlockDecision::Reject))
+                            | Err(_) => {
                                 write_policy_block_rejected_response(&mut stream, requested_stream)
                                     .await?;
                             }
@@ -3686,38 +3668,6 @@ fn remember_direct_policy_fingerprint(state: &Arc<ScribeProviderProxyState>, fin
         const MAX_DIRECT_POLICY_FINGERPRINTS: usize = 128;
         if fingerprints.len() > MAX_DIRECT_POLICY_FINGERPRINTS {
             let excess = fingerprints.len() - MAX_DIRECT_POLICY_FINGERPRINTS;
-            fingerprints.drain(0..excess);
-        }
-    }
-}
-
-fn body_matches_rejected_policy_fingerprint(
-    state: &Arc<ScribeProviderProxyState>,
-    body: &serde_json::Value,
-) -> bool {
-    let candidates = policy_block_conversation_fingerprints(body);
-    if candidates.is_empty() {
-        return false;
-    }
-    let Ok(fingerprints) = state.rejected_policy_fingerprints.lock() else {
-        return false;
-    };
-    candidates
-        .iter()
-        .any(|candidate| fingerprints.iter().any(|stored| stored == candidate))
-}
-
-fn remember_rejected_policy_fingerprint(
-    state: &Arc<ScribeProviderProxyState>,
-    fingerprint: String,
-) {
-    if let Ok(mut fingerprints) = state.rejected_policy_fingerprints.lock() {
-        if !fingerprints.iter().any(|stored| stored == &fingerprint) {
-            fingerprints.push(fingerprint);
-        }
-        const MAX_REJECTED_POLICY_FINGERPRINTS: usize = 128;
-        if fingerprints.len() > MAX_REJECTED_POLICY_FINGERPRINTS {
-            let excess = fingerprints.len() - MAX_REJECTED_POLICY_FINGERPRINTS;
             fingerprints.drain(0..excess);
         }
     }
