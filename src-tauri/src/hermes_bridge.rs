@@ -226,6 +226,20 @@ const POLICY_BLOCKED_ERROR_CODE: i64 = 4031;
 #[derive(Default)]
 pub struct PolicyBlockDecisionHub {
     pending: Mutex<HashMap<String, oneshot::Sender<PolicyBlockDecisionResponse>>>,
+    /// Conversation fingerprint -> decision id of the prompt currently awaiting
+    /// the user. While an entry exists, a duplicate block for the same
+    /// conversation (e.g. a Hermes retry of the same turn) is short-circuited
+    /// instead of emitting another prompt, so the user is not spammed.
+    active_by_fingerprint: Mutex<HashMap<String, String>>,
+}
+
+/// Outcome of asking the user about a blocked prompt.
+enum PolicyBlockRequestOutcome {
+    /// The user resolved the prompt for this conversation.
+    Decided(PolicyBlockDecision),
+    /// A prompt for this conversation is already awaiting the user; this
+    /// duplicate request was not shown again.
+    AlreadyPending,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -262,11 +276,30 @@ impl PolicyBlockDecisionHub {
         &self,
         app: &AppHandle,
         request: PolicyBlockDecisionRequest,
-    ) -> Result<PolicyBlockDecision, AppError> {
+    ) -> Result<PolicyBlockRequestOutcome, AppError> {
         let decision_id = request.decision_id.clone();
+        let fingerprint = request.conversation_fingerprint.clone();
+
+        // Only the first block for a conversation emits a prompt. While it is
+        // pending, duplicate blocks (a retried turn) short-circuit so the user
+        // sees a single prompt instead of one per retry.
+        {
+            let mut active = self.active_by_fingerprint.lock().map_err(|_| {
+                AppError::new(
+                    "policy_block_decision_failed",
+                    "Policy block decision lock failed.",
+                )
+            })?;
+            if active.contains_key(&fingerprint) {
+                return Ok(PolicyBlockRequestOutcome::AlreadyPending);
+            }
+            active.insert(fingerprint.clone(), decision_id.clone());
+        }
+
         let (sender, receiver) = oneshot::channel();
         {
             let mut pending = self.pending.lock().map_err(|_| {
+                self.clear_active(&fingerprint);
                 AppError::new(
                     "policy_block_decision_failed",
                     "Policy block decision lock failed.",
@@ -280,6 +313,7 @@ impl PolicyBlockDecisionHub {
             .is_err()
         {
             let _ = self.remove_pending(&decision_id);
+            self.clear_active(&fingerprint);
             return Err(AppError::new(
                 "policy_block_decision_unavailable",
                 "Policy block decision UI is unavailable.",
@@ -289,6 +323,7 @@ impl PolicyBlockDecisionHub {
         let response = match tokio::time::timeout(POLICY_BLOCK_DECISION_TIMEOUT, receiver).await {
             Ok(Ok(response)) => response,
             Ok(Err(_)) => {
+                self.clear_active(&fingerprint);
                 return Err(AppError::new(
                     "policy_block_decision_dropped",
                     "Policy block decision was dropped.",
@@ -296,22 +331,30 @@ impl PolicyBlockDecisionHub {
             }
             Err(_) => {
                 let _ = self.remove_pending(&decision_id);
+                self.clear_active(&fingerprint);
                 return Err(AppError::new(
                     "policy_block_decision_timeout",
                     "Policy block decision timed out.",
                 ));
             }
         };
+        self.clear_active(&fingerprint);
         if response.decision_id != decision_id {
             return Err(AppError::new(
                 "policy_block_decision_mismatch",
                 "Policy block decision mismatch.",
             ));
         }
-        Ok(match response.action {
+        Ok(PolicyBlockRequestOutcome::Decided(match response.action {
             PolicyBlockDecisionAction::Continue => PolicyBlockDecision::Continue,
             PolicyBlockDecisionAction::Reject => PolicyBlockDecision::Reject,
-        })
+        }))
+    }
+
+    fn clear_active(&self, fingerprint: &str) {
+        if let Ok(mut active) = self.active_by_fingerprint.lock() {
+            active.remove(fingerprint);
+        }
     }
 
     pub fn respond(&self, response: PolicyBlockDecisionResponse) -> Result<(), AppError> {
@@ -3357,7 +3400,9 @@ async fn handle_scribe_provider_connection(
                         && is_policy_blocked_response(collected.status, &collected.body)
                     {
                         match request_policy_block_decision(&state, &body, &collected.body).await {
-                            Ok(PolicyBlockDecision::Continue) => {
+                            Ok(PolicyBlockRequestOutcome::Decided(
+                                PolicyBlockDecision::Continue,
+                            )) => {
                                 if let Some(fingerprint) =
                                     policy_block_conversation_fingerprint(&body)
                                 {
@@ -3383,7 +3428,20 @@ async fn handle_scribe_provider_connection(
                                     }
                                 }
                             }
-                            Ok(PolicyBlockDecision::Reject) | Err(_) => {
+                            // A prompt for this conversation is already awaiting the
+                            // user: return the block to Hermes without showing
+                            // another prompt, so a retried turn cannot spam the UI.
+                            Ok(PolicyBlockRequestOutcome::AlreadyPending) => {
+                                write_collected_agent_response(
+                                    &mut stream,
+                                    &state,
+                                    requested_stream,
+                                    collected,
+                                )
+                                .await?;
+                            }
+                            Ok(PolicyBlockRequestOutcome::Decided(PolicyBlockDecision::Reject))
+                            | Err(_) => {
                                 write_policy_block_rejected_response(&mut stream, requested_stream)
                                     .await?;
                             }
@@ -3515,7 +3573,7 @@ async fn request_policy_block_decision(
     state: &Arc<ScribeProviderProxyState>,
     body: &serde_json::Value,
     response_body: &[u8],
-) -> Result<PolicyBlockDecision, AppError> {
+) -> Result<PolicyBlockRequestOutcome, AppError> {
     let decision_id = uuid::Uuid::new_v4().to_string();
     let conversation_fingerprint = policy_block_conversation_fingerprint(body)
         .unwrap_or_else(|| policy_block_body_fingerprint(body));
