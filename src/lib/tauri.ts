@@ -815,9 +815,9 @@ export type SubmitIssueReportRequest = {
   /** Which kind of report this is: "bug" | "feedback" | "feature". Drives the
    * team's triage. */
   category?: string;
-  /** The user's report as they typed it. */
+  /** The user's report as they typed it, before the investigation wrapper. */
   description: string;
-  /** June's diagnostic assessment from a report session, when available. */
+  /** June's diagnostic assessment from the report session, when available. */
   agentDiagnosis?: string;
   attachmentNames: string[];
   /** Workspace paths of the attached files; their bytes are uploaded with

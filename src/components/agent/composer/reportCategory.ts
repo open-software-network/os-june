@@ -1,8 +1,9 @@
 /**
  * The three report categories a composer message can be tagged with. A tag is
  * an inline chip in the composer (see CategoryChip) — at most one per message.
- * The category routes the message to the issue-report endpoint and drives
- * triage on the backend.
+ * The category drives two things: the preamble that frames the message for June
+ * (see categoryPrompt in lib/issue-report-prompt.ts) and triage when the
+ * report is delivered.
  */
 
 export type ReportCategory = "bug" | "feedback" | "feature";

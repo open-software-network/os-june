@@ -165,7 +165,10 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
-import { displayedUserMessageText } from "../../lib/issue-report-prompt";
+import {
+  categoryPrompt,
+  displayedUserMessageText,
+} from "../../lib/issue-report-prompt";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -636,7 +639,7 @@ export type AgentNewSessionDetail = {
   category?: ReportCategory;
 };
 
-/** Captured report details submitted directly to the June team. */
+/** Captured report details submitted to the June team after the LLM turn. */
 type PendingIssueReport = {
   category: ReportCategory;
   description: string;
@@ -658,7 +661,7 @@ type AgentWorkspaceErrorOptions = {
 
 type AgentWorkspaceNotice = {
   message: string;
-  sessionId: string | null;
+  sessionId: string;
 };
 
 type AgentDeleteSessionDetail = {
@@ -781,8 +784,8 @@ export function AgentWorkspace({
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
   // The message's single category tag, mirrored from the composer's chip. Null
-  // when the message carries no tag. Report tags submit directly to the June
-  // team instead of starting a chat turn.
+  // when the message carries no tag. Drives the report wrapper and the
+  // no-charge signal carried to the backend.
   const [category, setCategory] = useState<ReportCategory | null>(null);
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.
@@ -1025,6 +1028,11 @@ export function AgentWorkspace({
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(newSessionMode);
+  // sessionId -> the report captured at submit time, delivered to the June
+  // team once the agent's diagnostic turn reaches a terminal event.
+  const pendingIssueReportsRef = useRef<Map<string, PendingIssueReport>>(
+    new Map(),
+  );
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -1215,9 +1223,7 @@ export function AgentWorkspace({
     selectedHermesSessionId,
   );
   const visibleIssueReportNotice =
-    issueReportNotice &&
-    (issueReportNotice.sessionId === null ||
-      issueReportNotice.sessionId === selectedHermesSessionId)
+    issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
       : null;
   // Holds the prior render's heroMode. Read by both the composer auto-grow
@@ -1901,7 +1907,8 @@ export function AgentWorkspace({
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
-    // The composer's category chip makes this a report. Captured before the
+    // The composer's category chip makes this a report: wrap the prompt to
+    // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
     const content = promptWithAttachments(message, attachments);
@@ -1909,7 +1916,7 @@ export function AgentWorkspace({
     // up, suggestions down during the session-create latency. Without it they
     // sit frozen through the wait and then vanish in a single frame when the
     // conversation takes over.
-    if (heroMode && !reportCategory) setHeroLeaving(true);
+    if (heroMode) setHeroLeaving(true);
     setSubmitting(true);
     composerEditorRef.current?.clear();
     setDraft("");
@@ -1917,19 +1924,27 @@ export function AgentWorkspace({
     setAttachments([]);
     setIssueReportNotice(null);
     try {
-      if (reportCategory) {
-        await submitDirectIssueReport({
-          category: reportCategory,
-          // An attachments-only send has no typed text, but the server
-          // requires a description; the report must not bounce there.
-          description:
-            message || "No description was typed; see the attachments.",
-          attachmentNames: attachments.map((attachment) => attachment.name),
-          attachmentPaths: attachments.map((attachment) => attachment.path),
-        });
-      } else {
-        await submitHermesSession(content);
-      }
+      await submitHermesSession(
+        reportCategory ? categoryPrompt(reportCategory, content) : content,
+        undefined,
+        reportCategory
+          ? {
+              issueReport: {
+                category: reportCategory,
+                // An attachments-only send has no typed text, but the server
+                // requires a description; the report must not bounce there.
+                description:
+                  message || "No description was typed; see the attachments.",
+                attachmentNames: attachments.map(
+                  (attachment) => attachment.name,
+                ),
+                attachmentPaths: attachments.map(
+                  (attachment) => attachment.path,
+                ),
+              },
+            }
+          : undefined,
+      );
       setError(null);
       setBusyNotice(null);
     } catch (err) {
@@ -1950,8 +1965,8 @@ export function AgentWorkspace({
       }
     } finally {
       setSubmitting(false);
-      // On chat success the hero is gone; on direct-report success or failure
-      // this fades the greeting and suggestions back in.
+      // On success the hero is gone; on failure this fades the greeting and
+      // suggestions back in behind the restored draft.
       setHeroLeaving(false);
     }
   }
@@ -2071,29 +2086,54 @@ export function AgentWorkspace({
     setIssueReportNotice(null);
   }, [selectedHermesSessionId]);
 
-  async function submitDirectIssueReport(report: PendingIssueReport) {
+  /** Sends the captured report plus June's diagnostic reply (the last
+   * assistant message of the turn) to the June team. The diagnosis fetch is
+   * best-effort: a report without June's assessment still beats no report. */
+  async function deliverIssueReport(
+    sessionId: string,
+    report: PendingIssueReport,
+  ) {
+    let agentDiagnosis: string | undefined;
+    try {
+      const messages = await listHermesSessionMessages(sessionId);
+      agentDiagnosis = messages
+        .slice()
+        .reverse()
+        .map((message) =>
+          message.role === "assistant" ? visibleHermesMessageText(message) : "",
+        )
+        .find((text) => text.trim())
+        ?.trim();
+    } catch {
+      // Best-effort; the report ships without the diagnosis.
+    }
     try {
       await submitIssueReport({
         category: report.category,
         description: report.description,
+        agentDiagnosis,
         attachmentNames: report.attachmentNames,
         attachmentPaths: report.attachmentPaths,
+        sessionId,
       });
-      setIssueReportNotice({
-        message:
-          "Your report was sent to the June team. Thank you for helping improve June.",
-        sessionId: null,
-      });
+      if (selectedHermesSessionIdRef.current === sessionId) {
+        setIssueReportNotice({
+          message:
+            "Your report was sent to the June team. Thank you for helping improve June.",
+          sessionId,
+        });
+      }
     } catch (err) {
-      throw new Error(
-        `The issue report could not be sent. ${messageFromError(err)}`,
-      );
+      setError(`The issue report could not be sent. ${messageFromError(err)}`, {
+        sessionId,
+      });
     }
   }
 
   async function submitHermesSession(
     content: string,
     explicitSession?: HermesSessionInfo,
+    options?: { issueReport?: PendingIssueReport },
   ) {
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
@@ -2102,9 +2142,10 @@ export function AgentWorkspace({
         : selectedHermesSessionId;
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
-    const titlePromise = targetSessionId
-      ? undefined
-      : agentSessionTitleForPrompt(content);
+    const titlePromise =
+      targetSessionId || options?.issueReport
+        ? undefined
+        : agentSessionTitleForPrompt(content);
     // The Unrestricted opt-in is made per session: a new session applies the
     // picker draft, and a follow-up routes to the runtime process matching
     // the mode its session was created with. Without this, one Unrestricted
@@ -2119,20 +2160,26 @@ export function AgentWorkspace({
     const created = targetSessionId
       ? undefined
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
-          title: sessionTitle ?? titleFromPrompt(content),
+          title: options?.issueReport
+            ? "Issue report"
+            : (sessionTitle ?? titleFromPrompt(content)),
           cols: 96,
         });
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    if (options?.issueReport && !targetSessionId) {
+      pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
+    }
     if (!targetSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
-    const sessionDisplayTitle =
-      explicitSession?.title?.trim() ||
-      explicitSession?.preview?.trim() ||
-      sessionTitle ||
-      titleFromPrompt(content);
+    const sessionDisplayTitle = options?.issueReport
+      ? "Issue report"
+      : explicitSession?.title?.trim() ||
+        explicitSession?.preview?.trim() ||
+        sessionTitle ||
+        titleFromPrompt(content);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -2260,8 +2307,17 @@ export function AgentWorkspace({
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }
+        // The diagnostic turn is over (even on error): file the report now so
+        // the user's description isn't lost to a failed investigation.
+        const issueReport = pendingIssueReportsRef.current.get(storedSessionId);
+        if (issueReport) {
+          pendingIssueReportsRef.current.delete(storedSessionId);
+        }
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
+          if (issueReport) {
+            void deliverIssueReport(storedSessionId, issueReport);
+          }
         }, 300);
       }
     });
@@ -2281,6 +2337,9 @@ export function AgentWorkspace({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
       });
     } catch (err) {
+      // A queued report must not outlive its failed prompt; submit() re-arms
+      // issue-report mode so the retry files it again.
+      pendingIssueReportsRef.current.delete(storedSessionId);
       // The prompt never entered the session, so its optimistic bubble must
       // not linger — a retained pending message renders below every later
       // persisted message and reads as a send the agent ignored.
