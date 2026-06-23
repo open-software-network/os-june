@@ -48,3 +48,34 @@ pub(crate) async fn chat_completions(
     )
         .into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::take_initial_report_billing_marker;
+    use serde_json::json;
+
+    #[test]
+    fn billing_marker_is_consumed_from_chat_body() {
+        let mut body = json!({
+            "model": "text-model",
+            "__june": { "billingIntent": "initial_issue_report" },
+            "messages": [{ "role": "user", "content": "report" }]
+        });
+
+        assert!(take_initial_report_billing_marker(&mut body));
+        assert!(body.get("__june").is_none());
+        assert_eq!(body["messages"][0]["content"], "report");
+    }
+
+    #[test]
+    fn invalid_billing_marker_is_consumed_without_waiver() {
+        let mut body = json!({
+            "model": "text-model",
+            "__june": { "billingIntent": "ordinary" },
+            "messages": [{ "role": "user", "content": "hello" }]
+        });
+
+        assert!(!take_initial_report_billing_marker(&mut body));
+        assert!(body.get("__june").is_none());
+    }
+}

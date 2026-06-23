@@ -1224,6 +1224,45 @@ mod tests {
     }
 
     #[test]
+    fn agent_proxy_marks_initial_report_prompts_for_no_charge() {
+        for opening in [
+            "The user is filing a bug report about the June desktop app.",
+            "The user is sharing feedback about the June desktop app.",
+            "The user is requesting a feature for the June desktop app.",
+        ] {
+            let mut body = serde_json::json!({
+                "model": "hermes-selected-model",
+                "messages": [
+                    { "role": "system", "content": "You are June." },
+                    {
+                        "role": "user",
+                        "content": format!("{opening}\n\n---USER REPORT---\nSomething is wrong.\n---END USER REPORT---")
+                    }
+                ],
+            });
+
+            normalize_agent_chat_request_for_proxy(&mut body);
+
+            assert_eq!(
+                body[INTERNAL_AGENT_MARKER_KEY][INTERNAL_BILLING_INTENT_KEY],
+                serde_json::json!(INITIAL_REPORT_BILLING_INTENT)
+            );
+        }
+    }
+
+    #[test]
+    fn agent_proxy_does_not_mark_ordinary_prompts_for_no_charge() {
+        let mut body = serde_json::json!({
+            "model": "hermes-selected-model",
+            "messages": [{ "role": "user", "content": "Summarize this PDF." }],
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert!(body.get(INTERNAL_AGENT_MARKER_KEY).is_none());
+    }
+
+    #[test]
     fn agent_proxy_limits_messages_while_preserving_latest_context() {
         let mut body = serde_json::json!({
             "messages": std::iter::once(serde_json::json!({
