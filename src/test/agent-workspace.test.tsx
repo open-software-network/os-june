@@ -1233,6 +1233,63 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("restores an unsent new session draft after remounting", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "draft from a new session");
+    expect(screen.getByRole("textbox")).toHaveTextContent(
+      "draft from a new session",
+    );
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "draft from a new session",
+      ),
+    );
+    expect(screen.queryByText("Existing session")).toBeNull();
+  });
+
+  it("forgets the new session draft after submitting it", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "start from this draft");
+    expect(
+      window.localStorage.getItem("scribe:agent:composer-drafts") ?? "",
+    ).toContain("start from this draft");
+
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "start from this draft",
+      }),
+    );
+    expect(
+      window.localStorage.getItem("scribe:agent:composer-drafts") ?? "",
+    ).not.toContain("start from this draft");
+  });
+
   it("submits a pending New Session prompt as a fresh Hermes session", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
