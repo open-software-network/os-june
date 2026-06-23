@@ -118,6 +118,7 @@ struct SubscriptionWire {
     status: Option<String>,
     trial_end: Option<String>,
     current_period_end: Option<String>,
+    cancel_at_period_end: Option<bool>,
     /// Trial length from the Stripe price config, available pre-subscription.
     /// Absent on accounts APIs that don't expose it yet; the UI falls back to
     /// a pinned default.
@@ -179,6 +180,8 @@ pub struct AccountSubscription {
     pub trial_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_period_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_at_period_end: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trial_period_days: Option<u32>,
 }
@@ -375,6 +378,7 @@ fn local_dev_account_status() -> AccountStatus {
             status: Some("active".to_string()),
             trial_end: None,
             current_period_end: None,
+            cancel_at_period_end: None,
             trial_period_days: None,
         }),
         portal_url: None,
@@ -1343,6 +1347,7 @@ async fn fetch_snapshot(
             status: w.status,
             trial_end: w.trial_end,
             current_period_end: w.current_period_end,
+            cancel_at_period_end: w.cancel_at_period_end,
             trial_period_days: w.trial_period_days,
         });
     Ok((me.into(), balance.into(), subscription))

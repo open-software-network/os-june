@@ -180,29 +180,27 @@ export function BillingSettingsSection({
     }
   }
 
-  async function handleManageSubscription() {
+  async function openPortalWithStatus(message: string) {
     try {
       await osAccountsOpenPortal();
-      setBillingStatus("Opened your account portal in the browser.");
+      setBillingStatus(message);
     } catch (error) {
       setBillingStatus(messageFromError(error));
     }
   }
 
-  async function handleCancelSubscription() {
-    try {
-      await osAccountsOpenPortal();
-      setBillingStatus(
-        "Opened your account portal. Choose Cancel subscription to end your plan.",
-      );
-    } catch (error) {
-      setBillingStatus(messageFromError(error));
-    }
-  }
+  const handleManageSubscription = () =>
+    openPortalWithStatus("Opened your account portal in the browser.");
+
+  const handleCancelSubscription = () =>
+    openPortalWithStatus(
+      "Opened your account portal. Choose Cancel subscription to end your plan.",
+    );
 
   // Only the states reachable from inside the app: past_due and canceled park
   // the whole app on the trial gate, so settings never renders them.
   const subscription = account.subscription;
+  const cancelAtPeriodEnd = subscription?.cancelAtPeriodEnd === true;
   const subscriptionRow =
     subscription?.status === "trialing"
       ? {
@@ -213,7 +211,10 @@ export function BillingSettingsSection({
         ? {
             title: "Subscription",
             detail:
-              describeEnd("Renews", subscription.currentPeriodEnd) ?? "Active",
+              describeEnd(
+                cancelAtPeriodEnd ? "Ends" : "Renews",
+                subscription.currentPeriodEnd,
+              ) ?? "Active",
           }
         : undefined;
 
@@ -259,13 +260,15 @@ export function BillingSettingsSection({
                 >
                   Manage subscription
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => void handleCancelSubscription()}
-                >
-                  Cancel subscription
-                </button>
+                {!cancelAtPeriodEnd ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => void handleCancelSubscription()}
+                  >
+                    Cancel subscription
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}
