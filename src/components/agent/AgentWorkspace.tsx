@@ -986,6 +986,8 @@ export function AgentWorkspace({
   // each chat's stored model. A selection missing from the catalog still
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
+  const defaultGenerationModelIdRef = useRef("");
+  const sessionModelOverridesRef = useRef<Record<string, string>>({});
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>(
     [],
   );
@@ -1488,6 +1490,8 @@ export function AgentWorkspace({
             workingSessionIds: workingSessions,
             waitingSessionIds: waitingSessions,
             pendingMessages,
+            defaultModelId: defaultGenerationModelIdRef.current,
+            sessionModelOverrides: sessionModelOverridesRef.current,
           }),
         );
         setSelectedHermesSessionId((current) => {
@@ -1562,24 +1566,28 @@ export function AgentWorkspace({
         settingsResponse.settings.generationModel ||
         modelsResponse.selectedModel;
       if (requestId === generationModelRequestSequence.current) {
+        defaultGenerationModelIdRef.current = selectedModelId;
         setGenerationModels(modelsResponse.models);
         setDefaultGenerationModelId(selectedModelId);
       }
     } catch {
       if (requestId === generationModelRequestSequence.current) {
+        defaultGenerationModelIdRef.current = "";
         setDefaultGenerationModelId("");
       }
     }
   }, []);
 
   useEffect(() => {
-    if (!defaultGenerationModelId) return;
+    defaultGenerationModelIdRef.current = defaultGenerationModelId;
+    const defaultModelId = defaultGenerationModelId.trim();
+    if (!defaultModelId) return;
     setHermesSessionItems((current) => {
       let changed = false;
       const next = current.map((session) => {
         if (session.model?.trim()) return session;
         changed = true;
-        return { ...session, model: defaultGenerationModelId };
+        return { ...session, model: defaultModelId };
       });
       return changed ? next : current;
     });
@@ -1625,7 +1633,14 @@ export function AgentWorkspace({
         ? undefined
         : selectedHermesSessionIdRef.current;
       if (sessionId) {
-        await ensureHermesBridgeSession({ sessionId, model: modelId });
+        const previousModel = hermesSessionItemsRef.current.find(
+          (session) => session.id === sessionId,
+        )?.model;
+        const previousOverride = sessionModelOverridesRef.current[sessionId];
+        sessionModelOverridesRef.current = {
+          ...sessionModelOverridesRef.current,
+          [sessionId]: modelId,
+        };
         setHermesSessionItems((current) =>
           current.map((session) =>
             session.id === sessionId
@@ -1633,10 +1648,33 @@ export function AgentWorkspace({
               : session,
           ),
         );
+        try {
+          await ensureHermesBridgeSession({ sessionId, model: modelId });
+        } catch (err) {
+          if (previousOverride) {
+            sessionModelOverridesRef.current = {
+              ...sessionModelOverridesRef.current,
+              [sessionId]: previousOverride,
+            };
+          } else {
+            const { [sessionId]: _removed, ...remainingOverrides } =
+              sessionModelOverridesRef.current;
+            sessionModelOverridesRef.current = remainingOverrides;
+          }
+          setHermesSessionItems((current) =>
+            current.map((session) =>
+              session.id === sessionId && session.model === modelId
+                ? { ...session, model: previousModel }
+                : session,
+            ),
+          );
+          throw err;
+        }
         return;
       }
 
       await setVeniceModel("generation", modelId);
+      defaultGenerationModelIdRef.current = modelId;
       setDefaultGenerationModelId(modelId);
       dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
     } catch (err) {
@@ -7899,13 +7937,20 @@ function mergeActiveHermesSessions(
     workingSessionIds: Set<string>;
     waitingSessionIds: Set<string>;
     pendingMessages: Record<string, HermesSessionMessage[]>;
+    defaultModelId?: string;
+    sessionModelOverrides?: Record<string, string>;
   },
 ) {
   const currentById = new Map(current.map((session) => [session.id, session]));
+  const defaultModelId = options.defaultModelId?.trim();
+  const sessionModelOverrides = options.sessionModelOverrides ?? {};
   const mergedFresh = fresh.map((session) => {
+    const overrideModel = sessionModelOverrides[session.id]?.trim();
+    if (overrideModel) return { ...session, model: overrideModel };
     if (session.model?.trim()) return session;
     const currentModel = currentById.get(session.id)?.model?.trim();
-    return currentModel ? { ...session, model: currentModel } : session;
+    if (currentModel) return { ...session, model: currentModel };
+    return defaultModelId ? { ...session, model: defaultModelId } : session;
   });
   const seen = new Set(mergedFresh.map((session) => session.id));
   const retained = current.filter(

@@ -967,6 +967,169 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Anonymous mode")).not.toBeInTheDocument();
   });
 
+  it("keeps late-loaded existing chats on the default they first inherited", async () => {
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "anonymous-only",
+        name: "Anonymous Only",
+        modelType: "text",
+        privacy: "anonymous",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    const sessionResolvers: Array<
+      (sessions: (typeof existingSession)[]) => void
+    > = [];
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: catalog,
+    });
+    mocks.listHermesSessions.mockImplementation(
+      () =>
+        new Promise<(typeof existingSession)[]>((resolve) => {
+          sessionResolvers.push(resolve);
+        }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(sessionResolvers.length).toBeGreaterThan(0));
+
+    mocks.listHermesSessions.mockResolvedValue([existingSession]);
+    await act(async () => {
+      for (const resolveSessions of sessionResolvers) {
+        resolveSessions([existingSession]);
+      }
+    });
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const settingsCalls = mocks.providerModelSettings.mock.calls.length;
+    const modelListCalls = mocks.listVeniceModels.mock.calls.length;
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "anonymous-only",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "anonymous-only",
+      models: catalog,
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, {
+          detail: { mode: "generation", modelId: "anonymous-only" },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(mocks.providerModelSettings.mock.calls.length).toBeGreaterThan(
+        settingsCalls,
+      ),
+    );
+    await waitFor(() =>
+      expect(mocks.listVeniceModels.mock.calls.length).toBeGreaterThan(
+        modelListCalls,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Model: GLM 5.2" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Anonymous mode")).not.toBeInTheDocument();
+  });
+
+  it("keeps an explicit chat model when a refresh returns a stale server model", async () => {
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "anonymous-only",
+        name: "Anonymous Only",
+        modelType: "text",
+        privacy: "anonymous",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: catalog,
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "All models" }),
+    );
+    const panel = await screen.findByRole("group", {
+      name: "All text models",
+    });
+    await user.click(
+      within(panel).getByRole("option", { name: /Anonymous Only/ }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Model: Anonymous Only" }),
+    ).toBeInTheDocument();
+
+    const sessionListCalls = mocks.listHermesSessions.mock.calls.length;
+    mocks.listHermesSessions.mockResolvedValue([
+      { ...existingSession, model: "zai-org-glm-5-2" },
+    ]);
+
+    await user.type(screen.getByRole("textbox"), "continue");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
+        sessionListCalls,
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Model: Anonymous Only" }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+  });
+
   it("uses the new-chat composer picker to update the default model", async () => {
     const catalog = [
       {
