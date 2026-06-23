@@ -7650,22 +7650,17 @@ function assistantArtifactContext(
   nameIndex: number,
   nameLength: number,
 ) {
-  const priorSentence = Math.max(
-    text.lastIndexOf(".", nameIndex),
-    text.lastIndexOf("!", nameIndex),
-    text.lastIndexOf("?", nameIndex),
-  );
-  const nextSentenceCandidates = [".", "!", "?"]
-    .map((marker) => text.indexOf(marker, nameIndex + nameLength))
-    .filter((index) => index !== -1);
+  let priorSentence = -1;
+  for (let index = nameIndex - 1; index >= 0; index -= 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if ((char === "." || char === "!" || char === "?") && /\s/.test(next)) {
+      priorSentence = index;
+      break;
+    }
+  }
   const sentenceStart = Math.max(0, priorSentence + 1, nameIndex - 600);
-  const sentenceEnd = Math.min(
-    text.length,
-    nextSentenceCandidates.length
-      ? Math.min(...nextSentenceCandidates) + 1
-      : nameIndex + nameLength + 120,
-  );
-  return text.slice(sentenceStart, sentenceEnd);
+  return text.slice(sentenceStart, nameIndex + nameLength);
 }
 
 function assistantTextSurfacesArtifactName(text: string, name: string) {
