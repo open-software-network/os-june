@@ -189,6 +189,17 @@ export function BillingSettingsSection({
     }
   }
 
+  async function handleCancelSubscription() {
+    try {
+      await osAccountsOpenPortal();
+      setBillingStatus(
+        "Opened your account portal. Choose Cancel subscription to end your plan.",
+      );
+    } catch (error) {
+      setBillingStatus(messageFromError(error));
+    }
+  }
+
   // Only the states reachable from inside the app: past_due and canceled park
   // the whole app on the trial gate, so settings never renders them.
   const subscription = account.subscription;
@@ -247,6 +258,13 @@ export function BillingSettingsSection({
                   onClick={() => void handleManageSubscription()}
                 >
                   Manage subscription
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleCancelSubscription()}
+                >
+                  Cancel subscription
                 </button>
               </div>
             </div>
