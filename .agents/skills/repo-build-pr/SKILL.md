@@ -118,6 +118,7 @@ For inline review threads, use GraphQL through `gh api graphql` when `gh pr view
 
 - Greptile summary/comment author: `greptile-apps`
 - Codex review author: `chatgpt-codex-connector`
+- Codex review trigger comment: `@codex review`
 
 Classify every bot comment before acting:
 
@@ -133,7 +134,7 @@ After fixing accepted feedback:
 1. Re-run the relevant validation.
 2. Commit and push follow-up changes.
 3. Re-check PR comments, review threads, and CI.
-4. Request final review from Greptile and Codex using the repo's current trigger convention. If no convention is visible, leave a clear PR comment tagging the observed bot identities and asking for another pass.
+4. Request final review from Greptile and Codex using the repo's current trigger convention. For Codex, post the exact PR comment `@codex review`. If Greptile's convention is unclear, leave a clear PR comment tagging the observed Greptile identity and asking for another pass.
 5. Mark the PR ready for review only after the final review request is posted and there are no known local blockers:
    ```bash
    gh pr ready <number>
