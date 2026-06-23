@@ -2127,6 +2127,108 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("surfaces long generated file lists from one assistant sentence", async () => {
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "summary.md",
+              path: `${workspaceRoot}/summary.md`,
+              kind: "file",
+              size: 512,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "build-log.txt",
+              path: `${workspaceRoot}/build-log.txt`,
+              kind: "file",
+              size: 1024,
+              modifiedAt: "2026-06-04T18:40:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content:
+          "I exported the deliverables as `summary.md`, with implementation notes, validation details, and the complete command transcript available in `build-log.txt`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download summary.md" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download build-log.txt" }),
+    ).toBeInTheDocument();
+  });
+
+  it("recognizes generated output wording without surfacing generated attachment variants", async () => {
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: `${workspaceRoot}/report.md`,
+              kind: "file",
+              size: 512,
+              modifiedAt: "2026-06-23T12:40:00Z",
+            },
+            {
+              name: "compressed_screenshot.jpg",
+              path: `${workspaceRoot}/compressed_screenshot.jpg`,
+              kind: "file",
+              size: 95232,
+              modifiedAt: "2026-06-23T12:39:10Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content:
+          "I generated report.md. Screenshots showed generated attachment variants such as compressed_screenshot.jpg.",
+        timestamp: "2026-06-23T12:40:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download report.md" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: "Download compressed_screenshot.jpg",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not render download cards for files the user attached", async () => {
     const attachedPath =
       "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
@@ -2175,6 +2277,152 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText(/Here's a summary/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Generated files")).not.toBeInTheDocument();
+  });
+
+  it("does not surface diagnostic file mentions as generated artifacts", async () => {
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "june-context.md",
+              path: `${workspaceRoot}/june-context.md`,
+              kind: "file",
+              size: 14336,
+              modifiedAt: "2026-06-23T12:39:00Z",
+            },
+            {
+              name: "compressed_screenshot.jpg",
+              path: `${workspaceRoot}/compressed_screenshot.jpg`,
+              kind: "file",
+              size: 95232,
+              modifiedAt: "2026-06-23T12:39:10Z",
+            },
+            {
+              name: "small_screenshot.jpg",
+              path: `${workspaceRoot}/small_screenshot.jpg`,
+              kind: "file",
+              size: 28672,
+              modifiedAt: "2026-06-23T12:39:11Z",
+            },
+            {
+              name: "ss.png",
+              path: `${workspaceRoot}/ss.png`,
+              kind: "file",
+              size: 259072,
+              modifiedAt: "2026-06-23T12:39:12Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content:
+          "Screenshots showed generated attachment variants such as compressed_screenshot.jpg, small_screenshot.jpg, and ss.png, plus june-context.md visible in the attachment list.",
+        timestamp: "2026-06-23T12:40:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(/Screenshots showed/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generated files")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /View files/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces genuine outputs without listing diagnostic attachment artifacts", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "june-context.md",
+              path: `${workspaceRoot}/june-context.md`,
+              kind: "file",
+              size: 14336,
+              modifiedAt: "2026-06-23T12:39:00Z",
+            },
+            {
+              name: "compressed_screenshot.jpg",
+              path: `${workspaceRoot}/compressed_screenshot.jpg`,
+              kind: "file",
+              size: 95232,
+              modifiedAt: "2026-06-23T12:39:10Z",
+            },
+            {
+              name: "small_screenshot.jpg",
+              path: `${workspaceRoot}/small_screenshot.jpg`,
+              kind: "file",
+              size: 28672,
+              modifiedAt: "2026-06-23T12:39:11Z",
+            },
+            {
+              name: "diagnosis.md",
+              path: `${workspaceRoot}/diagnosis.md`,
+              kind: "file",
+              size: 4096,
+              modifiedAt: "2026-06-23T12:40:10Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content:
+          "Screenshots showed variants such as compressed_screenshot.jpg and small_screenshot.jpg, plus june-context.md visible in the attachment list. I saved the triage notes as diagnosis.md.",
+        timestamp: "2026-06-23T12:40:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(/saved the triage notes/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download diagnosis.md" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download june-context.md" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: "Download compressed_screenshot.jpg",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download small_screenshot.jpg" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View files (1)" }));
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(within(panel).getByText("diagnosis.md")).toBeInTheDocument();
+    expect(within(panel).queryByText("june-context.md")).not.toBeInTheDocument();
+    expect(
+      within(panel).queryByText("compressed_screenshot.jpg"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(panel).queryByText("small_screenshot.jpg"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders one download card when two workspace copies share a file name", async () => {

@@ -7648,6 +7648,39 @@ function filesystemEntriesToArtifacts(
   });
 }
 
+const ASSISTANT_ARTIFACT_SURFACE_RE =
+  /\b(?:available|attached|created|download|downloadable|exported|generated(?!\s+attachment\s+variants)|saved?|stored|uploaded|written|wrote)\b/;
+
+function assistantArtifactContext(
+  text: string,
+  nameIndex: number,
+  nameLength: number,
+) {
+  let priorSentence = -1;
+  for (let index = nameIndex - 1; index >= 0; index -= 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if ((char === "." || char === "!" || char === "?") && /\s/.test(next)) {
+      priorSentence = index;
+      break;
+    }
+  }
+  const sentenceStart = Math.max(0, priorSentence + 1, nameIndex - 600);
+  return text.slice(sentenceStart, nameIndex + nameLength);
+}
+
+function assistantTextSurfacesArtifactName(text: string, name: string) {
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const index = text.indexOf(name, searchFrom);
+    if (index === -1) return false;
+    const context = assistantArtifactContext(text, index, name.length);
+    if (ASSISTANT_ARTIFACT_SURFACE_RE.test(context)) return true;
+    searchFrom = index + name.length;
+  }
+  return false;
+}
+
 // Assigns each workspace file to the first turn that mentions it, so its
 // download card renders once instead of at the end of every later response
 // that happens to repeat the file name. User turns can claim a file too, using
@@ -7675,12 +7708,17 @@ function assignArtifactsToTurns(
     for (const artifact of artifacts) {
       const name = artifact.name.toLowerCase();
       if (!name || claimedPaths.has(artifact.path)) continue;
+      const fullPath = artifact.path.toLowerCase();
+      const promptPath = attachmentPromptPath(artifact.path).toLowerCase();
       const pathMentioned =
-        text.includes(artifact.path.toLowerCase()) ||
-        text.includes(attachmentPromptPath(artifact.path).toLowerCase());
+        turn.role === "assistant"
+          ? assistantTextSurfacesArtifactName(text, fullPath) ||
+            assistantTextSurfacesArtifactName(text, promptPath)
+          : text.includes(fullPath) || text.includes(promptPath);
       const nameMentioned =
         turn.role === "assistant" &&
         !claimedNames.has(name) &&
+        assistantTextSurfacesArtifactName(text, name) &&
         text.includes(name);
       if (!pathMentioned && !nameMentioned) continue;
       claimedPaths.add(artifact.path);
