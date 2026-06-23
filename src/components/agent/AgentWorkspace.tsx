@@ -680,6 +680,12 @@ type AgentAttachment = ImportedHermesFile & {
   id: string;
 };
 
+type ComposerDraftSnapshot = {
+  text: string;
+  category: ReportCategory | null;
+  attachments: AgentAttachment[];
+};
+
 /** The right-hand file viewer: a list of every file surfaced in the
  * conversation, or one file opened for reading. */
 type AgentArtifactPanelState =
@@ -730,6 +736,42 @@ type AgentSessionContinuity = {
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
+const NEW_SESSION_DRAFT_KEY = "new-session";
+const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
+
+function sessionComposerDraftKey(sessionId: string) {
+  return `session:${sessionId}`;
+}
+
+function rememberComposerDraft(
+  key: string | null,
+  text: string,
+  category: ReportCategory | null,
+  attachments: AgentAttachment[] = [],
+) {
+  if (!key) return;
+  if (!text.trim() && !category && attachments.length === 0) {
+    agentComposerDrafts.delete(key);
+    return;
+  }
+  agentComposerDrafts.set(key, {
+    text,
+    category,
+    attachments: [...attachments],
+  });
+}
+
+function forgetComposerDraft(key: string | null) {
+  if (key) agentComposerDrafts.delete(key);
+}
+
+function hasSavedNewSessionDraft() {
+  const snapshot = agentComposerDrafts.get(NEW_SESSION_DRAFT_KEY);
+  return Boolean(
+    snapshot &&
+    (snapshot.text.trim() || snapshot.category || snapshot.attachments.length),
+  );
+}
 
 function captureSessionContinuity(state: {
   sessionItems: HermesSessionInfo[];
@@ -770,6 +812,7 @@ function captureSessionContinuity(state: {
  * the next test's mount. */
 export function resetAgentSessionContinuity() {
   sessionContinuity = null;
+  agentComposerDrafts.clear();
 }
 
 export function AgentWorkspace({
@@ -791,7 +834,11 @@ export function AgentWorkspace({
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.
   const draftRef = useRef("");
+  const categoryRef = useRef<ReportCategory | null>(null);
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const attachmentsRef = useRef<AgentAttachment[]>([]);
+  categoryRef.current = category;
+  attachmentsRef.current = attachments;
   const [dropActive, setDropActive] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -868,14 +915,6 @@ export function AgentWorkspace({
       !initialSessionId &&
       (hasPendingNewSessionRequest() || hasSavedNewSessionDraft()),
   );
-  const selectedDraftKey = useMemo(
-    () =>
-      newSessionMode
-        ? AGENT_NEW_SESSION_DRAFT_KEY
-        : draftKeyForSession(selectedHermesSessionId),
-    [newSessionMode, selectedHermesSessionId],
-  );
-  const selectedDraftKeyRef = useRef<string | undefined>(selectedDraftKey);
   const setError = useCallback(
     (message: string | null, options: AgentWorkspaceErrorOptions = {}) => {
       if (!message) {
@@ -1068,10 +1107,6 @@ export function AgentWorkspace({
   }, [runtimeSessionIds]);
 
   useEffect(() => {
-    selectedDraftKeyRef.current = selectedDraftKey;
-  }, [selectedDraftKey]);
-
-  useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
@@ -1174,6 +1209,14 @@ export function AgentWorkspace({
       ...(pendingHermesMessages[selectedHermesSessionId] ?? []),
     ];
   }, [hermesSessionMessages, pendingHermesMessages, selectedHermesSessionId]);
+  const composerDraftKey = selectedHermesSessionId
+    ? sessionComposerDraftKey(selectedHermesSessionId)
+    : selectedTask
+      ? null
+      : NEW_SESSION_DRAFT_KEY;
+  const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
+  composerDraftKeyRef.current = composerDraftKey;
+  const restoredComposerDraftKeyRef = useRef<string | null>();
   const chatArtifacts = useMemo(
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
@@ -1630,10 +1673,6 @@ export function AgentWorkspace({
   }, [selectedHermesSessionId]);
 
   useEffect(() => {
-    restoreComposerDraft(selectedDraftKey);
-  }, [selectedDraftKey]);
-
-  useEffect(() => {
     // The sidebar and App replace their session lists wholesale with this
     // payload, so an unhydrated broadcast (mount seed only) would collapse
     // the list they already fetched themselves and flicker it back once the
@@ -1910,6 +1949,12 @@ export function AgentWorkspace({
     }
   }, [newSessionMode, activePanel]);
 
+  useEffect(() => {
+    if (activePanel !== "chat") return;
+    if (restoredComposerDraftKeyRef.current === composerDraftKey) return;
+    restoreComposerDraft(composerDraftKey);
+  }, [activePanel, composerDraftKey]);
+
   // The busy notice's advice ("wait for the reply") expires the moment the
   // selected session stops working — including when the user switches to a
   // session that isn't running.
@@ -1933,6 +1978,7 @@ export function AgentWorkspace({
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
     const content = promptWithAttachments(message, attachments);
+    const submittedDraftKey = composerDraftKeyRef.current;
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
     // sit frozen through the wait and then vanish in a single frame when the
@@ -1941,10 +1987,12 @@ export function AgentWorkspace({
     setSubmitting(true);
     composerEditorRef.current?.clear();
     setDraft("");
+    draftRef.current = "";
     setCategory(null);
-    setAttachments([]);
+    categoryRef.current = null;
+    forgetComposerDraft(submittedDraftKey);
+    setComposerAttachments([]);
     setIssueReportNotice(null);
-    forgetAgentComposerDraft(selectedDraftKeyRef.current);
     try {
       await submitHermesSession(
         reportCategory ? categoryPrompt(reportCategory, content) : content,
@@ -1975,8 +2023,16 @@ export function AgentWorkspace({
       // typed or attached something new during the in-flight send.
       if (composerEditorRef.current?.isEmpty() ?? true) {
         composerEditorRef.current?.setContent(message, reportCategory);
+        rememberComposerDraft(
+          submittedDraftKey,
+          message,
+          reportCategory,
+          attachments,
+        );
       }
-      setAttachments((current) => (current.length ? current : attachments));
+      setComposerAttachments((current) =>
+        current.length ? current : attachments,
+      );
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
         // connection banner along with showing the notice.
@@ -2024,7 +2080,7 @@ export function AgentWorkspace({
       for (const item of items) {
         imported.push(await importItem(item));
       }
-      setAttachments((current) => [
+      setComposerAttachments((current) => [
         ...current,
         ...imported.map((file) => ({
           ...file,
@@ -2068,7 +2124,9 @@ export function AgentWorkspace({
   }
 
   function removeAttachment(id: string) {
-    setAttachments((current) => current.filter((item) => item.id !== id));
+    setComposerAttachments((current) =>
+      current.filter((item) => item.id !== id),
+    );
   }
 
   // Focus the composer, then toggle the dictation helper's listening state —
@@ -2195,7 +2253,6 @@ export function AgentWorkspace({
     }
     if (!targetSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
-      forgetAgentComposerDraft(AGENT_NEW_SESSION_DRAFT_KEY);
     }
     const sessionDisplayTitle = options?.issueReport
       ? "Issue report"
@@ -2801,17 +2858,20 @@ export function AgentWorkspace({
     setActivePanel("chat");
     setSelectedTaskId(undefined);
     selectedHermesSessionIdRef.current = undefined;
+    composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
     setSelectedHermesSessionId(undefined);
     // Seed the composer: a category chip for a report, the prompt otherwise.
     // The editor may not be mounted yet on a cold open, so stash the category
     // for ComposerEditor's onReady to pick up and also try to apply now.
     pendingSeedCategoryRef.current = seedCategory;
     if (seedCategory) {
+      clearComposerDraft(NEW_SESSION_DRAFT_KEY);
       seedComposerCategory();
     } else if (initialPrompt) {
+      rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
     } else {
-      clearComposerDraft();
+      clearComposerDraft(NEW_SESSION_DRAFT_KEY);
     }
     if (!initialPrompt) return;
     dispatchAgentSessionStatus({
@@ -2824,9 +2884,11 @@ export function AgentWorkspace({
     try {
       await submitHermesSession(initialPrompt);
       composerEditorRef.current?.clear();
+      forgetComposerDraft(NEW_SESSION_DRAFT_KEY);
       setError(null);
     } catch (err) {
       composerEditorRef.current?.setContent(initialPrompt);
+      rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       setError(messageFromError(err));
       dispatchAgentSessionStatus({
         prompt: initialPrompt,
@@ -2839,24 +2901,50 @@ export function AgentWorkspace({
     }
   }
 
-  function clearComposerDraft() {
+  function clearComposerDraft(key = composerDraftKeyRef.current) {
     draftRef.current = "";
+    categoryRef.current = null;
+    attachmentsRef.current = [];
     setDraft("");
     setCategory(null);
+    setAttachments([]);
+    forgetComposerDraft(key);
     composerEditorRef.current?.clear();
-    forgetAgentComposerDraft(selectedDraftKeyRef.current);
   }
 
-  function restoreComposerDraft(draftKey: string | undefined) {
-    const saved = readAgentComposerDraft(draftKey);
-    draftRef.current = saved;
-    setDraft(saved);
-    setCategory(null);
-    if (saved) {
-      composerEditorRef.current?.setContent(saved);
-    } else {
-      composerEditorRef.current?.clear();
-    }
+  function restoreComposerDraft(key: string | null) {
+    const editor = composerEditorRef.current;
+    if (!editor) return;
+    restoredComposerDraftKeyRef.current = key;
+    const snapshot = key ? agentComposerDrafts.get(key) : undefined;
+    draftRef.current = snapshot?.text ?? "";
+    categoryRef.current = snapshot?.category ?? null;
+    attachmentsRef.current = snapshot?.attachments ?? [];
+    setDraft(snapshot?.text ?? "");
+    setCategory(snapshot?.category ?? null);
+    setAttachments(snapshot?.attachments ?? []);
+    editor.setContent(snapshot?.text ?? "", snapshot?.category ?? null, {
+      focus: false,
+    });
+  }
+
+  function setComposerAttachments(
+    nextValue:
+      | AgentAttachment[]
+      | ((current: AgentAttachment[]) => AgentAttachment[]),
+  ) {
+    setAttachments((current) => {
+      const next =
+        typeof nextValue === "function" ? nextValue(current) : nextValue;
+      attachmentsRef.current = next;
+      rememberComposerDraft(
+        composerDraftKeyRef.current,
+        draftRef.current,
+        categoryRef.current,
+        next,
+      );
+      return next;
+    });
   }
 
   /** Applies any pending seed category to the composer chip once the editor is
@@ -2872,6 +2960,7 @@ export function AgentWorkspace({
     window.setTimeout(() => {
       if (pendingSeedCategoryRef.current) return;
       editor.setContent("", seed);
+      rememberComposerDraft(NEW_SESSION_DRAFT_KEY, "", seed);
     }, 0);
   }
 
@@ -2916,6 +3005,7 @@ export function AgentWorkspace({
       return;
     }
     if (shortcut.action === "attach") {
+      rememberComposerDraft(composerDraftKeyRef.current, shortcut.prompt, null);
       composerEditorRef.current?.setContent(shortcut.prompt);
       void pickAttachments();
       return;
@@ -2925,6 +3015,7 @@ export function AgentWorkspace({
     composerEditorRef.current?.setContent(shortcut.prompt, null, {
       selectPlaceholder: true,
     });
+    rememberComposerDraft(composerDraftKeyRef.current, shortcut.prompt, null);
   }
 
   async function cancelTask(taskId: string) {
@@ -3091,13 +3182,13 @@ export function AgentWorkspace({
       return next;
     });
     scrubHermesSessionState(sessionId);
+    forgetComposerDraft(sessionComposerDraftKey(sessionId));
     // Every deletion funnels through here (the in-workspace delete and the
     // sidebar/sessions-list AGENT_DELETE_SESSION_EVENT), so this is the one
     // place that drops the session's Unrestricted record — a stale entry
     // would hand full write access to any future session that recycled the
     // id.
     forgetSessionMode(sessionId);
-    forgetAgentComposerDraft(draftKeyForSession(sessionId));
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
@@ -3581,13 +3672,19 @@ export function AgentWorkspace({
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
+              categoryRef.current = nextCategory;
               setDraft(text);
               setCategory(nextCategory);
-              writeAgentComposerDraft(selectedDraftKeyRef.current, text);
+              rememberComposerDraft(
+                composerDraftKeyRef.current,
+                text,
+                nextCategory,
+                attachmentsRef.current,
+              );
             }}
             onSubmit={() => void submit()}
             onReady={() => {
-              restoreComposerDraft(selectedDraftKeyRef.current);
+              restoreComposerDraft(composerDraftKeyRef.current);
               seedComposerCategory();
             }}
           />
@@ -7650,14 +7747,20 @@ function promptWithAttachments(
   return [
     message || "Use the attached file(s).",
     "",
-    "Attached files copied into the Scribe Hermes workspace:",
+    "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>
-        `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,
+        `- ${attachment.name} (${attachment.rootLabel}): ${attachmentPromptPath(attachment.path)}`,
     ),
     "",
-    "Use these workspace paths when inspecting or operating on the files.",
+    "Use these file paths when inspecting or operating on the files.",
   ].join("\n");
+}
+
+function attachmentPromptPath(path: string) {
+  const workspaceMatch = path.match(/(?:^|[/\\])workspace[/\\](.+)$/);
+  if (workspaceMatch?.[1]) return workspaceMatch[1];
+  return path;
 }
 
 function filesystemEntriesToArtifacts(
@@ -7684,11 +7787,11 @@ function filesystemEntriesToArtifacts(
 
 // Assigns each workspace file to the first turn that mentions it, so its
 // download card renders once instead of at the end of every later response
-// that happens to repeat the file name. User turns can claim a file too, but
-// only by full path — that's how promptWithAttachments injects attachments,
-// and a file the user just handed us shouldn't bounce back as a download.
-// Name-only matches are also deduplicated by name, so two workspace copies of
-// the same file don't produce twin cards.
+// that happens to repeat the file name. User turns can claim a file too, using
+// either the full artifact path or the workspace-relative path injected for
+// attachments, so a file the user just handed us shouldn't bounce back as a
+// download. Name-only matches are also deduplicated by name, so two workspace
+// copies of the same file don't produce twin cards.
 function assignArtifactsToTurns(
   turns: AgentChatTurn[],
   artifacts: AgentArtifact[],
@@ -7699,9 +7802,7 @@ function assignArtifactsToTurns(
   const claimedNames = new Set<string>();
   for (const turn of turns) {
     const text = turn.parts
-      .map((part) =>
-        part.type !== "context" && "text" in part ? part.text : "",
-      )
+      .map((part) => (part.type === "text" ? part.text : ""))
       .join("\n")
       .toLowerCase();
     if (!text.trim()) continue;
@@ -7709,7 +7810,9 @@ function assignArtifactsToTurns(
     for (const artifact of artifacts) {
       const name = artifact.name.toLowerCase();
       if (!name || claimedPaths.has(artifact.path)) continue;
-      const pathMentioned = text.includes(artifact.path.toLowerCase());
+      const pathMentioned =
+        text.includes(artifact.path.toLowerCase()) ||
+        text.includes(attachmentPromptPath(artifact.path).toLowerCase());
       const nameMentioned =
         turn.role === "assistant" &&
         !claimedNames.has(name) &&
@@ -8095,9 +8198,6 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
 // existing conversation after a relaunch is always safe, unlike the pending
 // new-session marker, which must NOT outlive its navigation.
 const AGENT_LAST_OPEN_SESSION_KEY = "scribe:agent:last-open-session";
-const AGENT_COMPOSER_DRAFTS_KEY = "scribe:agent:composer-drafts";
-const AGENT_NEW_SESSION_DRAFT_KEY = "new-session";
-const AGENT_COMPOSER_DRAFT_MAX_LENGTH = 20_000;
 
 // How long a second startNewTask call with the same prompt counts as an echo
 // of the first (marker + window event double-delivery) rather than a new ask.
@@ -8137,73 +8237,6 @@ function writeLastOpenSessionId(sessionId: string) {
   } catch {
     // Storage can be unavailable in restricted webviews; restore is best-effort.
   }
-}
-
-function draftKeyForSession(sessionId: string | undefined) {
-  return sessionId ? `session:${sessionId}` : undefined;
-}
-
-function readAgentComposerDrafts(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(AGENT_COMPOSER_DRAFTS_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string] =>
-          typeof entry[0] === "string" && typeof entry[1] === "string",
-      ),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function writeAgentComposerDrafts(drafts: Record<string, string>) {
-  try {
-    if (Object.keys(drafts).length === 0) {
-      window.localStorage.removeItem(AGENT_COMPOSER_DRAFTS_KEY);
-      return;
-    }
-    window.localStorage.setItem(
-      AGENT_COMPOSER_DRAFTS_KEY,
-      JSON.stringify(drafts),
-    );
-  } catch {
-    // Draft persistence is best-effort; the typed text still lives in memory.
-  }
-}
-
-function readAgentComposerDraft(key: string | undefined) {
-  if (!key) return "";
-  return readAgentComposerDrafts()[key] ?? "";
-}
-
-function hasSavedNewSessionDraft() {
-  return Boolean(readAgentComposerDraft(AGENT_NEW_SESSION_DRAFT_KEY).trim());
-}
-
-function writeAgentComposerDraft(key: string | undefined, draft: string) {
-  if (!key) return;
-  const drafts = readAgentComposerDrafts();
-  const normalized = draft.slice(0, AGENT_COMPOSER_DRAFT_MAX_LENGTH);
-  if (normalized.trim()) {
-    drafts[key] = normalized;
-  } else {
-    delete drafts[key];
-  }
-  writeAgentComposerDrafts(drafts);
-}
-
-function forgetAgentComposerDraft(key: string | undefined) {
-  if (!key) return;
-  const drafts = readAgentComposerDrafts();
-  if (!(key in drafts)) return;
-  delete drafts[key];
-  writeAgentComposerDrafts(drafts);
 }
 
 export function markAgentNewSessionPending(

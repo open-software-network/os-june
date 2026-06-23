@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import type { RoutineJob } from "../lib/hermes-routines";
 import type { HermesSessionInfo } from "../lib/tauri";
+import appCss from "../styles/app.css?raw";
 
 const mocks = vi.hoisted(() => ({
   listRoutines: vi.fn<() => Promise<RoutineJob[]>>(),
@@ -74,6 +75,32 @@ function renderView(
       onOpenRun={props.onOpenRun ?? vi.fn()}
     />,
   );
+}
+
+function mockTextareaScrollHeight(
+  getScrollHeight: (element: HTMLTextAreaElement) => number,
+) {
+  const original = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "scrollHeight",
+  );
+  Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      return getScrollHeight(this as HTMLTextAreaElement);
+    },
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(
+        HTMLTextAreaElement.prototype,
+        "scrollHeight",
+        original,
+      );
+    } else {
+      Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
+    }
+  };
 }
 
 async function openDetail(name: string) {
@@ -321,6 +348,51 @@ describe("RoutinesView templates and creation", () => {
     expect(prompt).toContain("cronjob tool");
     expect(prompt).toContain("Do not set enabled_toolsets");
     expect(prompt).not.toContain("Create the job with enabled_toolsets");
+  });
+
+  it("expands the describe composer for overflowing text", async () => {
+    const restoreScrollHeight = mockTextareaScrollHeight((element) =>
+      element.value.length > 48 ? 138 : 30,
+    );
+    try {
+      mocks.listRoutines.mockResolvedValue([]);
+      renderView();
+      await screen.findByText("Morning brief");
+
+      const composer = screen.getByRole("form", {
+        name: "Describe a routine to June",
+      });
+      const textbox = within(composer).getByRole("textbox", {
+        name: "Describe a routine",
+      }) as HTMLTextAreaElement;
+
+      await userEvent.type(
+        textbox,
+        "watch the weather and message me whenever storm updates need attention",
+      );
+
+      await waitFor(() => expect(textbox.style.height).toBe("140px"));
+    } finally {
+      restoreScrollHeight();
+    }
+  });
+
+  it("keeps the describe composer height cap on the create page", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning brief");
+
+    await userEvent.click(screen.getByRole("button", { name: "New routine" }));
+
+    const createPage = screen.getByRole("region", { name: "New routine" });
+    const describeBar = screen
+      .getByRole("form", { name: "Describe a routine to June" })
+      .closest(".routines-describe");
+    expect(describeBar).not.toBeNull();
+    expect(createPage.contains(describeBar)).toBe(false);
+    expect(appCss).toContain(
+      ".routines-workspace,\n.routine-detail,\n.routines-describe {\n  --routines-describe-input-max-h: 200px;",
+    );
   });
 
   it("describes an unrestricted routine only after the explicit opt-in", async () => {
