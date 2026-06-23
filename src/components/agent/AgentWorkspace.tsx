@@ -737,6 +737,7 @@ type AgentSessionContinuity = {
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
+const AGENT_COMPOSER_DRAFT_MAX_ENTRIES = 50;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
 let lastActiveComposerDraftKey: string | null | undefined;
 
@@ -755,15 +756,31 @@ function rememberComposerDraft(
     agentComposerDrafts.delete(key);
     return;
   }
+  agentComposerDrafts.delete(key);
   agentComposerDrafts.set(key, {
     text,
     category,
     attachments: [...attachments],
   });
+  pruneComposerDrafts();
 }
 
 function forgetComposerDraft(key: string | null) {
   if (key) agentComposerDrafts.delete(key);
+}
+
+function pruneComposerDrafts() {
+  while (agentComposerDrafts.size > AGENT_COMPOSER_DRAFT_MAX_ENTRIES) {
+    let oldestKey: string | undefined;
+    for (const key of agentComposerDrafts.keys()) {
+      if (key === NEW_SESSION_DRAFT_KEY) continue;
+      oldestKey = key;
+      break;
+    }
+    oldestKey ??= agentComposerDrafts.keys().next().value;
+    if (!oldestKey) return;
+    agentComposerDrafts.delete(oldestKey);
+  }
 }
 
 function hasSavedNewSessionDraft() {
