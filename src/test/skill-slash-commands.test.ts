@@ -97,6 +97,29 @@ describe("skill slash commands", () => {
     );
   });
 
+  it("rejects disabled skills and omits them from suggestions", () => {
+    const disabledSkills: HermesSkillInfo[] = [
+      ...skills,
+      {
+        name: "disabled-review",
+        description: "Review pull requests",
+        enabled: false,
+      },
+    ];
+    const [resolution] = resolveSkillSlashCommands(
+      ["disabled-review"],
+      disabledSkills,
+    );
+
+    expect(resolution).toMatchObject({ status: "disabled" });
+    expect(skillSlashResolutionError(resolution)).toBe(
+      "/disabled-review is disabled. Enable it in Agent settings to use it.",
+    );
+    expect(
+      matchSkillSlashSuggestions("disabled", disabledSkills).map((s) => s.name),
+    ).toEqual([]);
+  });
+
   it("ranks autocomplete suggestions by name and description", () => {
     expect(
       matchSkillSlashSuggestions("platform", skills).map((s) => s.name),

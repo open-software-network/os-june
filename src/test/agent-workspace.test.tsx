@@ -2077,6 +2077,41 @@ describe("AgentWorkspace", () => {
     ).toBe(false);
   });
 
+  it("rejects disabled skill slash commands", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: false,
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("textbox"),
+      "/repo-build-pr implement issue JUN-46",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText(
+        "/repo-build-pr is disabled. Enable it in Agent settings to use it.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveTextContent(
+      "/repo-build-pr implement issue JUN-46",
+    );
+    expect(mocks.getHermesBridgeSkill).not.toHaveBeenCalled();
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method]) => method === "prompt.submit",
+      ),
+    ).toBe(false);
+  });
+
   it("retries skill loading on submit after a silent slash-prefetch failure", async () => {
     const user = userEvent.setup();
     mocks.hermesBridgeSkills

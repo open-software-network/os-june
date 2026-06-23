@@ -27,6 +27,11 @@ export type SkillSlashResolution =
       status: "ambiguous";
       token: string;
       matches: HermesSkillInfo[];
+    }
+  | {
+      status: "disabled";
+      token: string;
+      matches: HermesSkillInfo[];
     };
 
 export function parseSkillSlashCommands(
@@ -78,6 +83,7 @@ export function matchSkillSlashSuggestions(
 ) {
   const normalized = normalizeSkillName(query);
   return (skills ?? [])
+    .filter(isSkillEnabled)
     .map((skill) => ({ skill, score: skillMatchScore(skill, normalized) }))
     .filter((item) => item.score > 0)
     .sort(
@@ -93,18 +99,24 @@ export function resolveSkillSlashCommands(
   commandNames: string[],
   skills: HermesSkillInfo[],
 ): SkillSlashResolution[] {
+  const enabledSkills = skills.filter(isSkillEnabled);
+  const disabledSkills = skills.filter((skill) => !isSkillEnabled(skill));
   return commandNames.map((token) => {
-    const matches = matchingSkills(token, skills);
+    const matches = matchingSkills(token, enabledSkills);
     if (matches.length === 1) {
       return { status: "resolved", token, skill: matches[0] };
     }
     if (matches.length > 1) {
       return { status: "ambiguous", token, matches };
     }
+    const disabledMatches = matchingSkills(token, disabledSkills);
+    if (disabledMatches.length) {
+      return { status: "disabled", token, matches: disabledMatches };
+    }
     return {
       status: "missing",
       token,
-      suggestions: matchSkillSlashSuggestions(token, skills, 3),
+      suggestions: matchSkillSlashSuggestions(token, enabledSkills, 3),
     };
   });
 }
@@ -117,6 +129,18 @@ export function skillSlashResolutionError(resolution: SkillSlashResolution) {
       .map((skill) => `/${skill.name}`)
       .join(", ");
     return `/${resolution.token} matches more than one skill. Use ${matches}.`;
+  }
+  if (resolution.status === "disabled") {
+    const matches = resolution.matches
+      .slice(0, 4)
+      .map((skill) => `/${skill.name}`)
+      .join(", ");
+    if (!matches) {
+      return `/${resolution.token} is disabled. Enable it in Agent settings to use it.`;
+    }
+    return resolution.matches.length === 1
+      ? `${matches} is disabled. Enable it in Agent settings to use it.`
+      : `${matches} are disabled. Enable one in Agent settings to use it.`;
   }
   const suggestions = resolution.suggestions
     .map((skill) => `/${skill.name}`)
@@ -221,4 +245,8 @@ function normalizeSkillName(value: string) {
 
 function safeText(value: unknown) {
   return typeof value === "string" ? value : "";
+}
+
+function isSkillEnabled(skill: HermesSkillInfo) {
+  return skill.enabled !== false;
 }
