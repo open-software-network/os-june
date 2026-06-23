@@ -794,6 +794,127 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.status).toBe("complete");
   });
 
+  it("keeps tool follow-up with the assistant message that requested it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "I'll inspect the document first." },
+        },
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "read_file",
+            text: "Reading the attached DOCX.",
+          },
+        },
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["I'll inspect the document first.", "tool"]);
+    expect(turns[0]?.status).toBe("running");
+  });
+
+  it("keeps subagent follow-up with the assistant message that delegated it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "I'll delegate the research." },
+        },
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          payload: {
+            subagent_id: "sa-1",
+            goal: "Research the document export flow",
+          },
+        },
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["I'll delegate the research.", "tool"]);
+    expect(turns[0]?.status).toBe("running");
+  });
+
+  it("does not attach tool-only live events to an older assistant turn", () => {
+    const messages: AgentMessageDto[] = [
+      {
+        id: "m1",
+        taskId: "task-1",
+        role: "user",
+        content: "Previous request",
+        createdAt: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "m2",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Previous answer",
+        createdAt: "2026-06-04T10:00:10.000Z",
+      },
+      {
+        id: "m3",
+        taskId: "task-1",
+        role: "user",
+        content: "turn this docx into a pdf",
+        createdAt: "2026-06-04T10:01:00.000Z",
+      },
+    ];
+
+    const turns = buildAgentChatTurns(
+      messages,
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:01:01.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "read_file",
+            text: "Reading the attached DOCX.",
+          },
+        },
+      ],
+    );
+
+    const previousAssistant = turns.find((turn) => turn.id === "m2");
+    expect(
+      previousAssistant?.parts.filter((part) => part.type === "tool"),
+    ).toHaveLength(0);
+
+    const liveAssistant = turns.at(-1);
+    expect(liveAssistant?.role).toBe("assistant");
+    expect(liveAssistant?.parts).toEqual([
+      {
+        type: "tool",
+        id: "tool-1",
+        name: "Read File",
+        text: "Reading the attached DOCX.",
+        status: "running",
+      },
+    ]);
+    expect(liveAssistant?.status).toBe("running");
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],

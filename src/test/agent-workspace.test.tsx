@@ -1324,9 +1324,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
-        text: expect.stringContaining(
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
-        ),
+        text: expect.stringContaining("uploads/screenshot.png"),
       }),
     );
   });
@@ -1367,7 +1365,10 @@ describe("AgentWorkspace", () => {
       preview: "Second preview",
       last_active: "2026-06-04T12:05:00Z",
     };
-    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    mocks.listHermesSessions.mockResolvedValue([
+      existingSession,
+      secondSession,
+    ]);
     const { rerender } = render(
       <AgentWorkspace initialSession={existingSession} />,
     );
@@ -1635,6 +1636,15 @@ describe("AgentWorkspace", () => {
       "open",
     );
 
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+        });
+      }
+    });
+
     await user.type(screen.getByRole("textbox"), "next request");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() =>
@@ -1657,6 +1667,57 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("Thinking").closest("details")).not.toHaveAttribute(
       "open",
     );
+  });
+
+  it("keeps listening after an assistant message completes before tool follow-up", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "turn this docx into a pdf",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "turn this docx into a pdf",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "I'll inspect the document first." },
+        });
+      }
+    });
+
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+    expect(
+      screen.getByRole("button", { name: "Stop June" }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_id: "tool-1",
+            name: "read_file",
+            text: "Reading the attached DOCX.",
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Thinking")).toBeInTheDocument();
+    expect(screen.getByText("Reading the attached DOCX.")).toBeInTheDocument();
   });
 
   it("explains a pending approval before the user chooses", async () => {
@@ -1974,6 +2035,183 @@ describe("AgentWorkspace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps a session working when persisted history ends with tool results", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        {
+          id: "m1",
+          role: "user",
+          content: "turn this docx into a pdf",
+          timestamp: "2026-06-04T12:00:00Z",
+        },
+        {
+          id: "m2",
+          role: "assistant",
+          content: "I'll inspect the document first.",
+          tool_calls: [{ id: "tool-1", name: "read_file" }],
+          timestamp: "2026-06-04T12:00:01Z",
+        },
+        {
+          id: "m3",
+          role: "tool",
+          content: "Document text...",
+          tool_call_id: "tool-1",
+          timestamp: "2026-06-04T12:00:02Z",
+        },
+      ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "working",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    let resolveEnsureSession: (value: unknown) => void = () => {};
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveEnsureSession = resolve;
+        }),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "turn this docx into a pdf");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalled(),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveEnsureSession({});
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.getByRole("button", { name: "Stop June" }),
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(screen.getByText("Document text...")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Stop June" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes a recent session whose persisted history ends with tool results", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "turn this docx into a pdf",
+        timestamp: new Date(Date.now() - 30_000).toISOString(),
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "I'll inspect the document first.",
+        tool_calls: [{ id: "tool-1", name: "read_file" }],
+        timestamp: new Date(Date.now() - 20_000).toISOString(),
+      },
+      {
+        id: "m3",
+        role: "tool",
+        content: "Document text...",
+        tool_call_id: "tool-1",
+        timestamp: new Date(Date.now() - 10_000).toISOString(),
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Document text...")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Stop June" }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("does not resume working state when the latest assistant message has no tool calls", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "turn this docx into a pdf",
+        timestamp: new Date(Date.now() - 30_000).toISOString(),
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "   ",
+        timestamp: new Date(Date.now() - 20_000).toISOString(),
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText("turn this docx into a pdf"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Thinking…")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("does not resume working state for serialized empty tool calls", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "summarize the export result",
+        timestamp: new Date(Date.now() - 30_000).toISOString(),
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "The export is ready.",
+        tool_calls: " [ ] ",
+        timestamp: new Date(Date.now() - 20_000).toISOString(),
+      },
+      {
+        id: "m3",
+        role: "assistant",
+        content: "",
+        tool_calls: "null",
+        timestamp: new Date(Date.now() - 10_000).toISOString(),
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("The export is ready.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Thinking…")).not.toBeInTheDocument(),
+    );
   });
 
   it("keeps polling when a follow-up user message is still only pending locally", async () => {

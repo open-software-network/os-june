@@ -393,8 +393,11 @@ function appendLiveHermesEvents(
       // each subagent as a tool-style row keyed by its id, so N parallel
       // subagents show as N live rows that resolve as they finish.
       if (!currentAssistant) {
-        currentAssistant = createAssistantTurn(turns, event.receivedAt);
-        toolCreatedTurns.add(currentAssistant);
+        currentAssistant = lastAssistantTurnAfterLatestUser(turns) ?? null;
+        if (!currentAssistant) {
+          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          toolCreatedTurns.add(currentAssistant);
+        }
       }
       const payload = event.payload as Record<string, unknown> | undefined;
       const subagentId = stringValue(payload?.subagent_id);
@@ -468,8 +471,11 @@ function appendLiveHermesEvents(
         continue;
       }
       if (!currentAssistant) {
-        currentAssistant = createAssistantTurn(turns, event.receivedAt);
-        toolCreatedTurns.add(currentAssistant);
+        currentAssistant = lastAssistantTurnAfterLatestUser(turns) ?? null;
+        if (!currentAssistant) {
+          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          toolCreatedTurns.add(currentAssistant);
+        }
       }
       const status = toolEventStatus(event);
       if (status === "running") {
@@ -610,6 +616,15 @@ function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
 function lastAssistantTurn(turns: AgentChatTurn[]) {
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     if (turns[index]?.role === "assistant") return turns[index];
+  }
+  return undefined;
+}
+
+function lastAssistantTurnAfterLatestUser(turns: AgentChatTurn[]) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn?.role === "user") return undefined;
+    if (turn?.role === "assistant") return turn;
   }
   return undefined;
 }

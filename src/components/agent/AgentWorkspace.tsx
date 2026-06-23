@@ -1762,13 +1762,12 @@ export function AgentWorkspace({
           shouldResumeSessionActivity(combined) &&
           !waitingSessionIdsRef.current.has(selectedHermesSessionId)
         ) {
-          // An in-flight run from before a remount or gateway drop: the
-          // latest message is the user's, so re-arm working state — the
-          // working-gated poll below picks the session back up and
+          // An in-flight run from before a remount or gateway drop: re-arm
+          // working state so the poll below picks the session back up and
           // reconciles it from persisted messages.
           setSessionWorking(selectedHermesSessionId, true);
         }
-        if (sessionHasAssistantAfterLatestUser(combined)) {
+        if (sessionHasFinalAssistantAfterLatestUser(combined)) {
           const wasActive = sessionHasActiveWork(
             selectedHermesSessionId,
             workingSessionIdsRef.current,
@@ -2701,7 +2700,10 @@ export function AgentWorkspace({
       });
       void suggestTitleForUntitledSession(sessionId, messages);
       if (
-        sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
+        sessionHasFinalAssistantAfterLatestUser([
+          ...messages,
+          ...retainedPending,
+        ])
       ) {
         const wasActive = sessionHasActiveWork(
           sessionId,
@@ -7936,19 +7938,47 @@ function hermesMessageTimestampMs(message: HermesSessionMessage) {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-function sessionHasAssistantAfterLatestUser(messages: HermesSessionMessage[]) {
+function sessionHasFinalAssistantAfterLatestUser(
+  messages: HermesSessionMessage[],
+) {
   let latestUserIndex = -1;
-  let latestAssistantIndex = -1;
+  let latestToolIndex = -1;
+  let latestFinalAssistantIndex = -1;
   messages.forEach((message, index) => {
     if (message.role === "user") {
       latestUserIndex = index;
-    } else if (message.role === "assistant") {
-      latestAssistantIndex = index;
+    } else if (message.role === "tool") {
+      latestToolIndex = index;
+    } else if (
+      message.role === "assistant" &&
+      isFinalAssistantMessage(message)
+    ) {
+      latestFinalAssistantIndex = index;
     }
   });
-  if (latestAssistantIndex < 0) return false;
+  if (latestFinalAssistantIndex < 0) return false;
   if (latestUserIndex < 0) return true;
-  return latestAssistantIndex > latestUserIndex;
+  return latestFinalAssistantIndex > Math.max(latestUserIndex, latestToolIndex);
+}
+
+function isFinalAssistantMessage(message: HermesSessionMessage) {
+  return !hasHermesToolCalls(message.tool_calls);
+}
+
+function hasHermesToolCalls(value: unknown) {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    try {
+      return hasHermesToolCalls(JSON.parse(trimmed));
+    } catch {
+      return true;
+    }
+  }
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return false;
 }
 
 // A session whose latest message is a recent user prompt with no assistant
@@ -7959,7 +7989,7 @@ function sessionHasAssistantAfterLatestUser(messages: HermesSessionMessage[]) {
 const RESUME_ACTIVITY_WINDOW_MS = 15 * 60 * 1000;
 
 function shouldResumeSessionActivity(messages: HermesSessionMessage[]) {
-  if (sessionHasAssistantAfterLatestUser(messages)) return false;
+  if (sessionHasFinalAssistantAfterLatestUser(messages)) return false;
   const latestUser = [...messages]
     .reverse()
     .find((message) => message.role === "user");
@@ -7987,8 +8017,6 @@ function isTerminalHermesEvent(type: string) {
   const normalized = type.toLowerCase();
   return (
     normalized === "error" ||
-    normalized === "message.complete" ||
-    normalized === "message.completed" ||
     normalized === "turn.complete" ||
     normalized === "turn.completed" ||
     normalized === "session.complete" ||
