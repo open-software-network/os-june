@@ -6,11 +6,12 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import {
   CATEGORY_CHIP_NODE,
-  CategoryChip,
   categoryFromDoc,
+  createCategoryChip,
   insertReportCategory,
 } from "./categoryChip";
 import type { ReportCategory } from "./reportCategory";
+import type { HermesSkillInfo } from "../../../lib/tauri";
 
 export type ComposerEditorHandle = {
   focus: () => void;
@@ -31,6 +32,7 @@ export type ComposerEditorHandle = {
 
 type ComposerEditorProps = {
   placeholder: string;
+  skills?: HermesSkillInfo[] | null;
   onChange: (text: string, category: ReportCategory | null) => void;
   onSubmit: () => void;
   /** Hands the live editor up to the parent (e.g. so the composer box can read
@@ -93,8 +95,9 @@ function buildDoc(text: string, category?: ReportCategory | null) {
 export const ComposerEditor = forwardRef<
   ComposerEditorHandle,
   ComposerEditorProps
->(({ placeholder, onChange, onSubmit, onReady }, ref) => {
+>(({ placeholder, skills, onChange, onSubmit, onReady }, ref) => {
   const frameRef = useRef<HTMLDivElement | null>(null);
+  const skillsRef = useRef(skills);
   // Latest callbacks behind refs so the editor (created once) never closes
   // over a stale handler.
   const onChangeRef = useRef(onChange);
@@ -104,7 +107,8 @@ export const ComposerEditor = forwardRef<
     onChangeRef.current = onChange;
     onSubmitRef.current = onSubmit;
     onReadyRef.current = onReady;
-  }, [onChange, onSubmit, onReady]);
+    skillsRef.current = skills;
+  }, [onChange, onSubmit, onReady, skills]);
 
   function updateScrollFades(nextEditor: Editor | null) {
     const frame = frameRef.current;
@@ -149,7 +153,7 @@ export const ComposerEditor = forwardRef<
         trailingNode: false,
       }),
       Placeholder.configure({ placeholder }),
-      CategoryChip,
+      createCategoryChip({ skills: () => skillsRef.current }),
     ],
     editorProps: {
       attributes: {

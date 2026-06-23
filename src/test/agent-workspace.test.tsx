@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   createAgentTask: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   getAgentTask: vi.fn(),
+  getHermesBridgeSkill: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeFileText: vi.fn(),
@@ -92,6 +93,7 @@ vi.mock("../lib/tauri", () => ({
   createAgentTask: mocks.createAgentTask,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   getAgentTask: mocks.getAgentTask,
+  getHermesBridgeSkill: mocks.getHermesBridgeSkill,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
@@ -243,6 +245,12 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
+    mocks.hermesBridgeSkills.mockResolvedValue([]);
+    mocks.getHermesBridgeSkill.mockImplementation(async (name: string) => ({
+      name,
+      relativePath: `${name}/SKILL.md`,
+      content: `# ${name}\n\nUse ${name}.`,
+    }));
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.hermesBridgeFilePreview.mockResolvedValue(null);
     mocks.hermesBridgeFileText.mockResolvedValue(null);
@@ -1868,6 +1876,93 @@ describe("AgentWorkspace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("submits leading skill slash commands as explicit skill context", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+      {
+        name: "os-platform",
+        description: "Read live Open Software Issues",
+        enabled: true,
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("textbox"),
+      "/repo-build-pr /os-platform implement issue JUN-46",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"),
+    );
+    expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("os-platform");
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({
+          session_id: "runtime-session-1",
+          text: expect.stringContaining("---EXPLICIT SKILLS---"),
+        }),
+      ),
+    );
+    const submitCall = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    );
+    const submittedText = submitCall?.[1]?.text as string;
+    expect(submittedText).toContain("Skill: repo-build-pr");
+    expect(submittedText).toContain("Skill: os-platform");
+    expect(submittedText).toContain("implement issue JUN-46");
+    expect(submittedText).not.toContain(
+      "/repo-build-pr /os-platform implement issue JUN-46",
+    );
+    expect(screen.getByText("implement issue JUN-46")).toBeInTheDocument();
+    expect(screen.queryByText("---EXPLICIT SKILLS---")).toBeNull();
+  });
+
+  it("keeps the draft and suggests matches for an unknown skill command", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("textbox"),
+      "/repo-build implement issue JUN-46",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText(
+        "Could not find skill /repo-build. Try /repo-build-pr.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveTextContent(
+      "/repo-build implement issue JUN-46",
+    );
+    expect(mocks.getHermesBridgeSkill).not.toHaveBeenCalled();
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method]) => method === "prompt.submit",
+      ),
+    ).toBe(false);
   });
 
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {

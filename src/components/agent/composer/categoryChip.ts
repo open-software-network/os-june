@@ -8,6 +8,7 @@ import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { CategoryChipView } from "./CategoryChipView";
 import {
   CategorySuggestionList,
+  type ComposerSlashCommandItem,
   type CategorySuggestionListHandle,
   type CategorySuggestionListProps,
 } from "./CategorySuggestionList";
@@ -15,8 +16,9 @@ import {
   matchReportCategories,
   reportCategoryDef,
   type ReportCategory,
-  type ReportCategoryDef,
 } from "./reportCategory";
+import type { HermesSkillInfo } from "../../../lib/tauri";
+import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
 
 /** Node name for the inline category chip. Distinct from the generic
  * "mention" node so the composer's chip styling never bleeds into (or
@@ -112,7 +114,7 @@ export function insertReportCategory(editor: Editor, category: ReportCategory) {
  * on Mention so it inherits the atom-node behaviour ProseMirror gives for
  * free: one backspace removes it, the caret can't land inside it, and text
  * wraps around it. */
-export const CategoryChip = Mention.extend({
+const CategoryChipBase = Mention.extend({
   name: CATEGORY_CHIP_NODE,
 
   addAttributes() {
@@ -137,109 +139,168 @@ export const CategoryChip = Mention.extend({
   addNodeView() {
     return ReactNodeViewRenderer(CategoryChipView);
   },
-}).configure({
-  deleteTriggerWithBackspace: true,
-  renderHTML({ node }) {
-    const def = reportCategoryDef(node.attrs.category as string);
-    return [
-      "span",
-      {
-        class: "agent-category-chip",
-        "data-category": (node.attrs.category as string) ?? "",
-      },
-      def?.label ?? "",
-    ];
-  },
-  suggestion: {
-    char: TRIGGER_CHAR,
-    // A leading "/" only — typing a path like "src/foo" mid-word must not pop
-    // the palette.
-    allowSpaces: false,
-    items: ({ query }) => matchReportCategories(query),
-    command: ({ editor, range, props }) => {
-      const { key: category } = props as unknown as ReportCategoryDef;
-      editor
-        .chain()
-        .focus()
-        .command(insertCategoryCommand(category, range))
-        .run();
-    },
-    render: () => {
-      let renderer: ReactRenderer<
-        CategorySuggestionListHandle,
-        CategorySuggestionListProps
-      > | null = null;
-      let host: HTMLDivElement | null = null;
+});
 
-      function position(props: {
-        clientRect?: (() => DOMRect | null) | null;
-        editor: Editor;
-      }) {
-        if (!host || !props.clientRect) return;
-        const rect = props.clientRect();
-        if (!rect) return;
-        const gap = 6;
-        const pad = 8;
-        const hostRect = host.getBoundingClientRect();
-        const maxLeft = window.innerWidth - hostRect.width - pad;
-        const left = Math.min(Math.max(rect.left, pad), Math.max(pad, maxLeft));
-        const composerBox = props.editor.view.dom.closest<HTMLElement>(
-          ".agent-composer-box",
-        );
-        if (composerBox) {
-          const composerRect = composerBox.getBoundingClientRect();
-          host.style.top = "";
-          host.style.bottom = `${Math.max(
-            window.innerHeight - composerRect.top + gap,
-            pad,
-          )}px`;
-          host.style.left = `${left}px`;
+export type CategoryChipOptions = {
+  skills?: () => HermesSkillInfo[] | null | undefined;
+};
+
+export function createCategoryChip(options: CategoryChipOptions = {}) {
+  return CategoryChipBase.configure({
+    deleteTriggerWithBackspace: true,
+    renderHTML({ node }) {
+      const def = reportCategoryDef(node.attrs.category as string);
+      return [
+        "span",
+        {
+          class: "agent-category-chip",
+          "data-category": (node.attrs.category as string) ?? "",
+        },
+        def?.label ?? "",
+      ];
+    },
+    suggestion: {
+      char: TRIGGER_CHAR,
+      // A leading "/" only — typing a path like "src/foo" mid-word must not pop
+      // the palette.
+      allowSpaces: false,
+      items: ({ query }) =>
+        composerSlashCommandItems(query, options.skills?.()),
+      command: ({ editor, range, props }) => {
+        const item = props as unknown as ComposerSlashCommandItem;
+        if (item.kind === "category") {
+          const { key: category } = item.category;
+          editor
+            .chain()
+            .focus()
+            .command(insertCategoryCommand(category, range))
+            .run();
           return;
         }
-        // Prefer opening above the caret (the composer sits low on screen),
-        // dropping below only when there's no room up top.
-        const aboveTop = rect.top - hostRect.height - gap;
-        const belowTop = rect.bottom + gap;
-        const fitsAbove = aboveTop >= pad;
-        const top = fitsAbove ? aboveTop : belowTop;
-        host.style.bottom = "";
-        host.style.top = `${Math.max(top, pad)}px`;
-        host.style.left = `${left}px`;
-      }
+        insertSkillSlashCommand(editor, item.skill.name, range);
+      },
+      render: () => {
+        let renderer: ReactRenderer<
+          CategorySuggestionListHandle,
+          CategorySuggestionListProps
+        > | null = null;
+        let host: HTMLDivElement | null = null;
 
-      return {
-        onStart(props) {
-          renderer = new ReactRenderer(CategorySuggestionList, {
-            props: { items: props.items, command: props.command },
-            editor: props.editor,
-          });
-          host = document.createElement("div");
-          host.className = "agent-category-menu-host";
-          host.appendChild(renderer.element);
-          document.body.appendChild(host);
-          position(props);
-        },
-        onUpdate(props) {
-          renderer?.updateProps({ items: props.items, command: props.command });
-          position(props);
-        },
-        onKeyDown(props) {
-          if (props.event.key === "Escape") {
+        function position(props: {
+          clientRect?: (() => DOMRect | null) | null;
+          editor: Editor;
+        }) {
+          if (!host || !props.clientRect) return;
+          const rect = props.clientRect();
+          if (!rect) return;
+          const gap = 6;
+          const pad = 8;
+          const hostRect = host.getBoundingClientRect();
+          const maxLeft = window.innerWidth - hostRect.width - pad;
+          const left = Math.min(
+            Math.max(rect.left, pad),
+            Math.max(pad, maxLeft),
+          );
+          const composerBox = props.editor.view.dom.closest<HTMLElement>(
+            ".agent-composer-box",
+          );
+          if (composerBox) {
+            const composerRect = composerBox.getBoundingClientRect();
+            host.style.top = "";
+            host.style.bottom = `${Math.max(
+              window.innerHeight - composerRect.top + gap,
+              pad,
+            )}px`;
+            host.style.left = `${left}px`;
+            return;
+          }
+          // Prefer opening above the caret (the composer sits low on screen),
+          // dropping below only when there's no room up top.
+          const aboveTop = rect.top - hostRect.height - gap;
+          const belowTop = rect.bottom + gap;
+          const fitsAbove = aboveTop >= pad;
+          const top = fitsAbove ? aboveTop : belowTop;
+          host.style.bottom = "";
+          host.style.top = `${Math.max(top, pad)}px`;
+          host.style.left = `${left}px`;
+        }
+
+        return {
+          onStart(props) {
+            renderer = new ReactRenderer(CategorySuggestionList, {
+              props: { items: props.items, command: props.command },
+              editor: props.editor,
+            });
+            host = document.createElement("div");
+            host.className = "agent-category-menu-host";
+            host.appendChild(renderer.element);
+            document.body.appendChild(host);
+            position(props);
+          },
+          onUpdate(props) {
+            renderer?.updateProps({
+              items: props.items,
+              command: props.command,
+            });
+            position(props);
+          },
+          onKeyDown(props) {
+            if (props.event.key === "Escape") {
+              renderer?.destroy();
+              host?.remove();
+              renderer = null;
+              host = null;
+              return true;
+            }
+            return renderer?.ref?.onKeyDown(props.event) ?? false;
+          },
+          onExit() {
             renderer?.destroy();
             host?.remove();
             renderer = null;
             host = null;
-            return true;
-          }
-          return renderer?.ref?.onKeyDown(props.event) ?? false;
-        },
-        onExit() {
-          renderer?.destroy();
-          host?.remove();
-          renderer = null;
-          host = null;
-        },
-      };
+          },
+        };
+      },
     },
-  },
-});
+  });
+}
+
+export const CategoryChip = createCategoryChip();
+
+function composerSlashCommandItems(
+  query: string,
+  skills: HermesSkillInfo[] | null | undefined,
+): ComposerSlashCommandItem[] {
+  return [
+    ...matchReportCategories(query).map((category) => ({
+      kind: "category" as const,
+      category,
+    })),
+    ...matchSkillSlashSuggestions(query, skills).map((skill) => ({
+      kind: "skill" as const,
+      skill,
+    })),
+  ];
+}
+
+function insertSkillSlashCommand(
+  editor: Editor,
+  skillName: string,
+  range: { from: number; to: number },
+) {
+  const text = `/${skillName} `;
+  editor
+    .chain()
+    .focus()
+    .command(({ tr, state, dispatch }) => {
+      if (!dispatch) return true;
+      const from = tr.mapping.map(range.from);
+      const to = tr.mapping.map(range.to);
+      tr.replaceWith(from, to, state.schema.text(text));
+      tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+      dispatch(tr.scrollIntoView());
+      return true;
+    })
+    .run();
+}

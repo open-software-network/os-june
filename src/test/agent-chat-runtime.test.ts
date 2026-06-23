@@ -6,6 +6,7 @@ import {
   repairContractionSpacing,
   toolEventKey,
 } from "../lib/agent-chat-runtime";
+import { explicitSkillInvocationPrompt } from "../lib/skill-slash-commands";
 import type { AgentMessageDto, HermesSessionMessage } from "../lib/tauri";
 
 describe("repairContractionSpacing", () => {
@@ -117,6 +118,34 @@ describe("Agent chat runtime", () => {
         status: "complete",
       },
       { type: "text", text: "Hi! How can I help?", status: "complete" },
+    ]);
+  });
+
+  it("strips explicit skill context from persisted Hermes user messages", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: explicitSkillInvocationPrompt(
+          [
+            {
+              name: "repo-build-pr",
+              relativePath: "repo-build-pr/SKILL.md",
+              content: "# Repo build PR\n\nOpen a draft PR.",
+            },
+          ],
+          "implement issue JUN-46",
+        ),
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "implement issue JUN-46",
+        status: "complete",
+      },
     ]);
   });
 

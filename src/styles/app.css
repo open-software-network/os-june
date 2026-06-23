@@ -3467,6 +3467,21 @@ input:focus-visible,
   line-height: 1.3;
 }
 
+.agent-category-menu-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.agent-category-menu-detail {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Leading glyph, tinted per category (default muted for "Attach files", which
  * carries no category). Same oklch tints as the chip. */
 .agent-category-menu-icon,
@@ -5183,8 +5198,7 @@ input:focus-visible,
    * the window edge). Derived from --sidebar-w-current so it tweens on the same
    * clock as the grid — and lives on the card, not the whole .main-column, so
    * the tab strip above isn't pushed by it. */
-  margin: 0 0 var(--sp-3)
-    max(0px, calc(var(--sp-3) - var(--sidebar-w-current)));
+  margin: 0 0 var(--sp-3) max(0px, calc(var(--sp-3) - var(--sidebar-w-current)));
   border-radius: var(--r-window);
   background: var(--card);
   color: var(--card-foreground);

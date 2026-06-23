@@ -75,6 +75,7 @@ import {
   dictationHelperCommand,
   explainAgentApproval,
   getAgentTask,
+  getHermesBridgeSkill,
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
@@ -169,6 +170,13 @@ import {
   categoryPrompt,
   displayedUserMessageText,
 } from "../../lib/issue-report-prompt";
+import {
+  displayedSkillInvocationText,
+  explicitSkillInvocationPrompt,
+  parseSkillSlashCommands,
+  resolveSkillSlashCommands,
+  skillSlashResolutionError,
+} from "../../lib/skill-slash-commands";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -680,6 +688,13 @@ type AgentAttachment = ImportedHermesFile & {
   id: string;
 };
 
+type PreparedComposerSubmission = {
+  displayContent: string;
+  runtimeContent: string;
+  titleContent: string;
+  typedMessage: string;
+};
+
 /** The right-hand file viewer: a list of every file surfaced in the
  * conversation, or one file opened for reading. */
 type AgentArtifactPanelState =
@@ -959,6 +974,7 @@ export function AgentWorkspace({
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
+  const [skillCommandLoading, setSkillCommandLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
   const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] =
     useState<string>();
@@ -1903,6 +1919,61 @@ export function AgentWorkspace({
     setBusyNotice(null);
   }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
 
+  async function prepareComposerSubmission(
+    message: string,
+    messageAttachments: AgentAttachment[],
+  ): Promise<PreparedComposerSubmission> {
+    const parsed = parseSkillSlashCommands(message);
+    if (!parsed.commandNames.length) {
+      const content = promptWithAttachments(message, messageAttachments);
+      return {
+        displayContent: content,
+        runtimeContent: content,
+        titleContent: message,
+        typedMessage: message,
+      };
+    }
+
+    const availableSkills = await loadSkillCommands();
+    const resolutions = resolveSkillSlashCommands(
+      parsed.commandNames,
+      availableSkills,
+    );
+    const problem = resolutions.find(
+      (resolution) => resolution.status !== "resolved",
+    );
+    if (problem) {
+      throw new Error(
+        skillSlashResolutionError(problem) ?? "Skill command failed.",
+      );
+    }
+
+    const typedMessage = parsed.prompt.trim();
+    if (!typedMessage && !messageAttachments.length) {
+      throw new Error("Add a request after the skill command.");
+    }
+
+    const documents = await Promise.all(
+      resolutions.map((resolution) =>
+        getHermesBridgeSkill(
+          resolution.status === "resolved"
+            ? resolution.skill.name
+            : resolution.token,
+        ),
+      ),
+    );
+    const displayContent = promptWithAttachments(
+      typedMessage,
+      messageAttachments,
+    );
+    return {
+      displayContent,
+      runtimeContent: explicitSkillInvocationPrompt(documents, displayContent),
+      titleContent: typedMessage,
+      typedMessage,
+    };
+  }
+
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = draft.trim();
@@ -1912,39 +1983,46 @@ export function AgentWorkspace({
     // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
-    const content = promptWithAttachments(message, attachments);
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
     // sit frozen through the wait and then vanish in a single frame when the
     // conversation takes over.
     if (heroMode) setHeroLeaving(true);
     setSubmitting(true);
-    composerEditorRef.current?.clear();
-    setDraft("");
-    setCategory(null);
-    setAttachments([]);
-    setIssueReportNotice(null);
     try {
+      const prepared = await prepareComposerSubmission(message, attachments);
+      composerEditorRef.current?.clear();
+      setDraft("");
+      setCategory(null);
+      setAttachments([]);
+      setIssueReportNotice(null);
       await submitHermesSession(
-        reportCategory ? categoryPrompt(reportCategory, content) : content,
-        undefined,
         reportCategory
-          ? {
-              issueReport: {
-                category: reportCategory,
-                // An attachments-only send has no typed text, but the server
-                // requires a description; the report must not bounce there.
-                description:
-                  message || "No description was typed; see the attachments.",
-                attachmentNames: attachments.map(
-                  (attachment) => attachment.name,
-                ),
-                attachmentPaths: attachments.map(
-                  (attachment) => attachment.path,
-                ),
-              },
-            }
-          : undefined,
+          ? categoryPrompt(reportCategory, prepared.runtimeContent)
+          : prepared.runtimeContent,
+        undefined,
+        {
+          displayContent: prepared.displayContent,
+          titleContent: prepared.titleContent,
+          ...(reportCategory
+            ? {
+                issueReport: {
+                  category: reportCategory,
+                  // An attachments-only send has no typed text, but the server
+                  // requires a description; the report must not bounce there.
+                  description:
+                    prepared.typedMessage ||
+                    "No description was typed; see the attachments.",
+                  attachmentNames: attachments.map(
+                    (attachment) => attachment.name,
+                  ),
+                  attachmentPaths: attachments.map(
+                    (attachment) => attachment.path,
+                  ),
+                },
+              }
+            : {}),
+        },
       );
       setError(null);
       setBusyNotice(null);
@@ -2134,8 +2212,14 @@ export function AgentWorkspace({
   async function submitHermesSession(
     content: string,
     explicitSession?: HermesSessionInfo,
-    options?: { issueReport?: PendingIssueReport },
+    options?: {
+      issueReport?: PendingIssueReport;
+      displayContent?: string;
+      titleContent?: string;
+    },
   ) {
+    const displayContent = options?.displayContent ?? content;
+    const titleContent = options?.titleContent ?? displayContent;
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
@@ -2146,7 +2230,7 @@ export function AgentWorkspace({
     const titlePromise =
       targetSessionId || options?.issueReport
         ? undefined
-        : agentSessionTitleForPrompt(content);
+        : agentSessionTitleForPrompt(titleContent);
     // The Unrestricted opt-in is made per session: a new session applies the
     // picker draft, and a follow-up routes to the runtime process matching
     // the mode its session was created with. Without this, one Unrestricted
@@ -2163,7 +2247,7 @@ export function AgentWorkspace({
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
           title: options?.issueReport
             ? "Issue report"
-            : (sessionTitle ?? titleFromPrompt(content)),
+            : (sessionTitle ?? titleFromPrompt(titleContent)),
           cols: 96,
         });
     const storedSessionId =
@@ -2180,7 +2264,7 @@ export function AgentWorkspace({
       : explicitSession?.title?.trim() ||
         explicitSession?.preview?.trim() ||
         sessionTitle ||
-        titleFromPrompt(content);
+        titleFromPrompt(titleContent);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -2231,7 +2315,7 @@ export function AgentWorkspace({
         {
           id: storedSessionId,
           title: sessionDisplayTitle,
-          preview: content,
+          preview: displayContent,
           started_at: createdAt,
           last_active: createdAt,
           message_count: 1,
@@ -2242,7 +2326,7 @@ export function AgentWorkspace({
     const pendingUserMessage: HermesSessionMessage = {
       id: `pending:user:${Date.now()}`,
       role: "user",
-      content,
+      content: displayContent,
       timestamp: createdAt,
     };
     setPendingHermesMessages((current) => {
@@ -2261,7 +2345,7 @@ export function AgentWorkspace({
     dispatchAgentSessionStatus({
       sessionId: storedSessionId,
       title: sessionDisplayTitle,
-      prompt: content,
+      prompt: displayContent,
       status: "running",
       summary: "June is working.",
     });
@@ -2961,6 +3045,27 @@ export function AgentWorkspace({
     }
   }
 
+  async function loadSkillCommands(options?: { silent?: boolean }) {
+    if (skills) return skills;
+    setSkillCommandLoading(true);
+    try {
+      await ensureHermesGateway();
+      const nextSkills = await hermesBridgeSkills();
+      setSkills(nextSkills);
+      return nextSkills;
+    } catch (err) {
+      if (!options?.silent) {
+        throw new Error(
+          `Skill commands are unavailable. ${messageFromError(err)}`,
+        );
+      }
+      setSkills([]);
+      return [];
+    } finally {
+      setSkillCommandLoading(false);
+    }
+  }
+
   async function loadCapabilities() {
     setCapabilityLoading(true);
     try {
@@ -3536,6 +3641,7 @@ export function AgentWorkspace({
           ) : null}
           <ComposerEditor
             ref={composerEditorRef}
+            skills={skills}
             placeholder={
               importingFiles
                 ? "Attaching file…"
@@ -3547,6 +3653,13 @@ export function AgentWorkspace({
               draftRef.current = text;
               setDraft(text);
               setCategory(nextCategory);
+              if (
+                !skills &&
+                !skillCommandLoading &&
+                text.trimStart().startsWith("/")
+              ) {
+                void loadSkillCommands({ silent: true });
+              }
             }}
             onSubmit={() => void submit()}
             onReady={seedComposerCategory}
@@ -6040,7 +6153,7 @@ function AgentChatTurnRow({
               key={`${turn.id}:text:${index}`}
               // Issue-report sessions open with the wrapped investigation
               // prompt; the transcript shows only what the user typed.
-              markdown={displayedUserMessageText(part.text)}
+              markdown={displayedComposerUserMessageText(part.text)}
             />
           ))}
         </div>
@@ -7893,7 +8006,17 @@ function visibleHermesMessageText(message: HermesSessionMessage) {
     textFromHermesValue(message.content) ??
     textFromHermesValue(message.text) ??
     "";
-  return stripHermesVisibleContext(text);
+  return displayedComposerUserMessageText(stripHermesVisibleContext(text));
+}
+
+function displayedComposerUserMessageText(content: string): string {
+  let text = content;
+  for (let index = 0; index < 3; index += 1) {
+    const next = displayedUserMessageText(displayedSkillInvocationText(text));
+    if (next === text) return text;
+    text = next;
+  }
+  return text;
 }
 
 function textFromHermesValue(value: unknown): string | undefined {

@@ -5,13 +5,19 @@ import {
   useImperativeHandle,
   useState,
 } from "react";
+import { IconToolbox } from "central-icons/IconToolbox";
 
 import { CategoryIcon } from "./CategoryIcon";
 import type { ReportCategoryDef } from "./reportCategory";
+import type { HermesSkillInfo } from "../../../lib/tauri";
+
+export type ComposerSlashCommandItem =
+  | { kind: "category"; category: ReportCategoryDef }
+  | { kind: "skill"; skill: HermesSkillInfo };
 
 export type CategorySuggestionListProps = {
-  items: ReportCategoryDef[];
-  command: (item: ReportCategoryDef) => void;
+  items: ComposerSlashCommandItem[];
+  command: (item: ComposerSlashCommandItem) => void;
 };
 
 export type CategorySuggestionListHandle = {
@@ -80,7 +86,7 @@ export const CategorySuggestionList = forwardRef<
     >
       {items.map((item, index) => (
         <button
-          key={item.key}
+          key={commandItemKey(item)}
           type="button"
           role="option"
           aria-selected={index === selected}
@@ -93,13 +99,44 @@ export const CategorySuggestionList = forwardRef<
           }}
           onMouseEnter={() => setSelected(index)}
         >
-          <span className="agent-category-menu-icon" data-category={item.key}>
-            <CategoryIcon category={item.key} size={16} />
+          <span
+            className="agent-category-menu-icon"
+            data-category={
+              item.kind === "category" ? item.category.key : undefined
+            }
+          >
+            {item.kind === "category" ? (
+              <CategoryIcon category={item.category.key} size={16} />
+            ) : (
+              <IconToolbox size={16} aria-hidden />
+            )}
           </span>
-          <span className="agent-category-menu-label">{item.label}</span>
+          <span className="agent-category-menu-copy">
+            <span className="agent-category-menu-label">
+              {commandItemLabel(item)}
+            </span>
+            <span className="agent-category-menu-detail">
+              {commandItemDetail(item)}
+            </span>
+          </span>
         </button>
       ))}
     </div>
   );
 });
 CategorySuggestionList.displayName = "CategorySuggestionList";
+
+function commandItemKey(item: ComposerSlashCommandItem) {
+  return item.kind === "category"
+    ? `category:${item.category.key}`
+    : `skill:${item.skill.name}`;
+}
+
+function commandItemLabel(item: ComposerSlashCommandItem) {
+  return item.kind === "category" ? item.category.label : `/${item.skill.name}`;
+}
+
+function commandItemDetail(item: ComposerSlashCommandItem) {
+  if (item.kind === "category") return item.category.hint;
+  return item.skill.description?.trim() || "Run this skill for the turn";
+}
