@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import type { RoutineJob } from "../lib/hermes-routines";
 import type { HermesSessionInfo } from "../lib/tauri";
+import appCss from "../styles/app.css?raw";
 
 const mocks = vi.hoisted(() => ({
   listRoutines: vi.fn<() => Promise<RoutineJob[]>>(),
@@ -374,6 +375,24 @@ describe("RoutinesView templates and creation", () => {
     } finally {
       restoreScrollHeight();
     }
+  });
+
+  it("keeps the describe composer height cap on the create page", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning brief");
+
+    await userEvent.click(screen.getByRole("button", { name: "New routine" }));
+
+    const createPage = screen.getByRole("region", { name: "New routine" });
+    const describeBar = screen
+      .getByRole("form", { name: "Describe a routine to June" })
+      .closest(".routines-describe");
+    expect(describeBar).not.toBeNull();
+    expect(createPage.contains(describeBar)).toBe(false);
+    expect(appCss).toContain(
+      ".routines-workspace,\n.routine-detail,\n.routines-describe {\n  --routines-describe-input-max-h: 200px;",
+    );
   });
 
   it("describes an unrestricted routine only after the explicit opt-in", async () => {

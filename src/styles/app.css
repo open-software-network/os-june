@@ -8955,8 +8955,13 @@ input:focus-visible,
 /* Routines — Hermes scheduled automations. Shares the Dictation page chrome
  * (.folders-* header/search) and the dictation row action buttons. */
 .routines-workspace,
-.routine-detail {
+.routine-detail,
+.routines-describe {
   --routines-describe-input-max-h: 200px;
+}
+
+.routines-workspace,
+.routine-detail {
   --routines-describe-clearance: calc(
     var(--routines-describe-input-max-h) + var(--control-lg) + var(--sp-12) +
       var(--sp-5)
