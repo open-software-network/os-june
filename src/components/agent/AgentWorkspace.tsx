@@ -855,15 +855,27 @@ export function AgentWorkspace({
   >(
     () =>
       initialSessionId ??
-      (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+      (hasPendingNewSessionRequest() || hasSavedNewSessionDraft()
+        ? undefined
+        : readLastOpenSessionId()),
   );
   const selectedHermesSessionIdRef = useRef<string | undefined>(
     selectedHermesSessionId,
   );
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(
-    () => !initialSessionId && hasPendingNewSessionRequest(),
+    () =>
+      !initialSessionId &&
+      (hasPendingNewSessionRequest() || hasSavedNewSessionDraft()),
   );
+  const selectedDraftKey = useMemo(
+    () =>
+      newSessionMode
+        ? AGENT_NEW_SESSION_DRAFT_KEY
+        : draftKeyForSession(selectedHermesSessionId),
+    [newSessionMode, selectedHermesSessionId],
+  );
+  const selectedDraftKeyRef = useRef<string | undefined>(selectedDraftKey);
   const setError = useCallback(
     (message: string | null, options: AgentWorkspaceErrorOptions = {}) => {
       if (!message) {
@@ -1054,6 +1066,10 @@ export function AgentWorkspace({
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
   }, [runtimeSessionIds]);
+
+  useEffect(() => {
+    selectedDraftKeyRef.current = selectedDraftKey;
+  }, [selectedDraftKey]);
 
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
@@ -1614,6 +1630,10 @@ export function AgentWorkspace({
   }, [selectedHermesSessionId]);
 
   useEffect(() => {
+    restoreComposerDraft(selectedDraftKey);
+  }, [selectedDraftKey]);
+
+  useEffect(() => {
     // The sidebar and App replace their session lists wholesale with this
     // payload, so an unhydrated broadcast (mount seed only) would collapse
     // the list they already fetched themselves and flicker it back once the
@@ -1924,6 +1944,7 @@ export function AgentWorkspace({
     setCategory(null);
     setAttachments([]);
     setIssueReportNotice(null);
+    forgetAgentComposerDraft(selectedDraftKeyRef.current);
     try {
       await submitHermesSession(
         reportCategory ? categoryPrompt(reportCategory, content) : content,
@@ -2174,6 +2195,7 @@ export function AgentWorkspace({
     }
     if (!targetSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
+      forgetAgentComposerDraft(AGENT_NEW_SESSION_DRAFT_KEY);
     }
     const sessionDisplayTitle = options?.issueReport
       ? "Issue report"
@@ -2822,6 +2844,19 @@ export function AgentWorkspace({
     setDraft("");
     setCategory(null);
     composerEditorRef.current?.clear();
+    forgetAgentComposerDraft(selectedDraftKeyRef.current);
+  }
+
+  function restoreComposerDraft(draftKey: string | undefined) {
+    const saved = readAgentComposerDraft(draftKey);
+    draftRef.current = saved;
+    setDraft(saved);
+    setCategory(null);
+    if (saved) {
+      composerEditorRef.current?.setContent(saved);
+    } else {
+      composerEditorRef.current?.clear();
+    }
   }
 
   /** Applies any pending seed category to the composer chip once the editor is
@@ -3062,6 +3097,7 @@ export function AgentWorkspace({
     // would hand full write access to any future session that recycled the
     // id.
     forgetSessionMode(sessionId);
+    forgetAgentComposerDraft(draftKeyForSession(sessionId));
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
@@ -3547,9 +3583,13 @@ export function AgentWorkspace({
               draftRef.current = text;
               setDraft(text);
               setCategory(nextCategory);
+              writeAgentComposerDraft(selectedDraftKeyRef.current, text);
             }}
             onSubmit={() => void submit()}
-            onReady={seedComposerCategory}
+            onReady={() => {
+              restoreComposerDraft(selectedDraftKeyRef.current);
+              seedComposerCategory();
+            }}
           />
           <div className="agent-composer-toolbar">
             <button
@@ -8055,6 +8095,9 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
 // existing conversation after a relaunch is always safe, unlike the pending
 // new-session marker, which must NOT outlive its navigation.
 const AGENT_LAST_OPEN_SESSION_KEY = "scribe:agent:last-open-session";
+const AGENT_COMPOSER_DRAFTS_KEY = "scribe:agent:composer-drafts";
+const AGENT_NEW_SESSION_DRAFT_KEY = "new-session";
+const AGENT_COMPOSER_DRAFT_MAX_LENGTH = 20_000;
 
 // How long a second startNewTask call with the same prompt counts as an echo
 // of the first (marker + window event double-delivery) rather than a new ask.
@@ -8094,6 +8137,73 @@ function writeLastOpenSessionId(sessionId: string) {
   } catch {
     // Storage can be unavailable in restricted webviews; restore is best-effort.
   }
+}
+
+function draftKeyForSession(sessionId: string | undefined) {
+  return sessionId ? `session:${sessionId}` : undefined;
+}
+
+function readAgentComposerDrafts(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(AGENT_COMPOSER_DRAFTS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[0] === "string" && typeof entry[1] === "string",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeAgentComposerDrafts(drafts: Record<string, string>) {
+  try {
+    if (Object.keys(drafts).length === 0) {
+      window.localStorage.removeItem(AGENT_COMPOSER_DRAFTS_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      AGENT_COMPOSER_DRAFTS_KEY,
+      JSON.stringify(drafts),
+    );
+  } catch {
+    // Draft persistence is best-effort; the typed text still lives in memory.
+  }
+}
+
+function readAgentComposerDraft(key: string | undefined) {
+  if (!key) return "";
+  return readAgentComposerDrafts()[key] ?? "";
+}
+
+function hasSavedNewSessionDraft() {
+  return Boolean(readAgentComposerDraft(AGENT_NEW_SESSION_DRAFT_KEY).trim());
+}
+
+function writeAgentComposerDraft(key: string | undefined, draft: string) {
+  if (!key) return;
+  const drafts = readAgentComposerDrafts();
+  const normalized = draft.slice(0, AGENT_COMPOSER_DRAFT_MAX_LENGTH);
+  if (normalized.trim()) {
+    drafts[key] = normalized;
+  } else {
+    delete drafts[key];
+  }
+  writeAgentComposerDrafts(drafts);
+}
+
+function forgetAgentComposerDraft(key: string | undefined) {
+  if (!key) return;
+  const drafts = readAgentComposerDrafts();
+  if (!(key in drafts)) return;
+  delete drafts[key];
+  writeAgentComposerDrafts(drafts);
 }
 
 export function markAgentNewSessionPending(
