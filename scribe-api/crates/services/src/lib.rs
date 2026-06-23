@@ -27,18 +27,19 @@ pub use pricing::{PricingError, PricingTable};
 #[cfg(test)]
 mod tests {
     use super::{
-        DictateCleanupParams, DictateService, DictateServiceDeps, DictateTranscribeParams,
-        NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeParams,
-        NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable, ServiceError,
+        AgentChatParams, AgentChatService, AgentChatServiceDeps, DictateCleanupParams,
+        DictateService, DictateServiceDeps, DictateTranscribeParams, NoteGenerateParams,
+        NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeParams, NoteTranscribeService,
+        NoteTranscribeServiceDeps, PricingTable, ServiceError,
     };
     use async_trait::async_trait;
     use pretty_assertions::assert_eq;
     use scribe_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
     use scribe_domain::{
-        AudioDurationProbe, Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner,
-        CleanupRequest, Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
-        OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest,
-        UserId,
+        AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe,
+        Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner, CleanupRequest,
+        Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
+        OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
     };
     use std::{
         collections::BTreeMap,
@@ -150,6 +151,34 @@ mod tests {
             .await
             .unwrap_or_default();
         assert_eq!(charge_call, "dictate_cleanup:usr_123:session_1:utt_2");
+    }
+
+    #[tokio::test]
+    async fn agent_chat_does_not_meter_marked_initial_issue_report_turn() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = agent_chat_service(os_accounts.clone());
+
+        let output = service
+            .complete(AgentChatParams {
+                user_id: UserId("usr_123".to_string()),
+                model_id: ModelId("text-model".to_string()),
+                waive_metering: true,
+                body: serde_json::json!({
+                    "model": "text-model",
+                    "messages": [
+                        { "role": "system", "content": "You are June." },
+                        {
+                            "role": "user",
+                            "content": "The user is filing a bug report about the June desktop app.\n\n---USER REPORT---\nBug reports are charging me.\n---END USER REPORT---"
+                        }
+                    ]
+                }),
+            })
+            .await
+            .expect("issue report chat succeeds");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert_eq!(os_accounts.events(), Vec::new());
     }
 
     #[tokio::test]
@@ -741,6 +770,21 @@ mod tests {
         assert!(matches!(result, Err(ServiceError::AuthorizationDenied)));
     }
 
+    fn agent_chat_service(os_accounts: Arc<RecordingOsAccounts>) -> AgentChatService {
+        AgentChatService::new(AgentChatServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "text-model",
+                PriceUnit::Tokens,
+                2,
+                ModelType::Text,
+            )]))),
+            os_accounts,
+            chat_completer: Arc::new(FixedAgentChatCompleter),
+            hold_ttl_seconds: 300,
+            flat_estimate_credits: 8200,
+        })
+    }
+
     async fn wait_for_charge_idempotency_key(os_accounts: &RecordingOsAccounts) -> Option<String> {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
@@ -882,6 +926,26 @@ mod tests {
             Ok(GeneratedNote {
                 content: "Generated note".to_string(),
                 title_suggestion: Some("Title".to_string()),
+                provider: "test".to_string(),
+                usage: TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                },
+            })
+        }
+    }
+
+    struct FixedAgentChatCompleter;
+
+    #[async_trait]
+    impl AgentChatCompleter for FixedAgentChatCompleter {
+        async fn complete(
+            &self,
+            _request: AgentChatRequest,
+        ) -> Result<AgentChatCompletion, DomainError> {
+            Ok(AgentChatCompletion {
+                body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
+                content_type: "application/json".to_string(),
                 provider: "test".to_string(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
