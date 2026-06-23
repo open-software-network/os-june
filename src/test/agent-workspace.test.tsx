@@ -2613,6 +2613,85 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
   });
 
+  it("imports pasted images by uploading clipboard bytes", async () => {
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "pasted-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/pasted-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    const image = new File(["image"], "", { type: "image/png" });
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.paste(form as HTMLFormElement, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => image,
+          },
+        ],
+        files: [],
+      },
+    });
+
+    expect(await screen.findByText("pasted-image.png")).toBeInTheDocument();
+    expect(
+      document.querySelector(".agent-attachment-chip img"),
+    ).toHaveAttribute("src", "data:image/png;base64,preview");
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+      "pasted-image.png",
+      expect.any(Uint8Array),
+    );
+    expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+  });
+
+  it("chooses one preferred image when paste exposes multiple representations", async () => {
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/image.png",
+      rootLabel: "Workspace",
+      size: 3,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    const tiff = new File(["tiff"], "image.tiff", { type: "image/tiff" });
+    const png = new File(["png"], "image.png", { type: "image/png" });
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.paste(form as HTMLFormElement, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/tiff",
+            getAsFile: () => tiff,
+          },
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => png,
+          },
+        ],
+        files: [],
+      },
+    });
+
+    expect(await screen.findByText("image.png")).toBeInTheDocument();
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+      "image.png",
+      expect.any(Uint8Array),
+    );
+  });
+
   it("keeps a re-sent duplicate message and the running state against older identical history", async () => {
     const user = userEvent.setup();
     mocks.listHermesSessionMessages.mockResolvedValue([

@@ -48,8 +48,9 @@ import { IconStop } from "central-icons/IconStop";
 import { DotSpinner } from "../DotSpinner";
 import {
   type CSSProperties,
-  type FormEvent,
+  type ClipboardEvent,
   type DragEvent,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -694,6 +695,11 @@ type AgentArtifactPanelState =
 
 type TauriFileDropPayload = {
   paths?: string[];
+};
+
+type FileBytesImportOptions = {
+  tooLargeMessage: string;
+  readErrorMessage: (file: File) => string;
 };
 
 type HermesRuntimeSessionResponse = {
@@ -2054,6 +2060,13 @@ export function AgentWorkspace({
     void importDroppedFiles(files);
   }
 
+  function handleComposerPaste(event: ClipboardEvent<HTMLFormElement>) {
+    const files = clipboardImageFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void importPastedImageFiles(files);
+  }
+
   async function importAttachments<T>(
     items: T[],
     importItem: (item: T) => Promise<ImportedHermesFile>,
@@ -2097,15 +2110,31 @@ export function AgentWorkspace({
   // folders) and WKWebView never exposes filesystem paths on dropped Files —
   // so read each blob and import its bytes.
   async function importDroppedFiles(files: File[]) {
+    await importFileBytes(files, {
+      tooLargeMessage: "Dropped files must be 50 MB or smaller.",
+      readErrorMessage: (file) =>
+        // Reading fails for directories, which Finder happily lets you drop.
+        `Could not read "${file.name}". Folders can't be attached.`,
+    });
+  }
+
+  async function importPastedImageFiles(files: File[]) {
+    await importFileBytes(files, {
+      tooLargeMessage: "Pasted images must be 50 MB or smaller.",
+      readErrorMessage: () => "Could not read the pasted image.",
+    });
+  }
+
+  async function importFileBytes(
+    files: File[],
+    options: FileBytesImportOptions,
+  ) {
     await importAttachments(files.slice(0, 8), async (file) => {
       if (file.size > 50 * 1024 * 1024) {
-        throw new Error("Dropped files must be 50 MB or smaller.");
+        throw new Error(options.tooLargeMessage);
       }
       const bytes = await readFileBytes(file).catch(() => {
-        // Reading fails for directories, which Finder happily lets you drop.
-        throw new Error(
-          `Could not read "${file.name}". Folders can't be attached.`,
-        );
+        throw new Error(options.readErrorMessage(file));
       });
       return importHermesBridgeFileBytes(file.name, bytes);
     });
@@ -3586,6 +3615,7 @@ export function AgentWorkspace({
         onDragEnter={() => setDropActive(true)}
         onDragLeave={() => setDropActive(false)}
         onDrop={handleComposerDrop}
+        onPaste={handleComposerPaste}
       >
         <AnimatePresence>
           {busyNotice || galleryErrors ? (
@@ -8081,6 +8111,86 @@ function formatBytes(value: number | null | undefined) {
 
 function safeText(value: unknown) {
   return typeof value === "string" ? value : "";
+}
+
+function clipboardImageFiles(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const itemFiles =
+    data.items && data.items.length
+      ? Array.from(data.items)
+          .filter(
+            (item) => item.kind === "file" && isClipboardImageType(item.type),
+          )
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => Boolean(file))
+      : [];
+  if (itemFiles.length) return normalizeClipboardImageFiles(itemFiles);
+  return normalizeClipboardImageFiles(
+    Array.from(data.files ?? []).filter((file) =>
+      isClipboardImageType(file.type),
+    ),
+  );
+}
+
+function normalizeClipboardImageFiles(files: File[]): File[] {
+  if (files.length <= 1 || hasDistinctClipboardFileNames(files)) {
+    return files.map(ensureClipboardImageName);
+  }
+  const best = [...files].sort(
+    (left, right) => clipboardImageRank(right) - clipboardImageRank(left),
+  )[0];
+  return best ? [ensureClipboardImageName(best, 0)] : [];
+}
+
+function hasDistinctClipboardFileNames(files: File[]) {
+  const names = files.map((file) => file.name.trim()).filter(Boolean);
+  const stems = names.map(clipboardImageStem);
+  return (
+    names.length === files.length &&
+    new Set(names).size === files.length &&
+    new Set(stems).size === files.length
+  );
+}
+
+function ensureClipboardImageName(file: File, index: number) {
+  if (file.name.trim()) return file;
+  const suffix = index === 0 ? "" : `-${index + 1}`;
+  return new File(
+    [file],
+    `pasted-image${suffix}.${clipboardImageExtension(file)}`,
+    {
+      type: file.type,
+      lastModified: file.lastModified,
+    },
+  );
+}
+
+function isClipboardImageType(type: string) {
+  return type.toLowerCase().startsWith("image/");
+}
+
+function clipboardImageExtension(file: File) {
+  const mimeType = file.type.toLowerCase().split(";")[0];
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
+  if (mimeType === "image/tiff" || mimeType === "image/tif") return "tiff";
+  const subtype = mimeType.startsWith("image/") ? mimeType.slice(6) : "";
+  return subtype.replace(/[^a-z0-9]/g, "") || "png";
+}
+
+function clipboardImageStem(name: string) {
+  const trimmed = name.trim().toLowerCase();
+  const dot = trimmed.lastIndexOf(".");
+  return dot > 0 ? trimmed.slice(0, dot) : trimmed;
+}
+
+function clipboardImageRank(file: File) {
+  const mimeType = file.type.toLowerCase().split(";")[0];
+  if (mimeType === "image/png") return 50;
+  if (mimeType === "image/tiff" || mimeType === "image/tif") return 40;
+  if (mimeType === "image/webp") return 30;
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return 20;
+  if (mimeType === "image/gif") return 10;
+  return 1;
 }
 
 function toolNames(toolset: HermesToolsetInfo) {
