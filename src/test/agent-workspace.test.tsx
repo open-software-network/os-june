@@ -1914,6 +1914,73 @@ describe("AgentWorkspace", () => {
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
   });
 
+  it("does not surface files mentioned only in thought text or directory listings", async () => {
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    const pdfPath = `${workspaceRoot}/June Creator Get Started Guide.pdf`;
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "June Creator Get Started Guide.pdf",
+              path: pdfPath,
+              kind: "file",
+              size: 128000,
+              modifiedAt: "2026-06-23T12:30:00Z",
+            },
+            {
+              name: "generate_pdf.py",
+              path: `${workspaceRoot}/generate_pdf.py`,
+              kind: "file",
+              size: 4096,
+              modifiedAt: "2026-06-23T12:28:00Z",
+            },
+            {
+              name: "screenshot.png",
+              path: `${workspaceRoot}/screenshot.png`,
+              kind: "file",
+              size: 633000,
+              modifiedAt: "2026-06-23T12:26:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content:
+          "The workspace contains generate_pdf.py and screenshot.png. The styled PDF is available as `June Creator Get Started Guide.pdf`.",
+        reasoning:
+          "I inspected generate_pdf.py and screenshot.png before writing the PDF.",
+        timestamp: "2026-06-23T12:30:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Download June Creator Get Started Guide.pdf",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "View files (1)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download generate_pdf.py" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download screenshot.png" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders a workspace file's download card only on the first response that mentions it", async () => {
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [

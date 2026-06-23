@@ -7658,12 +7658,7 @@ function assignArtifactsToTurns(
   const claimedPaths = new Set<string>();
   const claimedNames = new Set<string>();
   for (const turn of turns) {
-    const text = turn.parts
-      .map((part) =>
-        part.type !== "context" && "text" in part ? part.text : "",
-      )
-      .join("\n")
-      .toLowerCase();
+    const text = artifactMatchText(turn);
     if (!text.trim()) continue;
     const mentioned: AgentArtifact[] = [];
     for (const artifact of artifacts) {
@@ -7673,7 +7668,7 @@ function assignArtifactsToTurns(
       const nameMentioned =
         turn.role === "assistant" &&
         !claimedNames.has(name) &&
-        text.includes(name);
+        deliverableNameMentioned(text, name);
       if (!pathMentioned && !nameMentioned) continue;
       claimedPaths.add(artifact.path);
       claimedNames.add(name);
@@ -7682,6 +7677,66 @@ function assignArtifactsToTurns(
     if (mentioned.length) byTurn.set(turn.id, mentioned);
   }
   return byTurn;
+}
+
+function artifactMatchText(turn: AgentChatTurn): string {
+  return turn.parts
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n")
+    .toLowerCase();
+}
+
+function deliverableNameMentioned(text: string, name: string): boolean {
+  let index = text.indexOf(name);
+  while (index !== -1) {
+    if (isDeliverableMentionContext(text, index, name.length)) return true;
+    index = text.indexOf(name, index + name.length);
+  }
+  return false;
+}
+
+function isDeliverableMentionContext(
+  text: string,
+  index: number,
+  length: number,
+): boolean {
+  const beforeBoundary = previousSentenceBoundary(text, index);
+  const afterBoundary = nextSentenceBoundary(text, index + length);
+  const context = text.slice(beforeBoundary + 1, afterBoundary);
+  return /\b(available|created|download|exported|generated|made|produced|rendered|saved|wrote)\b/.test(
+    context,
+  );
+}
+
+function previousSentenceBoundary(text: string, index: number): number {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (isSentenceBoundaryAt(text, cursor)) return cursor;
+  }
+  return -1;
+}
+
+function nextSentenceBoundary(text: string, index: number): number {
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    if (isSentenceBoundaryAt(text, cursor)) return cursor;
+  }
+  return text.length;
+}
+
+function isSentenceBoundaryAt(text: string, index: number): boolean {
+  const char = text[index];
+  if (char === "\n" || char === "!" || char === "?") return true;
+  if (char !== ".") return false;
+  return !isFileExtensionDot(text, index);
+}
+
+function isFileExtensionDot(text: string, index: number): boolean {
+  return (
+    isAsciiAlphanumeric(text[index - 1]) && isAsciiAlphanumeric(text[index + 1])
+  );
+}
+
+function isAsciiAlphanumeric(char: string | undefined): boolean {
+  return char != null && /^[a-z0-9]$/.test(char);
 }
 
 function includesQuery(value: unknown, query: string) {
