@@ -2002,6 +2002,50 @@ describe("AgentWorkspace", () => {
     ).toBe(true);
   });
 
+  it("shares an in-flight slash-prefetch with submit", async () => {
+    const user = userEvent.setup();
+    let resolveSkills: (
+      skills: Array<{
+        name: string;
+        description: string;
+        enabled: boolean;
+      }>,
+    ) => void = () => {};
+    mocks.hermesBridgeSkills.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSkills = resolve;
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "/");
+    await waitFor(() =>
+      expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1),
+    );
+
+    await user.type(
+      screen.getByRole("textbox"),
+      "repo-build-pr implement issue JUN-46",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1);
+
+    resolveSkills([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"),
+    );
+    expect(mocks.hermesBridgeSkills).toHaveBeenCalledTimes(1);
+  });
+
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
     const samplePath =

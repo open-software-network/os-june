@@ -949,6 +949,7 @@ export function AgentWorkspace({
     ReadonlySet<string>
   >(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
+  const skillCommandsLoadRef = useRef<Promise<HermesSkillInfo[]> | null>(null);
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
   const [messagingPlatforms, setMessagingPlatforms] = useState<
     HermesMessagingPlatformInfo[] | null
@@ -3043,12 +3044,20 @@ export function AgentWorkspace({
 
   async function loadSkillCommands(options?: { silent?: boolean }) {
     if (skills) return skills;
-    setSkillCommandLoading(true);
+    let loadPromise = skillCommandsLoadRef.current;
+    if (!loadPromise) {
+      setSkillCommandLoading(true);
+      loadPromise = (async () => {
+        await ensureHermesGateway();
+        const nextSkills = await hermesBridgeSkills();
+        setSkills(nextSkills);
+        return nextSkills;
+      })();
+      skillCommandsLoadRef.current = loadPromise;
+    }
+
     try {
-      await ensureHermesGateway();
-      const nextSkills = await hermesBridgeSkills();
-      setSkills(nextSkills);
-      return nextSkills;
+      return await loadPromise;
     } catch (err) {
       if (!options?.silent) {
         throw new Error(
@@ -3057,7 +3066,10 @@ export function AgentWorkspace({
       }
       return [];
     } finally {
-      setSkillCommandLoading(false);
+      if (skillCommandsLoadRef.current === loadPromise) {
+        skillCommandsLoadRef.current = null;
+        setSkillCommandLoading(false);
+      }
     }
   }
 
