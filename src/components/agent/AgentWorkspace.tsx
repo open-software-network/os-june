@@ -1629,7 +1629,7 @@ export function AgentWorkspace({
         setHermesSessionItems((current) =>
           current.map((session) =>
             session.id === sessionId
-              ? { ...session, model: modelId, has_model_config: true }
+              ? { ...session, model: modelId }
               : session,
           ),
         );
