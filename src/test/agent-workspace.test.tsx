@@ -756,7 +756,7 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
-  it("switches the text model from the composer's picker", async () => {
+  it("switches the text model only for the active chat", async () => {
     // Tool-capable catalog: the picker refuses tool-less models for the
     // agent, so the switch target must support function calling.
     const catalog = [
@@ -794,7 +794,6 @@ describe("AgentWorkspace", () => {
       selectedModel: "zai-org-glm-5-2",
       models: catalog,
     });
-    mocks.setVeniceModel.mockResolvedValue(undefined);
     const user = userEvent.setup();
 
     render(<AgentWorkspace initialSession={existingSession} />);
@@ -806,20 +805,6 @@ describe("AgentWorkspace", () => {
       name: "Choose text model",
     });
 
-    // The reload after the switch reads the updated setting.
-    mocks.providerModelSettings.mockResolvedValue({
-      settings: {
-        transcriptionProvider: "venice",
-        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "anonymous-only",
-      },
-    });
-    mocks.listVeniceModels.mockResolvedValue({
-      mode: "generation",
-      modelType: "text",
-      selectedModel: "anonymous-only",
-      models: catalog,
-    });
     // The popover opens on the suggested picks (GLM 5.2 is curated); the
     // switch target only exists in the full catalog behind All models.
     await user.click(
@@ -833,11 +818,12 @@ describe("AgentWorkspace", () => {
     );
 
     await waitFor(() =>
-      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
-        "generation",
-        "anonymous-only",
-      ),
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        model: "anonymous-only",
+      }),
     );
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
     // The composer trigger reflects the new model and the session bar badge
     // its privacy mode.
     expect(
@@ -847,7 +833,91 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
 
-  it("refreshes the model privacy label when generation model settings change", async () => {
+  it("keeps another active chat on its own model after switching the current chat", async () => {
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "anonymous-only",
+        name: "Anonymous Only",
+        modelType: "text",
+        privacy: "anonymous",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    const secondSession = {
+      ...existingSession,
+      id: "session-2",
+      title: "Second session",
+      preview: "Second preview",
+      last_active: "2026-06-04T12:05:00Z",
+      model: "kimi-k2-6",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      existingSession,
+      secondSession,
+    ]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: catalog,
+    });
+    const user = userEvent.setup();
+
+    const { rerender } = render(
+      <AgentWorkspace initialSession={existingSession} />,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "All models" }),
+    );
+    const panel = await screen.findByRole("group", {
+      name: "All text models",
+    });
+    await user.click(
+      within(panel).getByRole("option", { name: /Anonymous Only/ }),
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Model: Anonymous Only" }),
+    ).toBeInTheDocument();
+
+    rerender(<AgentWorkspace initialSession={secondSession} />);
+
+    expect(
+      await screen.findByRole("button", { name: "Model: Kimi K2.6" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Model: Anonymous Only" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps an existing chat model when generation model settings change", async () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Private mode")).toBeInTheDocument();
@@ -864,6 +934,15 @@ describe("AgentWorkspace", () => {
       modelType: "text",
       selectedModel: "anonymous-only",
       models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
         {
           provider: "venice",
           id: "anonymous-only",
@@ -884,10 +963,69 @@ describe("AgentWorkspace", () => {
       );
     });
 
-    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.queryByText("Private mode")).not.toBeInTheDocument(),
+    expect(await screen.findByText("Private mode")).toBeInTheDocument();
+    expect(screen.queryByText("Anonymous mode")).not.toBeInTheDocument();
+  });
+
+  it("uses the new-chat composer picker to update the default model", async () => {
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "anonymous-only",
+        name: "Anonymous Only",
+        modelType: "text",
+        privacy: "anonymous",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: catalog,
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
     );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "All models" }),
+    );
+    const panel = await screen.findByRole("group", {
+      name: "All text models",
+    });
+    await user.click(
+      within(panel).getByRole("option", { name: /Anonymous Only/ }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+        "generation",
+        "anonymous-only",
+      ),
+    );
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: expect.any(String),
+      model: "anonymous-only",
+    });
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {
@@ -1324,9 +1462,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
-        text: expect.stringContaining(
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
-        ),
+        text: expect.stringContaining("uploads/screenshot.png"),
       }),
     );
   });
@@ -1367,7 +1503,10 @@ describe("AgentWorkspace", () => {
       preview: "Second preview",
       last_active: "2026-06-04T12:05:00Z",
     };
-    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    mocks.listHermesSessions.mockResolvedValue([
+      existingSession,
+      secondSession,
+    ]);
     const { rerender } = render(
       <AgentWorkspace initialSession={existingSession} />,
     );
@@ -1841,6 +1980,7 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
         title: "Summarize Current Page",
         cols: 96,
+        model: "zai-org-glm-5-2",
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
