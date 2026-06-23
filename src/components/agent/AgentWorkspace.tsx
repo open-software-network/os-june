@@ -7934,8 +7934,7 @@ function sessionHasFinalAssistantAfterLatestUser(
 }
 
 function isFinalAssistantMessage(message: HermesSessionMessage) {
-  if (hasHermesToolCalls(message.tool_calls)) return false;
-  return visibleHermesMessageText(message).trim().length > 0;
+  return !hasHermesToolCalls(message.tool_calls);
 }
 
 function hasHermesToolCalls(value: unknown) {
@@ -7943,7 +7942,12 @@ function hasHermesToolCalls(value: unknown) {
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === "string") {
     const trimmed = value.trim();
-    return Boolean(trimmed && trimmed !== "[]");
+    if (!trimmed) return false;
+    try {
+      return hasHermesToolCalls(JSON.parse(trimmed));
+    } catch {
+      return true;
+    }
   }
   if (typeof value === "object") return Object.keys(value).length > 0;
   return false;

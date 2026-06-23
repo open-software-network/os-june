@@ -825,6 +825,36 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.status).toBe("running");
   });
 
+  it("keeps subagent follow-up with the assistant message that delegated it", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.complete",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: { text: "I'll delegate the research." },
+        },
+        {
+          type: "subagent.start",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+          payload: {
+            subagent_id: "sa-1",
+            goal: "Research the document export flow",
+          },
+        },
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(
+      turns[0]?.parts.map((part) =>
+        part.type === "text" ? part.text : part.type,
+      ),
+    ).toEqual(["I'll delegate the research.", "tool"]);
+    expect(turns[0]?.status).toBe("running");
+  });
+
   it("does not attach tool-only live events to an older assistant turn", () => {
     const messages: AgentMessageDto[] = [
       {

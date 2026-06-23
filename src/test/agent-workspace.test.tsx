@@ -2156,6 +2156,64 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("does not resume working state when the latest assistant message has no tool calls", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "turn this docx into a pdf",
+        timestamp: new Date(Date.now() - 30_000).toISOString(),
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "   ",
+        timestamp: new Date(Date.now() - 20_000).toISOString(),
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText("turn this docx into a pdf"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Thinking…")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("does not resume working state for serialized empty tool calls", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "summarize the export result",
+        timestamp: new Date(Date.now() - 30_000).toISOString(),
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "The export is ready.",
+        tool_calls: " [ ] ",
+        timestamp: new Date(Date.now() - 20_000).toISOString(),
+      },
+      {
+        id: "m3",
+        role: "assistant",
+        content: "",
+        tool_calls: "null",
+        timestamp: new Date(Date.now() - 10_000).toISOString(),
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("The export is ready.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Thinking…")).not.toBeInTheDocument(),
+    );
+  });
+
   it("keeps polling when a follow-up user message is still only pending locally", async () => {
     const user = userEvent.setup();
     mocks.listHermesSessionMessages.mockResolvedValue([

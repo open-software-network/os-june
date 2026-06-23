@@ -393,8 +393,11 @@ function appendLiveHermesEvents(
       // each subagent as a tool-style row keyed by its id, so N parallel
       // subagents show as N live rows that resolve as they finish.
       if (!currentAssistant) {
-        currentAssistant = createAssistantTurn(turns, event.receivedAt);
-        toolCreatedTurns.add(currentAssistant);
+        currentAssistant = lastAssistantTurnAfterLatestUser(turns) ?? null;
+        if (!currentAssistant) {
+          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          toolCreatedTurns.add(currentAssistant);
+        }
       }
       const payload = event.payload as Record<string, unknown> | undefined;
       const subagentId = stringValue(payload?.subagent_id);
