@@ -515,6 +515,37 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the hero steady while a direct report is in flight", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    let resolveReport: (() => void) | undefined;
+    mocks.submitIssueReport.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveReport = () => resolve({ received: true });
+        }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    await user.type(await screen.findByRole("textbox"), "The recorder crashes");
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    expect(
+      screen.getByRole("region", { name: "Agent task details" }),
+    ).not.toHaveAttribute("data-hero-leaving");
+
+    await waitFor(() => expect(resolveReport).toBeDefined());
+    act(() => resolveReport?.());
+    expect(
+      await screen.findByText(/Your report was sent to the June team/),
+    ).toBeInTheDocument();
+  });
+
   it("submits feature requests directly without starting a chat session", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

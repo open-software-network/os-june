@@ -208,6 +208,7 @@ pub struct ChargeRequest {
 #[derive(Clone, Debug)]
 pub struct IssueReport {
     pub user_id: UserId,
+    pub category: Option<String>,
     pub description: String,
     pub agent_diagnosis: Option<String>,
     /// Names of everything the user attached, including files whose bytes

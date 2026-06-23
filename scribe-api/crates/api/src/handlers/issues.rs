@@ -22,6 +22,7 @@ pub struct IssueReportResponse {
 /// every attached file, including ones whose bytes were not uploaded.
 #[derive(Default)]
 struct IssueReportFields {
+    category: Option<String>,
     description: String,
     agent_diagnosis: Option<String>,
     attachment_names: Vec<String>,
@@ -63,6 +64,9 @@ impl IssueReportFields {
                 "description" => {
                     fields.description = field.text().await.map_err(multipart_invalid)?;
                 }
+                "category" => {
+                    fields.category = Some(field.text().await.map_err(multipart_invalid)?);
+                }
                 "agentDiagnosis" => {
                     fields.agent_diagnosis = Some(field.text().await.map_err(multipart_invalid)?);
                 }
@@ -86,6 +90,9 @@ impl IssueReportFields {
     fn validate(&self) -> Result<(), ApiError> {
         if self.description.trim().is_empty() {
             return Err(ApiError::bad_request("description_required"));
+        }
+        if let Some(category) = self.category.as_deref() {
+            validate_issue_category(category)?;
         }
         validation::validate_text_len(
             "description",
@@ -131,6 +138,13 @@ impl IssueReportFields {
     }
 }
 
+fn validate_issue_category(category: &str) -> Result<(), ApiError> {
+    match category {
+        "bug" | "feedback" | "feature" => Ok(()),
+        _ => Err(ApiError::bad_request("category_invalid")),
+    }
+}
+
 pub(crate) async fn submit(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -143,6 +157,7 @@ pub(crate) async fn submit(
         .issue_reports()
         .deliver(IssueReport {
             user_id,
+            category: request.category,
             description: request.description,
             agent_diagnosis: request.agent_diagnosis,
             attachment_names: request.attachment_names,

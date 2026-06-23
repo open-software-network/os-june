@@ -1909,7 +1909,7 @@ export function AgentWorkspace({
     // up, suggestions down during the session-create latency. Without it they
     // sit frozen through the wait and then vanish in a single frame when the
     // conversation takes over.
-    if (heroMode) setHeroLeaving(true);
+    if (heroMode && !reportCategory) setHeroLeaving(true);
     setSubmitting(true);
     composerEditorRef.current?.clear();
     setDraft("");
@@ -1950,8 +1950,8 @@ export function AgentWorkspace({
       }
     } finally {
       setSubmitting(false);
-      // On success the hero is gone; on failure this fades the greeting and
-      // suggestions back in behind the restored draft.
+      // On chat success the hero is gone; on direct-report success or failure
+      // this fades the greeting and suggestions back in.
       setHeroLeaving(false);
     }
   }

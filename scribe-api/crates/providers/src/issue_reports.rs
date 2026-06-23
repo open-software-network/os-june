@@ -7,8 +7,9 @@ use serde::Deserialize;
 /// configured label (default `bug`). Uses only os-platform's stock API:
 /// attachments are uploaded first (best-effort — a failed upload never
 /// blocks the report; the names are listed in the body either way), the
-/// Issue is created with `type: bug`, and the label is attached afterwards
-/// via the labels PUT — creating the label in the Project the first time.
+/// Issue is created with the matching report type, and bug reports get the
+/// configured label via the labels PUT — creating the label in the Project the
+/// first time.
 /// Delivery to os-platform is best-effort: the sink retries without a Project
 /// destination and finally logs the report rather than surfacing delivery
 /// failures to the user.
@@ -132,7 +133,7 @@ impl OsPlatformIssueReportSink {
             "title": issue_title(&report.description),
             "body_markdown": issue_body(report),
             "reward_amount_units": "0",
-            "type": "bug",
+            "type": issue_type(report),
             "status": "todo",
             "file_ids": file_ids,
         });
@@ -277,10 +278,14 @@ impl OsPlatformIssueReportSink {
 
     /// Best-effort tagging after the Issue exists. First report into a
     /// Project: the label won't exist yet, so the missing-label rejection
-    /// creates it and retries once. Failure here never fails the delivery —
-    /// the Issue is already filed (and carries `type: bug` regardless).
-    async fn tag_issue(&self, number_in_org: i64, destination: IssueCreateDestination) {
-        if self.label.is_empty() {
+    /// creates it and retries once. Failure here never fails the delivery.
+    async fn tag_issue(
+        &self,
+        report: &IssueReport,
+        number_in_org: i64,
+        destination: IssueCreateDestination,
+    ) {
+        if self.label.is_empty() || issue_type(report) != "bug" {
             return;
         }
         let attached = match self.put_label(number_in_org).await {
@@ -416,7 +421,8 @@ impl IssueReportSink for OsPlatformIssueReportSink {
         };
         let issue = envelope.data.as_ref();
         if let Some(issue) = issue {
-            self.tag_issue(issue.number_in_org, destination).await;
+            self.tag_issue(&report, issue.number_in_org, destination)
+                .await;
         }
         tracing::info!(
             issue = issue.map_or("", |issue| issue.external_id.as_str()),
@@ -431,6 +437,14 @@ impl IssueReportSink for OsPlatformIssueReportSink {
 
 fn is_missing_label(message: &str) -> bool {
     message.contains("label(s) not found")
+}
+
+fn issue_type(report: &IssueReport) -> &'static str {
+    match report.category.as_deref() {
+        Some("feature") => "feature",
+        Some("feedback") => "other",
+        _ => "bug",
+    }
 }
 
 const ISSUE_TITLE_MAX_CHARS: usize = 120;
@@ -492,6 +506,9 @@ fn issue_body(report: &IssueReport) -> String {
     }
     body.push_str("\n## Metadata\n\n");
     let _ = writeln!(body, "- Reporter: `{}`", report.user_id.0);
+    if let Some(category) = report.category.as_deref().filter(|v| !v.is_empty()) {
+        let _ = writeln!(body, "- Category: {category}");
+    }
     if let Some(session_id) = report.session_id.as_deref().filter(|v| !v.is_empty()) {
         let _ = writeln!(body, "- Session: `{session_id}`");
     }
@@ -598,6 +615,7 @@ mod os_platform_tests {
     fn report() -> IssueReport {
         IssueReport {
             user_id: UserId("usr_test".to_string()),
+            category: Some("bug".to_string()),
             description: "The recorder freezes\nwhen I pause it".to_string(),
             agent_diagnosis: Some("Likely the audio capture thread".to_string()),
             attachment_names: vec!["screenshot.png".to_string()],
@@ -813,6 +831,40 @@ mod os_platform_tests {
             .await;
 
         assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_preserves_feature_report_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "title": "June report: The recorder freezes",
+                "reward_amount_units": "0",
+                "asset_symbol": "POINTS",
+                "type": "feature",
+                "status": "todo",
+                "file_ids": [],
+            })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
+            .respond_with(labels_set())
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let mut report = report();
+        report.category = Some("feature".to_string());
+        assert!(sink(&server).deliver(report).await.is_ok());
     }
 
     #[tokio::test]

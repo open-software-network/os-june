@@ -143,6 +143,7 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
                     "agentDiagnosis",
                     "Likely the audio capture thread is blocked",
                 ),
+                text_part("category", "feature"),
                 text_part("attachmentName", "screenshot.png"),
                 text_part("sessionId", "session-9"),
                 text_part("appVersion", "0.0.5"),
@@ -179,6 +180,7 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
         reports[0].agent_diagnosis.as_deref(),
         Some("Likely the audio capture thread is blocked")
     );
+    assert_eq!(reports[0].category.as_deref(), Some("feature"));
     assert_eq!(reports[0].attachment_names, vec!["screenshot.png"]);
     assert_eq!(reports[0].session_id.as_deref(), Some("session-9"));
     assert_eq!(reports[0].attachments.len(), 1);
