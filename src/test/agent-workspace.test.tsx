@@ -1294,6 +1294,35 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Existing session")).toBeNull();
   });
 
+  it("restores the last open session after leaving a saved new session draft", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "new session idea");
+
+    first.rerender(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+  });
+
   it("forgets the new session draft after submitting it", async () => {
     const user = userEvent.setup();
     const first = render(<AgentWorkspace />);

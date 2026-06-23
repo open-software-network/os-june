@@ -738,6 +738,7 @@ type AgentSessionContinuity = {
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
+let lastActiveComposerDraftKey: string | null | undefined;
 
 function sessionComposerDraftKey(sessionId: string) {
   return `session:${sessionId}`;
@@ -770,6 +771,13 @@ function hasSavedNewSessionDraft() {
   return Boolean(
     snapshot &&
     (snapshot.text.trim() || snapshot.category || snapshot.attachments.length),
+  );
+}
+
+function shouldRestoreNewSessionDraft() {
+  return (
+    lastActiveComposerDraftKey === NEW_SESSION_DRAFT_KEY &&
+    hasSavedNewSessionDraft()
   );
 }
 
@@ -813,6 +821,7 @@ function captureSessionContinuity(state: {
 export function resetAgentSessionContinuity() {
   sessionContinuity = null;
   agentComposerDrafts.clear();
+  lastActiveComposerDraftKey = undefined;
 }
 
 export function AgentWorkspace({
@@ -902,7 +911,7 @@ export function AgentWorkspace({
   >(
     () =>
       initialSessionId ??
-      (hasPendingNewSessionRequest() || hasSavedNewSessionDraft()
+      (hasPendingNewSessionRequest() || shouldRestoreNewSessionDraft()
         ? undefined
         : readLastOpenSessionId()),
   );
@@ -913,7 +922,7 @@ export function AgentWorkspace({
   const [newSessionMode, setNewSessionMode] = useState(
     () =>
       !initialSessionId &&
-      (hasPendingNewSessionRequest() || hasSavedNewSessionDraft()),
+      (hasPendingNewSessionRequest() || shouldRestoreNewSessionDraft()),
   );
   const setError = useCallback(
     (message: string | null, options: AgentWorkspaceErrorOptions = {}) => {
@@ -1217,6 +1226,11 @@ export function AgentWorkspace({
   const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
   composerDraftKeyRef.current = composerDraftKey;
   const restoredComposerDraftKeyRef = useRef<string | null>();
+
+  useEffect(() => {
+    lastActiveComposerDraftKey = composerDraftKey;
+  }, [composerDraftKey]);
+
   const chatArtifacts = useMemo(
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
@@ -1862,6 +1876,7 @@ export function AgentWorkspace({
     })();
     return () => {
       cancelled = true;
+      lastActiveComposerDraftKey = composerDraftKeyRef.current;
       // Keep any mid-run session alive for the next mount before the
       // gateways (and with them the live event streams) go away.
       sessionContinuity = captureSessionContinuity({
