@@ -1220,6 +1220,7 @@ export type AccountSubscription = {
   status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
   trialEnd?: string;
   currentPeriodEnd?: string;
+  cancelAtPeriodEnd?: boolean;
   /** Trial length from the Stripe price config, available pre-subscription.
    * Absent on accounts APIs that don't expose it yet. */
   trialPeriodDays?: number;
