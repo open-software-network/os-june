@@ -8166,11 +8166,20 @@ function ensureClipboardImageName(file: File, index: number) {
 }
 
 function isClipboardImageType(type: string) {
-  return type.toLowerCase().startsWith("image/");
+  const mimeType = normalizedImageMimeType(type);
+  return (
+    mimeType === "image/png" ||
+    mimeType === "image/jpeg" ||
+    mimeType === "image/jpg" ||
+    mimeType === "image/tiff" ||
+    mimeType === "image/tif" ||
+    mimeType === "image/gif" ||
+    mimeType === "image/webp"
+  );
 }
 
 function clipboardImageExtension(file: File) {
-  const mimeType = file.type.toLowerCase().split(";")[0];
+  const mimeType = normalizedImageMimeType(file.type);
   if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
   if (mimeType === "image/tiff" || mimeType === "image/tif") return "tiff";
   const subtype = mimeType.startsWith("image/") ? mimeType.slice(6) : "";
@@ -8184,13 +8193,17 @@ function clipboardImageStem(name: string) {
 }
 
 function clipboardImageRank(file: File) {
-  const mimeType = file.type.toLowerCase().split(";")[0];
+  const mimeType = normalizedImageMimeType(file.type);
   if (mimeType === "image/png") return 50;
   if (mimeType === "image/tiff" || mimeType === "image/tif") return 40;
   if (mimeType === "image/webp") return 30;
   if (mimeType === "image/jpeg" || mimeType === "image/jpg") return 20;
   if (mimeType === "image/gif") return 10;
   return 1;
+}
+
+function normalizedImageMimeType(type: string) {
+  return type.toLowerCase().split(";")[0];
 }
 
 function toolNames(toolset: HermesToolsetInfo) {

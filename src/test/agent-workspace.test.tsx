@@ -2692,6 +2692,32 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("ignores pasted image formats that cannot preview as attachments", async () => {
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const svg = new File(["<svg />"], "diagram.svg", {
+      type: "image/svg+xml",
+    });
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.paste(form as HTMLFormElement, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/svg+xml",
+            getAsFile: () => svg,
+          },
+        ],
+        files: [],
+      },
+    });
+
+    expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
+    expect(screen.queryByText("diagram.svg")).not.toBeInTheDocument();
+  });
+
   it("keeps a re-sent duplicate message and the running state against older identical history", async () => {
     const user = userEvent.setup();
     mocks.listHermesSessionMessages.mockResolvedValue([
