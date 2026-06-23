@@ -165,10 +165,7 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
-import {
-  categoryPrompt,
-  displayedUserMessageText,
-} from "../../lib/issue-report-prompt";
+import { displayedUserMessageText } from "../../lib/issue-report-prompt";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -639,8 +636,7 @@ export type AgentNewSessionDetail = {
   category?: ReportCategory;
 };
 
-/** Frames the user's bug report for June: investigate and write a diagnosis
- * for the team instead of treating it as a normal request for help. */
+/** Captured report details submitted directly to the June team. */
 type PendingIssueReport = {
   category: ReportCategory;
   description: string;
@@ -662,7 +658,7 @@ type AgentWorkspaceErrorOptions = {
 
 type AgentWorkspaceNotice = {
   message: string;
-  sessionId: string;
+  sessionId: string | null;
 };
 
 type AgentDeleteSessionDetail = {
@@ -785,8 +781,8 @@ export function AgentWorkspace({
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
   // The message's single category tag, mirrored from the composer's chip. Null
-  // when the message carries no tag. Drives the report wrapper and (server
-  // side) the no-charge waiver.
+  // when the message carries no tag. Report tags submit directly to the June
+  // team instead of starting a chat turn.
   const [category, setCategory] = useState<ReportCategory | null>(null);
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.
@@ -1224,7 +1220,9 @@ export function AgentWorkspace({
     selectedHermesSessionId,
   );
   const visibleIssueReportNotice =
-    issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
+    issueReportNotice &&
+    (issueReportNotice.sessionId === null ||
+      issueReportNotice.sessionId === selectedHermesSessionId)
       ? issueReportNotice.message
       : null;
   // Holds the prior render's heroMode. Read by both the composer auto-grow
@@ -1908,8 +1906,7 @@ export function AgentWorkspace({
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
-    // The composer's category chip makes this a report: wrap the prompt to
-    // frame it for the team and queue the delivery. Captured before the
+    // The composer's category chip makes this a report. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
     const content = promptWithAttachments(message, attachments);
@@ -1925,27 +1922,19 @@ export function AgentWorkspace({
     setAttachments([]);
     setIssueReportNotice(null);
     try {
-      await submitHermesSession(
-        reportCategory ? categoryPrompt(reportCategory, content) : content,
-        undefined,
-        reportCategory
-          ? {
-              issueReport: {
-                category: reportCategory,
-                // An attachments-only send has no typed text, but the server
-                // requires a description; the report must not bounce there.
-                description:
-                  message || "No description was typed; see the attachments.",
-                attachmentNames: attachments.map(
-                  (attachment) => attachment.name,
-                ),
-                attachmentPaths: attachments.map(
-                  (attachment) => attachment.path,
-                ),
-              },
-            }
-          : undefined,
-      );
+      if (reportCategory) {
+        await submitDirectIssueReport({
+          category: reportCategory,
+          // An attachments-only send has no typed text, but the server
+          // requires a description; the report must not bounce there.
+          description:
+            message || "No description was typed; see the attachments.",
+          attachmentNames: attachments.map((attachment) => attachment.name),
+          attachmentPaths: attachments.map((attachment) => attachment.path),
+        });
+      } else {
+        await submitHermesSession(content);
+      }
       setError(null);
       setBusyNotice(null);
     } catch (err) {
@@ -2128,6 +2117,26 @@ export function AgentWorkspace({
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId,
       });
+    }
+  }
+
+  async function submitDirectIssueReport(report: PendingIssueReport) {
+    try {
+      await submitIssueReport({
+        category: report.category,
+        description: report.description,
+        attachmentNames: report.attachmentNames,
+        attachmentPaths: report.attachmentPaths,
+      });
+      setIssueReportNotice({
+        message:
+          "Your report was sent to the June team. Thank you for helping improve June.",
+        sessionId: null,
+      });
+    } catch (err) {
+      throw new Error(
+        `The issue report could not be sent. ${messageFromError(err)}`,
+      );
     }
   }
 

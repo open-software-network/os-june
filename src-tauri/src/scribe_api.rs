@@ -26,11 +26,6 @@ const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
-const INTERNAL_AGENT_MARKER_KEY: &str = "__june";
-const INTERNAL_BILLING_INTENT_KEY: &str = "billingIntent";
-const INITIAL_REPORT_BILLING_INTENT: &str = "initial_issue_report";
-const USER_REPORT_START: &str = "---USER REPORT---";
-const USER_REPORT_END: &str = "---END USER REPORT---";
 const INVALID_SCRIBE_RESPONSE_MESSAGE: &str =
     "The processing service returned an invalid response.";
 
@@ -384,7 +379,6 @@ fn limit_agent_chat_messages_for_proxy(body: &mut serde_json::Value) {
 
 fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
     limit_agent_chat_messages_for_proxy(body);
-    mark_initial_report_agent_chat(body);
     let Some(object) = body.as_object_mut() else {
         return;
     };
@@ -394,45 +388,6 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
     );
     clamp_agent_chat_output_tokens(object, "max_tokens");
     clamp_agent_chat_output_tokens(object, "max_completion_tokens");
-}
-
-fn mark_initial_report_agent_chat(body: &mut serde_json::Value) {
-    let is_initial_report =
-        latest_user_message_content(body).is_some_and(is_initial_report_prompt_content);
-    let Some(object) = body.as_object_mut() else {
-        return;
-    };
-    object.remove(INTERNAL_AGENT_MARKER_KEY);
-    if is_initial_report {
-        object.insert(
-            INTERNAL_AGENT_MARKER_KEY.to_string(),
-            serde_json::json!({
-                INTERNAL_BILLING_INTENT_KEY: INITIAL_REPORT_BILLING_INTENT,
-            }),
-        );
-    }
-}
-
-fn latest_user_message_content(body: &serde_json::Value) -> Option<&str> {
-    body.get("messages")
-        .and_then(serde_json::Value::as_array)?
-        .iter()
-        .rev()
-        .find(|message| agent_message_role(message) == Some("user"))?
-        .get("content")
-        .and_then(serde_json::Value::as_str)
-}
-
-fn is_initial_report_prompt_content(content: &str) -> bool {
-    let content = content.trim_start();
-    let has_report_markers = content
-        .find(USER_REPORT_START)
-        .zip(content.rfind(USER_REPORT_END))
-        .is_some_and(|(start, end)| start < end);
-    has_report_markers
-        && (content.starts_with("The user is filing a bug report about the June desktop app.")
-            || content.starts_with("The user is sharing feedback about the June desktop app.")
-            || content.starts_with("The user is requesting a feature for the June desktop app."))
 }
 
 fn clamp_agent_chat_output_tokens(
@@ -1266,45 +1221,6 @@ mod tests {
         normalize_agent_chat_request_for_proxy(&mut body);
 
         assert_eq!(body["max_tokens"], serde_json::json!(-1));
-    }
-
-    #[test]
-    fn agent_proxy_marks_initial_report_prompts_for_no_charge() {
-        for opening in [
-            "The user is filing a bug report about the June desktop app.",
-            "The user is sharing feedback about the June desktop app.",
-            "The user is requesting a feature for the June desktop app.",
-        ] {
-            let mut body = serde_json::json!({
-                "model": "hermes-selected-model",
-                "messages": [
-                    { "role": "system", "content": "You are June." },
-                    {
-                        "role": "user",
-                        "content": format!("{opening}\n\n---USER REPORT---\nSomething is wrong.\n---END USER REPORT---")
-                    }
-                ],
-            });
-
-            normalize_agent_chat_request_for_proxy(&mut body);
-
-            assert_eq!(
-                body[INTERNAL_AGENT_MARKER_KEY][INTERNAL_BILLING_INTENT_KEY],
-                serde_json::json!(INITIAL_REPORT_BILLING_INTENT)
-            );
-        }
-    }
-
-    #[test]
-    fn agent_proxy_does_not_mark_ordinary_prompts_for_no_charge() {
-        let mut body = serde_json::json!({
-            "model": "hermes-selected-model",
-            "messages": [{ "role": "user", "content": "Summarize this PDF." }],
-        });
-
-        normalize_agent_chat_request_for_proxy(&mut body);
-
-        assert!(body.get(INTERNAL_AGENT_MARKER_KEY).is_none());
     }
 
     #[test]

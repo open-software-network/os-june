@@ -468,7 +468,7 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
-  it("wraps a submitted issue report for June and files it after the turn", async () => {
+  it("submits a bug report directly without starting a chat session", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -492,139 +492,84 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start session" }));
 
-    // June gets the investigation framing, with the user's words inside it.
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-        session_id: "runtime-session-2",
-        text: expect.stringContaining("---USER REPORT---"),
-      }),
-    );
-    const submitted = mocks.gatewayRequest.mock.calls.find(
-      ([method]) => method === "prompt.submit",
-    )?.[1] as { text: string };
-    expect(submitted.text).toContain(
-      "The recorder crashes after long meetings",
-    );
-    expect(submitted.text).toContain(
-      "Attached files copied into the June workspace:",
-    );
-    expect(submitted.text).toContain(
-      "Use these file paths when inspecting or operating on the files.",
-    );
-    expect(submitted.text).not.toContain("Scribe Hermes");
-    // The transcript shows the user's words only — the investigation
-    // framing is plumbing between June and the runtime, never UI.
-    expect(
-      await screen.findByText(/The recorder crashes after long meetings/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/in-app reporting flow/)).toBeNull();
-    expect(screen.queryByText(/---USER REPORT---/)).toBeNull();
-    // The report waits for June's diagnosis; nothing is filed yet.
-    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
-
-    mocks.listHermesSessionMessages.mockResolvedValue([
-      {
-        id: "m1",
-        role: "user",
-        content: submitted.text,
-        timestamp: "2026-06-11T10:00:00Z",
-      },
-      {
-        id: "m2",
-        role: "assistant",
-        content: "The screenshot shows the recorder stuck on saving.",
-        timestamp: "2026-06-11T10:00:10Z",
-      },
-    ]);
-    act(() => {
-      for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
-      }
-    });
-
     await waitFor(() =>
       expect(mocks.submitIssueReport).toHaveBeenCalledWith({
         category: "bug",
         description: "The recorder crashes after long meetings",
-        agentDiagnosis: "The screenshot shows the recorder stuck on saving.",
         attachmentNames: ["screenshot.png"],
         attachmentPaths: [
           "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
         ],
-        sessionId: "session-2",
       }),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "session.create",
+      expect.anything(),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.anything(),
     );
     expect(
       await screen.findByText(/Your report was sent to the June team/),
     ).toBeInTheDocument();
-    // Drain the post-terminal refresh timer before the test ends so its
-    // session refetch cannot land inside a later test's render.
-    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
-  it("does not show a failed issue report banner after switching away", async () => {
+  it("submits feature requests directly without starting a chat session", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "feature" }),
+    );
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Feature request")).toBeInTheDocument();
+    await user.type(
+      await screen.findByRole("textbox"),
+      "Let me pin a note to the menu bar",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "feature",
+        description: "Let me pin a note to the menu bar",
+        attachmentNames: [],
+        attachmentPaths: [],
+      }),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.anything(),
+    );
+  });
+
+  it("restores a failed issue report for retry", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
-    let rejectIssueReport: ((error: Error) => void) | undefined;
-    mocks.submitIssueReport.mockImplementation(
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectIssueReport = reject;
-        }),
+    mocks.submitIssueReport.mockRejectedValueOnce(
+      new Error("upstream_provider_failed"),
     );
 
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Bug report")).toBeInTheDocument();
-    await user.type(
-      await screen.findByRole("textbox"),
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "The recorder crashes after long meetings");
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    expect(
+      await screen.findByText(/The issue report could not be sent/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Bug report")).toBeInTheDocument();
+    expect(await screen.findByRole("textbox")).toHaveTextContent(
       "The recorder crashes after long meetings",
     );
-    await user.click(screen.getByRole("button", { name: "Start session" }));
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-        session_id: "runtime-session-2",
-        text: expect.stringContaining("---USER REPORT---"),
-      }),
-    );
-
-    mocks.listHermesSessionMessages.mockResolvedValue([
-      {
-        id: "m1",
-        role: "user",
-        content: "The recorder crashes after long meetings",
-        timestamp: "2026-06-11T10:00:00Z",
-      },
-      {
-        id: "m2",
-        role: "assistant",
-        content: "The recorder failed while saving.",
-        timestamp: "2026-06-11T10:00:10Z",
-      },
-    ]);
-    act(() => {
-      for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
-      }
-    });
-    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalled());
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
-    });
-    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
-
-    await act(async () => {
-      rejectIssueReport?.(new Error("upstream_provider_failed"));
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByText(/The issue report could not be sent/)).toBeNull();
-    expect(screen.queryByText(/upstream_provider_failed/)).toBeNull();
-    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
   it("labels anonymous-only agent models as anonymous mode", async () => {
