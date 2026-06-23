@@ -42,6 +42,22 @@ impl AgentChatService {
     pub async fn complete(&self, params: AgentChatParams) -> Result<AgentChatOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        if params.waive_metering {
+            let completion = self
+                .chat_completer
+                .complete(AgentChatRequest {
+                    body: params.body,
+                    model: params.model_id,
+                })
+                .await?;
+            return Ok(AgentChatOutput {
+                completion,
+                receipt: Receipt {
+                    credits_charged: Credits(0),
+                    idempotent_replay: false,
+                },
+            });
+        }
         let estimate = Credits(self.flat_estimate_credits);
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -90,6 +106,7 @@ impl AgentChatService {
 pub struct AgentChatParams {
     pub user_id: UserId,
     pub model_id: ModelId,
+    pub waive_metering: bool,
     pub body: serde_json::Value,
 }
 

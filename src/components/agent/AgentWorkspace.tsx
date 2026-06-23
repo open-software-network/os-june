@@ -640,8 +640,7 @@ export type AgentNewSessionDetail = {
   category?: ReportCategory;
 };
 
-/** Frames the user's bug report for June: investigate and write a diagnosis
- * for the team instead of treating it as a normal request for help. */
+/** Captured report details submitted to the June team after the LLM turn. */
 type PendingIssueReport = {
   category: ReportCategory;
   description: string;
@@ -826,8 +825,8 @@ export function AgentWorkspace({
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
   // The message's single category tag, mirrored from the composer's chip. Null
-  // when the message carries no tag. Drives the report wrapper and (server
-  // side) the no-charge waiver.
+  // when the message carries no tag. Drives the report wrapper and the
+  // no-charge signal carried to the backend.
   const [category, setCategory] = useState<ReportCategory | null>(null);
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.

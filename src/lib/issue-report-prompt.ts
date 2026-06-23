@@ -2,9 +2,9 @@
  * The report investigation prompts. When a composer message carries a category
  * tag (bug / feedback / feature), the user's text is wrapped in an instruction
  * preamble for June, and the wrapped whole becomes the session's first user
- * message — the runtime needs it verbatim. The transcript, on the other hand,
- * must show only what the user actually typed: the preamble is plumbing, not
- * conversation (see `displayedUserMessageText`).
+ * message. The transcript, on the other hand, must show only what the user
+ * actually typed: the preamble is plumbing, not conversation (see
+ * `displayedUserMessageText`).
  */
 
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
@@ -64,7 +64,7 @@ export function issueReportPrompt(report: string) {
 
 /** What a user message should look like in the transcript: a wrapped report
  * renders as just the report the user typed. Both markers must be present and
- * ordered, so ordinary messages — even ones discussing the markers — pass
+ * ordered, so ordinary messages, even ones discussing the markers, pass
  * through untouched. */
 export function displayedUserMessageText(content: string): string {
   const start = content.indexOf(USER_REPORT_START);

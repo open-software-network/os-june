@@ -813,7 +813,7 @@ export async function suggestAgentSessionTitle(prompt: string) {
 
 export type SubmitIssueReportRequest = {
   /** Which kind of report this is: "bug" | "feedback" | "feature". Drives the
-   * team's triage and (server side) the no-charge waiver for the turn. */
+   * team's triage. */
   category?: string;
   /** The user's report as they typed it, before the investigation wrapper. */
   description: string;

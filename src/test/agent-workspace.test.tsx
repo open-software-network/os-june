@@ -538,8 +538,8 @@ describe("AgentWorkspace", () => {
       "Use these file paths when inspecting or operating on the files.",
     );
     expect(submitted.text).not.toContain("Scribe Hermes");
-    // The transcript shows the user's words only — the investigation
-    // framing is plumbing between June and the runtime, never UI.
+    // The transcript shows the user's words only. The investigation framing is
+    // plumbing between June and the runtime, never UI.
     expect(
       await screen.findByText(/The recorder crashes after long meetings/),
     ).toBeInTheDocument();
@@ -585,6 +585,70 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     // Drain the post-terminal refresh timer before the test ends so its
     // session refetch cannot land inside a later test's render.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
+  it("wraps feature requests for June and preserves their category", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "feature" }),
+    );
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Feature request")).toBeInTheDocument();
+    await user.type(
+      await screen.findByRole("textbox"),
+      "Let me pin a note to the menu bar",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain("requesting a feature");
+    expect(submitted.text).toContain("Let me pin a note to the menu bar");
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: submitted.text,
+        timestamp: "2026-06-11T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "The request is for faster note access from the menu bar.",
+        timestamp: "2026-06-11T10:00:10Z",
+      },
+    ]);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "feature",
+        description: "Let me pin a note to the menu bar",
+        agentDiagnosis:
+          "The request is for faster note access from the menu bar.",
+        attachmentNames: [],
+        attachmentPaths: [],
+        sessionId: "session-2",
+      }),
+    );
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
@@ -1324,11 +1388,13 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
-        text: expect.stringContaining(
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
-        ),
+        text: expect.stringContaining("uploads/screenshot.png"),
       }),
     );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).not.toContain("co.opensoftware.scribe");
   });
 
   it("keeps a session draft when starting a blank new session", async () => {
