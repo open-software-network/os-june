@@ -43,6 +43,7 @@ import { HoverTip } from "../ui/HoverTip";
 import { RoutineCreate, type RoutineCreateInput } from "./RoutineCreate";
 import { RoutineDetail } from "./RoutineDetail";
 import { formatRunTime, RoutineRunList } from "./RoutineRunList";
+import { GrowingTextarea } from "./GrowingTextarea";
 import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 
 const NO_ROUTINES: RoutineJob[] = [];
@@ -811,8 +812,8 @@ function DescribeBar({
         }}
       >
         <div className="agent-composer-box">
-          <textarea
-            rows={1}
+          <GrowingTextarea
+            aria-label="Describe a routine"
             value={draft}
             placeholder="Have June help you set up a routine"
             onChange={(event) => onDraftChange(event.currentTarget.value)}

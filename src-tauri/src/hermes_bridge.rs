@@ -1815,6 +1815,7 @@ fn image_mime_type(path: &Path) -> Option<&'static str> {
     match extension.as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
+        "tif" | "tiff" => Some("image/tiff"),
         "gif" => Some("image/gif"),
         "webp" => Some("image/webp"),
         _ => None,

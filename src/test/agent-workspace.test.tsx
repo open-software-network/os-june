@@ -468,6 +468,32 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("clears a stale new-session draft before seeding a report chip", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "stale hero draft");
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { category: "bug" },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).not.toHaveTextContent(
+      "stale hero draft",
+    );
+  });
+
   it("wraps a submitted issue report for June and files it after the turn", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
@@ -1301,6 +1327,157 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
       "prompt.submit",
       expect.objectContaining({ text: "stale draft" }),
+    );
+  });
+
+  it("restores a session draft after leaving and returning to agent chat", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "carry this thought");
+    expect(screen.getByRole("textbox")).toHaveTextContent("carry this thought");
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "carry this thought",
+      ),
+    );
+  });
+
+  it("restores a session draft with attachments after returning to agent chat", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "what is in this image?",
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining(
+          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
+        ),
+      }),
+    );
+  });
+
+  it("keeps a session draft when starting a blank new session", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "come back to this");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "come back to this",
+      ),
+    );
+  });
+
+  it("restores drafts when switching sessions without remounting", async () => {
+    const user = userEvent.setup();
+    const secondSession = {
+      ...existingSession,
+      id: "session-2",
+      title: "Second session",
+      preview: "Second preview",
+      last_active: "2026-06-04T12:05:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    const { rerender } = render(
+      <AgentWorkspace initialSession={existingSession} />,
+    );
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "first session draft");
+
+    rerender(<AgentWorkspace initialSession={secondSession} />);
+
+    expect(await screen.findByText("Second session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+    await user.type(screen.getByRole("textbox"), "second session draft");
+
+    rerender(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "first session draft",
+      ),
+    );
+  });
+
+  it("clears a cached session draft after sending it", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "ship this");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "ship this",
+      }),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
     );
   });
 
@@ -2191,6 +2368,94 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not surface files only mentioned inside tool output", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "sample.pdf",
+              path: `${workspaceRoot}/sample.pdf`,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "screenshot.png",
+              path: `${workspaceRoot}/screenshot.png`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "generate_pdf.py",
+              path: `${workspaceRoot}/generate_pdf.py`,
+              kind: "file",
+              size: 512,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done. The PDF is available as `sample.pdf`.",
+        timestamp: "2026-06-04T18:39:00Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "list_files",
+              arguments: "{}",
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        content: "sample.pdf\nscreenshot.png\ngenerate_pdf.py",
+        timestamp: "2026-06-04T18:39:01Z",
+        tool_call_id: "call-1",
+        tool_name: "list_files",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download sample.pdf" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download screenshot.png" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download generate_pdf.py" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      await screen.findByRole("button", { name: "View files (1)" }),
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(within(panel).getByText("sample.pdf")).toBeInTheDocument();
+    expect(within(panel).queryByText("screenshot.png")).not.toBeInTheDocument();
+    expect(
+      within(panel).queryByText("generate_pdf.py"),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not render download cards for files the user attached", async () => {
     const attachedPath =
       "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
@@ -2410,6 +2675,111 @@ describe("AgentWorkspace", () => {
       expect.any(Uint8Array),
     );
     expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+  });
+
+  it("imports pasted images by uploading clipboard bytes", async () => {
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "pasted-image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/pasted-image.png",
+      rootLabel: "Workspace",
+      size: 5,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    const image = new File(["image"], "", { type: "image/png" });
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.paste(form as HTMLFormElement, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => image,
+          },
+        ],
+        files: [],
+      },
+    });
+
+    expect(await screen.findByText("pasted-image.png")).toBeInTheDocument();
+    expect(
+      document.querySelector(".agent-attachment-chip img"),
+    ).toHaveAttribute("src", "data:image/png;base64,preview");
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+      "pasted-image.png",
+      expect.any(Uint8Array),
+    );
+    expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+  });
+
+  it("chooses one preferred image when paste exposes multiple representations", async () => {
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mocks.importHermesBridgeFileBytes.mockResolvedValueOnce({
+      name: "image.png",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/image.png",
+      rootLabel: "Workspace",
+      size: 3,
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+
+    const tiff = new File(["tiff"], "image.tiff", { type: "image/tiff" });
+    const png = new File(["png"], "image.png", { type: "image/png" });
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.paste(form as HTMLFormElement, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/tiff",
+            getAsFile: () => tiff,
+          },
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => png,
+          },
+        ],
+        files: [],
+      },
+    });
+
+    expect(await screen.findByText("image.png")).toBeInTheDocument();
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+      "image.png",
+      expect.any(Uint8Array),
+    );
+  });
+
+  it("ignores pasted image formats that cannot preview as attachments", async () => {
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const svg = new File(["<svg />"], "diagram.svg", {
+      type: "image/svg+xml",
+    });
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.paste(form as HTMLFormElement, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/svg+xml",
+            getAsFile: () => svg,
+          },
+        ],
+        files: [],
+      },
+    });
+
+    expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
+    expect(screen.queryByText("diagram.svg")).not.toBeInTheDocument();
   });
 
   it("keeps a re-sent duplicate message and the running state against older identical history", async () => {
