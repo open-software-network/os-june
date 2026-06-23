@@ -1388,11 +1388,13 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
-        text: expect.stringContaining(
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
-        ),
+        text: expect.stringContaining("uploads/screenshot.png"),
       }),
     );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).not.toContain("co.opensoftware.scribe");
   });
 
   it("keeps a session draft when starting a blank new session", async () => {
