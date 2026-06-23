@@ -665,11 +665,6 @@ type AgentWorkspaceNotice = {
   sessionId: string;
 };
 
-type ComposerDraftSnapshot = {
-  text: string;
-  category: ReportCategory | null;
-};
-
 type AgentDeleteSessionDetail = {
   sessionId: string;
 };
@@ -683,6 +678,12 @@ type AgentArtifact = {
 
 type AgentAttachment = ImportedHermesFile & {
   id: string;
+};
+
+type ComposerDraftSnapshot = {
+  text: string;
+  category: ReportCategory | null;
+  attachments: AgentAttachment[];
 };
 
 /** The right-hand file viewer: a list of every file surfaced in the
@@ -746,13 +747,18 @@ function rememberComposerDraft(
   key: string | null,
   text: string,
   category: ReportCategory | null,
+  attachments: AgentAttachment[] = [],
 ) {
   if (!key) return;
-  if (!text.trim() && !category) {
+  if (!text.trim() && !category && attachments.length === 0) {
     agentComposerDrafts.delete(key);
     return;
   }
-  agentComposerDrafts.set(key, { text, category });
+  agentComposerDrafts.set(key, {
+    text,
+    category,
+    attachments: [...attachments],
+  });
 }
 
 function forgetComposerDraft(key: string | null) {
@@ -820,7 +826,11 @@ export function AgentWorkspace({
   // Live mirror of `draft` for closures (the hero-chip interval) that must read
   // the current value without re-subscribing.
   const draftRef = useRef("");
+  const categoryRef = useRef<ReportCategory | null>(null);
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const attachmentsRef = useRef<AgentAttachment[]>([]);
+  categoryRef.current = category;
+  attachmentsRef.current = attachments;
   const [dropActive, setDropActive] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1963,9 +1973,11 @@ export function AgentWorkspace({
     setSubmitting(true);
     composerEditorRef.current?.clear();
     setDraft("");
+    draftRef.current = "";
     setCategory(null);
+    categoryRef.current = null;
     forgetComposerDraft(submittedDraftKey);
-    setAttachments([]);
+    setComposerAttachments([]);
     setIssueReportNotice(null);
     try {
       await submitHermesSession(
@@ -1997,9 +2009,16 @@ export function AgentWorkspace({
       // typed or attached something new during the in-flight send.
       if (composerEditorRef.current?.isEmpty() ?? true) {
         composerEditorRef.current?.setContent(message, reportCategory);
-        rememberComposerDraft(submittedDraftKey, message, reportCategory);
+        rememberComposerDraft(
+          submittedDraftKey,
+          message,
+          reportCategory,
+          attachments,
+        );
       }
-      setAttachments((current) => (current.length ? current : attachments));
+      setComposerAttachments((current) =>
+        current.length ? current : attachments,
+      );
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
         // connection banner along with showing the notice.
@@ -2047,7 +2066,7 @@ export function AgentWorkspace({
       for (const item of items) {
         imported.push(await importItem(item));
       }
-      setAttachments((current) => [
+      setComposerAttachments((current) => [
         ...current,
         ...imported.map((file) => ({
           ...file,
@@ -2091,7 +2110,9 @@ export function AgentWorkspace({
   }
 
   function removeAttachment(id: string) {
-    setAttachments((current) => current.filter((item) => item.id !== id));
+    setComposerAttachments((current) =>
+      current.filter((item) => item.id !== id),
+    );
   }
 
   // Focus the composer, then toggle the dictation helper's listening state —
@@ -2867,8 +2888,11 @@ export function AgentWorkspace({
 
   function clearComposerDraft(key = composerDraftKeyRef.current) {
     draftRef.current = "";
+    categoryRef.current = null;
+    attachmentsRef.current = [];
     setDraft("");
     setCategory(null);
+    setAttachments([]);
     forgetComposerDraft(key);
     composerEditorRef.current?.clear();
   }
@@ -2878,10 +2902,32 @@ export function AgentWorkspace({
     if (!editor) return;
     const snapshot = key ? agentComposerDrafts.get(key) : undefined;
     draftRef.current = snapshot?.text ?? "";
+    categoryRef.current = snapshot?.category ?? null;
+    attachmentsRef.current = snapshot?.attachments ?? [];
     setDraft(snapshot?.text ?? "");
     setCategory(snapshot?.category ?? null);
+    setAttachments(snapshot?.attachments ?? []);
     editor.setContent(snapshot?.text ?? "", snapshot?.category ?? null, {
       focus: false,
+    });
+  }
+
+  function setComposerAttachments(
+    nextValue:
+      | AgentAttachment[]
+      | ((current: AgentAttachment[]) => AgentAttachment[]),
+  ) {
+    setAttachments((current) => {
+      const next =
+        typeof nextValue === "function" ? nextValue(current) : nextValue;
+      attachmentsRef.current = next;
+      rememberComposerDraft(
+        composerDraftKeyRef.current,
+        draftRef.current,
+        categoryRef.current,
+        next,
+      );
+      return next;
     });
   }
 
@@ -3610,12 +3656,14 @@ export function AgentWorkspace({
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
+              categoryRef.current = nextCategory;
               setDraft(text);
               setCategory(nextCategory);
               rememberComposerDraft(
                 composerDraftKeyRef.current,
                 text,
                 nextCategory,
+                attachmentsRef.current,
               );
             }}
             onSubmit={() => void submit()}
