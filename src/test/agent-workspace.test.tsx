@@ -545,7 +545,9 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
-    mocks.submitIssueReport.mockRejectedValue(new Error("upstream_failed"));
+    mocks.submitIssueReport.mockRejectedValue(
+      new HermesGatewayError("session busy", 4009),
+    );
 
     render(<AgentWorkspace />);
 

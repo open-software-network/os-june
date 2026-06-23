@@ -2003,15 +2003,15 @@ export function AgentWorkspace({
       setComposerAttachments((current) =>
         current.length ? current : attachments,
       );
-      if (isSessionBusyError(err)) {
+      if (reportCategory) {
+        setError(
+          `The issue report could not be sent. ${messageFromError(err)}`,
+        );
+      } else if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
         // connection banner along with showing the notice.
         setError(null);
         setBusyNotice(SESSION_BUSY_NOTICE);
-      } else if (reportCategory) {
-        setError(
-          `The issue report could not be sent. ${messageFromError(err)}`,
-        );
       } else {
         setError(messageFromError(err));
       }
