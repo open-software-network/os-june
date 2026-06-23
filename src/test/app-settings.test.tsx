@@ -512,6 +512,41 @@ describe("AppSettings", () => {
     await waitFor(() => expect(onAccountRefresh).toHaveBeenCalledOnce());
   });
 
+  it("offers a direct cancel subscription action in billing settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          subscription: {
+            subscribed: true,
+            status: "active",
+            currentPeriodEnd: "2027-02-03T00:00:00Z",
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(
+      screen.getByRole("button", { name: "Cancel subscription" }),
+    );
+
+    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByText(
+        "Opened your account portal. Choose Cancel subscription to end your plan.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("hides billing and sign-out controls in local mode", () => {
     render(
       <AppSettings
