@@ -106,4 +106,11 @@ describe("skill slash commands", () => {
       "implement issue JUN-46",
     );
   });
+
+  it("does not strip ordinary messages that mention the marker strings", () => {
+    const ordinary =
+      "Explain this example:\n---USER REQUEST---\nhello\n---END USER REQUEST---";
+
+    expect(displayedSkillInvocationText(ordinary)).toBe(ordinary);
+  });
 });

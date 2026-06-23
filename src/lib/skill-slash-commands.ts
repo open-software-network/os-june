@@ -139,11 +139,22 @@ export function explicitSkillInvocationPrompt(
 }
 
 export function displayedSkillInvocationText(content: string): string {
-  const start = content.indexOf(USER_REQUEST_START);
+  const text = content.trim();
+  if (!text.startsWith(EXPLICIT_SKILLS_START)) return content;
+
+  const skillsEnd = text.indexOf(EXPLICIT_SKILLS_END);
+  if (skillsEnd === -1) return content;
+
+  const start = text.indexOf(
+    USER_REQUEST_START,
+    skillsEnd + EXPLICIT_SKILLS_END.length,
+  );
   if (start === -1) return content;
-  const end = content.lastIndexOf(USER_REQUEST_END);
+  const end = text.lastIndexOf(USER_REQUEST_END);
   if (end <= start) return content;
-  const request = content.slice(start + USER_REQUEST_START.length, end).trim();
+  if (text.slice(end + USER_REQUEST_END.length).trim()) return content;
+
+  const request = text.slice(start + USER_REQUEST_START.length, end).trim();
   return request || content;
 }
 

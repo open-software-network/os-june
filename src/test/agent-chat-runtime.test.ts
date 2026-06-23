@@ -6,6 +6,7 @@ import {
   repairContractionSpacing,
   toolEventKey,
 } from "../lib/agent-chat-runtime";
+import { categoryPrompt } from "../lib/issue-report-prompt";
 import { explicitSkillInvocationPrompt } from "../lib/skill-slash-commands";
 import type { AgentMessageDto, HermesSessionMessage } from "../lib/tauri";
 
@@ -144,6 +145,37 @@ describe("Agent chat runtime", () => {
       {
         type: "text",
         text: "implement issue JUN-46",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("strips report prompts that contain explicit skill context", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: categoryPrompt(
+          "feature",
+          explicitSkillInvocationPrompt(
+            [
+              {
+                name: "repo-build-pr",
+                relativePath: "repo-build-pr/SKILL.md",
+                content: "# Repo build PR\n\nOpen a draft PR.",
+              },
+            ],
+            "add slash commands",
+          ),
+        ),
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "add slash commands",
         status: "complete",
       },
     ]);

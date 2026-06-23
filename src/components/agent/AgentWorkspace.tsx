@@ -175,6 +175,7 @@ import {
   explicitSkillInvocationPrompt,
   parseSkillSlashCommands,
   resolveSkillSlashCommands,
+  type SkillSlashResolution,
   skillSlashResolutionError,
 } from "../../lib/skill-slash-commands";
 import {
@@ -1953,14 +1954,9 @@ export function AgentWorkspace({
       throw new Error("Add a request after the skill command.");
     }
 
+    const resolved = resolutions.filter(isResolvedSkillSlashResolution);
     const documents = await Promise.all(
-      resolutions.map((resolution) =>
-        getHermesBridgeSkill(
-          resolution.status === "resolved"
-            ? resolution.skill.name
-            : resolution.token,
-        ),
-      ),
+      resolved.map((resolution) => getHermesBridgeSkill(resolution.skill.name)),
     );
     const displayContent = promptWithAttachments(
       typedMessage,
@@ -3059,7 +3055,6 @@ export function AgentWorkspace({
           `Skill commands are unavailable. ${messageFromError(err)}`,
         );
       }
-      setSkills([]);
       return [];
     } finally {
       setSkillCommandLoading(false);
@@ -8007,6 +8002,12 @@ function visibleHermesMessageText(message: HermesSessionMessage) {
     textFromHermesValue(message.text) ??
     "";
   return displayedComposerUserMessageText(stripHermesVisibleContext(text));
+}
+
+function isResolvedSkillSlashResolution(
+  resolution: SkillSlashResolution,
+): resolution is Extract<SkillSlashResolution, { status: "resolved" }> {
+  return resolution.status === "resolved";
 }
 
 function displayedComposerUserMessageText(content: string): string {
