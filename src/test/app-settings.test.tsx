@@ -547,6 +547,37 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("offers the cancel subscription action during a trial", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          subscription: {
+            subscribed: true,
+            status: "trialing",
+            trialEnd: "2027-02-03T00:00:00Z",
+          },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    expect(screen.getByText("Free trial")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Cancel subscription" }),
+    );
+    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+  });
+
   it("hides billing and sign-out controls in local mode", () => {
     render(
       <AppSettings
