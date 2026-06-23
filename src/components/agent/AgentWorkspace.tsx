@@ -7708,9 +7708,13 @@ function assignArtifactsToTurns(
     for (const artifact of artifacts) {
       const name = artifact.name.toLowerCase();
       if (!name || claimedPaths.has(artifact.path)) continue;
+      const fullPath = artifact.path.toLowerCase();
+      const promptPath = attachmentPromptPath(artifact.path).toLowerCase();
       const pathMentioned =
-        text.includes(artifact.path.toLowerCase()) ||
-        text.includes(attachmentPromptPath(artifact.path).toLowerCase());
+        turn.role === "assistant"
+          ? assistantTextSurfacesArtifactName(text, fullPath) ||
+            assistantTextSurfacesArtifactName(text, promptPath)
+          : text.includes(fullPath) || text.includes(promptPath);
       const nameMentioned =
         turn.role === "assistant" &&
         !claimedNames.has(name) &&
