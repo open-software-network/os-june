@@ -1233,6 +1233,76 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("restores a session draft after leaving and returning to agent chat", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "carry this thought");
+    expect(screen.getByRole("textbox")).toHaveTextContent("carry this thought");
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "carry this thought",
+      ),
+    );
+  });
+
+  it("keeps a session draft when starting a blank new session", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "come back to this");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "come back to this",
+      ),
+    );
+  });
+
+  it("clears a cached session draft after sending it", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "ship this");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "ship this",
+      }),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+  });
+
   it("submits a pending New Session prompt as a fresh Hermes session", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
