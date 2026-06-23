@@ -7610,14 +7610,20 @@ function promptWithAttachments(
   return [
     message || "Use the attached file(s).",
     "",
-    "Attached files copied into the Scribe Hermes workspace:",
+    "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>
-        `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,
+        `- ${attachment.name} (${attachment.rootLabel}): ${attachmentPromptPath(attachment.path)}`,
     ),
     "",
-    "Use these workspace paths when inspecting or operating on the files.",
+    "Use these file paths when inspecting or operating on the files.",
   ].join("\n");
+}
+
+function attachmentPromptPath(path: string) {
+  const workspaceMatch = path.match(/(?:^|[/\\])workspace[/\\](.+)$/);
+  if (workspaceMatch?.[1]) return workspaceMatch[1];
+  return path;
 }
 
 function filesystemEntriesToArtifacts(
@@ -7677,11 +7683,11 @@ function assistantTextSurfacesArtifactName(text: string, name: string) {
 
 // Assigns each workspace file to the first turn that mentions it, so its
 // download card renders once instead of at the end of every later response
-// that happens to repeat the file name. User turns can claim a file too, but
-// only by full path — that's how promptWithAttachments injects attachments,
-// and a file the user just handed us shouldn't bounce back as a download.
-// Name-only matches are also deduplicated by name, so two workspace copies of
-// the same file don't produce twin cards.
+// that happens to repeat the file name. User turns can claim a file too, using
+// either the full artifact path or the workspace-relative path injected for
+// attachments, so a file the user just handed us shouldn't bounce back as a
+// download. Name-only matches are also deduplicated by name, so two workspace
+// copies of the same file don't produce twin cards.
 function assignArtifactsToTurns(
   turns: AgentChatTurn[],
   artifacts: AgentArtifact[],
@@ -7702,7 +7708,9 @@ function assignArtifactsToTurns(
     for (const artifact of artifacts) {
       const name = artifact.name.toLowerCase();
       if (!name || claimedPaths.has(artifact.path)) continue;
-      const pathMentioned = text.includes(artifact.path.toLowerCase());
+      const pathMentioned =
+        text.includes(artifact.path.toLowerCase()) ||
+        text.includes(attachmentPromptPath(artifact.path).toLowerCase());
       const nameMentioned =
         turn.role === "assistant" &&
         !claimedNames.has(name) &&

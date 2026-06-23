@@ -505,6 +505,13 @@ describe("AgentWorkspace", () => {
     expect(submitted.text).toContain(
       "The recorder crashes after long meetings",
     );
+    expect(submitted.text).toContain(
+      "Attached files copied into the June workspace:",
+    );
+    expect(submitted.text).toContain(
+      "Use these file paths when inspecting or operating on the files.",
+    );
+    expect(submitted.text).not.toContain("Scribe Hermes");
     // The transcript shows the user's words only — the investigation
     // framing is plumbing between June and the runtime, never UI.
     expect(
@@ -2251,10 +2258,10 @@ describe("AgentWorkspace", () => {
         content: [
           "Summarize this.",
           "",
-          "Attached files copied into the Scribe Hermes workspace:",
-          `- june-context.md (Workspace): ${attachedPath}`,
+          "Attached files copied into the June workspace:",
+          "- june-context.md (Workspace): june-context.md",
           "",
-          "Use these workspace paths when inspecting or operating on the files.",
+          "Use these file paths when inspecting or operating on the files.",
         ].join("\n"),
         timestamp: "2026-06-04T18:38:00Z",
       },
@@ -2547,11 +2554,20 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
-        text: expect.stringContaining(
-          "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/screenshot.png",
-        ),
+        text: expect.stringContaining("uploads/screenshot.png"),
       }),
     );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain(
+      "Attached files copied into the June workspace:",
+    );
+    expect(submitted.text).toContain(
+      "Use these file paths when inspecting or operating on the files.",
+    );
+    expect(submitted.text).not.toContain("co.opensoftware.scribe");
+    expect(submitted.text).not.toContain("Scribe Hermes");
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
     );
