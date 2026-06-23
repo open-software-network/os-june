@@ -1489,6 +1489,94 @@ input:focus-visible,
   color: var(--destructive);
 }
 
+.tool-guard-review {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.tool-guard-findings {
+  display: grid;
+  gap: var(--sp-2);
+  max-height: 260px;
+  overflow: auto;
+}
+
+.tool-guard-finding {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: flex-start;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.tool-guard-finding input {
+  margin-top: 2px;
+}
+
+.tool-guard-finding > span {
+  min-width: 0;
+}
+
+.tool-guard-finding-title {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.tool-guard-finding code {
+  display: block;
+  overflow: hidden;
+  max-width: 100%;
+  margin-top: var(--sp-2);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-guard-advisories {
+  border-left: 2px solid
+    color-mix(in oklch, var(--warm-strong) 52%, var(--border));
+  padding-left: var(--sp-3);
+}
+
+.tool-guard-advisories p,
+.tool-guard-empty,
+.tool-guard-error {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.tool-guard-advisories ul {
+  display: grid;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0 0;
+  padding-left: var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.tool-guard-error {
+  color: var(--destructive);
+}
+
+.tool-guard-raw {
+  color: var(--muted-foreground);
+}
+
 /* The resolved record is a quiet line of text, not a chip. */
 .agent-approval-result {
   display: inline-flex;
@@ -2745,6 +2833,16 @@ input:focus-visible,
 
 .agent-composer-notice .dot-spinner {
   flex-shrink: 0;
+}
+
+.agent-composer-notice-action {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.agent-composer-notice-action .btn {
+  min-height: 28px;
+  padding: 0 var(--sp-2);
 }
 
 /* No per-state / collapsed overrides or left transition needed: the single
@@ -7349,6 +7447,46 @@ input:focus-visible,
 
 .agent-credits-notice .inline-notice-body {
   display: inline;
+}
+
+.agent-policy-block-notice {
+  align-items: flex-start;
+}
+
+.agent-policy-block-notice .inline-notice-actions {
+  padding-top: 1px;
+}
+
+/* Full-width timeline marker for OS Guard being re-enabled: a centred label
+ * flanked by hairlines, so the span where it was off stays readable between
+ * the block/approval card and the turns that follow. */
+.agent-chat-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.agent-chat-divider::before,
+.agent-chat-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.agent-chat-divider-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--success);
+  white-space: nowrap;
+}
+
+.agent-chat-divider-label svg {
+  color: var(--success);
 }
 
 /* Inline notice — shared shape used by NoteRecoveryPrompt and the

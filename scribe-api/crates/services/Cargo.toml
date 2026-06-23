@@ -11,6 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+async-stream.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
 scribe-config.workspace = true
 scribe-domain.workspace = true
 serde.workspace = true

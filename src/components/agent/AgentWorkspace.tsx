@@ -71,6 +71,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
 import {
   cancelAgentTask,
+  AGENT_POLICY_BLOCK_DECISION_EVENT,
   createAgentTask,
   dictationHelperCommand,
   explainAgentApproval,
@@ -83,6 +84,8 @@ import {
   hermesAgentCliAccess,
   hermesBridgeSkills,
   hermesBridgeStatus,
+  hermesBridgeClearDirectPolicy,
+  hermesBridgePolicyBlockDecision,
   hermesBridgeToolsets,
   importHermesBridgeFile,
   importHermesBridgeFileBytes,
@@ -107,6 +110,8 @@ import {
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
   type ImportedHermesFile,
+  type PolicyBlockDecisionAction,
+  type PolicyBlockDecisionRequest,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
   type HermesSessionInfo,
@@ -150,6 +155,7 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
+import { ToolGuardReviewDialog } from "./ToolGuardReviewDialog";
 import {
   contextLabel,
   modelOptions,
@@ -192,6 +198,7 @@ import {
   stripAgentCliAccessRequest,
 } from "../../lib/agent-cli-access";
 import {
+  applyPolicyBlockCards,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   repairContractionSpacing,
@@ -199,6 +206,8 @@ import {
   type AgentChatPart,
   type AgentChatTurn,
   type LiveHermesEvent,
+  type PolicyBlockDecision,
+  type OsGuardReenable,
 } from "../../lib/agent-chat-runtime";
 import {
   buildAgentChatGallery,
@@ -727,6 +736,10 @@ type AgentSessionContinuity = {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  directPolicySessionIds: string[];
+  rejectedPolicySessionIds: string[];
+  policyBlockDecisions: Record<string, PolicyBlockDecision[]>;
+  osGuardReenabledAt: Record<string, OsGuardReenable[]>;
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
@@ -739,6 +752,10 @@ function captureSessionContinuity(state: {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  directPolicySessionIds: Set<string>;
+  rejectedPolicySessionIds: Set<string>;
+  policyBlockDecisions: Record<string, PolicyBlockDecision[]>;
+  osGuardReenabledAt: Record<string, OsGuardReenable[]>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
     ...state.workingSessionIds,
@@ -762,6 +779,14 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
+    directPolicySessionIds: [...state.directPolicySessionIds].filter(
+      (sessionId) => activeIds.has(sessionId),
+    ),
+    rejectedPolicySessionIds: [...state.rejectedPolicySessionIds].filter(
+      (sessionId) => activeIds.has(sessionId),
+    ),
+    policyBlockDecisions: pick(state.policyBlockDecisions),
+    osGuardReenabledAt: pick(state.osGuardReenabledAt),
   };
 }
 
@@ -807,6 +832,31 @@ export function AgentWorkspace({
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] =
     useState<AgentWorkspaceNotice | null>(null);
+  const [policyBlockSubmitting, setPolicyBlockSubmitting] = useState<
+    Record<string, PolicyBlockDecisionAction>
+  >({});
+  const policyBlockSessionIdsRef = useRef<Record<string, string>>({});
+  const [directPolicySessionIds, setDirectPolicySessionIds] = useState<
+    Set<string>
+  >(() => new Set(continuity?.directPolicySessionIds ?? []));
+  const directPolicySessionIdsRef = useRef(directPolicySessionIds);
+  const [rejectedPolicySessionIds, setRejectedPolicySessionIds] = useState<
+    Set<string>
+  >(() => new Set(continuity?.rejectedPolicySessionIds ?? []));
+  const rejectedPolicySessionIdsRef = useRef(rejectedPolicySessionIds);
+  // Per-session policy-block decisions: the single source of the inline
+  // block/approval cards, rendered by array position so they never drift or
+  // duplicate across live streaming and reconcile.
+  const [policyBlockDecisions, setPolicyBlockDecisions] = useState<
+    Record<string, PolicyBlockDecision[]>
+  >(() => continuity?.policyBlockDecisions ?? {});
+  const policyBlockDecisionsRef = useRef(policyBlockDecisions);
+  // Per-session OS Guard re-enable markers; each renders a divider in the
+  // timeline anchored by user-turn ordinal.
+  const [osGuardReenabledAt, setOsGuardReenabledAt] = useState<
+    Record<string, OsGuardReenable[]>
+  >(() => continuity?.osGuardReenabledAt ?? {});
+  const osGuardReenabledAtRef = useRef(osGuardReenabledAt);
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -893,6 +943,9 @@ export function AgentWorkspace({
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
+  const hermesSessionMessagesRef = useRef<
+    Record<string, HermesSessionMessage[]>
+  >(hermesSessionMessages);
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >(() => continuity?.pendingMessages ?? {});
@@ -1059,11 +1112,21 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
+    directPolicySessionIdsRef.current = directPolicySessionIds;
+    rejectedPolicySessionIdsRef.current = rejectedPolicySessionIds;
+    policyBlockDecisionsRef.current = policyBlockDecisions;
+    osGuardReenabledAtRef.current = osGuardReenabledAt;
     pendingHermesMessagesRef.current = pendingHermesMessages;
+    hermesSessionMessagesRef.current = hermesSessionMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
+    directPolicySessionIds,
     hermesSessionItems,
+    hermesSessionMessages,
+    osGuardReenabledAt,
     pendingHermesMessages,
+    policyBlockDecisions,
+    rejectedPolicySessionIds,
     selectedHermesSessionId,
     waitingSessionIds,
     workingSessionIds,
@@ -1101,6 +1164,22 @@ export function AgentWorkspace({
     [],
   );
 
+  // User-turn text contents for a session in the same chronological order the
+  // chat builds them (persisted first, then unpersisted pending). Used to anchor
+  // policy-block cards and re-enable dividers by user-turn ordinal.
+  const sessionUserTurnContents = useCallback((sessionId: string): string[] => {
+    const persisted = hermesSessionMessagesRef.current[sessionId] ?? [];
+    const pending = pendingHermesMessagesRef.current[sessionId] ?? [];
+    return [...persisted, ...pending]
+      .filter(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.trim().length > 0,
+      )
+      .map((message) => message.content as string);
+  }, []);
+
   const clearSessionActivity = useCallback((sessionId: string) => {
     const nextWorking = new Set(workingSessionIdsRef.current);
     nextWorking.delete(sessionId);
@@ -1118,6 +1197,163 @@ export function AgentWorkspace({
     };
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<PolicyBlockDecisionRequest>(
+      AGENT_POLICY_BLOCK_DECISION_EVENT,
+      (event) => {
+        const request = event.payload;
+        const sessionId = selectedHermesSessionIdRef.current;
+        if (!request || !sessionId) return;
+        policyBlockSessionIdsRef.current[request.decisionId] = sessionId;
+        // The blocked prompt is the latest user turn. Anchor the card to its
+        // ordinal position among all user turns (chronological), the one anchor
+        // that survives a prompt persisting under a new id or its timestamp
+        // crossing client/server clocks.
+        const sessionUserMessages = sessionUserTurnContents(sessionId);
+        const blockedPrompt = sessionUserMessages.at(-1) ?? "";
+        const blockedUserTurnIndex = Math.max(0, sessionUserMessages.length - 1);
+        setPolicyBlockDecisions((current) => {
+          const existing = current[sessionId] ?? [];
+          // Ignore a repeat for a decision id we already track.
+          if (existing.some((decision) => decision.id === request.decisionId)) {
+            return current;
+          }
+          const added: PolicyBlockDecision = {
+            id: request.decisionId,
+            promptText: blockedPrompt,
+            status: "pending",
+            blockedUserTurnIndex,
+          };
+          const next = {
+            ...current,
+            [sessionId]: [...existing, added],
+          };
+          policyBlockDecisionsRef.current = next;
+          return next;
+        });
+        // Surface the prompt as a "needs you" state: the agent HUD/menu-bar
+        // shows the session as waitingForUser (its own colour + entry) until the
+        // user accepts or rejects, instead of looking like it is still working.
+        setSessionWorking(sessionId, false);
+        setSessionWaiting(sessionId, true);
+      },
+    ).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+        return;
+      }
+      unlisten = cleanup;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [setSessionWaiting, setSessionWorking]);
+
+  async function answerPolicyBlock(
+    part: Extract<AgentChatPart, { type: "policyBlock" }>,
+    action: PolicyBlockDecisionAction,
+  ) {
+    const sessionId =
+      policyBlockSessionIdsRef.current[part.id] ?? selectedHermesSessionId;
+    if (!sessionId || policyBlockSubmitting[part.id]) return;
+    setPolicyBlockSubmitting((current) => ({ ...current, [part.id]: action }));
+    // Reflect the decision on the card immediately, before the backend
+    // round-trip — otherwise the card lingers on the pending prompt and then
+    // visibly swaps to its final state once the call returns.
+    const decisionStatus: PolicyBlockDecision["status"] =
+      action === "continue" ? "continued" : "rejected";
+    setPolicyBlockDecisions((current) => {
+      const existing = current[sessionId] ?? [];
+      const next = {
+        ...current,
+        [sessionId]: existing.map((decision) =>
+          decision.id === part.id
+            ? { ...decision, status: decisionStatus }
+            : decision,
+        ),
+      };
+      policyBlockDecisionsRef.current = next;
+      return next;
+    });
+    try {
+      await hermesBridgePolicyBlockDecision({
+        decisionId: part.id,
+        action,
+      });
+      if (action === "continue") {
+        setDirectPolicySessionIds((current) => {
+          const next = new Set(current);
+          next.add(sessionId);
+          return next;
+        });
+        // Decision made: leave the waiting state and resume the working
+        // indicator while the turn re-runs through the direct route.
+        setSessionWaiting(sessionId, false);
+        setSessionWorking(sessionId, true);
+      } else {
+        setRejectedPolicySessionIds((current) => {
+          const next = new Set(current);
+          next.add(sessionId);
+          return next;
+        });
+        const activityCounts = clearSessionActivity(sessionId);
+        dispatchAgentSessionStatus({
+          sessionId,
+          status: "failed",
+          summary: "The prompt was blocked.",
+          ...activityCounts,
+        });
+      }
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setPolicyBlockSubmitting((current) => {
+        const next = { ...current };
+        delete next[part.id];
+        return next;
+      });
+    }
+  }
+
+  // Re-enable OS Guard for a session the user previously continued past a
+  // block: drop it from the direct set, clear the inline approval card from the
+  // live timeline, and tell the proxy to forget the remembered "continue"
+  // fingerprints so the next turn is scanned again.
+  async function reactivateOsGuard(sessionId: string | undefined) {
+    if (!sessionId) return;
+    setDirectPolicySessionIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    // Keep the block/approval card and record a re-enable marker closing the
+    // span where OS Guard was off, instead of deleting that history. The divider
+    // is anchored before the next prompt the user will send (the user turn at
+    // the current count), by ordinal — the same stable anchor the cards use.
+    const beforeUserTurnIndex = sessionUserTurnContents(sessionId).length;
+    setOsGuardReenabledAt((current) => {
+      const existing = current[sessionId] ?? [];
+      const next = {
+        ...current,
+        [sessionId]: [
+          ...existing,
+          { id: `${existing.length}:${beforeUserTurnIndex}`, beforeUserTurnIndex },
+        ],
+      };
+      osGuardReenabledAtRef.current = next;
+      return next;
+    });
+    try {
+      await hermesBridgeClearDirectPolicy();
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
   // Shared teardown for a session that is going away: its messages, pending
   // sends, working/waiting flags, live gateway listener, and buffered live
   // events. Both delete paths (sidebar event and session-bar menu) run this so
@@ -1134,6 +1370,30 @@ export function AgentWorkspace({
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
+      setDirectPolicySessionIds((current) => {
+        if (!current.has(sessionId)) return current;
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      setRejectedPolicySessionIds((current) => {
+        if (!current.has(sessionId)) return current;
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      setPolicyBlockDecisions((current) => {
+        if (!(sessionId in current)) return current;
+        const next = omitRecordKey(current, sessionId);
+        policyBlockDecisionsRef.current = next;
+        return next;
+      });
+      setOsGuardReenabledAt((current) => {
+        if (!(sessionId in current)) return current;
+        const next = omitRecordKey(current, sessionId);
+        osGuardReenabledAtRef.current = next;
+        return next;
+      });
       // A deleted session must not be the restore target on the next mount.
       forgetLastOpenSessionId(sessionId);
     },
@@ -1735,10 +1995,13 @@ export function AgentWorkspace({
               ...activityCounts,
             });
           }
-          liveEventsRef.current = {
-            ...liveEventsRef.current,
-            [selectedHermesSessionId]: [],
-          };
+          // The turn is reconciled from persisted messages now; drop its live
+          // events. Policy-block cards survive this because they render from
+          // decision state, not from live events.
+          liveEventsRef.current = omitRecordKey(
+            liveEventsRef.current,
+            selectedHermesSessionId,
+          );
           setLiveEvents(liveEventsRef.current);
         }
       })
@@ -1813,6 +2076,10 @@ export function AgentWorkspace({
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
+        directPolicySessionIds: directPolicySessionIdsRef.current,
+        rejectedPolicySessionIds: rejectedPolicySessionIdsRef.current,
+        policyBlockDecisions: policyBlockDecisionsRef.current,
+        osGuardReenabledAt: osGuardReenabledAtRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -1905,6 +2172,13 @@ export function AgentWorkspace({
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (
+      selectedHermesSessionId &&
+      rejectedPolicySessionIds.has(selectedHermesSessionId)
+    ) {
+      setBusyNotice("June blocked this session. Start a new session to continue.");
+      return;
+    }
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
@@ -2625,7 +2899,10 @@ export function AgentWorkspace({
             ...activityCounts,
           });
         }
-        liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
+        // The turn is reconciled from persisted messages now; drop its live
+        // events. Policy-block cards survive this because they render from
+        // decision state, not from live events.
+        liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
         setLiveEvents(liveEventsRef.current);
       }
       await loadHermesSessions();
@@ -3229,11 +3506,15 @@ export function AgentWorkspace({
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
   const hermesTurns = selectedHermesSessionId
-    ? mergeThinkingTurns(
-        buildHermesSessionChatTurns(
-          selectedHermesMessages,
-          liveEvents[selectedHermesSessionId] ?? [],
+    ? applyPolicyBlockCards(
+        mergeThinkingTurns(
+          buildHermesSessionChatTurns(
+            selectedHermesMessages,
+            liveEvents[selectedHermesSessionId] ?? [],
+          ),
         ),
+        policyBlockDecisions[selectedHermesSessionId] ?? [],
+        osGuardReenabledAt[selectedHermesSessionId] ?? [],
       )
     : [];
   const taskTurns = selectedTask
@@ -3460,6 +3741,15 @@ export function AgentWorkspace({
     );
   });
 
+  const selectedSessionDirectPolicy =
+    !newSessionMode &&
+    selectedHermesSessionId !== undefined &&
+    directPolicySessionIds.has(selectedHermesSessionId);
+  const selectedSessionRejectedPolicy =
+    !newSessionMode &&
+    selectedHermesSessionId !== undefined &&
+    rejectedPolicySessionIds.has(selectedHermesSessionId);
+
   const composer =
     activePanel === "chat" ? (
       <form
@@ -3473,7 +3763,47 @@ export function AgentWorkspace({
         onDrop={handleComposerDrop}
       >
         <AnimatePresence>
-          {busyNotice || galleryErrors ? (
+          {selectedSessionRejectedPolicy ? (
+            <motion.div
+              key="policy-rejected-notice"
+              className="agent-composer-notice agent-composer-notice-action"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span>June blocked this session. Start a new session to continue.</span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void startNewTask()}
+              >
+                Start new session
+              </button>
+            </motion.div>
+          ) : selectedSessionDirectPolicy ? (
+            <motion.div
+              key="policy-direct-notice"
+              className="agent-composer-notice agent-composer-notice-action"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span>
+                Protection is bypassed for this session at your request.
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void reactivateOsGuard(selectedHermesSessionId)}
+              >
+                Restore protection
+              </button>
+            </motion.div>
+          ) : busyNotice || galleryErrors ? (
             // Same fade as the recording-consent note, so the pill dissolves
             // when the turn finishes instead of vanishing.
             <motion.p
@@ -3536,6 +3866,7 @@ export function AgentWorkspace({
           ) : null}
           <ComposerEditor
             ref={composerEditorRef}
+            disabled={selectedSessionRejectedPolicy}
             placeholder={
               importingFiles
                 ? "Attaching file…"
@@ -3561,6 +3892,7 @@ export function AgentWorkspace({
               aria-haspopup="menu"
               aria-expanded={attachMenuOpen}
               data-open={attachMenuOpen || undefined}
+              disabled={selectedSessionRejectedPolicy}
               onClick={() => setAttachMenuOpen((open) => !open)}
             >
               <IconPlusMedium size={18} />
@@ -3607,6 +3939,7 @@ export function AgentWorkspace({
                 className="agent-composer-mic"
                 aria-label="Dictate"
                 title="Start dictation"
+                disabled={selectedSessionRejectedPolicy}
                 onClick={() => void startDictation()}
               >
                 <IconMicrophone size={18} />
@@ -3633,6 +3966,7 @@ export function AgentWorkspace({
                   className="agent-composer-send"
                   disabled={
                     submitting ||
+                    selectedSessionRejectedPolicy ||
                     importingFiles ||
                     (!draft.trim() && !attachments.length)
                   }
@@ -3810,6 +4144,7 @@ export function AgentWorkspace({
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
+          policyBlockSubmitting={policyBlockSubmitting}
           cliAccess={{
             enabled: cliAccessEnabled,
             submitting: cliAccessSubmitting,
@@ -3832,6 +4167,9 @@ export function AgentWorkspace({
             void osAccountsTopUp().catch((err: unknown) =>
               setError(messageFromError(err)),
             )
+          }
+          onPolicyBlock={(part, action) =>
+            void answerPolicyBlock(part, action)
           }
           onClarify={(part, answer) =>
             void respondToClarify(
@@ -3895,6 +4233,7 @@ export function AgentWorkspace({
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
+            policyBlockSubmitting={{}}
             cliAccess={{
               enabled: cliAccessEnabled,
               submitting: cliAccessSubmitting,
@@ -3909,6 +4248,7 @@ export function AgentWorkspace({
                 setError(messageFromError(err)),
               )
             }
+            onPolicyBlock={galleryNoop}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -4089,6 +4429,7 @@ export function AgentWorkspace({
             : null}
         </>
       )}
+      <ToolGuardReviewDialog />
     </section>
   );
 }
@@ -5894,10 +6235,12 @@ function AgentResponseGallery({
               artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
+              policyBlockSubmitting={{}}
               thinkingOpen={(key) => thinkingOpenByKey[key] ?? false}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onPolicyBlock={galleryNoop}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
             />
@@ -5914,11 +6257,13 @@ function AgentChatTurnRow({
   artifacts,
   clarifySubmitting,
   cliAccess,
+  policyBlockSubmitting,
   thinkingOpen,
   onApproval,
   onClarify,
   onDownloadArtifact,
   onOpenArtifact,
+  onPolicyBlock,
   onThinkingOpenChange,
   onTopUp,
   turn,
@@ -5927,6 +6272,7 @@ function AgentChatTurnRow({
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
+  policyBlockSubmitting: Record<string, PolicyBlockDecisionAction>;
   /** State + handler for June's in-chat Agent CLI access request card.
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
@@ -5938,6 +6284,10 @@ function AgentChatTurnRow({
   onClarify: (
     part: Extract<AgentChatPart, { type: "clarify" }>,
     answer: string,
+  ) => void;
+  onPolicyBlock: (
+    part: Extract<AgentChatPart, { type: "policyBlock" }>,
+    action: PolicyBlockDecisionAction,
   ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
@@ -6004,6 +6354,25 @@ function AgentChatTurnRow({
       part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+
+  const dividerParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "divider" }> =>
+      part.type === "divider",
+  );
+  if (dividerParts.length && turn.parts.every((part) => part.type === "divider")) {
+    return (
+      <>
+        {dividerParts.map((part) => (
+          <div key={`${turn.id}:divider:${part.id}`} className="agent-chat-divider">
+            <span className="agent-chat-divider-label">
+              <IconShieldCheck size={13} aria-hidden />
+              {part.label}
+            </span>
+          </div>
+        ))}
+      </>
+    );
+  }
 
   if (
     contextParts.length &&
@@ -6099,6 +6468,13 @@ function AgentChatTurnRow({
               part={part}
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
+            />
+          ) : part.type === "policyBlock" ? (
+            <PolicyBlockPart
+              key={`${turn.id}:policy-block:${part.id}`}
+              part={part}
+              submitting={policyBlockSubmitting[part.id]}
+              onPolicyBlock={onPolicyBlock}
             />
           ) : part.type === "notice" ? (
             <CreditsNoticePart
@@ -6202,6 +6578,59 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
             Add funds
           </button>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function PolicyBlockPart({
+  onPolicyBlock,
+  part,
+  submitting,
+}: {
+  onPolicyBlock: (
+    part: Extract<AgentChatPart, { type: "policyBlock" }>,
+    action: PolicyBlockDecisionAction,
+  ) => void;
+  part: Extract<AgentChatPart, { type: "policyBlock" }>;
+  submitting?: PolicyBlockDecisionAction;
+}) {
+  const pending = part.status === "pending";
+  const continued = part.status === "continued";
+  const body = continued
+    ? "Protection is bypassed for the rest of this session at your request. Prompts run without June's checks."
+    : part.status === "rejected"
+      ? "June blocked this prompt. Start a new session to continue."
+      : "June blocked this prompt because it detected malicious content. You can reject it, or bypass protection for the rest of this session to continue.";
+  return (
+    <InlineNotice
+      className="agent-policy-block-notice"
+      tone={continued ? "warning" : "destructive"}
+      role="alert"
+      icon={<IconShieldCrossed size={14} aria-hidden />}
+      eyebrow={continued ? "Protection bypassed" : "Prompt blocked"}
+      body={body}
+      actions={
+        pending ? (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={Boolean(submitting)}
+              onClick={() => onPolicyBlock(part, "continue")}
+            >
+              {submitting === "continue" ? "Continuing" : "Continue"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={Boolean(submitting)}
+              onClick={() => onPolicyBlock(part, "reject")}
+            >
+              {submitting === "reject" ? "Rejecting" : "Reject"}
+            </button>
+          </>
         ) : undefined
       }
     />

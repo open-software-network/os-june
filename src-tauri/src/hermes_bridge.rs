@@ -2,6 +2,7 @@ use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
@@ -15,7 +16,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::oneshot,
@@ -202,12 +203,199 @@ pub struct HermesBridge {
     /// per-process proxy would rewrite the file under the other process.
     /// Started lazily on the first spawn, lives until app shutdown.
     provider_proxy: Mutex<Option<SharedProviderProxy>>,
+    /// Pending Tool Guard review prompts emitted by the provider proxy and
+    /// resolved by the desktop UI. Missing, timed-out, or cancelled decisions
+    /// fail closed so raw tool data is not forwarded accidentally.
+    tool_guard_decisions: Arc<crate::tool_guard::ToolGuardDecisionHub>,
+    /// Pending OS Guard policy-block prompts emitted by the provider proxy.
+    /// The UI must explicitly choose whether a blocked session continues
+    /// directly through Venice or stops.
+    policy_block_decisions: Arc<PolicyBlockDecisionHub>,
+    /// Conversation fingerprints the user chose to continue past a policy
+    /// block: the proxy routes them straight to Venice on later turns instead
+    /// of re-prompting. Shared with the provider proxy and cleared when the
+    /// user re-enables OS Guard for the session.
+    direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
+    /// Per-user-message fingerprints the user explicitly continued past. Unlike
+    /// `direct_policy_fingerprints`, this set is NOT cleared when OS Guard is
+    /// re-enabled: a message the user already approved must not re-block every
+    /// later turn just because it still sits in the conversation history. New
+    /// content is still scanned normally; only an approved historical message is
+    /// allowed to ride along.
+    approved_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 }
 
 struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
+}
+
+const AGENT_POLICY_BLOCK_DECISION_EVENT: &str = "agent-policy-block-decision-request";
+const POLICY_BLOCK_DECISION_TIMEOUT: Duration = Duration::from_secs(300);
+const POLICY_BLOCKED_ERROR_CODE: i64 = 4031;
+
+#[derive(Default)]
+pub struct PolicyBlockDecisionHub {
+    pending: Mutex<HashMap<String, oneshot::Sender<PolicyBlockDecisionResponse>>>,
+    /// Conversation fingerprint -> decision id of the prompt currently awaiting
+    /// the user. While an entry exists, a duplicate block for the same
+    /// conversation (e.g. a Hermes retry of the same turn) is short-circuited
+    /// instead of emitting another prompt, so the user is not spammed.
+    active_by_fingerprint: Mutex<HashMap<String, String>>,
+}
+
+/// Outcome of asking the user about a blocked prompt.
+enum PolicyBlockRequestOutcome {
+    /// The user resolved the prompt for this conversation.
+    Decided(PolicyBlockDecision),
+    /// A prompt for this conversation is already awaiting the user; this
+    /// duplicate request was not shown again.
+    AlreadyPending,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyBlockDecisionRequest {
+    pub decision_id: String,
+    pub conversation_fingerprint: String,
+    pub model: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyBlockDecisionResponse {
+    pub decision_id: String,
+    pub action: PolicyBlockDecisionAction,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum PolicyBlockDecisionAction {
+    Continue,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PolicyBlockDecision {
+    Continue,
+    Reject,
+}
+
+impl PolicyBlockDecisionHub {
+    async fn request_decision(
+        &self,
+        app: &AppHandle,
+        request: PolicyBlockDecisionRequest,
+    ) -> Result<PolicyBlockRequestOutcome, AppError> {
+        let decision_id = request.decision_id.clone();
+        let fingerprint = request.conversation_fingerprint.clone();
+
+        // Only the first block for a conversation emits a prompt. While it is
+        // pending, duplicate blocks (a retried turn) short-circuit so the user
+        // sees a single prompt instead of one per retry.
+        {
+            let mut active = self.active_by_fingerprint.lock().map_err(|_| {
+                AppError::new(
+                    "policy_block_decision_failed",
+                    "Policy block decision lock failed.",
+                )
+            })?;
+            if active.contains_key(&fingerprint) {
+                return Ok(PolicyBlockRequestOutcome::AlreadyPending);
+            }
+            active.insert(fingerprint.clone(), decision_id.clone());
+        }
+
+        let (sender, receiver) = oneshot::channel();
+        {
+            let mut pending = self.pending.lock().map_err(|_| {
+                self.clear_active(&fingerprint);
+                AppError::new(
+                    "policy_block_decision_failed",
+                    "Policy block decision lock failed.",
+                )
+            })?;
+            pending.insert(decision_id.clone(), sender);
+        }
+
+        if app
+            .emit(AGENT_POLICY_BLOCK_DECISION_EVENT, request)
+            .is_err()
+        {
+            let _ = self.remove_pending(&decision_id);
+            self.clear_active(&fingerprint);
+            return Err(AppError::new(
+                "policy_block_decision_unavailable",
+                "Policy block decision UI is unavailable.",
+            ));
+        }
+
+        let response = match tokio::time::timeout(POLICY_BLOCK_DECISION_TIMEOUT, receiver).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                self.clear_active(&fingerprint);
+                return Err(AppError::new(
+                    "policy_block_decision_dropped",
+                    "Policy block decision was dropped.",
+                ));
+            }
+            Err(_) => {
+                let _ = self.remove_pending(&decision_id);
+                self.clear_active(&fingerprint);
+                return Err(AppError::new(
+                    "policy_block_decision_timeout",
+                    "Policy block decision timed out.",
+                ));
+            }
+        };
+        self.clear_active(&fingerprint);
+        if response.decision_id != decision_id {
+            return Err(AppError::new(
+                "policy_block_decision_mismatch",
+                "Policy block decision mismatch.",
+            ));
+        }
+        Ok(PolicyBlockRequestOutcome::Decided(match response.action {
+            PolicyBlockDecisionAction::Continue => PolicyBlockDecision::Continue,
+            PolicyBlockDecisionAction::Reject => PolicyBlockDecision::Reject,
+        }))
+    }
+
+    fn clear_active(&self, fingerprint: &str) {
+        if let Ok(mut active) = self.active_by_fingerprint.lock() {
+            active.remove(fingerprint);
+        }
+    }
+
+    pub fn respond(&self, response: PolicyBlockDecisionResponse) -> Result<(), AppError> {
+        let sender = self.remove_pending(&response.decision_id)?;
+        sender
+            .send(response)
+            .map_err(|_| AppError::new("policy_block_decision_dropped", "Decision was dropped."))
+    }
+
+    fn remove_pending(
+        &self,
+        decision_id: &str,
+    ) -> Result<oneshot::Sender<PolicyBlockDecisionResponse>, AppError> {
+        self.pending
+            .lock()
+            .map_err(|_| {
+                AppError::new(
+                    "policy_block_decision_failed",
+                    "Policy block decision lock failed.",
+                )
+            })?
+            .remove(decision_id)
+            .ok_or_else(|| {
+                AppError::new(
+                    "policy_block_decision_missing",
+                    "Policy block decision missing.",
+                )
+            })
+    }
 }
 
 struct SharedProviderProxy {
@@ -418,6 +606,35 @@ pub async fn hermes_bridge_status(
     Ok(status_for(connections, None))
 }
 
+#[tauri::command]
+pub async fn hermes_bridge_tool_guard_decision(
+    bridge: State<'_, HermesBridge>,
+    response: crate::tool_guard::ToolGuardDecisionResponse,
+) -> Result<(), AppError> {
+    bridge.tool_guard_decisions.respond(response)
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_policy_block_decision(
+    bridge: State<'_, HermesBridge>,
+    response: PolicyBlockDecisionResponse,
+) -> Result<(), AppError> {
+    bridge.policy_block_decisions.respond(response)
+}
+
+/// Re-enable OS Guard after the user previously chose to continue past a block:
+/// forget the remembered "continue" fingerprints so subsequent turns are
+/// scanned by OS Guard again instead of going straight to Venice.
+#[tauri::command]
+pub async fn hermes_bridge_clear_direct_policy(
+    bridge: State<'_, HermesBridge>,
+) -> Result<(), AppError> {
+    if let Ok(mut fingerprints) = bridge.direct_policy_fingerprints.lock() {
+        fingerprints.clear();
+    }
+    Ok(())
+}
+
 /// Reap-and-collect: drops map entries whose process has exited and returns
 /// the connections that are still live, sandboxed first.
 fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>, AppError> {
@@ -567,7 +784,7 @@ async fn start_hermes_bridge_inner(
         .map(std::path::PathBuf::from)
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
-    let provider_proxy = ensure_provider_proxy(bridge).await?;
+    let provider_proxy = ensure_provider_proxy(app, bridge).await?;
     sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy.token)?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -701,7 +918,10 @@ async fn start_hermes_bridge_inner(
 
 /// The shared provider proxy's coordinates, starting it on first use. Both
 /// runtime processes point at it through the one shared config.yaml.
-async fn ensure_provider_proxy(bridge: &HermesBridge) -> Result<SharedProviderProxyInfo, AppError> {
+async fn ensure_provider_proxy(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+) -> Result<SharedProviderProxyInfo, AppError> {
     {
         let guard = bridge.provider_proxy.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
@@ -714,7 +934,15 @@ async fn ensure_provider_proxy(bridge: &HermesBridge) -> Result<SharedProviderPr
         }
     }
     let token = random_token();
-    let started = start_scribe_provider_proxy(token.clone()).await?;
+    let started = start_scribe_provider_proxy(
+        app.clone(),
+        token.clone(),
+        bridge.tool_guard_decisions.clone(),
+        bridge.policy_block_decisions.clone(),
+        bridge.direct_policy_fingerprints.clone(),
+        bridge.approved_policy_fingerprints.clone(),
+    )
+    .await?;
     let mut guard = bridge
         .provider_proxy
         .lock()
@@ -1648,7 +1876,7 @@ fn validate_dropped_file_name(raw: &str) -> Result<String, AppError> {
 }
 
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
-    let hermes_home = resolve_scribe_hermes_home(&app)?;
+    let hermes_home = resolve_scribe_hermes_home(app)?;
     let requested = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
@@ -3204,7 +3432,12 @@ fn yaml_string(value: &str) -> String {
 }
 
 async fn start_scribe_provider_proxy(
+    app: AppHandle,
     token: String,
+    decisions: Arc<crate::tool_guard::ToolGuardDecisionHub>,
+    policy_block_decisions: Arc<PolicyBlockDecisionHub>,
+    direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
+    approved_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 ) -> Result<RunningScribeProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
@@ -3218,12 +3451,25 @@ async fn start_scribe_provider_proxy(
     let listener = tokio::net::TcpListener::from_std(listener)
         .map_err(|error| AppError::new("scribe_provider_proxy_failed", error.to_string()))?;
     let (shutdown, shutdown_rx) = oneshot::channel();
-    tauri::async_runtime::spawn(run_scribe_provider_proxy(
-        listener,
-        Arc::new(token),
-        shutdown_rx,
-    ));
+    let state = Arc::new(ScribeProviderProxyState {
+        app,
+        token: Arc::new(token),
+        decisions,
+        policy_block_decisions,
+        direct_policy_fingerprints,
+        approved_policy_fingerprints,
+    });
+    tauri::async_runtime::spawn(run_scribe_provider_proxy(listener, state, shutdown_rx));
     Ok(RunningScribeProviderProxy { port, shutdown })
+}
+
+struct ScribeProviderProxyState {
+    app: AppHandle,
+    token: Arc<String>,
+    decisions: Arc<crate::tool_guard::ToolGuardDecisionHub>,
+    policy_block_decisions: Arc<PolicyBlockDecisionHub>,
+    direct_policy_fingerprints: Arc<Mutex<Vec<String>>>,
+    approved_policy_fingerprints: Arc<Mutex<Vec<String>>>,
 }
 
 struct RunningScribeProviderProxy {
@@ -3233,7 +3479,7 @@ struct RunningScribeProviderProxy {
 
 async fn run_scribe_provider_proxy(
     listener: tokio::net::TcpListener,
-    token: Arc<String>,
+    state: Arc<ScribeProviderProxyState>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
     loop {
@@ -3242,9 +3488,9 @@ async fn run_scribe_provider_proxy(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _)) => {
-                        let token = token.clone();
+                        let state = state.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = handle_scribe_provider_connection(stream, token).await;
+                            let _ = handle_scribe_provider_connection(stream, state).await;
                         });
                     }
                     Err(error) => {
@@ -3263,7 +3509,7 @@ async fn run_scribe_provider_proxy(
 
 async fn handle_scribe_provider_connection(
     mut stream: tokio::net::TcpStream,
-    token: Arc<String>,
+    state: Arc<ScribeProviderProxyState>,
 ) -> io::Result<()> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
@@ -3277,7 +3523,7 @@ async fn handle_scribe_provider_connection(
             return Ok(());
         }
     };
-    if !provider_proxy_authorized(&request, &token) {
+    if !provider_proxy_authorized(&request, &state.token) {
         write_json_response(
             &mut stream,
             401,
@@ -3295,40 +3541,137 @@ async fn handle_scribe_provider_connection(
             write_json_response(&mut stream, 200, body).await?;
         }
         ("POST", "/v1/chat/completions") => {
-            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
-            match crate::scribe_api::proxy_agent_chat_completions(body).await {
-                Ok(response) if response.status >= 400 => {
+            let requested_stream = chat_completion_requested_stream(&body);
+            force_non_streaming_chat_completion(&mut body);
+            let outbound_mappings = match guard_outbound_tool_results(&state, &mut body).await {
+                Ok(mappings) => mappings,
+                Err(error) => {
+                    write_tool_guard_blocked_response(&mut stream, &error).await?;
+                    return Ok(());
+                }
+            };
+            let direct_policy_route = body_matches_direct_policy_fingerprint(&state, &body);
+            let proxy_result = if direct_policy_route {
+                crate::scribe_api::proxy_agent_chat_completions_direct(body.clone()).await
+            } else {
+                crate::scribe_api::proxy_agent_chat_completions(body.clone()).await
+            };
+            match proxy_result {
+                Ok(response) => {
                     // Error bodies are small enough to buffer whole, and
                     // buffering is what makes the overflow translation
-                    // below possible. Success responses keep streaming.
-                    let status = response.status;
-                    let content_type = response.content_type.clone();
-                    let body = response.collect_body().await.unwrap_or_default();
-                    match translate_context_overflow_error(&body) {
-                        Some(rewritten) => {
-                            write_json_response(&mut stream, status, rewritten).await?;
+                    // below possible. Success bodies are buffered too so Tool
+                    // Guard can inspect proposed tool calls before Hermes
+                    // receives them.
+                    let collected = collect_agent_proxy_response(response).await;
+                    if !direct_policy_route
+                        && is_policy_blocked_response(collected.status, &collected.body)
+                        && block_attributable_only_to_approved_history(&state, &body).await
+                    {
+                        // The newest prompt scanned clean on its own, and every
+                        // user message ahead of it was already approved by the
+                        // user. The block is the gateway re-flagging an
+                        // already-approved historical message, not new danger —
+                        // route this turn direct so an approved message cannot
+                        // poison the session after OS Guard is re-enabled.
+                        match crate::scribe_api::proxy_agent_chat_completions_direct(body.clone())
+                            .await
+                        {
+                            Ok(response) => {
+                                let direct = collect_agent_proxy_response(response).await;
+                                write_collected_agent_response(
+                                    &mut stream,
+                                    &state,
+                                    requested_stream,
+                                    direct,
+                                    &outbound_mappings,
+                                )
+                                .await?;
+                            }
+                            Err(error) => {
+                                write_agent_proxy_error(&mut stream, error).await?;
+                            }
                         }
-                        None => {
-                            write_raw_response(&mut stream, status, &content_type, &body).await?;
+                    } else if !direct_policy_route
+                        && is_policy_blocked_response(collected.status, &collected.body)
+                    {
+                        match request_policy_block_decision(&state, &body, &collected.body).await {
+                            Ok(PolicyBlockRequestOutcome::Decided(
+                                PolicyBlockDecision::Continue,
+                            )) => {
+                                if let Some(fingerprint) =
+                                    policy_block_conversation_fingerprint(&body)
+                                {
+                                    // Remember the conversation so later turns
+                                    // route direct, and record the just-approved
+                                    // message so it never re-blocks the session
+                                    // after OS Guard is re-enabled.
+                                    remember_approved_policy_fingerprint(
+                                        &state,
+                                        fingerprint.clone(),
+                                    );
+                                    remember_direct_policy_fingerprint(&state, fingerprint);
+                                }
+                                match crate::scribe_api::proxy_agent_chat_completions_direct(
+                                    body.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(response) => {
+                                        let direct = collect_agent_proxy_response(response).await;
+                                        write_collected_agent_response(
+                                            &mut stream,
+                                            &state,
+                                            requested_stream,
+                                            direct,
+                                            &outbound_mappings,
+                                        )
+                                        .await?;
+                                    }
+                                    Err(error) => {
+                                        write_agent_proxy_error(&mut stream, error).await?;
+                                    }
+                                }
+                            }
+                            // A prompt for this conversation is already awaiting the
+                            // user: return the block to Hermes without showing
+                            // another prompt, so a retried turn cannot spam the UI.
+                            Ok(PolicyBlockRequestOutcome::AlreadyPending) => {
+                                write_collected_agent_response(
+                                    &mut stream,
+                                    &state,
+                                    requested_stream,
+                                    collected,
+                                    &outbound_mappings,
+                                )
+                                .await?;
+                            }
+                            // Reject, or a decision timeout: deny this turn. The
+                            // rejection is not remembered across turns or
+                            // sessions — the block notice is a valid completion
+                            // that ends the turn cleanly, and a fresh session
+                            // with the same prompt must be asked again.
+                            Ok(PolicyBlockRequestOutcome::Decided(PolicyBlockDecision::Reject))
+                            | Err(_) => {
+                                write_policy_block_rejected_response(&mut stream, requested_stream)
+                                    .await?;
+                            }
                         }
+                    } else {
+                        write_collected_agent_response(
+                            &mut stream,
+                            &state,
+                            requested_stream,
+                            collected,
+                            &outbound_mappings,
+                        )
+                        .await?;
                     }
                 }
-                Ok(response) => {
-                    write_streaming_response(&mut stream, response).await?;
-                }
                 Err(error) => {
-                    write_json_response(
-                        &mut stream,
-                        502,
-                        serde_json::json!({
-                            "error": {
-                                "message": format!("Scribe agent provider failed: {}", error.message),
-                                "type": error.code
-                            }
-                        }),
-                    )
-                    .await?;
+                    write_agent_proxy_error(&mut stream, error).await?;
                 }
             }
         }
@@ -3342,6 +3685,678 @@ async fn handle_scribe_provider_connection(
         }
     }
     Ok(())
+}
+
+struct CollectedAgentProxyResponse {
+    status: u16,
+    content_type: String,
+    body: Vec<u8>,
+}
+
+async fn collect_agent_proxy_response(
+    response: crate::scribe_api::AgentChatCompletionsResponse,
+) -> CollectedAgentProxyResponse {
+    let status = response.status;
+    let content_type = response.content_type.clone();
+    let body = response.collect_body().await.unwrap_or_default();
+    CollectedAgentProxyResponse {
+        status,
+        content_type,
+        body,
+    }
+}
+
+async fn write_collected_agent_response(
+    stream: &mut tokio::net::TcpStream,
+    state: &Arc<ScribeProviderProxyState>,
+    requested_stream: bool,
+    response: CollectedAgentProxyResponse,
+    // Tool Guard replacement mappings produced while redacting this request's
+    // tool results (the outbound pass). They are scoped to this single
+    // request/response cycle — never a shared store — so one session's redacted
+    // PII can never rehydrate into another session's response.
+    outbound_mappings: &[crate::tool_guard::ToolGuardReplacementMapping],
+) -> io::Result<()> {
+    if response.status >= 400 {
+        match translate_context_overflow_error(&response.body) {
+            Some(rewritten) => {
+                write_json_response(stream, response.status, rewritten).await?;
+            }
+            None => {
+                write_raw_response(
+                    stream,
+                    response.status,
+                    &response.content_type,
+                    &response.body,
+                )
+                .await?;
+            }
+        }
+    } else if requested_stream {
+        let mut value = serde_json::from_slice::<serde_json::Value>(&response.body)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let inbound_mappings = match guard_inbound_tool_calls(state, &mut value).await {
+            Ok(mappings) => mappings,
+            Err(error) => {
+                write_tool_guard_blocked_response(stream, &error).await?;
+                return Ok(());
+            }
+        };
+        rehydrate_assistant_text_cycle(&mut value, outbound_mappings, &inbound_mappings);
+        write_synthetic_sse_response(stream, response.status, value).await?;
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&response.body) {
+            Ok(mut value) => {
+                let inbound_mappings = match guard_inbound_tool_calls(state, &mut value).await {
+                    Ok(mappings) => mappings,
+                    Err(error) => {
+                        write_tool_guard_blocked_response(stream, &error).await?;
+                        return Ok(());
+                    }
+                };
+                rehydrate_assistant_text_cycle(&mut value, outbound_mappings, &inbound_mappings);
+                write_json_response(stream, response.status, value).await?;
+            }
+            Err(_) => {
+                write_raw_response(
+                    stream,
+                    response.status,
+                    &response.content_type,
+                    &response.body,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Rehydrates the assistant text using only the mappings produced in this one
+/// request/response cycle: the outbound pass (this request's tool results) plus
+/// the inbound pass (this response's tool calls). Keeping it cycle-local is what
+/// prevents cross-session PII bleed — the alternative, a proxy-wide mapping
+/// list, let a repeated replacement token (`[[OSG.EMAIL.1]]` is per analysis and
+/// can repeat) rehydrate one session's response with another's original value.
+fn rehydrate_assistant_text_cycle(
+    body: &mut serde_json::Value,
+    outbound_mappings: &[crate::tool_guard::ToolGuardReplacementMapping],
+    inbound_mappings: &[crate::tool_guard::ToolGuardReplacementMapping],
+) {
+    if outbound_mappings.is_empty() && inbound_mappings.is_empty() {
+        return;
+    }
+    let mut mappings = outbound_mappings.to_vec();
+    mappings.extend_from_slice(inbound_mappings);
+    rehydrate_assistant_text_from_mappings(body, &mappings);
+}
+
+async fn write_agent_proxy_error(
+    stream: &mut tokio::net::TcpStream,
+    error: AppError,
+) -> io::Result<()> {
+    write_json_response(
+        stream,
+        502,
+        serde_json::json!({
+            "error": {
+                "message": format!("Scribe agent provider failed: {}", error.message),
+                "type": error.code
+            }
+        }),
+    )
+    .await
+}
+
+async fn request_policy_block_decision(
+    state: &Arc<ScribeProviderProxyState>,
+    body: &serde_json::Value,
+    response_body: &[u8],
+) -> Result<PolicyBlockRequestOutcome, AppError> {
+    let decision_id = uuid::Uuid::new_v4().to_string();
+    let conversation_fingerprint = policy_block_conversation_fingerprint(body)
+        .unwrap_or_else(|| policy_block_body_fingerprint(body));
+    let request = PolicyBlockDecisionRequest {
+        decision_id,
+        conversation_fingerprint,
+        model: body
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        message: policy_block_response_message(response_body)
+            .unwrap_or_else(|| "policy_blocked".to_string()),
+    };
+    state
+        .policy_block_decisions
+        .request_decision(&state.app, request)
+        .await
+}
+
+fn is_policy_blocked_response(status: u16, body: &[u8]) -> bool {
+    if status != 403 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    json_contains_policy_block(&value)
+}
+
+fn json_contains_policy_block(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => object.iter().any(|(key, value)| {
+            (key == "error_code"
+                && (value.as_i64() == Some(POLICY_BLOCKED_ERROR_CODE)
+                    || value.as_str() == Some("4031")))
+                || (key == "message" && value.as_str() == Some("policy_blocked"))
+                || json_contains_policy_block(value)
+        }),
+        serde_json::Value::Array(items) => items.iter().any(json_contains_policy_block),
+        _ => false,
+    }
+}
+
+fn policy_block_response_message(body: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    find_json_string_field(&value, "message")
+}
+
+fn find_json_string_field(value: &serde_json::Value, field: &str) -> Option<String> {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(value) = object.get(field).and_then(serde_json::Value::as_str) {
+                return Some(value.to_string());
+            }
+            object
+                .values()
+                .find_map(|value| find_json_string_field(value, field))
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .find_map(|value| find_json_string_field(value, field)),
+        _ => None,
+    }
+}
+
+fn body_matches_direct_policy_fingerprint(
+    state: &Arc<ScribeProviderProxyState>,
+    body: &serde_json::Value,
+) -> bool {
+    let candidates = policy_block_conversation_fingerprints(body);
+    if candidates.is_empty() {
+        return false;
+    }
+    let Ok(fingerprints) = state.direct_policy_fingerprints.lock() else {
+        return false;
+    };
+    candidates
+        .iter()
+        .any(|candidate| fingerprints.iter().any(|stored| stored == candidate))
+}
+
+fn remember_direct_policy_fingerprint(state: &Arc<ScribeProviderProxyState>, fingerprint: String) {
+    if let Ok(mut fingerprints) = state.direct_policy_fingerprints.lock() {
+        if !fingerprints.iter().any(|stored| stored == &fingerprint) {
+            fingerprints.push(fingerprint);
+        }
+        const MAX_DIRECT_POLICY_FINGERPRINTS: usize = 128;
+        if fingerprints.len() > MAX_DIRECT_POLICY_FINGERPRINTS {
+            let excess = fingerprints.len() - MAX_DIRECT_POLICY_FINGERPRINTS;
+            fingerprints.drain(0..excess);
+        }
+    }
+}
+
+fn remember_approved_policy_fingerprint(
+    state: &Arc<ScribeProviderProxyState>,
+    fingerprint: String,
+) {
+    if let Ok(mut fingerprints) = state.approved_policy_fingerprints.lock() {
+        if !fingerprints.iter().any(|stored| stored == &fingerprint) {
+            fingerprints.push(fingerprint);
+        }
+        const MAX_APPROVED_POLICY_FINGERPRINTS: usize = 128;
+        if fingerprints.len() > MAX_APPROVED_POLICY_FINGERPRINTS {
+            let excess = fingerprints.len() - MAX_APPROVED_POLICY_FINGERPRINTS;
+            fingerprints.drain(0..excess);
+        }
+    }
+}
+
+/// Decides whether a policy block is caused solely by historical user messages
+/// the user already approved (so it should ride through) rather than by genuinely
+/// new content (which must still be blocked).
+///
+/// Two conditions must both hold:
+/// 1. Every flagged user message ahead of the newest one is in the approved set.
+///    Without an approved match there is nothing to forgive, so the block stands.
+/// 2. The newest user message, scanned alone (system prefix + that message), is
+///    NOT itself blocked by OS Guard. This is the safety check: a brand-new
+///    dangerous prompt is still caught even when sitting behind approved history.
+///
+/// The extra OS Guard call only happens on a block that already cleared
+/// condition 1, so the common path (no approved history) pays nothing.
+async fn block_attributable_only_to_approved_history(
+    state: &Arc<ScribeProviderProxyState>,
+    body: &serde_json::Value,
+) -> bool {
+    let fingerprints = policy_block_conversation_fingerprints(body);
+    // Need at least one historical user message plus the newest one.
+    let Some((_, history)) = fingerprints.split_last() else {
+        return false;
+    };
+    if history.is_empty() {
+        return false;
+    }
+    // Every historical user message must be one the user already approved.
+    // A single unapproved historical message means the block could be its
+    // fault, so fall back to prompting the user. The lock is scoped so its
+    // guard is never held across the await below.
+    let all_history_approved = {
+        let approved = match state.approved_policy_fingerprints.lock() {
+            Ok(approved) => approved,
+            Err(_) => return false,
+        };
+        history
+            .iter()
+            .all(|candidate| approved.iter().any(|stored| stored == candidate))
+    };
+    if !all_history_approved {
+        return false;
+    }
+
+    let Some(recheck_body) = newest_user_message_only_body(body) else {
+        return false;
+    };
+    // Re-scan only the newest prompt. If it is blocked on its own, the new
+    // content is dangerous and must go through the normal decision flow.
+    match crate::scribe_api::proxy_agent_chat_completions(recheck_body).await {
+        Ok(response) => {
+            let collected = collect_agent_proxy_response(response).await;
+            !is_policy_blocked_response(collected.status, &collected.body)
+        }
+        // A failed recheck is inconclusive: do not silently bypass the block.
+        Err(_) => false,
+    }
+}
+
+/// Builds a chat-completions body that keeps the system prefix and only the
+/// newest user message, dropping all earlier turns. Used to scan the new prompt
+/// in isolation so a block can be attributed to it or to approved history.
+/// Returns `None` when there is no user message to scan.
+fn newest_user_message_only_body(body: &serde_json::Value) -> Option<serde_json::Value> {
+    let messages = body.get("messages").and_then(serde_json::Value::as_array)?;
+    let newest_user = messages
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(serde_json::Value::as_str) == Some("user"))?
+        .clone();
+    let mut trimmed: Vec<serde_json::Value> = messages
+        .iter()
+        .take_while(|message| {
+            message.get("role").and_then(serde_json::Value::as_str) == Some("system")
+        })
+        .cloned()
+        .collect();
+    trimmed.push(newest_user);
+    let mut recheck = body.clone();
+    if let Some(object) = recheck.as_object_mut() {
+        object.insert("messages".to_string(), serde_json::Value::Array(trimmed));
+    }
+    Some(recheck)
+}
+
+fn policy_block_conversation_fingerprint(body: &serde_json::Value) -> Option<String> {
+    policy_block_conversation_fingerprints(body).pop()
+}
+
+fn policy_block_conversation_fingerprints(body: &serde_json::Value) -> Vec<String> {
+    let system_prefix = body
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .take_while(|message| {
+                    message.get("role").and_then(serde_json::Value::as_str) == Some("system")
+                })
+                .filter_map(|message| chat_message_content_text(message.get("content")?))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let Some(messages) = body.get("messages").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    messages
+        .iter()
+        .filter(|message| message.get("role").and_then(serde_json::Value::as_str) == Some("user"))
+        .filter_map(|message| chat_message_content_text(message.get("content")?))
+        .map(|user_text| policy_block_text_fingerprint(&system_prefix, &user_text))
+        .collect()
+}
+
+fn chat_message_content_text(content: &serde_json::Value) -> Option<String> {
+    match content {
+        serde_json::Value::String(value) => Some(value.trim().to_string()),
+        serde_json::Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    let object = part.as_object()?;
+                    if object.get("type").and_then(serde_json::Value::as_str) != Some("text") {
+                        return None;
+                    }
+                    object
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn policy_block_text_fingerprint(system_prefix: &str, user_text: &str) -> String {
+    let value = serde_json::json!({
+        "system": system_prefix.trim(),
+        "user": user_text.trim(),
+    });
+    policy_block_body_fingerprint(&value)
+}
+
+fn policy_block_body_fingerprint(value: &serde_json::Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.to_string().as_bytes());
+    hex_lower(&hasher.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn chat_completion_requested_stream(body: &serde_json::Value) -> bool {
+    body.get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn force_non_streaming_chat_completion(body: &mut serde_json::Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("stream".to_string(), serde_json::Value::Bool(false));
+    }
+}
+
+async fn guard_inbound_tool_calls(
+    state: &ScribeProviderProxyState,
+    body: &mut serde_json::Value,
+) -> Result<Vec<crate::tool_guard::ToolGuardReplacementMapping>, AppError> {
+    let agent_turn_id = uuid::Uuid::new_v4().to_string();
+    let mut mappings = Vec::new();
+    let calls = proposed_tool_calls(body);
+    for call in calls {
+        let destination_id = call.tool_name.clone();
+        let analysis = crate::scribe_api::analyze_tool_guard_call(
+            crate::scribe_api::ToolGuardCallAnalysisBody {
+                agent_turn_id: agent_turn_id.clone(),
+                tool_call_id: call.tool_call_id.clone(),
+                tool_name: call.tool_name.clone(),
+                destination_id: destination_id.clone(),
+                destination_class: crate::tool_guard::ToolDestinationClass::ExternalUntrusted,
+                tool_schema_ref: None,
+                arguments: call.arguments.clone(),
+                deadline_ms: tool_guard_deadline_ms(),
+                policy_context: None,
+            },
+        )
+        .await?;
+        if analysis.findings.is_empty() && analysis.advisories.is_empty() {
+            continue;
+        }
+        let decision_id = uuid::Uuid::new_v4().to_string();
+        let decision_request = crate::tool_guard::build_decision_request(
+            decision_id,
+            crate::tool_guard::ToolGuardDecisionKind::ToolCall,
+            call.tool_call_id.clone(),
+            Some(call.tool_name.clone()),
+            destination_id,
+            &call.arguments,
+            &analysis,
+        );
+        let decision = state
+            .decisions
+            .request_decision(&state.app, decision_request)
+            .await?;
+        let redaction = match decision {
+            crate::tool_guard::ToolGuardDecision::AllowRaw => continue,
+            crate::tool_guard::ToolGuardDecision::RedactAll => {
+                crate::tool_guard::apply_redaction_plan(
+                    &call.arguments,
+                    &analysis.redaction_plan,
+                    None,
+                )?
+            }
+            crate::tool_guard::ToolGuardDecision::RedactSelected(selected) => {
+                crate::tool_guard::apply_redaction_plan(
+                    &call.arguments,
+                    &analysis.redaction_plan,
+                    Some(&selected),
+                )?
+            }
+        };
+        set_proposed_tool_call_arguments(body, &call, redaction.value)?;
+        mappings.extend(redaction.mappings);
+    }
+    Ok(mappings)
+}
+
+#[derive(Debug)]
+struct ProposedToolCall {
+    choice_index: usize,
+    tool_call_index: usize,
+    tool_call_id: String,
+    tool_name: String,
+    arguments: serde_json::Value,
+    arguments_were_json: bool,
+}
+
+fn proposed_tool_calls(body: &serde_json::Value) -> Vec<ProposedToolCall> {
+    body.get("choices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .flat_map(|(choice_index, choice)| {
+            choice
+                .get("message")
+                .and_then(|message| message.get("tool_calls"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(move |(tool_call_index, tool_call)| {
+                    let function = tool_call.get("function")?;
+                    let raw_arguments = function
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let parsed_arguments =
+                        serde_json::from_str::<serde_json::Value>(&raw_arguments);
+                    let (arguments, arguments_were_json) = match parsed_arguments {
+                        Ok(value) => (value, true),
+                        Err(_) => (serde_json::Value::String(raw_arguments), false),
+                    };
+                    Some(ProposedToolCall {
+                        choice_index,
+                        tool_call_index,
+                        tool_call_id: tool_call
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("tool-call-{}", uuid::Uuid::new_v4())),
+                        tool_name: function
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string(),
+                        arguments,
+                        arguments_were_json,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn set_proposed_tool_call_arguments(
+    body: &mut serde_json::Value,
+    call: &ProposedToolCall,
+    arguments: serde_json::Value,
+) -> Result<(), AppError> {
+    let serialized = if call.arguments_were_json {
+        serde_json::to_string(&arguments).map_err(|_| {
+            AppError::new(
+                "tool_guard_redaction_failed",
+                "tool_guard_arguments_invalid",
+            )
+        })?
+    } else {
+        arguments
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| arguments.to_string())
+    };
+    let tool_call = body
+        .get_mut("choices")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|choices| choices.get_mut(call.choice_index))
+        .and_then(|choice| choice.get_mut("message"))
+        .and_then(|message| message.get_mut("tool_calls"))
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|tool_calls| tool_calls.get_mut(call.tool_call_index))
+        .ok_or_else(|| {
+            AppError::new(
+                "tool_guard_redaction_failed",
+                "tool_guard_tool_call_missing",
+            )
+        })?;
+    tool_call["function"]["arguments"] = serde_json::Value::String(serialized);
+    Ok(())
+}
+
+fn rehydrate_assistant_text_from_mappings(
+    body: &mut serde_json::Value,
+    mappings: &[crate::tool_guard::ToolGuardReplacementMapping],
+) {
+    let Some(choices) = body
+        .get_mut("choices")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for choice in choices {
+        let Some(message) = choice.get_mut("message") else {
+            continue;
+        };
+        let Some(content) = message
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let rehydrated = crate::tool_guard::rehydrate_text(&content, mappings);
+        message["content"] = serde_json::Value::String(rehydrated);
+    }
+}
+
+async fn guard_outbound_tool_results(
+    state: &ScribeProviderProxyState,
+    body: &mut serde_json::Value,
+) -> Result<Vec<crate::tool_guard::ToolGuardReplacementMapping>, AppError> {
+    let agent_turn_id = uuid::Uuid::new_v4().to_string();
+    let mut mappings = Vec::new();
+    let Some(messages) = body
+        .as_object_mut()
+        .and_then(|object| object.get_mut("messages"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(mappings);
+    };
+
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(serde_json::Value::as_str) != Some("tool") {
+            continue;
+        }
+        let Some(result) = message.get("content").cloned() else {
+            continue;
+        };
+        let tool_call_id = message
+            .get("tool_call_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("tool-result-{}", uuid::Uuid::new_v4()));
+        let destination_id = tool_call_id.clone();
+        let analysis = crate::scribe_api::analyze_tool_guard_result(
+            crate::scribe_api::ToolGuardResultAnalysisBody {
+                agent_turn_id: agent_turn_id.clone(),
+                tool_call_id: tool_call_id.clone(),
+                destination_id: destination_id.clone(),
+                destination_class: crate::tool_guard::ToolDestinationClass::ExternalUntrusted,
+                result: result.clone(),
+                deadline_ms: tool_guard_deadline_ms(),
+                policy_context: None,
+            },
+        )
+        .await?;
+        if analysis.findings.is_empty() && analysis.advisories.is_empty() {
+            continue;
+        }
+        let decision_id = uuid::Uuid::new_v4().to_string();
+        let decision_request = crate::tool_guard::build_decision_request(
+            decision_id,
+            crate::tool_guard::ToolGuardDecisionKind::ToolResult,
+            tool_call_id,
+            None,
+            destination_id,
+            &result,
+            &analysis,
+        );
+        let decision = state
+            .decisions
+            .request_decision(&state.app, decision_request)
+            .await?;
+        let redaction = match decision {
+            crate::tool_guard::ToolGuardDecision::AllowRaw => continue,
+            crate::tool_guard::ToolGuardDecision::RedactAll => {
+                crate::tool_guard::apply_redaction_plan(&result, &analysis.redaction_plan, None)?
+            }
+            crate::tool_guard::ToolGuardDecision::RedactSelected(selected) => {
+                crate::tool_guard::apply_redaction_plan(
+                    &result,
+                    &analysis.redaction_plan,
+                    Some(&selected),
+                )?
+            }
+        };
+        message["content"] = redaction.value;
+        mappings.extend(redaction.mappings);
+    }
+    Ok(mappings)
+}
+
+fn tool_guard_deadline_ms() -> u64 {
+    let deadline = chrono::Utc::now().timestamp_millis().saturating_add(30_000);
+    u64::try_from(deadline).unwrap_or(30_000)
 }
 
 struct HttpRequest {
@@ -3512,6 +4527,63 @@ async fn write_json_response(
     write_raw_response(stream, status, "application/json", &body).await
 }
 
+async fn write_tool_guard_blocked_response(
+    stream: &mut tokio::net::TcpStream,
+    error: &AppError,
+) -> io::Result<()> {
+    write_json_response(stream, 403, tool_guard_blocked_response_body(error)).await
+}
+
+async fn write_policy_block_rejected_response(
+    stream: &mut tokio::net::TcpStream,
+    requested_stream: bool,
+) -> io::Result<()> {
+    let body = serde_json::json!({
+        "id": format!("chatcmpl-policy-block-rejected-{}", uuid::Uuid::new_v4()),
+        "object": "chat.completion",
+        "created": chrono::Utc::now().timestamp(),
+        "model": crate::providers::generation_model(),
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                // Non-empty, and recognizable as a policy block by the
+                // frontend, which renders the "Prompt blocked" card from this
+                // and suppresses the raw text. Empty content would make the
+                // agent runtime treat the turn as an empty completion, retry,
+                // and finally surface a confusing "No reply" error instead.
+                "content": "Error: policy_blocked - the prompt was blocked by OS Guard."
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    });
+    if requested_stream {
+        write_synthetic_sse_response(stream, 200, body).await
+    } else {
+        write_json_response(stream, 200, body).await
+    }
+}
+
+fn tool_guard_blocked_response_body(error: &AppError) -> serde_json::Value {
+    let reason = if error.code.is_empty() {
+        "tool_guard_blocked"
+    } else {
+        error.code.as_str()
+    };
+    serde_json::json!({
+        "error": {
+            "message": "tool_guard_blocked",
+            "type": "tool_guard_blocked",
+            "reason": reason
+        }
+    })
+}
+
 async fn write_raw_response(
     stream: &mut tokio::net::TcpStream,
     status: u16,
@@ -3528,39 +4600,101 @@ async fn write_raw_response(
     stream.shutdown().await
 }
 
-/// Forwards an upstream chat-completions response to the socket chunk by
-/// chunk, so Hermes sees streamed tokens (`stream: true`) as they are
-/// generated instead of one buffered body after generation completes. The
-/// proxy already speaks `Connection: close`, so the body is delimited by
-/// closing the connection and no Content-Length is sent.
-async fn write_streaming_response(
+async fn write_synthetic_sse_response(
     stream: &mut tokio::net::TcpStream,
-    mut response: crate::scribe_api::AgentChatCompletionsResponse,
+    status: u16,
+    body: serde_json::Value,
 ) -> io::Result<()> {
-    let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n",
-        status = response.status,
-        reason = http_status_reason(response.status),
-        content_type = response.content_type,
-    );
-    stream.write_all(headers.as_bytes()).await?;
-    loop {
-        match response.chunk().await {
-            Ok(Some(chunk)) => stream.write_all(&chunk).await?,
-            Ok(None) => break,
-            Err(error) => {
-                // Headers are already on the wire, so an error response is
-                // no longer possible. Close the connection to end the body;
-                // the client sees a truncated stream and surfaces the abort.
-                eprintln!(
-                    "Scribe provider proxy upstream stream failed: {}",
-                    error.message
-                );
-                break;
-            }
-        }
+    let mut data = String::new();
+    // Reasoning first, then the answer — so the runtime streams them in that
+    // order into a single turn (thought above output). A buffered upstream
+    // response carries both at once; without a separate reasoning chunk the
+    // reasoning was dropped entirely and only resurfaced, out of order, from
+    // the persisted message.
+    if let Some(reasoning_chunk) = chat_completion_sse_reasoning_chunk(&body) {
+        let reasoning_chunk =
+            serde_json::to_string(&reasoning_chunk).unwrap_or_else(|_| "{}".to_string());
+        data.push_str(&format!("data: {reasoning_chunk}\n\n"));
     }
-    stream.shutdown().await
+    let chunk = chat_completion_sse_chunk(body);
+    let chunk = serde_json::to_string(&chunk).unwrap_or_else(|_| "{}".to_string());
+    data.push_str(&format!("data: {chunk}\n\ndata: [DONE]\n\n"));
+    write_raw_response(stream, status, "text/event-stream", data.as_bytes()).await
+}
+
+// Builds a streaming chunk carrying only the assistant's reasoning, or None
+// when the buffered response has no reasoning to relay. Mirrors the field names
+// providers use for reasoning so the runtime can pick whichever it understands.
+fn chat_completion_sse_reasoning_chunk(body: &serde_json::Value) -> Option<serde_json::Value> {
+    let choices = body.get("choices").and_then(serde_json::Value::as_array)?;
+    let mut any_reasoning = false;
+    let out_choices: Vec<serde_json::Value> = choices
+        .iter()
+        .map(|choice| {
+            let message = choice.get("message").cloned().unwrap_or_default();
+            let mut delta = serde_json::Map::new();
+            if let Some(role) = message.get("role").cloned() {
+                delta.insert("role".to_string(), role);
+            }
+            let reasoning = message
+                .get("reasoning_content")
+                .cloned()
+                .or_else(|| message.get("reasoning").cloned())
+                .filter(|value| value.as_str().is_some_and(|text| !text.is_empty()));
+            if let Some(reasoning) = reasoning {
+                delta.insert("reasoning_content".to_string(), reasoning.clone());
+                delta.insert("reasoning".to_string(), reasoning);
+                any_reasoning = true;
+            }
+            serde_json::json!({
+                "index": choice.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                "delta": delta,
+                "finish_reason": serde_json::Value::Null,
+            })
+        })
+        .collect();
+    if !any_reasoning {
+        return None;
+    }
+    let mut chunk = body.clone();
+    chunk["object"] = serde_json::Value::String("chat.completion.chunk".to_string());
+    chunk["choices"] = serde_json::Value::Array(out_choices);
+    Some(chunk)
+}
+
+fn chat_completion_sse_chunk(mut body: serde_json::Value) -> serde_json::Value {
+    body["object"] = serde_json::Value::String("chat.completion.chunk".to_string());
+    let Some(choices) = body
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+    else {
+        return body;
+    };
+    body["choices"] = serde_json::Value::Array(
+        choices
+            .into_iter()
+            .map(|choice| {
+                let message = choice.get("message").cloned().unwrap_or_default();
+                let mut delta = serde_json::Map::new();
+                if let Some(role) = message.get("role").cloned() {
+                    delta.insert("role".to_string(), role);
+                }
+                if let Some(content) = message.get("content").cloned() {
+                    delta.insert("content".to_string(), content);
+                }
+                if let Some(tool_calls) = message.get("tool_calls").cloned() {
+                    delta.insert("tool_calls".to_string(), tool_calls);
+                }
+                serde_json::json!({
+                    "index": choice.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                    "delta": delta,
+                    "finish_reason": choice.get("finish_reason").cloned().unwrap_or(serde_json::Value::Null)
+                })
+            })
+            .collect(),
+    );
+    body
 }
 
 fn http_status_reason(status: u16) -> &'static str {
@@ -3569,6 +4703,7 @@ fn http_status_reason(status: u16) -> &'static str {
         400 => "Bad Request",
         401 => "Unauthorized",
         402 => "Payment Required",
+        403 => "Forbidden",
         404 => "Not Found",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
@@ -3741,6 +4876,312 @@ mod tests {
         let entry = &body["data"][0];
         assert_eq!(entry["id"], "zai-org-glm-5");
         assert!(entry.get("context_length").is_none());
+    }
+
+    #[test]
+    fn provider_proxy_forces_non_streaming_for_guarded_requests() {
+        let mut body = serde_json::json!({ "stream": true, "messages": [] });
+
+        assert!(chat_completion_requested_stream(&body));
+        force_non_streaming_chat_completion(&mut body);
+
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn provider_proxy_synthesizes_stream_chunks_from_buffered_completions() {
+        let chunk = chat_completion_sse_chunk(serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Done"
+                },
+                "finish_reason": "stop"
+            }]
+        }));
+
+        assert_eq!(chunk["object"], "chat.completion.chunk");
+        assert_eq!(chunk["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(chunk["choices"][0]["delta"]["content"], "Done");
+        assert_eq!(chunk["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn provider_proxy_extracts_and_rewrites_tool_call_arguments() {
+        let mut body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_lookup",
+                            "arguments": "{\"query\":\"alice@example.com\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let calls = proposed_tool_calls(&body);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_call_id, "call-1");
+        assert_eq!(calls[0].tool_name, "web_lookup");
+        assert_eq!(calls[0].arguments["query"], "alice@example.com");
+
+        set_proposed_tool_call_arguments(
+            &mut body,
+            &calls[0],
+            serde_json::json!({ "query": "[[OSG.EMAIL.1]]" }),
+        )
+        .expect("rewrite succeeds");
+
+        let arguments = body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments string");
+        let parsed: serde_json::Value = serde_json::from_str(arguments).expect("valid JSON args");
+        assert_eq!(parsed["query"], "[[OSG.EMAIL.1]]");
+    }
+
+    #[test]
+    fn provider_proxy_rehydrates_assistant_text_from_mappings() {
+        let mut body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "I found [[OSG.EMAIL.1]]."
+                }
+            }]
+        });
+        let mappings = vec![crate::tool_guard::ToolGuardReplacementMapping {
+            replacement: "[[OSG.EMAIL.1]]".to_string(),
+            original: "alice@example.com".to_string(),
+        }];
+
+        rehydrate_assistant_text_from_mappings(&mut body, &mappings);
+
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "I found alice@example.com."
+        );
+    }
+
+    #[test]
+    fn provider_proxy_rehydration_is_scoped_to_its_own_cycle() {
+        // Two request/response cycles reuse the same replacement token but map it
+        // to different originals (the token is per analysis and can repeat). Each
+        // cycle must rehydrate with its own mapping only — never the other's. The
+        // mappings are passed per cycle (no shared store), so one session's PII
+        // can never bleed into another's response.
+        let rehydrate = |original: &str| {
+            let mut body = serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": "Sent to [[OSG.EMAIL.1]]." } }]
+            });
+            let outbound = vec![crate::tool_guard::ToolGuardReplacementMapping {
+                replacement: "[[OSG.EMAIL.1]]".to_string(),
+                original: original.to_string(),
+            }];
+            rehydrate_assistant_text_cycle(&mut body, &outbound, &[]);
+            body["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        assert_eq!(rehydrate("alice@example.com"), "Sent to alice@example.com.");
+        assert_eq!(rehydrate("bob@example.com"), "Sent to bob@example.com.");
+    }
+
+    #[test]
+    fn provider_proxy_rehydration_merges_outbound_and_inbound_cycle_mappings() {
+        let mut body = serde_json::json!({
+            "choices": [{ "message": {
+                "role": "assistant",
+                "content": "Result [[OSG.EMAIL.1]] and arg [[OSG.PHONE.1]]."
+            } }]
+        });
+        let outbound = vec![crate::tool_guard::ToolGuardReplacementMapping {
+            replacement: "[[OSG.EMAIL.1]]".to_string(),
+            original: "alice@example.com".to_string(),
+        }];
+        let inbound = vec![crate::tool_guard::ToolGuardReplacementMapping {
+            replacement: "[[OSG.PHONE.1]]".to_string(),
+            original: "+15551234567".to_string(),
+        }];
+
+        rehydrate_assistant_text_cycle(&mut body, &outbound, &inbound);
+
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "Result alice@example.com and arg +15551234567."
+        );
+    }
+
+    #[test]
+    fn provider_proxy_tool_guard_failures_use_fail_closed_error_shape() {
+        let body = tool_guard_blocked_response_body(&AppError::new(
+            "scribe_request_failed",
+            "tool_guard_unavailable",
+        ));
+
+        assert_eq!(body["error"]["message"], "tool_guard_blocked");
+        assert_eq!(body["error"]["type"], "tool_guard_blocked");
+        assert_eq!(body["error"]["reason"], "scribe_request_failed");
+    }
+
+    #[test]
+    fn provider_proxy_detects_scribe_policy_block_envelope() {
+        let body = br#"{"data":null,"success":false,"error_code":4031,"message":"policy_blocked"}"#;
+
+        assert!(is_policy_blocked_response(403, body));
+        assert!(!is_policy_blocked_response(502, body));
+    }
+
+    #[test]
+    fn policy_block_fingerprint_matches_follow_up_context() {
+        let blocked = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Describe an apple" }
+            ]
+        });
+        let follow_up = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Describe an apple" },
+                { "role": "assistant", "content": "" },
+                { "role": "user", "content": "Try again" }
+            ]
+        });
+
+        let fingerprint =
+            policy_block_conversation_fingerprint(&blocked).expect("blocked fingerprint");
+        assert!(policy_block_conversation_fingerprints(&follow_up)
+            .iter()
+            .any(|candidate| candidate == &fingerprint));
+    }
+
+    #[test]
+    fn newest_user_message_only_body_keeps_system_prefix_and_last_prompt() {
+        let body = serde_json::json!({
+            "model": "june",
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Dangerous X" },
+                { "role": "assistant", "content": "..." },
+                { "role": "user", "content": "Benign Y" }
+            ]
+        });
+
+        let trimmed = newest_user_message_only_body(&body).expect("trimmed body");
+        let messages = trimmed["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are June.");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "Benign Y");
+        // Unrelated fields are preserved so the recheck mirrors the real request.
+        assert_eq!(trimmed["model"], "june");
+    }
+
+    #[test]
+    fn newest_user_message_only_body_none_without_user_message() {
+        let body = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." }
+            ]
+        });
+        assert!(newest_user_message_only_body(&body).is_none());
+    }
+
+    #[test]
+    fn historical_user_fingerprints_split_newest_from_history() {
+        // The newest user message is the one to be scanned in isolation; every
+        // earlier user message is history that must already be approved before a
+        // block is forgiven.
+        let body = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Dangerous X" },
+                { "role": "assistant", "content": "blocked" },
+                { "role": "user", "content": "Benign Y" }
+            ]
+        });
+
+        let fingerprints = policy_block_conversation_fingerprints(&body);
+        let (newest, history) = fingerprints
+            .split_last()
+            .expect("at least one user message");
+
+        let x_only = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Dangerous X" }
+            ]
+        });
+        let y_only = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are June." },
+                { "role": "user", "content": "Benign Y" }
+            ]
+        });
+        let x_fingerprint = policy_block_conversation_fingerprint(&x_only).expect("x fingerprint");
+        let y_fingerprint = policy_block_conversation_fingerprint(&y_only).expect("y fingerprint");
+
+        // History is the dangerous approved message; newest is the benign prompt.
+        assert_eq!(history, [x_fingerprint]);
+        assert_eq!(newest, &y_fingerprint);
+        // The trimmed recheck body fingerprints to the newest prompt alone.
+        let trimmed = newest_user_message_only_body(&body).expect("trimmed body");
+        assert_eq!(
+            policy_block_conversation_fingerprint(&trimmed).expect("trimmed fingerprint"),
+            y_fingerprint
+        );
+    }
+
+    #[test]
+    fn synthetic_sse_reasoning_chunk_precedes_content_and_carries_reasoning() {
+        let body = serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Let me think.",
+                    "content": "An apple is a fruit."
+                },
+                "finish_reason": "stop"
+            }]
+        });
+
+        let reasoning = chat_completion_sse_reasoning_chunk(&body)
+            .expect("a response with reasoning yields a reasoning chunk");
+        let reasoning_delta = &reasoning["choices"][0]["delta"];
+        assert_eq!(reasoning_delta["reasoning_content"], "Let me think.");
+        // The reasoning chunk must not also carry the answer, or the runtime
+        // would render the output before the thought streams.
+        assert!(reasoning_delta.get("content").is_none());
+
+        // The content chunk stays reasoning-free so the thought is not repeated.
+        let content = chat_completion_sse_chunk(body);
+        let content_delta = &content["choices"][0]["delta"];
+        assert_eq!(content_delta["content"], "An apple is a fruit.");
+        assert!(content_delta.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn synthetic_sse_reasoning_chunk_absent_without_reasoning() {
+        let body = serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "Hi." },
+                "finish_reason": "stop"
+            }]
+        });
+        assert!(chat_completion_sse_reasoning_chunk(&body).is_none());
     }
 
     #[test]
@@ -3925,7 +5366,7 @@ mod tests {
         std::env::set_var("HERMES_ENVIRONMENT_HINT", "stale-from-shell");
         apply_isolated_hermes_env(&mut bare, Path::new("/tmp/hermes-home"), "token", None);
         std::env::remove_var("HERMES_ENVIRONMENT_HINT");
-        assert!(envs_of(&bare).get("HERMES_ENVIRONMENT_HINT").is_none());
+        assert!(!envs_of(&bare).contains_key("HERMES_ENVIRONMENT_HINT"));
     }
 
     #[test]

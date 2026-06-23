@@ -1,10 +1,11 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
-    TRANSIENT_RETRY_AFTER_SECS, error_response, error_response_with_retry_after,
+    ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_TOOL_GUARD_UNAVAILABLE, ERR_UNAUTHORIZED,
+    ERR_UNPROCESSABLE, ERR_UPSTREAM, TRANSIENT_RETRY_AFTER_SECS, error_response,
+    error_response_with_retry_after,
 };
 use axum::{http::StatusCode, response::IntoResponse};
-use scribe_domain::AuthError;
+use scribe_domain::{AuthError, DomainError};
 use scribe_services::ServiceError;
 use thiserror::Error;
 
@@ -24,6 +25,10 @@ pub enum ApiError {
     AuthorizationDenied,
     #[error("upstream_provider_failed")]
     Upstream,
+    #[error("policy_blocked")]
+    PolicyBlocked,
+    #[error("tool_guard_unavailable")]
+    ToolGuardUnavailable,
     #[error("internal_error")]
     Internal,
 }
@@ -87,6 +92,20 @@ impl IntoResponse for ApiError {
                 ERR_UPSTREAM,
                 "upstream_provider_failed",
             ),
+            // The privacy gateway rejected the content (prompt injection or
+            // unredactable PII). Deterministic — a retry will not help, so this
+            // is a 403 rather than the retryable 502 upstream failure.
+            Self::PolicyBlocked => {
+                error_response(StatusCode::FORBIDDEN, ERR_POLICY_BLOCKED, "policy_blocked")
+            }
+            // Tool Guard requires an analyzer. Normal deployments wire one from
+            // the required OS-Guard upstream; manually constructed states can
+            // still omit it, so report the feature as unavailable.
+            Self::ToolGuardUnavailable => error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ERR_TOOL_GUARD_UNAVAILABLE,
+                "tool_guard_unavailable",
+            ),
             Self::Internal => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL,
@@ -104,7 +123,20 @@ impl From<ServiceError> for ApiError {
             ServiceError::InsufficientCredits => Self::InsufficientCredits,
             ServiceError::AuthorizationDenied => Self::AuthorizationDenied,
             ServiceError::UpstreamProvider => Self::Upstream,
+            ServiceError::PolicyBlocked => Self::PolicyBlocked,
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
+        }
+    }
+}
+
+impl From<DomainError> for ApiError {
+    fn from(error: DomainError) -> Self {
+        match error {
+            DomainError::PolicyBlocked => Self::PolicyBlocked,
+            DomainError::InvalidInput { reason } => Self::bad_request(reason),
+            DomainError::UpstreamProvider
+            | DomainError::ModelNotPriced
+            | DomainError::InsufficientCredits => Self::Upstream,
         }
     }
 }
@@ -166,5 +198,19 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 5001);
         assert_eq!(body["message"], "upstream_provider_failed");
+    }
+
+    #[tokio::test]
+    async fn policy_block_maps_to_403_with_structured_code() {
+        // A privacy-gateway policy block (prompt injection or unredactable PII)
+        // is deterministic: it must surface as 403 policy_blocked, distinct from
+        // the retryable 502 upstream failure, so the client does not retry it.
+        let response = ApiError::from(ServiceError::PolicyBlocked).into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 4031);
+        assert_eq!(body["message"], "policy_blocked");
+        assert_eq!(body["success"], false);
     }
 }

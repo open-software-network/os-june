@@ -1,6 +1,8 @@
 //! Scribe API client. The Tauri side calls the backend for every metered
 //! action; provider keys live there, never here.
+#![allow(clippy::items_after_test_module)]
 
+use crate::tool_guard::{ToolDestinationClass, ToolGuardAnalysis};
 use crate::{domain::types::AppError, providers::PROVIDER_OPENAI};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
@@ -110,10 +112,10 @@ pub struct DictateCleanupRequestParams {
     pub utterance_id: String,
 }
 
-/// Response from the agent chat-completions proxy. Holds the upstream
-/// reqwest response so callers can forward body bytes as they arrive
-/// (Hermes requests `stream: true`) instead of buffering the whole
-/// generation before the first token is visible.
+/// Response from the agent chat-completions proxy. Holds the upstream reqwest
+/// response so callers can decide whether to buffer or stream the body. June's
+/// provider proxy buffers successful agent responses before forwarding them so
+/// Tool Guard can inspect proposed tool calls.
 pub struct AgentChatCompletionsResponse {
     pub status: u16,
     pub content_type: String,
@@ -212,6 +214,35 @@ struct DictateCleanupBody {
     dictionary_context: Option<String>,
     style: String,
     model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardCallAnalysisBody {
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub destination_id: String,
+    pub destination_class: ToolDestinationClass,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_schema_ref: Option<String>,
+    pub arguments: serde_json::Value,
+    pub deadline_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_context: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGuardResultAnalysisBody {
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub destination_id: String,
+    pub destination_class: ToolDestinationClass,
+    pub result: serde_json::Value,
+    pub deadline_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_context: Option<serde_json::Value>,
 }
 
 pub async fn transcribe_saved_audio(
@@ -328,6 +359,18 @@ pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String,
     Ok(response.text)
 }
 
+pub async fn analyze_tool_guard_call(
+    body: ToolGuardCallAnalysisBody,
+) -> Result<ToolGuardAnalysis, AppError> {
+    post_json("/v1/tool-guard/calls", &body).await
+}
+
+pub async fn analyze_tool_guard_result(
+    body: ToolGuardResultAnalysisBody,
+) -> Result<ToolGuardAnalysis, AppError> {
+    post_json("/v1/tool-guard/results", &body).await
+}
+
 pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
     let url = format!("{}/v1/models", scribe_api_url());
     let response = http_client()
@@ -340,10 +383,23 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
 }
 
 pub async fn proxy_agent_chat_completions(
+    body: serde_json::Value,
+) -> Result<AgentChatCompletionsResponse, AppError> {
+    proxy_agent_chat_completions_to_path("/v1/chat/completions", body).await
+}
+
+pub async fn proxy_agent_chat_completions_direct(
+    body: serde_json::Value,
+) -> Result<AgentChatCompletionsResponse, AppError> {
+    proxy_agent_chat_completions_to_path("/v1/chat/completions/direct", body).await
+}
+
+async fn proxy_agent_chat_completions_to_path(
+    path: &str,
     mut body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
     normalize_agent_chat_request_for_proxy(&mut body);
-    let url = format!("{}/v1/chat/completions", scribe_api_url());
+    let url = format!("{}{}", scribe_api_url(), path);
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
         let response = agent_http_client()
@@ -845,7 +901,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ")
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ':' | '-'))
+        .trim_end_matches(['.', ':', '-'])
         .trim()
         .to_string();
     if title.is_empty() {

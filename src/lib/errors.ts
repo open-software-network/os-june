@@ -36,3 +36,11 @@ export function isInsufficientCreditsMessage(message?: string) {
     message,
   );
 }
+
+export function isPolicyBlockedMessage(message?: string) {
+  if (!message) return false;
+  // Match only OS-Guard policy blocks. A bare `Error code: 403` is dropped: it
+  // also matches unrelated 403s (e.g. a Venice auth/Forbidden error), which
+  // would be mis-rendered as a "Prompt blocked" card and hide the real failure.
+  return /policy_blocked|error_code['"]?\s*:\s*4031/i.test(message);
+}

@@ -13,6 +13,7 @@ const REDACTED: &str = "<redacted>";
 pub const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER: &str = "local-dev-token";
 pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
+pub const OSGUARD_API_KEY_PLACEHOLDER: &str = "OSGUARD_GATEWAY_TOKEN_REPLACE_ME";
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AppConfig {
@@ -259,6 +260,26 @@ impl Debug for OsAccountsConfig {
 pub struct UpstreamsConfig {
     pub openai: UpstreamConfig,
     pub venice: UpstreamConfig,
+    /// OS-Guard privacy gateway. Chat completions (note generation, dictation
+    /// cleanup, agent chat) are routed through it so PII is redacted before
+    /// reaching the provider. Audio transcription always stays on `venice`.
+    #[serde(default)]
+    pub osguard: UpstreamConfig,
+}
+
+impl UpstreamsConfig {
+    /// Upstream that serves chat completions. Audio transcription does not use
+    /// this: it always targets `venice` directly.
+    pub fn chat_upstream(&self) -> &UpstreamConfig {
+        &self.osguard
+    }
+
+    /// Whether chat completions route through the OS-Guard gateway. Used to
+    /// gate gateway-specific response handling such as treating a `403` as a
+    /// policy block.
+    pub fn chat_routes_through_osguard(&self) -> bool {
+        true
+    }
 }
 
 impl Debug for UpstreamsConfig {
@@ -267,14 +288,16 @@ impl Debug for UpstreamsConfig {
             .debug_struct("UpstreamsConfig")
             .field("openai", &self.openai)
             .field("venice", &self.venice)
+            .field("osguard", &self.osguard)
             .finish()
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct UpstreamConfig {
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
     pub base_url: String,
 }
 
@@ -526,6 +549,12 @@ impl Default for AppConfig {
                     api_key: String::new(),
                     base_url: "https://api.venice.ai/api/v1".to_string(),
                 },
+                // Required at validation time. Deployments set this to the
+                // OS-Guard privacy gateway endpoint.
+                osguard: UpstreamConfig {
+                    api_key: String::new(),
+                    base_url: String::new(),
+                },
             },
             attestation: AttestationConfig {
                 source_commit: String::new(),
@@ -579,6 +608,7 @@ const OPENAI_API_KEY_PLACEHOLDERS: &[&str] = &[
     LEGACY_OPENAI_API_KEY_PLACEHOLDER,
 ];
 const VENICE_API_KEY_PLACEHOLDERS: &[&str] = &["VENICE_API_KEY_REPLACE_ME"];
+const OSGUARD_API_KEY_PLACEHOLDERS: &[&str] = &[OSGUARD_API_KEY_PLACEHOLDER];
 const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDERS: &[&str] = &[LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER];
 
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
@@ -604,40 +634,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         config.os_accounts.note_transcribe_preview_max_audio_secs,
     )?;
 
-    let uses_openai = config
-        .pricing
-        .values()
-        .any(|pricing| pricing.provider == ModelProvider::Openai);
-    let uses_venice = config
-        .pricing
-        .values()
-        .any(|pricing| pricing.provider == ModelProvider::Venice);
-    if uses_openai {
-        validate_required_text(
-            "upstreams.openai.base_url",
-            &config.upstreams.openai.base_url,
-        )?;
-        if !config.local_dev.enabled {
-            validate_required_secret(
-                "upstreams.openai.api_key",
-                &config.upstreams.openai.api_key,
-                OPENAI_API_KEY_PLACEHOLDERS,
-            )?;
-        }
-    }
-    if uses_venice {
-        validate_required_text(
-            "upstreams.venice.base_url",
-            &config.upstreams.venice.base_url,
-        )?;
-        if !config.local_dev.enabled {
-            validate_required_secret(
-                "upstreams.venice.api_key",
-                &config.upstreams.venice.api_key,
-                VENICE_API_KEY_PLACEHOLDERS,
-            )?;
-        }
-    }
+    validate_upstreams(config)?;
 
     for (model_id, pricing) in &config.pricing {
         let expected_unit = match pricing.model_type {
@@ -676,6 +673,57 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
                 )?;
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_upstreams(config: &AppConfig) -> Result<(), ConfigError> {
+    let uses_openai = config
+        .pricing
+        .values()
+        .any(|pricing| pricing.provider == ModelProvider::Openai);
+    let uses_venice = config
+        .pricing
+        .values()
+        .any(|pricing| pricing.provider == ModelProvider::Venice);
+    if uses_openai {
+        validate_required_text(
+            "upstreams.openai.base_url",
+            &config.upstreams.openai.base_url,
+        )?;
+        if !config.local_dev.enabled {
+            validate_required_secret(
+                "upstreams.openai.api_key",
+                &config.upstreams.openai.api_key,
+                OPENAI_API_KEY_PLACEHOLDERS,
+            )?;
+        }
+    }
+    if uses_venice {
+        validate_required_text(
+            "upstreams.venice.base_url",
+            &config.upstreams.venice.base_url,
+        )?;
+        if !config.local_dev.enabled {
+            validate_required_secret(
+                "upstreams.venice.api_key",
+                &config.upstreams.venice.api_key,
+                VENICE_API_KEY_PLACEHOLDERS,
+            )?;
+        }
+    }
+    validate_required_text(
+        "upstreams.osguard.base_url",
+        &config.upstreams.osguard.base_url,
+    )?;
+    // The gateway token is required outside local mode. The gateway holds the
+    // provider key, so an unset token would 401 there.
+    if !config.local_dev.enabled {
+        validate_required_secret(
+            "upstreams.osguard.api_key",
+            &config.upstreams.osguard.api_key,
+            OSGUARD_API_KEY_PLACEHOLDERS,
+        )?;
     }
     Ok(())
 }
@@ -760,6 +808,8 @@ mod tests {
         config.os_accounts.app_api_key = "osk_test".to_string();
         config.upstreams.openai.api_key = "sk-test".to_string();
         config.upstreams.venice.api_key = "venice-test".to_string();
+        config.upstreams.osguard.api_key = "gw-token".to_string();
+        config.upstreams.osguard.base_url = "https://gateway.example/v1".to_string();
         config
     }
 
@@ -770,6 +820,7 @@ mod tests {
         config.local_dev.bearer_token = "local-secret-token".to_string();
         config.upstreams.openai.api_key = "sk-secret".to_string();
         config.upstreams.venice.api_key = "vc-secret".to_string();
+        config.upstreams.osguard.api_key = "gw-secret".to_string();
         let dump = format!("{config:?}");
         assert!(
             !dump.contains("app_api_key_secret_value"),
@@ -778,6 +829,7 @@ mod tests {
         assert!(!dump.contains("local-secret-token"));
         assert!(!dump.contains("sk-secret"));
         assert!(!dump.contains("vc-secret"));
+        assert!(!dump.contains("gw-secret"));
         assert!(dump.contains("<redacted>"));
     }
 
@@ -905,6 +957,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.local_dev.enabled = true;
         config.upstreams.venice.api_key = "venice-test".to_string();
+        config.upstreams.osguard.base_url = "https://gateway.example/v1".to_string();
 
         let result = validate(&config);
 
@@ -917,6 +970,7 @@ mod tests {
         config.local_dev.enabled = true;
         config.upstreams.openai.api_key = String::new();
         config.upstreams.venice.api_key = "VENICE_API_KEY_REPLACE_ME".to_string();
+        config.upstreams.osguard.base_url = "https://gateway.example/v1".to_string();
 
         let result = validate(&config);
 
@@ -943,6 +997,56 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn chat_upstream_uses_osguard_gateway() {
+        let config = valid_config();
+
+        let chat = config.upstreams.chat_upstream();
+
+        assert_eq!(chat.base_url, config.upstreams.osguard.base_url);
+    }
+
+    #[test]
+    fn validate_rejects_missing_osguard_base_url() {
+        let mut config = valid_config();
+        config.upstreams.osguard.base_url = String::new();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_osguard_without_token_outside_local_dev() {
+        let mut config = valid_config();
+        config.upstreams.osguard.api_key = String::new();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_osguard_placeholder_token() {
+        let mut config = valid_config();
+        config.upstreams.osguard.api_key = super::OSGUARD_API_KEY_PLACEHOLDER.to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_allows_required_osguard_base_url_with_token() {
+        let mut config = valid_config();
+        config.upstreams.osguard.base_url = "https://gateway.example/v1".to_string();
+        config.upstreams.osguard.api_key = "gw-token".to_string();
+
+        let result = validate(&config);
+
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{fmt, time::Duration};
 use thiserror::Error;
 
@@ -79,6 +80,19 @@ pub struct AgentChatCompletion {
     pub content_type: String,
     pub provider: String,
     pub usage: TokenUsage,
+}
+
+/// A streamed agent-chat completion: the provider response body forwarded to the
+/// caller as it arrives, instead of buffered. `usage` is filled in once the
+/// terminal usage frame is seen (end of stream), so billing can settle after the
+/// body has been forwarded rather than before the response starts.
+pub struct AgentChatStream {
+    pub content_type: String,
+    pub provider: String,
+    pub usage: std::sync::Arc<std::sync::Mutex<Option<TokenUsage>>>,
+    pub body: std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, DomainError>> + Send>,
+    >,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -240,6 +254,108 @@ impl std::fmt::Debug for IssueReportAttachment {
     }
 }
 
+/// Where a tool call ultimately routes. Mirrors the OS-Guard Tool Guard
+/// contract verbatim so the value the desktop client supplies is forwarded
+/// unchanged. Detection only — the class never grants or denies access here.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolDestinationClass {
+    InternalTdx,
+    TrustedUserConnector,
+    ExternalUntrusted,
+}
+
+/// A tool-call analysis request as forwarded to OS-Guard. `caller_identity` is
+/// populated by scribe from the authenticated principal and is never taken from
+/// the client body. `arguments` may contain PII and must never be logged.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolGuardCallAnalysisRequest {
+    pub caller_identity: String,
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub destination_id: String,
+    pub destination_class: ToolDestinationClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_schema_ref: Option<String>,
+    pub arguments: Value,
+    pub deadline_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_context: Option<Value>,
+}
+
+/// A tool-result analysis request as forwarded to OS-Guard. As with the call
+/// request, `caller_identity` comes from auth and `result` may contain PII.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolGuardResultAnalysisRequest {
+    pub caller_identity: String,
+    pub agent_turn_id: String,
+    pub tool_call_id: String,
+    pub destination_id: String,
+    pub destination_class: ToolDestinationClass,
+    pub result: Value,
+    pub deadline_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_context: Option<Value>,
+}
+
+/// Detection analysis returned by OS-Guard for both calls and results: PII
+/// findings, prompt-injection/jailbreak advisories, and the redaction
+/// operations the client applies locally. Carried as opaque JSON-faithful
+/// structures the client interprets; scribe only relays it. There is no guard
+/// token, no allow/block decision, and no approval round-trip.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ToolGuardAnalysis {
+    pub request_id: String,
+    pub canonical_request_hash: String,
+    #[serde(default)]
+    pub findings: Vec<ToolGuardPiiFinding>,
+    #[serde(default)]
+    pub advisories: Vec<ToolGuardAdvisory>,
+    pub redaction_plan: ToolGuardRedactionPlan,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ToolGuardPiiFinding {
+    pub finding_id: String,
+    pub pii_type: String,
+    pub confidence_bucket: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub source_roles: Vec<String>,
+    pub locator: Value,
+    pub range: Value,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ToolGuardAdvisory {
+    pub advisory_id: String,
+    pub advisory_type: String,
+    pub confidence_bucket: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub source_roles: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ToolGuardRedactionPlan {
+    #[serde(default)]
+    pub operations: Vec<ToolGuardRedactionOperation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ToolGuardRedactionOperation {
+    pub finding_id: String,
+    pub locator: Value,
+    pub range: Value,
+    pub replacement: String,
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum DomainError {
     #[error("model is not priced")]
@@ -248,6 +364,11 @@ pub enum DomainError {
     InsufficientCredits,
     #[error("upstream provider failed")]
     UpstreamProvider,
+    /// The privacy gateway rejected the request on policy grounds (prompt
+    /// injection or PII that cannot be redacted). Deterministic: never retried
+    /// and never billed.
+    #[error("content rejected by policy")]
+    PolicyBlocked,
     #[error("invalid input: {reason}")]
     InvalidInput { reason: String },
 }
@@ -279,6 +400,33 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+
+    /// Stream the completion body as it arrives. The default buffers via
+    /// `complete` and emits the whole body as a single chunk, so existing
+    /// (non-streaming) implementations keep working unchanged; streaming
+    /// providers override this to forward the upstream response incrementally.
+    async fn complete_streaming(
+        &self,
+        mut request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        // This default buffers the whole completion, so the upstream call must be
+        // non-streaming regardless of what the caller requested; force it off so
+        // a provider using the default never receives an SSE body it would then
+        // (incorrectly) treat as a single buffered completion.
+        if let Some(object) = request.body.as_object_mut() {
+            object.insert("stream".to_string(), serde_json::Value::Bool(false));
+        }
+        let completion = self.complete(request).await?;
+        let usage = std::sync::Arc::new(std::sync::Mutex::new(Some(completion.usage)));
+        let chunk = bytes::Bytes::from(completion.body);
+        let body = Box::pin(futures_util::stream::once(async move { Ok(chunk) }));
+        Ok(AgentChatStream {
+            content_type: completion.content_type,
+            provider: completion.provider,
+            usage,
+            body,
+        })
+    }
 }
 
 #[async_trait]
@@ -286,6 +434,23 @@ pub trait OsAccountsClient: Send + Sync {
     async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError>;
 
     async fn charge(&self, request: ChargeRequest) -> Result<Receipt, DomainError>;
+}
+
+/// Proxies OS-Guard Tool Guard's detection-only analysis. scribe forwards the
+/// request with the server-side gateway token and relays the analysis back to
+/// the desktop client, which applies the redaction operations and surfaces the
+/// advisories locally. Detection only: no tool execution, no decision.
+#[async_trait]
+pub trait ToolGuardAnalyzer: Send + Sync {
+    async fn analyze_call(
+        &self,
+        request: ToolGuardCallAnalysisRequest,
+    ) -> Result<ToolGuardAnalysis, DomainError>;
+
+    async fn analyze_result(
+        &self,
+        request: ToolGuardResultAnalysisRequest,
+    ) -> Result<ToolGuardAnalysis, DomainError>;
 }
 
 #[async_trait]

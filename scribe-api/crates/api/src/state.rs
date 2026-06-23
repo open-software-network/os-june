@@ -1,4 +1,4 @@
-use scribe_domain::{IssueReportSink, TokenVerifier};
+use scribe_domain::{IssueReportSink, TokenVerifier, ToolGuardAnalyzer};
 use scribe_services::{
     AgentChatService, DictateService, NoteGenerateService, NoteTranscribeService, PricingTable,
 };
@@ -17,6 +17,9 @@ struct ApiStateInner {
     agent_chat: Arc<AgentChatService>,
     dictate: Arc<DictateService>,
     issue_reports: Arc<dyn IssueReportSink>,
+    /// None only for manually constructed states. The app builder requires
+    /// OS-Guard and wires this analyzer in normal deployments.
+    tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
     limits: ApiLimits,
     attestation: AttestationInfo,
 }
@@ -37,6 +40,10 @@ pub struct AttestationInfo {
     pub source_repo_url: String,
     pub image_repo: String,
     pub trust_center_url: String,
+    /// Whether chat prompts/context are redacted by the OS-Guard privacy
+    /// gateway before reaching Venice. Drives the `/verify` privacy copy.
+    /// Normal app configuration sets this to true.
+    pub chat_via_osguard: bool,
 }
 
 pub struct ApiStateParams {
@@ -47,6 +54,7 @@ pub struct ApiStateParams {
     pub agent_chat: Arc<AgentChatService>,
     pub dictate: Arc<DictateService>,
     pub issue_reports: Arc<dyn IssueReportSink>,
+    pub tool_guard: Option<Arc<dyn ToolGuardAnalyzer>>,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
 }
@@ -62,6 +70,7 @@ impl ApiState {
                 agent_chat: params.agent_chat,
                 dictate: params.dictate,
                 issue_reports: params.issue_reports,
+                tool_guard: params.tool_guard,
                 limits: params.limits,
                 attestation: params.attestation,
             }),
@@ -94,6 +103,10 @@ impl ApiState {
 
     pub(crate) fn issue_reports(&self) -> &dyn IssueReportSink {
         self.inner.issue_reports.as_ref()
+    }
+
+    pub(crate) fn tool_guard(&self) -> Option<&dyn ToolGuardAnalyzer> {
+        self.inner.tool_guard.as_deref()
     }
 
     pub(crate) fn limits(&self) -> ApiLimits {

@@ -1009,6 +1009,7 @@ async fn transcribe_turn_jobs_by_source_lane(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn transcribe_turn_jobs_bounded(
     jobs: Vec<TurnTranscriptionJob>,
     cached_candidates: &[TranscriptCandidate],

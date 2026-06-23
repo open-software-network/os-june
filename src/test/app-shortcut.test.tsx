@@ -100,6 +100,8 @@ vi.mock("../app/update-decision", async () => {
 
 vi.mock("../lib/tauri", () => ({
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  TOOL_GUARD_DECISION_EVENT: "tool-guard-decision-request",
+  AGENT_POLICY_BLOCK_DECISION_EVENT: "agent-policy-block-decision-request",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,

@@ -6,9 +6,9 @@ use scribe_config::{
 };
 use scribe_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
-    MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, default_client,
-    jwks_client,
+    MultiFormatDurationProbe, OsAccountsHttpClient, OsGuardToolGuard, OsPlatformIssueReportSink,
+    RoutingTranscriber, VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog,
+    default_client, jwks_client,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
@@ -96,21 +96,33 @@ fn build_router(
     let transcriber: Arc<dyn scribe_domain::Transcriber> = Arc::new(
         RoutingTranscriber::from_config(http.clone(), &config.upstreams, openai_model_ids),
     );
+    // Chat completions (note generation, dictation cleanup, agent chat) go
+    // through OS-Guard. The gateway is OpenAI-compatible, so only the upstream
+    // changes. Audio transcription above stays on Venice unconditionally.
+    let chat_upstream = config.upstreams.chat_upstream();
+    // A 403 from OS-Guard means a deterministic policy block.
+    let chat_via_osguard = config.upstreams.chat_routes_through_osguard();
     let generator: Arc<dyn scribe_domain::Generator> = Arc::new(VeniceGenerator::from_config(
         http.clone(),
-        &config.upstreams.venice,
+        chat_upstream,
+        chat_via_osguard,
     ));
     let cleaner: Arc<dyn scribe_domain::Cleaner> = Arc::new(VeniceCleaner::from_config(
         http.clone(),
-        &config.upstreams.venice,
+        chat_upstream,
+        chat_via_osguard,
     ));
-    let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
-        VeniceAgentChat::from_config(http.clone(), &config.upstreams.venice),
+    let guarded_agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
+        VeniceAgentChat::from_config(http.clone(), chat_upstream, chat_via_osguard),
+    );
+    let direct_agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
+        VeniceAgentChat::from_config(http.clone(), &config.upstreams.venice, false),
     );
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
     let issue_reports = build_issue_report_sink(config, http);
+    let tool_guard = Some(build_tool_guard(config, http));
 
     let flat_estimate_credits = config.os_accounts.flat_estimate_credits;
 
@@ -133,7 +145,8 @@ fn build_router(
     let agent_chat = Arc::new(AgentChatService::new(AgentChatServiceDeps {
         pricing: pricing.clone(),
         os_accounts: os_accounts.clone(),
-        chat_completer: agent_chat_completer,
+        guarded_chat_completer: guarded_agent_chat_completer,
+        direct_chat_completer: direct_agent_chat_completer,
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_note_generate_secs,
         flat_estimate_credits,
     }));
@@ -158,6 +171,7 @@ fn build_router(
         agent_chat,
         dictate,
         issue_reports,
+        tool_guard,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
@@ -168,6 +182,7 @@ fn build_router(
             source_repo_url: config.attestation.source_repo_url.clone(),
             image_repo: config.attestation.image_repo.clone(),
             trust_center_url: config.attestation.trust_center_url.clone(),
+            chat_via_osguard: config.upstreams.chat_routes_through_osguard(),
         },
     });
     scribe_api::router(state)
@@ -186,6 +201,21 @@ fn build_os_accounts_client(
             &config.os_accounts,
         ))
     }
+}
+
+/// Builds the Tool Guard analyzer from the required OS-Guard upstream. Tool
+/// Guard has no Venice equivalent, so the app requires the gateway URL at
+/// configuration time rather than falling back to a provider that cannot
+/// perform detection.
+fn build_tool_guard(
+    config: &AppConfig,
+    http: &reqwest::Client,
+) -> Arc<dyn scribe_domain::ToolGuardAnalyzer> {
+    tracing::info!("OS-Guard Tool Guard enabled");
+    Arc::new(OsGuardToolGuard::from_config(
+        http.clone(),
+        &config.upstreams.osguard,
+    ))
 }
 
 fn build_token_verifier(config: &AppConfig) -> Arc<dyn scribe_domain::TokenVerifier> {

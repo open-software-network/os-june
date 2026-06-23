@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 axum.workspace = true
+bytes.workspace = true
 scribe-config.workspace = true
 scribe-domain.workspace = true
 scribe-services.workspace = true

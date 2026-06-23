@@ -5,7 +5,7 @@ import type {
   HermesSessionMessage,
 } from "./tauri";
 import type { HermesGatewayEvent } from "./hermes-gateway";
-import { isInsufficientCreditsMessage } from "./errors";
+import { isInsufficientCreditsMessage, isPolicyBlockedMessage } from "./errors";
 import {
   isScheduledRunPreamble,
   stripScheduledRunPreamble,
@@ -73,6 +73,21 @@ export type AgentChatNoticePart = {
   text: string;
 };
 
+export type AgentChatPolicyBlockPart = {
+  type: "policyBlock";
+  id: string;
+  status: "pending" | "continued" | "rejected";
+};
+
+/** A full-width marker in the timeline (today: OS Guard was re-enabled).
+ * Renders as a labelled divider so the span where it was off stays visible
+ * between the block/approval card and the turns that follow. */
+export type AgentChatDividerPart = {
+  type: "divider";
+  id: string;
+  label: string;
+};
+
 export type AgentChatPart =
   | AgentChatTextPart
   | AgentChatReasoningPart
@@ -80,7 +95,9 @@ export type AgentChatPart =
   | AgentChatToolPart
   | AgentChatApprovalPart
   | AgentChatClarifyPart
-  | AgentChatNoticePart;
+  | AgentChatNoticePart
+  | AgentChatPolicyBlockPart
+  | AgentChatDividerPart;
 
 export type AgentChatTurn = {
   id: string;
@@ -98,7 +115,7 @@ export function buildAgentChatTurns(
   toolEvents: AgentToolEventDto[],
   liveEvents: LiveHermesEvent[] = [],
 ): AgentChatTurn[] {
-  const turns = messages.map(messageToTurn);
+  const turns = messages.flatMap((message) => messageToTurn(message) ?? []);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
   return turns
@@ -182,10 +199,18 @@ export function buildHermesSessionChatTurns(
       }
 
       if (content) {
-        turn.parts.push(
-          (turn.role === "assistant"
+        // The proxy persists a "policy_blocked" marker as the assistant reply
+        // on reject; the block card comes from decision state, so skip the
+        // marker rather than leaking it as raw text.
+        if (turn.role === "assistant" && isPolicyBlockedMessage(content)) {
+          continue;
+        }
+        const notice =
+          turn.role === "assistant"
             ? creditsNoticeFromTurnText(content)
-            : undefined) ?? {
+            : undefined;
+        turn.parts.push(
+          notice ?? {
             type: "text",
             text: content,
             status: "complete",
@@ -200,11 +225,15 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  // Keep insertion order: persisted messages arrive already ordered, pending
+  // messages follow in send order, and live event turns are appended last as
+  // they stream. That sequence is chronological by construction. A sort by
+  // `createdAt` only broke it — pending/live turns carry a client clock and
+  // persisted ones a server clock, so any skew reordered an in-flight prompt
+  // (and its streaming "thinking" turn) around the persisted history.
+  return turns.filter((turn) =>
+    turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
+  );
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
@@ -263,7 +292,13 @@ function creditsNoticeFromTurnText(
   return /^\s*error\b/i.test(text) ? creditsNotice(text) : undefined;
 }
 
-function messageToTurn(message: AgentMessageDto): AgentChatTurn {
+function messageToTurn(message: AgentMessageDto): AgentChatTurn | undefined {
+  // The proxy persists a "policy_blocked" marker as the assistant reply on
+  // reject; the block card comes from decision state, so skip the marker
+  // rather than leaking it as raw text.
+  if (message.role === "assistant" && isPolicyBlockedMessage(message.content)) {
+    return undefined;
+  }
   const notice =
     message.role === "assistant"
       ? creditsNoticeFromTurnText(message.content)
@@ -347,6 +382,14 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "message.delta") {
+      // The proxy re-streams a rejected prompt as assistant content; never show
+      // that raw policy_blocked notice as streaming text — the block card comes
+      // from decision state, not from this stream.
+      if (isPolicyBlockedMessage(deltaEventText(event))) {
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        currentAssistant.status = "running";
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
       appendAssistantTextPart(
@@ -358,6 +401,20 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "message.complete") {
+      // The proxy re-streams a rejected prompt as the assistant message; the
+      // block card comes from decision state, so swallow the marker rather than
+      // rendering it as text.
+      if (text && isPolicyBlockedMessage(text)) {
+        if (currentAssistant) {
+          currentAssistant.parts = currentAssistant.parts.filter(
+            (part) => part.type !== "text",
+          );
+          currentAssistant.status = "complete";
+          completeRunningParts(currentAssistant.parts);
+          currentAssistant = null;
+        }
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNoticeFromTurnText(text) : undefined;
       if (notice) {
@@ -573,6 +630,19 @@ function appendLiveHermesEvents(
     }
 
     if (event.type === "error") {
+      // The proxy reports a rejected prompt as an error; the block card comes
+      // from decision state, so swallow the marker rather than rendering it.
+      if (text && isPolicyBlockedMessage(text)) {
+        if (currentAssistant) {
+          currentAssistant.parts = currentAssistant.parts.filter(
+            (part) => part.type !== "text",
+          );
+          currentAssistant.status = "complete";
+          completeRunningParts(currentAssistant.parts);
+          currentAssistant = null;
+        }
+        continue;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNotice(text) : undefined;
       if (notice) {
@@ -590,6 +660,100 @@ function appendLiveHermesEvents(
       currentAssistant = null;
     }
   }
+}
+
+/** A user's policy-block decision for one prompt, kept in per-session frontend
+ * state and the only source of the inline block/approval cards. */
+export type PolicyBlockDecision = {
+  id: string;
+  promptText: string;
+  status: "pending" | "continued" | "rejected";
+  /** Zero-based index of the user turn this decision blocked, among all user
+   * turns in chronological order. This is the only anchor that survives the
+   * pending→persisted transition: turn ids change when a prompt persists and
+   * timestamps mix client and server clocks, but the order of user turns never
+   * changes. The card renders right after this user turn. */
+  blockedUserTurnIndex: number;
+};
+
+/** A re-enable marker closing the span where OS Guard was off. The divider
+ * renders right before the user turn at `beforeUserTurnIndex` — i.e. just before
+ * the next prompt the user sends after re-enabling — or at the end if no such
+ * prompt exists yet. Anchored by user-turn ordinal for the same reason as
+ * decisions: ids and timestamps are not stable, ordinals are. */
+export type OsGuardReenable = {
+  id: string;
+  beforeUserTurnIndex: number;
+};
+
+/**
+ * The single mechanism that places policy-block cards and OS-Guard re-enable
+ * dividers in the timeline. Pure: it takes the built turns plus the session's
+ * decision state and returns a new array with the cards/dividers spliced in by
+ * position, so rendering is deterministic across live streaming and reconcile.
+ *
+ * Everything is anchored by user-turn ordinal — the position of a prompt among
+ * all user turns in chronological order. That ordinal is the only thing that
+ * survives the pending→persisted transition: a prompt's turn id changes when it
+ * persists and its timestamp mixes client and server clocks, but the order of
+ * user turns never changes. A decision's card renders right after the user turn
+ * at its `blockedUserTurnIndex`; a re-enable divider renders right before the
+ * user turn at its `beforeUserTurnIndex` (i.e. just before the next prompt), or
+ * at the end when that prompt doesn't exist yet.
+ */
+export function applyPolicyBlockCards(
+  turns: AgentChatTurn[],
+  decisions: PolicyBlockDecision[],
+  reenables: OsGuardReenable[],
+): AgentChatTurn[] {
+  const out = [...turns];
+
+  // Array index of the nth user turn, recomputed each call because earlier
+  // splices shift positions. Cards (assistant) and dividers (system) are never
+  // user turns, so inserting them never changes any user-turn ordinal.
+  const userTurnIndex = (ordinal: number): number => {
+    let seen = 0;
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i]?.role !== "user") continue;
+      if (seen === ordinal) return i;
+      seen += 1;
+    }
+    return -1;
+  };
+
+  for (const decision of decisions) {
+    const at = userTurnIndex(decision.blockedUserTurnIndex);
+    const card: AgentChatTurn = {
+      id: `policy-block:${decision.id}`,
+      role: "assistant",
+      createdAt: at >= 0 ? (out[at]?.createdAt ?? "") : "",
+      status: "complete",
+      parts: [{ type: "policyBlock", id: decision.id, status: decision.status }],
+    };
+    if (at >= 0) out.splice(at + 1, 0, card);
+    else out.push(card);
+  }
+
+  for (const reenable of reenables) {
+    const at = userTurnIndex(reenable.beforeUserTurnIndex);
+    const divider: AgentChatTurn = {
+      id: `os-guard-reenabled:${reenable.id}`,
+      role: "system",
+      createdAt: at > 0 ? (out[at - 1]?.createdAt ?? "") : "",
+      status: "complete",
+      parts: [
+        {
+          type: "divider",
+          id: `os-guard-reenabled:${reenable.id}`,
+          label: "Protection restored",
+        },
+      ],
+    };
+    if (at >= 0) out.splice(at, 0, divider);
+    else out.push(divider);
+  }
+
+  return out;
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
@@ -716,6 +880,8 @@ function completeRunningParts(parts: AgentChatPart[]) {
       part.status = "resolved";
     if (part.type === "clarify" && part.status === "pending")
       part.status = "resolved";
+    if (part.type === "policyBlock" && part.status === "pending")
+      part.status = "rejected";
   }
 }
 
@@ -1055,6 +1221,8 @@ function partText(part: AgentChatPart) {
   if (part.type === "clarify")
     return [part.question, part.answer ?? ""].join(" ");
   if (part.type === "context") return part.preview || part.text;
+  if (part.type === "policyBlock") return "June blocked this prompt.";
+  if (part.type === "divider") return part.label;
   return part.text;
 }
 

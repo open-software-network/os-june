@@ -13,6 +13,7 @@ pub mod menu_bar;
 pub mod os_accounts;
 pub mod providers;
 pub mod scribe_api;
+pub mod tool_guard;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -153,6 +154,9 @@ pub fn run() {
             commands::retry_agent_task,
             commands::list_agent_tool_events,
             hermes_bridge::hermes_bridge_status,
+            hermes_bridge::hermes_bridge_tool_guard_decision,
+            hermes_bridge::hermes_bridge_policy_block_decision,
+            hermes_bridge::hermes_bridge_clear_direct_policy,
             hermes_bridge::hermes_bridge_skills,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,

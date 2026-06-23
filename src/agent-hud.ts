@@ -509,6 +509,11 @@ function sessionSummary(
   status: HudSessionStatus,
   record?: StatusRecord,
 ) {
+  // A session awaiting a policy-block decision keeps the runtime's last
+  // summary ("Thinking."), which is stale and misleading once it is really
+  // waiting on the user. Surface the waiting label instead (rowSummary then
+  // collapses it, leaving a clean "needs input" row with no progress text).
+  if (status === "waitingForUser") return statusLabel(status);
   const summary = record?.summary?.trim();
   if (summary) return summary;
   if (status !== "idle") return statusLabel(status);

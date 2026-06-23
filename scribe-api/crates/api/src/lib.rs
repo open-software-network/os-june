@@ -22,7 +22,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 pub use envelope::{
     ApiResponse, ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_PAYLOAD_TOO_LARGE, ERR_TIMEOUT, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    ERR_PAYLOAD_TOO_LARGE, ERR_POLICY_BLOCKED, ERR_TIMEOUT, ERR_TOOL_GUARD_UNAVAILABLE,
+    ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
 pub use handlers::dictate::{
@@ -61,6 +62,11 @@ pub fn router(state: ApiState) -> Router {
                 .layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
+            "/v1/chat/completions/direct",
+            post(handlers::agent::chat_completions_direct)
+                .layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
             "/v1/dictate",
             post(handlers::dictate::transcribe)
                 .layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
@@ -68,6 +74,16 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/dictate/cleanup",
             post(handlers::dictate::cleanup).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/tool-guard/calls",
+            post(handlers::tool_guard::analyze_call)
+                .layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/tool-guard/results",
+            post(handlers::tool_guard::analyze_result)
+                .layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
             "/v1/issue-reports",

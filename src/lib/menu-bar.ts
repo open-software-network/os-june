@@ -81,6 +81,10 @@ export function buildAgentMenuBarState({
       lastActive: sessionTimestamp(session),
     }));
 
+  const lastStatusWaiting = Boolean(
+    lastStatus?.sessionId && waitingSessionIds.has(lastStatus.sessionId),
+  );
+
   return {
     activeCount: activeSessionIds.size,
     needsUserCount: waitingSessionIds.size,
@@ -92,8 +96,14 @@ export function buildAgentMenuBarState({
           title:
             normalizeText(lastStatus.title, TITLE_LIMIT) ??
             normalizeText(lastStatus.prompt, TITLE_LIMIT),
-          status: lastStatus.status,
-          summary: normalizeText(lastStatus.summary, SUBTITLE_LIMIT),
+          // Once a session is waiting on a policy-block decision, its last
+          // runtime status/summary ("Thinking.") is stale: present it as
+          // waitingForUser and drop the progress text so the menu bar does
+          // not claim it is still working.
+          status: lastStatusWaiting ? "waitingForUser" : lastStatus.status,
+          summary: lastStatusWaiting
+            ? undefined
+            : normalizeText(lastStatus.summary, SUBTITLE_LIMIT),
         }
       : undefined,
     updatedAt: now.toISOString(),

@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
+  hermesBridgePolicyBlockDecision: vi.fn(),
+  invoke: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
@@ -74,12 +76,12 @@ const mocks = vi.hoisted(() => ({
   }>,
   eventHandlers: new Map<
     string,
-    (event: { payload?: { paths?: string[] } }) => void
+    (event: { payload?: Record<string, unknown> }) => void
   >(),
   listen: vi.fn(
     async (
       eventName: string,
-      handler: (event: { payload?: { paths?: string[] } }) => void,
+      handler: (event: { payload?: Record<string, unknown> }) => void,
     ) => {
       mocks.eventHandlers.set(eventName, handler);
       return () => mocks.eventHandlers.delete(eventName);
@@ -96,6 +98,8 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
+  hermesBridgePolicyBlockDecision: mocks.hermesBridgePolicyBlockDecision,
+  AGENT_POLICY_BLOCK_DECISION_EVENT: "agent-policy-block-decision-request",
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -125,6 +129,10 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
 }));
 
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
@@ -184,6 +192,7 @@ describe("AgentWorkspace", () => {
     vi.clearAllMocks();
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    mocks.eventHandlers.clear();
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
@@ -228,6 +237,8 @@ describe("AgentWorkspace", () => {
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
     });
+    mocks.invoke.mockResolvedValue(undefined);
+    mocks.hermesBridgePolicyBlockDecision.mockResolvedValue(undefined);
     // Mirrors the backend: starting a mode yields a status that contains
     // that mode's connection (alongside any other live mode).
     mocks.startHermesBridge.mockImplementation(
@@ -305,6 +316,59 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("renders Tool Guard review requests and sends selected redactions", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(
+        mocks.eventHandlers.has("tool-guard-decision-request"),
+      ).toBeTruthy(),
+    );
+
+    act(() => {
+      mocks.eventHandlers.get("tool-guard-decision-request")?.({
+        payload: {
+          decisionId: "decision-1",
+          kind: "toolCall",
+          toolCallId: "call-1",
+          toolName: "web_lookup",
+          destinationId: "web",
+          analysisRequestId: "req-1",
+          findings: [
+            {
+              findingId: "finding-1",
+              piiType: "email",
+              confidenceBucket: "high",
+              replacement: "[[OSG.EMAIL.1]]",
+              originalText: "alice@example.com",
+            },
+          ],
+          advisories: [],
+        },
+      });
+    });
+
+    expect(
+      await screen.findByRole("dialog", { name: "Review tool data" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("alice@example.com")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Redact selected" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "hermes_bridge_tool_guard_decision",
+        {
+          response: {
+            decisionId: "decision-1",
+            action: "redactSelected",
+            selectedFindingIds: ["finding-1"],
+          },
+        },
+      ),
+    );
   });
 
   it("keeps retrying startup session loads until the API is ready", async () => {
@@ -3066,6 +3130,78 @@ describe("AgentWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Add funds" }));
     expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+  });
+
+  it("shows a policy block card and marks the session direct after Continue", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
+        payload: {
+          decisionId: "decision-1",
+          conversationFingerprint: "fingerprint-1",
+          model: "zai-org-glm-5-2",
+          message: "policy_blocked",
+        },
+      });
+    });
+
+    expect(await screen.findByText("Prompt blocked")).toBeInTheDocument();
+    expect(
+      screen.getByText(/June blocked this prompt because it detected malicious content/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() =>
+      expect(mocks.hermesBridgePolicyBlockDecision).toHaveBeenCalledWith({
+        decisionId: "decision-1",
+        action: "continue",
+      }),
+    );
+    expect(
+      await screen.findAllByText(
+        /Protection is bypassed for this session at your request/,
+      ),
+    ).not.toHaveLength(0);
+  });
+
+  it("keeps a rejected policy block visible and makes the session read-only", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      mocks.eventHandlers.get("agent-policy-block-decision-request")?.({
+        payload: {
+          decisionId: "decision-2",
+          conversationFingerprint: "fingerprint-2",
+          model: "zai-org-glm-5-2",
+          message: "policy_blocked",
+        },
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Reject" }));
+
+    await waitFor(() =>
+      expect(mocks.hermesBridgePolicyBlockDecision).toHaveBeenCalledWith({
+        decisionId: "decision-2",
+        action: "reject",
+      }),
+    );
+    expect(
+      screen.getByText("June blocked this prompt. Start a new session to continue."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("June blocked this session. Start a new session to continue."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {
