@@ -39,7 +39,8 @@ mod tests {
         AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe,
         Authorization, AuthorizeRequest, ChargeRequest, CleanedText, Cleaner, CleanupRequest,
         Credits, DomainError, GeneratedNote, GenerationRequest, Generator, ModelId,
-        OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+        OsAccountsClient, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest,
+        UserId,
     };
     use std::{
         collections::BTreeMap,
@@ -179,6 +180,47 @@ mod tests {
 
         assert_eq!(output.receipt.credits_charged.0, 0);
         assert_eq!(os_accounts.events(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn agent_chat_meters_unmarked_turns() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = agent_chat_service(os_accounts.clone());
+
+        let output = service
+            .complete(AgentChatParams {
+                user_id: UserId("usr_123".to_string()),
+                model_id: ModelId("text-model".to_string()),
+                waive_metering: false,
+                body: serde_json::json!({
+                    "model": "text-model",
+                    "messages": [{ "role": "user", "content": "Summarize this PDF." }]
+                }),
+            })
+            .await
+            .expect("agent chat succeeds");
+
+        assert_eq!(output.receipt.credits_charged.0, 60);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "agent_chat".to_string(),
+                    estimate: 8200,
+                    hold_ttl: 300,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 60,
+                    idempotency_key: concat!(
+                        "agent_chat:usr_123:text-model:",
+                        "5d2fa5e23ba78fb298b4891a7d6c4c1f60caaf1b8b6461496b9aca2a945d63ed"
+                    )
+                    .to_string(),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
