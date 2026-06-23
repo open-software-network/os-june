@@ -7790,9 +7790,7 @@ function assignArtifactsToTurns(
   const claimedNames = new Set<string>();
   for (const turn of turns) {
     const text = turn.parts
-      .map((part) =>
-        part.type !== "context" && "text" in part ? part.text : "",
-      )
+      .map((part) => (part.type === "text" ? part.text : ""))
       .join("\n")
       .toLowerCase();
     if (!text.trim()) continue;

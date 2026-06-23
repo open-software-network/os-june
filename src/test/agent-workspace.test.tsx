@@ -2304,6 +2304,94 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not surface files only mentioned inside tool output", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "sample.pdf",
+              path: `${workspaceRoot}/sample.pdf`,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "screenshot.png",
+              path: `${workspaceRoot}/screenshot.png`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "generate_pdf.py",
+              path: `${workspaceRoot}/generate_pdf.py`,
+              kind: "file",
+              size: 512,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done. The PDF is available as `sample.pdf`.",
+        timestamp: "2026-06-04T18:39:00Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "list_files",
+              arguments: "{}",
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        content: "sample.pdf\nscreenshot.png\ngenerate_pdf.py",
+        timestamp: "2026-06-04T18:39:01Z",
+        tool_call_id: "call-1",
+        tool_name: "list_files",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download sample.pdf" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download screenshot.png" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download generate_pdf.py" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      await screen.findByRole("button", { name: "View files (1)" }),
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(within(panel).getByText("sample.pdf")).toBeInTheDocument();
+    expect(within(panel).queryByText("screenshot.png")).not.toBeInTheDocument();
+    expect(
+      within(panel).queryByText("generate_pdf.py"),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not render download cards for files the user attached", async () => {
     const attachedPath =
       "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
