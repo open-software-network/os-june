@@ -382,10 +382,18 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
-    object.insert(
-        "model".to_string(),
-        serde_json::Value::String(crate::providers::generation_model()),
-    );
+    let has_request_model = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|model| !model.is_empty())
+        .unwrap_or(false);
+    if !has_request_model {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(crate::providers::generation_model()),
+        );
+    }
     clamp_agent_chat_output_tokens(object, "max_tokens");
     clamp_agent_chat_output_tokens(object, "max_completion_tokens");
 }
@@ -1152,6 +1160,47 @@ mod tests {
                 .and_then(|details| details.get("retryAfterMs").cloned())
                 .and_then(|value| value.as_u64()),
             Some(2_000)
+        );
+    }
+
+    #[test]
+    fn agent_proxy_preserves_session_selected_model() {
+        let mut body = serde_json::json!({
+            "model": "hermes-selected-model",
+            "messages": [{ "role": "user", "content": "hello" }],
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert_eq!(body["model"], serde_json::json!("hermes-selected-model"));
+    }
+
+    #[test]
+    fn agent_proxy_fills_missing_model_from_settings() {
+        let mut body = serde_json::json!({
+            "messages": [{ "role": "user", "content": "hello" }],
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert_eq!(
+            body["model"],
+            serde_json::json!(crate::providers::generation_model())
+        );
+    }
+
+    #[test]
+    fn agent_proxy_replaces_blank_model_from_settings() {
+        let mut body = serde_json::json!({
+            "model": "  ",
+            "messages": [{ "role": "user", "content": "hello" }],
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert_eq!(
+            body["model"],
+            serde_json::json!(crate::providers::generation_model())
         );
     }
 
