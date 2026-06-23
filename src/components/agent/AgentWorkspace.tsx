@@ -1204,6 +1204,7 @@ export function AgentWorkspace({
       : NEW_SESSION_DRAFT_KEY;
   const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
   composerDraftKeyRef.current = composerDraftKey;
+  const restoredComposerDraftKeyRef = useRef<string | null>();
   const chatArtifacts = useMemo(
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
@@ -1938,6 +1939,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (activePanel !== "chat") return;
+    if (restoredComposerDraftKeyRef.current === composerDraftKey) return;
     restoreComposerDraft(composerDraftKey);
   }, [activePanel, composerDraftKey]);
 
@@ -2851,6 +2853,7 @@ export function AgentWorkspace({
     // for ComposerEditor's onReady to pick up and also try to apply now.
     pendingSeedCategoryRef.current = seedCategory;
     if (seedCategory) {
+      clearComposerDraft(NEW_SESSION_DRAFT_KEY);
       seedComposerCategory();
     } else if (initialPrompt) {
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
@@ -2900,6 +2903,7 @@ export function AgentWorkspace({
   function restoreComposerDraft(key: string | null) {
     const editor = composerEditorRef.current;
     if (!editor) return;
+    restoredComposerDraftKeyRef.current = key;
     const snapshot = key ? agentComposerDrafts.get(key) : undefined;
     draftRef.current = snapshot?.text ?? "";
     categoryRef.current = snapshot?.category ?? null;
