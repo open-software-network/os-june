@@ -1946,12 +1946,15 @@ export function AgentWorkspace({
     // The composer's category chip makes this a report. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
+    const reportSessionId = reportCategory
+      ? (selectedHermesSessionIdRef.current ?? null)
+      : null;
     const submittedDraftKey = composerDraftKeyRef.current;
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
     // sit frozen through the wait and then vanish in a single frame when the
     // conversation takes over.
-    if (heroMode) setHeroLeaving(true);
+    if (heroMode && !reportCategory) setHeroLeaving(true);
     setSubmitting(true);
     composerEditorRef.current?.clear();
     setDraft("");
@@ -1963,7 +1966,6 @@ export function AgentWorkspace({
     setIssueReportNotice(null);
     try {
       if (reportCategory) {
-        const reportSessionId = selectedHermesSessionIdRef.current ?? null;
         await submitIssueReport({
           category: reportCategory,
           // An attachments-only send has no typed text, but the server
@@ -2006,6 +2008,7 @@ export function AgentWorkspace({
       if (reportCategory) {
         setError(
           `The issue report could not be sent. ${messageFromError(err)}`,
+          { sessionId: reportSessionId },
         );
       } else if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale

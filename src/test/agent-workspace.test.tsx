@@ -500,7 +500,13 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
-    mocks.submitIssueReport.mockResolvedValue({ received: true });
+    let resolveReport: ((value: { received: boolean }) => void) | undefined;
+    mocks.submitIssueReport.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveReport = resolve;
+        }),
+    );
 
     render(<AgentWorkspace />);
 
@@ -517,6 +523,9 @@ describe("AgentWorkspace", () => {
     });
     expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start session" }));
+    expect(document.querySelector(".agent-main")).not.toHaveAttribute(
+      "data-hero-leaving",
+    );
 
     await waitFor(() =>
       expect(mocks.submitIssueReport).toHaveBeenCalledWith({
@@ -534,6 +543,11 @@ describe("AgentWorkspace", () => {
       expect.anything(),
     );
     expect(screen.queryByText(/---USER REPORT---/)).toBeNull();
+
+    await act(async () => {
+      resolveReport?.({ received: true });
+      await Promise.resolve();
+    });
     expect(
       await screen.findByText(/Your report was sent to the June team/),
     ).toBeInTheDocument();
@@ -569,6 +583,45 @@ describe("AgentWorkspace", () => {
       "prompt.submit",
       expect.anything(),
     );
+  });
+
+  it("does not show a delayed report failure after switching away", async () => {
+    const user = userEvent.setup();
+    let rejectReport: ((error: Error) => void) | undefined;
+    mocks.submitIssueReport.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectReport = reject;
+        }),
+    );
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Attach files or tag this message" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: /Bug report/ }));
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    await user.type(
+      screen.getByRole("textbox"),
+      "The recorder crashes after long meetings",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalled());
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+
+    await act(async () => {
+      rejectReport?.(new Error("upstream_failed"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(/The issue report could not be sent/)).toBeNull();
+    expect(screen.queryByText(/upstream_failed/)).toBeNull();
   });
 
   it("labels anonymous-only agent models as anonymous mode", async () => {
