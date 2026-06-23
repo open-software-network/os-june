@@ -7642,6 +7642,23 @@ function filesystemEntriesToArtifacts(
   });
 }
 
+const ASSISTANT_ARTIFACT_SURFACE_RE =
+  /\b(?:available|attached|created|download|downloadable|exported|saved?|stored|uploaded|written|wrote)\b/;
+
+function assistantTextSurfacesArtifactName(text: string, name: string) {
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const index = text.indexOf(name, searchFrom);
+    if (index === -1) return false;
+    const contextStart = Math.max(0, index - 80);
+    const contextEnd = Math.min(text.length, index + name.length + 30);
+    const context = text.slice(contextStart, contextEnd);
+    if (ASSISTANT_ARTIFACT_SURFACE_RE.test(context)) return true;
+    searchFrom = index + name.length;
+  }
+  return false;
+}
+
 // Assigns each workspace file to the first turn that mentions it, so its
 // download card renders once instead of at the end of every later response
 // that happens to repeat the file name. User turns can claim a file too, but
@@ -7673,6 +7690,7 @@ function assignArtifactsToTurns(
       const nameMentioned =
         turn.role === "assistant" &&
         !claimedNames.has(name) &&
+        assistantTextSurfacesArtifactName(text, name) &&
         text.includes(name);
       if (!pathMentioned && !nameMentioned) continue;
       claimedPaths.add(artifact.path);
