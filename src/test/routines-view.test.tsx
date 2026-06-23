@@ -76,6 +76,32 @@ function renderView(
   );
 }
 
+function mockTextareaScrollHeight(
+  getScrollHeight: (element: HTMLTextAreaElement) => number,
+) {
+  const original = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "scrollHeight",
+  );
+  Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      return getScrollHeight(this as HTMLTextAreaElement);
+    },
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(
+        HTMLTextAreaElement.prototype,
+        "scrollHeight",
+        original,
+      );
+    } else {
+      Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
+    }
+  };
+}
+
 async function openDetail(name: string) {
   const list = await screen.findByRole("list", { name: "Routines" });
   await userEvent.click(within(list).getByText(name));
@@ -321,6 +347,33 @@ describe("RoutinesView templates and creation", () => {
     expect(prompt).toContain("cronjob tool");
     expect(prompt).toContain("Do not set enabled_toolsets");
     expect(prompt).not.toContain("Create the job with enabled_toolsets");
+  });
+
+  it("expands the describe composer for overflowing text", async () => {
+    const restoreScrollHeight = mockTextareaScrollHeight((element) =>
+      element.value.length > 48 ? 138 : 30,
+    );
+    try {
+      mocks.listRoutines.mockResolvedValue([]);
+      renderView();
+      await screen.findByText("Morning brief");
+
+      const composer = screen.getByRole("form", {
+        name: "Describe a routine to June",
+      });
+      const textbox = within(composer).getByRole("textbox", {
+        name: "Describe a routine",
+      }) as HTMLTextAreaElement;
+
+      await userEvent.type(
+        textbox,
+        "watch the weather and message me whenever storm updates need attention",
+      );
+
+      await waitFor(() => expect(textbox.style.height).toBe("140px"));
+    } finally {
+      restoreScrollHeight();
+    }
   });
 
   it("describes an unrestricted routine only after the explicit opt-in", async () => {
