@@ -736,6 +736,59 @@ describe("AgentWorkspace", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
+  it("allows second-precision diagnosis timestamps near the report boundary", async () => {
+    const user = userEvent.setup();
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "The same-second diagnosis is relevant.",
+        created_at: Date.parse("2026-06-11T10:00:10Z") / 1000,
+      },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await screen.findByRole("textbox");
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("june-agent-issue-report-delivery-settled", {
+          detail: {
+            sessionId: "session-1",
+            report: {
+              category: "bug",
+              description: "The recorder crashes from this existing chat",
+              followUps: [],
+              attachmentNames: [],
+              attachmentPaths: [],
+              diagnosisStartedAt: "2026-06-11T10:00:10.750Z",
+            },
+            result: {
+              sent: false,
+              errorMessage: "The issue report could not be sent. Network down.",
+            },
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "The recorder crashes from this existing chat",
+        agentDiagnosis: "The same-second diagnosis is relevant.",
+        attachmentNames: [],
+        attachmentPaths: [],
+        sessionId: "session-1",
+      }),
+    );
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
   it("sends a report when the diagnosis refresh stalls", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

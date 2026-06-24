@@ -794,6 +794,7 @@ const ISSUE_REPORT_DELIVERY_SETTLED_EVENT =
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
+const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
 
 function sessionComposerDraftKey(sessionId: string) {
@@ -1015,7 +1016,10 @@ function messageAfterIssueReportDiagnosisBoundary(
   const messageTime = hermesMessageTimestampMs(message);
   const boundaryTime = Date.parse(report.diagnosisStartedAt);
   if (!Number.isFinite(boundaryTime)) return true;
-  return messageTime !== undefined && messageTime >= boundaryTime;
+  return (
+    messageTime !== undefined &&
+    messageTime >= boundaryTime - ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS
+  );
 }
 
 /** Test hook: the snapshot is module state, so a test that unmounts with a
