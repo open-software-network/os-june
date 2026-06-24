@@ -2,12 +2,20 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
-import type { RoutineJob } from "../lib/hermes-routines";
+import type { RoutineBlueprint, RoutineJob } from "../lib/hermes-routines";
 import type { HermesSessionInfo } from "../lib/tauri";
 import appCss from "../styles/app.css?raw";
 
 const mocks = vi.hoisted(() => ({
   listRoutines: vi.fn<() => Promise<RoutineJob[]>>(),
+  listRoutineBlueprints: vi.fn<() => Promise<RoutineBlueprint[]>>(),
+  instantiateRoutineBlueprint:
+    vi.fn<
+      (input: {
+        blueprint: string;
+        values: Record<string, unknown>;
+      }) => Promise<RoutineJob>
+    >(),
   pauseRoutine: vi.fn(),
   resumeRoutine: vi.fn(),
   removeRoutine: vi.fn(),
@@ -59,6 +67,37 @@ function run(overrides: Partial<HermesSessionInfo> = {}): HermesSessionInfo {
     title: "Morning Summary Digest",
     preview: "Here is today's summary of your unread notes.",
     last_active: "2026-06-10T09:00:30Z",
+    ...overrides,
+  };
+}
+
+function blueprint(
+  overrides: Partial<RoutineBlueprint> = {},
+): RoutineBlueprint {
+  return {
+    key: "morning-brief",
+    title: "Morning briefing",
+    description: "Send a concise daily briefing.",
+    category: "daily",
+    scheduleHuman: "daily at 08:00",
+    tags: ["daily", "briefing"],
+    fields: [
+      {
+        name: "time",
+        type: "time",
+        label: "Time",
+        default: "08:00",
+        help: "Uses your local timezone.",
+      },
+      {
+        name: "deliver",
+        type: "enum",
+        label: "Delivery",
+        default: "local",
+        options: ["local", "origin"],
+        strict: false,
+      },
+    ],
     ...overrides,
   };
 }
@@ -117,6 +156,8 @@ beforeEach(() => {
   mocks.triggerRoutine.mockResolvedValue({});
   mocks.createRoutine.mockResolvedValue(job());
   mocks.updateRoutine.mockResolvedValue(job());
+  mocks.listRoutineBlueprints.mockResolvedValue([]);
+  mocks.instantiateRoutineBlueprint.mockResolvedValue(job());
   adapterMocks.listScheduledRunSessions.mockResolvedValue([]);
 });
 
@@ -318,6 +359,76 @@ describe("RoutinesView templates and creation", () => {
     expect(
       await screen.findByRole("textbox", { name: "Routine name" }),
     ).toHaveValue("Morning summary");
+  });
+
+  it("shows automation blueprints and instantiates one", async () => {
+    mocks.listRoutines.mockResolvedValueOnce([]);
+    mocks.listRoutineBlueprints.mockResolvedValue([blueprint()]);
+    renderView();
+
+    const blueprints = await screen.findByRole("region", {
+      name: "Automation blueprints",
+    });
+    expect(within(blueprints).getByText("Morning briefing")).toBeVisible();
+    expect(within(blueprints).getByText("daily at 08:00")).toBeInTheDocument();
+    expect(within(blueprints).getByText("daily")).toBeInTheDocument();
+
+    await userEvent.click(
+      within(blueprints).getByRole("button", {
+        name: "Set up Morning briefing",
+      }),
+    );
+    expect(within(blueprints).getByLabelText(/time/i)).toHaveValue("08:00");
+    expect(within(blueprints).getByLabelText(/delivery/i)).toHaveValue(
+      "local",
+    );
+    await userEvent.clear(within(blueprints).getByLabelText(/delivery/i));
+    await userEvent.type(
+      within(blueprints).getByLabelText(/delivery/i),
+      "slack",
+    );
+
+    mocks.listRoutines.mockResolvedValue([job()]);
+    await userEvent.click(
+      within(blueprints).getByRole("button", { name: "Schedule" }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.instantiateRoutineBlueprint).toHaveBeenCalledWith({
+        blueprint: "morning-brief",
+        values: {
+          time: "08:00",
+          deliver: "slack",
+        },
+      }),
+    );
+    expect(
+      await screen.findByRole("textbox", { name: "Routine name" }),
+    ).toHaveValue("Morning summary");
+  });
+
+  it("keeps blueprint instantiation failures inside the card", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    mocks.listRoutineBlueprints.mockResolvedValue([blueprint()]);
+    mocks.instantiateRoutineBlueprint.mockRejectedValue(
+      new Error("time is invalid"),
+    );
+    renderView();
+
+    const blueprints = await screen.findByRole("region", {
+      name: "Automation blueprints",
+    });
+    await userEvent.click(
+      within(blueprints).getByRole("button", {
+        name: "Set up Morning briefing",
+      }),
+    );
+    await userEvent.click(
+      within(blueprints).getByRole("button", { name: "Schedule" }),
+    );
+
+    expect(await within(blueprints).findByText("time is invalid")).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Routine name" })).toBeNull();
   });
 
   it("routes the describe path through the agent prompt, sandboxed by default", async () => {

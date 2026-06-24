@@ -21,6 +21,8 @@ import {
 } from "../../lib/hermes-adapter";
 import {
   createRoutine,
+  instantiateRoutineBlueprint,
+  listRoutineBlueprints,
   listRoutines,
   pauseRoutine,
   removeRoutine,
@@ -30,6 +32,7 @@ import {
   triggerRoutine,
   updateRoutine,
   type RoutineJob,
+  type RoutineBlueprint,
   type RoutineUpdates,
 } from "../../lib/hermes-routines";
 import {
@@ -47,6 +50,7 @@ import { GrowingTextarea } from "./GrowingTextarea";
 import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 
 const NO_ROUTINES: RoutineJob[] = [];
+const NO_BLUEPRINTS: RoutineBlueprint[] = [];
 const NO_RUNS: HermesSessionInfo[] = [];
 const RUN_HISTORY_REFRESH_MS = 10000;
 
@@ -87,6 +91,11 @@ export function RoutinesView({
   // deliberate per-creation opt-in, never a sticky preference.
   const [describeUnrestricted, setDescribeUnrestricted] = useState(false);
   const [allRuns, setRuns] = useState<HermesSessionInfo[]>([]);
+  const [allBlueprints, setBlueprints] = useState<RoutineBlueprint[]>([]);
+  const [blueprintsLoadingState, setBlueprintsLoading] = useState(true);
+  const [blueprintsErrorState, setBlueprintsError] = useState<string | null>(
+    null,
+  );
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
   const runLoadSequenceRef = useRef(0);
 
@@ -95,7 +104,10 @@ export function RoutinesView({
   const forcedEmpty = useForcedEmptyStates();
   const routines = forcedEmpty ? NO_ROUTINES : allRoutines;
   const runs = forcedEmpty ? NO_RUNS : allRuns;
+  const blueprints = forcedEmpty ? NO_BLUEPRINTS : allBlueprints;
   const loading = !forcedEmpty && loadingState;
+  const blueprintsLoading = !forcedEmpty && blueprintsLoadingState;
+  const blueprintsError = !forcedEmpty ? blueprintsErrorState : null;
   const runsUnavailable = !forcedEmpty && runsUnavailableState;
 
   // `loading` gates the whole list and only covers the first fetch;
@@ -135,9 +147,21 @@ export function RoutinesView({
     }
   }, []);
 
+  const loadBlueprints = useCallback(async () => {
+    try {
+      const nextBlueprints = await listRoutineBlueprints();
+      setBlueprints(nextBlueprints);
+      setBlueprintsError(null);
+    } catch (err) {
+      setBlueprintsError(messageFromError(err));
+    } finally {
+      setBlueprintsLoading(false);
+    }
+  }, []);
+
   const refresh = useCallback(
-    () => Promise.all([loadRoutines(), loadRuns()]),
-    [loadRoutines, loadRuns],
+    () => Promise.all([loadRoutines(), loadRuns(), loadBlueprints()]),
+    [loadBlueprints, loadRoutines, loadRuns],
   );
 
   useEffect(() => {
@@ -259,6 +283,20 @@ export function RoutinesView({
     } finally {
       setCreating(false);
     }
+  }
+
+  async function submitBlueprint(
+    blueprint: RoutineBlueprint,
+    values: Record<string, unknown>,
+  ) {
+    const created = await instantiateRoutineBlueprint({
+      blueprint: blueprint.key,
+      values,
+    });
+    await loadRoutines();
+    setError(null);
+    setDetailError(null);
+    setPage({ kind: "detail", jobId: created.job_id });
   }
 
   async function confirmDelete() {
@@ -449,6 +487,12 @@ export function RoutinesView({
         </div>
       ) : routines.length === 0 ? (
         <div className="routines-hero">
+          <BlueprintSection
+            blueprints={blueprints}
+            error={blueprintsError}
+            loading={blueprintsLoading}
+            onCreate={(blueprint, values) => submitBlueprint(blueprint, values)}
+          />
           <TemplateGrid onPick={openCreate} />
         </div>
       ) : filtered.length === 0 ? (
@@ -511,12 +555,22 @@ export function RoutinesView({
       ) : null}
 
       {!loading && routines.length > 0 && !query.trim() ? (
-        <section className="routines-starters" aria-label="Starter routines">
-          <header className="routines-section-header">
-            <h2>Starter routines</h2>
-          </header>
-          <TemplateGrid onPick={openCreate} />
-        </section>
+        <>
+          <BlueprintSection
+            blueprints={blueprints}
+            error={blueprintsError}
+            loading={blueprintsLoading}
+            onCreate={(blueprint, values) =>
+              submitBlueprint(blueprint, values)
+            }
+          />
+          <section className="routines-starters" aria-label="Starter routines">
+            <header className="routines-section-header">
+              <h2>Starter routines</h2>
+            </header>
+            <TemplateGrid onPick={openCreate} />
+          </section>
+        </>
       ) : null}
 
       {describeBar}
@@ -568,6 +622,264 @@ function TemplateGrid({
         </li>
       ))}
     </ul>
+  );
+}
+
+function BlueprintSection({
+  blueprints,
+  error,
+  loading,
+  onCreate,
+}: {
+  blueprints: RoutineBlueprint[];
+  error: string | null;
+  loading: boolean;
+  onCreate: (
+    blueprint: RoutineBlueprint,
+    values: Record<string, unknown>,
+  ) => Promise<void>;
+}) {
+  if (loading) {
+    return (
+      <section
+        className="routines-starters"
+        aria-label="Automation blueprints"
+      >
+        <header className="routines-section-header">
+          <h2>Automation blueprints</h2>
+        </header>
+        <div className="folders-empty">
+          <p>Loading blueprints...</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (error) {
+    return (
+      <section
+        className="routines-starters"
+        aria-label="Automation blueprints"
+      >
+        <header className="routines-section-header">
+          <h2>Automation blueprints</h2>
+        </header>
+        <p className="error-banner">{error}</p>
+      </section>
+    );
+  }
+
+  if (!blueprints.length) return null;
+
+  return (
+    <section className="routines-starters" aria-label="Automation blueprints">
+      <header className="routines-section-header">
+        <h2>Automation blueprints</h2>
+      </header>
+      <ul className="routines-template-grid" role="list">
+        {blueprints.map((blueprint) => (
+          <BlueprintCard
+            key={blueprint.key}
+            blueprint={blueprint}
+            onCreate={onCreate}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function BlueprintCard({
+  blueprint,
+  onCreate,
+}: {
+  blueprint: RoutineBlueprint;
+  onCreate: (
+    blueprint: RoutineBlueprint,
+    values: Record<string, unknown>,
+  ) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    initialBlueprintValues(blueprint),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onCreate(blueprint, values);
+      setOpen(false);
+      setValues(initialBlueprintValues(blueprint));
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <li
+      className="routines-template-card routines-blueprint-card"
+      data-expanded={open || undefined}
+    >
+      <span className="routines-template-icon" aria-hidden>
+        <IconZap size={15} />
+      </span>
+      <div className="routines-template-body">
+        <span className="routines-template-name">{blueprint.title}</span>
+        <p className="routines-template-description">
+          {blueprint.description}
+        </p>
+        {blueprint.scheduleHuman ? (
+          <span className="routines-blueprint-schedule">
+            <IconCalendarRepeat size={12} aria-hidden />
+            {blueprint.scheduleHuman}
+          </span>
+        ) : null}
+        {blueprint.tags?.length ? (
+          <span className="routines-blueprint-tags" aria-label="Tags">
+            {blueprint.tags.slice(0, 3).map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </span>
+        ) : null}
+        {open ? (
+          <form
+            className="routines-blueprint-form"
+            aria-label={`${blueprint.title} blueprint`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submit();
+            }}
+          >
+            {blueprint.fields.map((field) => (
+              <BlueprintField
+                key={field.name}
+                blueprintKey={blueprint.key}
+                field={field}
+                value={values[field.name] ?? ""}
+                onChange={(value) =>
+                  setValues((current) => ({
+                    ...current,
+                    [field.name]: value,
+                  }))
+                }
+              />
+            ))}
+            {error ? (
+              <p className="settings-row-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <div className="routines-blueprint-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={submitting}
+                onClick={() => {
+                  setOpen(false);
+                  setError(null);
+                  setValues(initialBlueprintValues(blueprint));
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="primary-action primary-solid"
+                disabled={submitting}
+              >
+                {submitting ? "Scheduling..." : "Schedule"}
+              </button>
+            </div>
+          </form>
+        ) : null}
+      </div>
+      {!open ? (
+        <button
+          type="button"
+          className="icon-button routines-template-add"
+          aria-label={`Set up ${blueprint.title}`}
+          onClick={() => setOpen(true)}
+        >
+          <IconPlusMedium size={13} aria-hidden />
+        </button>
+      ) : null}
+    </li>
+  );
+}
+
+function BlueprintField({
+  blueprintKey,
+  field,
+  value,
+  onChange,
+}: {
+  blueprintKey: string;
+  field: RoutineBlueprint["fields"][number];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = `blueprint-${blueprintKey}-${field.name}`;
+  const options = field.options ?? [];
+  const allowsCustomEnum = field.type === "enum" && field.strict === false;
+
+  return (
+    <label className="routines-blueprint-field" htmlFor={id}>
+      <span>{field.label}</span>
+      {allowsCustomEnum ? (
+        <>
+          <input
+            id={id}
+            list={`${id}-options`}
+            type="text"
+            value={value}
+            placeholder={field.help || field.label}
+            onChange={(event) => onChange(event.currentTarget.value)}
+          />
+          <datalist id={`${id}-options`}>
+            {options.map((option) => (
+              <option key={String(option)} value={String(option)} />
+            ))}
+          </datalist>
+        </>
+      ) : field.type === "enum" || field.type === "weekdays" ? (
+        <select
+          id={id}
+          value={value}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        >
+          {options.map((option) => (
+            <option key={String(option)} value={String(option)}>
+              {String(option)}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          id={id}
+          type={field.type === "time" ? "time" : "text"}
+          value={value}
+          placeholder={field.help || field.label}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        />
+      )}
+      {field.help ? <small>{field.help}</small> : null}
+    </label>
+  );
+}
+
+function initialBlueprintValues(blueprint: RoutineBlueprint) {
+  return Object.fromEntries(
+    blueprint.fields.map((field) => [
+      field.name,
+      field.default === undefined || field.default === null
+        ? ""
+        : String(field.default),
+    ]),
   );
 }
 

@@ -1362,6 +1362,14 @@ pub struct HermesCronJobRequest {
     pub job_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstantiateHermesCronBlueprintRequest {
+    pub blueprint: String,
+    #[serde(default)]
+    pub values: serde_json::Value,
+}
+
 #[tauri::command]
 pub async fn hermes_bridge_cron_jobs(
     bridge: State<'_, HermesBridge>,
@@ -1371,6 +1379,36 @@ pub async fn hermes_bridge_cron_jobs(
         reqwest::Method::GET,
         &format!("/api/cron/jobs?{CRON_PROFILE_QUERY}"),
         None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn hermes_bridge_cron_blueprints(
+    bridge: State<'_, HermesBridge>,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::GET,
+        "/api/cron/blueprints",
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn instantiate_hermes_bridge_cron_blueprint(
+    bridge: State<'_, HermesBridge>,
+    request: InstantiateHermesCronBlueprintRequest,
+) -> Result<serde_json::Value, AppError> {
+    hermes_api_json(
+        &bridge,
+        reqwest::Method::POST,
+        &format!("/api/cron/blueprints/instantiate?{CRON_PROFILE_QUERY}"),
+        Some(serde_json::json!({
+            "blueprint": request.blueprint,
+            "values": request.values,
+        })),
     )
     .await
 }
