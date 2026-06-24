@@ -103,6 +103,17 @@ describe("shouldBlockOnFunding", () => {
     ).toBe(true);
   });
 
+  it("blocks explicit non-live subscription statuses with no credits left", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
+          subscription: { subscribed: true, status: "incomplete" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("allows zero-credit users while subscription state is unknown", () => {
     expect(
       shouldBlockOnFunding(

@@ -6,10 +6,12 @@ import type { AccountStatus } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   osAccountsOpenPortal: vi.fn(),
+  osAccountsTopUp: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
+  osAccountsTopUp: mocks.osAccountsTopUp,
 }));
 
 const baseAccount: AccountStatus = {
@@ -34,6 +36,7 @@ describe("FundingGate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
+    mocks.osAccountsTopUp.mockResolvedValue(undefined);
   });
 
   it("asks users with no credits to add credits, not start a card trial", async () => {
@@ -58,7 +61,8 @@ describe("FundingGate", () => {
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Add credits" }));
-    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
     await screen.findByText("Waiting for your credits");
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
@@ -78,6 +82,7 @@ describe("FundingGate", () => {
 
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsTopUp).not.toHaveBeenCalled();
   });
 
   it("lets a waiting account update be checked or reopened", async () => {
@@ -98,7 +103,7 @@ describe("FundingGate", () => {
     expect(onRefresh).toHaveBeenCalledOnce();
 
     await user.click(screen.getByRole("button", { name: "Reopen account" }));
-    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledTimes(2);
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(2);
   });
 
   it("polls account refresh while the gate is visible", async () => {

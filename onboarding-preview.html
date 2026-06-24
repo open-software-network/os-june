@@ -2,9 +2,9 @@
 <!--
   Dev-only onboarding preview. Runs the real wizard in a plain browser by
   faking the Tauri IPC bridge inline: signed in, permissions grant on
-  request, and "checkout" completes 4 seconds after you click Start free
-  trial so the activation moment is watchable. Nothing here ships: vite
-  builds only index.html, and no app code references this file.
+  request, and the dictation practice can be watched in isolation. Nothing
+  here ships: vite builds only index.html, and no app code references this
+  file.
 
   Usage:
     npm run dev
@@ -12,8 +12,9 @@
 
   Console helpers once it's open:
     june.replayOnboarding()            restart the wizard from step 1
-    june.replayOnboarding("trial")     jump to a step (sign-in, permissions,
-                                       trial, dictation-practice)
+    june.replayOnboarding("permissions")
+                                       jump to a step (sign-in, permissions,
+                                       dictation-practice)
     __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
     localStorage.setItem("os-scribe:theme", "dark"); location.reload()
 
@@ -134,18 +135,13 @@
               signedIn: true,
               configured: true,
               user: stubUser,
+              balance: { credits: 5000, usdMillis: 5000 },
               subscription: { subscribed: false },
             }
           : { signedIn: false, configured: true };
 
         window.__JUNE_STUB__ = {
           emitEvent,
-          setSubscribed(status) {
-            account = {
-              ...account,
-              subscription: { subscribed: true, status },
-            };
-          },
           signOut() {
             // The bare URL is the signed-out start.
             location.href = location.pathname;
@@ -182,17 +178,13 @@
                   signedIn: true,
                   configured: true,
                   user: stubUser,
+                  balance: { credits: 5000, usdMillis: 5000 },
                   subscription: { subscribed: false },
                 };
                 return account;
-              case "os_accounts_start_trial_checkout":
-                // Pretend the user finishes Stripe checkout 4s from now;
-                // the wizard's poll notices and shows the activated screen.
-                setTimeout(
-                  () => window.__JUNE_STUB__.setSubscribed("trialing"),
-                  4000,
-                );
-                return { outcome: "checkoutOpened" };
+              case "os_accounts_open_portal":
+              case "os_accounts_top_up":
+                return null;
               case "dictation_settings":
                 return { settings: dictationSettings() };
               case "set_dictation_shortcut":

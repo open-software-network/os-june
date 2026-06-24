@@ -21,7 +21,7 @@ function hasKnownNonLiveSubscription(account: AccountStatus): boolean {
   if (subscription.subscribed === false) return true;
 
   const status = subscription.status;
-  return status === "past_due" || status === "canceled";
+  return typeof status === "string" && status.length > 0;
 }
 
 // New users start from their OS Accounts credits, not a card-gated
