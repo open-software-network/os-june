@@ -596,6 +596,41 @@ describe("AgentWorkspace", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
+  it("applies a report category picked from the active session menu", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace />);
+
+    await screen.findByText("Existing session");
+
+    await user.click(
+      screen.getByRole("button", { name: "Attach files or tag this message" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Feature request" }));
+
+    expect(await screen.findByText("Feature request")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "Add a compact review mode");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining(
+          "The user is requesting a feature for the June desktop app.",
+        ),
+      }),
+    );
+    const submitted = mocks.gatewayRequest.mock.calls.find(
+      ([method, payload]) =>
+        method === "prompt.submit" &&
+        (payload as { text?: string }).text?.includes(
+          "Add a compact review mode",
+        ),
+    )?.[1] as { text: string };
+    expect(submitted.text).toContain("---USER REPORT---");
+    expect(submitted.text).toContain("Add a compact review mode");
+  });
+
   it("does not show a failed issue report banner after switching away", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

@@ -28,4 +28,10 @@ describe("dialog layering", () => {
       zIndexFor(".dialog-backdrop"),
     );
   });
+
+  it("lets the docked composer attach menu receive clicks", () => {
+    expect(appCss).toMatch(
+      /\.agent-attach-menu\s*\{[^}]*pointer-events:\s*auto;/,
+    );
+  });
 });

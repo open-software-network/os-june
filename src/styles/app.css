@@ -3483,6 +3483,9 @@ input:focus-visible,
 }
 
 .agent-attach-menu {
+  /* The docked composer form is pointer-events: none so it does not block the
+   * conversation. The menu is a sibling of the box, so it must opt back in. */
+  pointer-events: auto;
   min-width: 232px;
   max-width: min(420px, calc(100vw - 16px));
 }
