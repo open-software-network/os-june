@@ -496,6 +496,37 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (
+      event.type === "background.complete" ||
+      event.type === "background.completed"
+    ) {
+      if (!currentAssistant) {
+        currentAssistant = createAssistantTurn(turns, event.receivedAt);
+        toolCreatedTurns.add(currentAssistant);
+      }
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const taskId =
+        stringValue(payload?.task_id) ??
+        stringValue(payload?.taskId) ??
+        event.receivedAt;
+      const text =
+        stringValue(payload?.text, true) ??
+        stringValue(payload?.summary, true) ??
+        textFromHermesContent(payload);
+      const failed = /^\s*error\b/i.test(text ?? "");
+      upsertToolPart(currentAssistant.parts, {
+        id: `background:${taskId}`,
+        name: "Background task",
+        text: text ?? "",
+        status: failed ? "failed" : "complete",
+      });
+      if (toolCreatedTurns.has(currentAssistant)) {
+        currentAssistant.status = "complete";
+      }
+      currentAssistant = null;
+      continue;
+    }
+
     if (event.type === "clarify.request") {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";

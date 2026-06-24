@@ -29,6 +29,8 @@ const hermesMocks = vi.hoisted(() => ({
 
 vi.mock("../lib/hermes-adapter", () => ({
   deleteHermesSession: hermesMocks.deleteHermesSession,
+  isChildHermesSession: (session: { parentHermesSessionId?: string }) =>
+    Boolean(session.parentHermesSessionId),
   listHermesSessions: hermesMocks.listHermesSessions,
   sessionTimestamp: (session: { last_active?: string; started_at?: string }) =>
     session.last_active ?? session.started_at ?? "",

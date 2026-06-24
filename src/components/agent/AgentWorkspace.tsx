@@ -120,6 +120,7 @@ import {
 } from "../../lib/tauri";
 import {
   deleteHermesSession,
+  isChildHermesSession,
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
@@ -1484,7 +1485,9 @@ export function AgentWorkspace({
       let keepLoading = false;
       setHermesSessionsLoading(true);
       try {
-        const sessions = applySessionTitleOverrides(await listHermesSessions());
+        const sessions = applySessionTitleOverrides(
+          await listHermesSessions({ includeChildren: true }),
+        );
         hermesSessionsHydratedRef.current = true;
         setHermesSessionsHydrated(true);
         const pendingMessages = pendingHermesMessagesRef.current;
@@ -4291,6 +4294,11 @@ export function AgentWorkspace({
           fullMode={
             !newSessionMode && sessionUnrestricted(selectedHermesSessionId)
           }
+          backgroundSession={
+            !newSessionMode &&
+            selectedHermesSession !== undefined &&
+            isChildHermesSession(selectedHermesSession)
+          }
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -5054,6 +5062,7 @@ function AgentSessionBar({
   origin,
   privacyBadge,
   fullMode,
+  backgroundSession,
   title,
   artifactCount = 0,
   artifactsOpen = false,
@@ -5064,6 +5073,7 @@ function AgentSessionBar({
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
   fullMode?: boolean;
+  backgroundSession?: boolean;
   title?: string;
   artifactCount?: number;
   artifactsOpen?: boolean;
@@ -5172,6 +5182,16 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
+        {backgroundSession ? (
+          <HoverTip
+            tip="This session was started from another agent session."
+            className="agent-safety-badge agent-background-session-badge"
+            tabIndex={0}
+            aria-label="Background session - This session was started from another agent session."
+          >
+            Background
+          </HoverTip>
+        ) : null}
         {fullMode ? <UnrestrictedBadge /> : null}
         {onToggleArtifacts && artifactCount > 0 ? (
           <button

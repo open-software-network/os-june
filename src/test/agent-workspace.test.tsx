@@ -746,6 +746,18 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("labels reopened child sessions as background sessions", async () => {
+    const childSession = {
+      ...existingSession,
+      parent_session_id: "parent-session",
+    };
+    mocks.listHermesSessions.mockResolvedValue([childSession]);
+
+    render(<AgentWorkspace initialSession={childSession} />);
+
+    expect(await screen.findByText("Background")).toBeInTheDocument();
+  });
+
   it("opens the model picker from the composer's model trigger", async () => {
     const user = userEvent.setup();
 

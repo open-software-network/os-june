@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isChildHermesSession,
   isRunningScheduledRunSession,
   isReplaceableScheduledRunTitle,
   isScheduledRunPreamble,
@@ -147,6 +148,25 @@ describe("Hermes adapter", () => {
     expect(mocks.hermesBridgeSessions).toHaveBeenLastCalledWith(
       expect.objectContaining({ minMessages: 0 }),
     );
+  });
+
+  it("can ask Hermes for child sessions when a list surface needs background work", async () => {
+    mocks.hermesBridgeSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "child-session",
+          title: "Subagent result",
+          parent_session_id: "parent-session",
+        },
+      ],
+    });
+
+    const sessions = await listHermesSessions({ includeChildren: true });
+
+    expect(mocks.hermesBridgeSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ includeChildren: true }),
+    );
+    expect(isChildHermesSession(sessions[0] as HermesSessionInfo)).toBe(true);
   });
 
   it("lists only cron-sourced sessions as scheduled runs", async () => {

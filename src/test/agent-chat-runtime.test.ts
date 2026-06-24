@@ -1050,6 +1050,34 @@ describe("Agent chat runtime", () => {
     );
   });
 
+  it("renders background completion events in the parent session", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "background.complete",
+          session_id: "parent-session",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            task_id: "bg_123",
+            text: "Finished the audit.",
+          },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "tool",
+        id: "background:bg_123",
+        name: "Background task",
+        text: "Finished the audit.",
+        status: "complete",
+      },
+    ]);
+  });
+
   it("keeps the goal label when a later subagent event omits it", () => {
     const turns = buildAgentChatTurns(
       [],
