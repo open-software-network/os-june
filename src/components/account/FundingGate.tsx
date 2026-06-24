@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { osAccountsOpenPortal } from "../../lib/tauri";
+import { osAccountsOpenPortal, osAccountsTopUp } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
 import { JuneMark } from "./AccountGate";
@@ -46,7 +46,11 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   async function handleOpenPortal() {
     setPortalError(undefined);
     try {
-      await osAccountsOpenPortal();
+      if (pastDue) {
+        await osAccountsOpenPortal();
+      } else {
+        await osAccountsTopUp();
+      }
       setOpenedPortal(true);
     } catch (error) {
       setPortalError(messageFromError(error));
