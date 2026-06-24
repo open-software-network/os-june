@@ -1394,6 +1394,9 @@ export function AgentWorkspace({
           ),
         }
       : undefined;
+  const visibleIssueReportHasUnsentContext = Boolean(
+    visibleIssueReportReview && (draft.trim() || attachments.length),
+  );
   // Holds the prior render's heroMode. Read by both the composer auto-grow
   // effect (to skip its glide across a hero transition) and the hero→dock FLIP
   // below (to detect the hero handoff); the FLIP effect, which runs last, is
@@ -2178,7 +2181,7 @@ export function AgentWorkspace({
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
     const reportFollowUpSessionId =
-      !reportCategory && selectedHermesSessionId
+      !reportCategory && !newSessionModeRef.current && selectedHermesSessionId
         ? selectedHermesSessionId
         : null;
     const reportFollowUp = reportFollowUpSessionId
@@ -3955,7 +3958,10 @@ export function AgentWorkspace({
               <button
                 type="button"
                 className="agent-composer-notice-button"
-                disabled={visibleIssueReportReview.submitting}
+                disabled={
+                  visibleIssueReportReview.submitting ||
+                  visibleIssueReportHasUnsentContext
+                }
                 onClick={() =>
                   void sendReviewableIssueReport(
                     visibleIssueReportReview.sessionId,
@@ -3967,7 +3973,9 @@ export function AgentWorkspace({
                 ) : null}
                 {visibleIssueReportReview.submitting
                   ? "Sending"
-                  : "Send report"}
+                  : visibleIssueReportHasUnsentContext
+                    ? "Send message first"
+                    : "Send report"}
               </button>
             </motion.div>
           ) : visibleIssueReportNotice ? (

@@ -636,6 +636,10 @@ describe("AgentWorkspace", () => {
       await screen.findByRole("textbox"),
       "It also loses the transcript",
     );
+    expect(
+      screen.getByRole("button", { name: "Send message first" }),
+    ).toBeDisabled();
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
