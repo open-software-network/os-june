@@ -321,6 +321,69 @@ describe("agent HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
 
+  it("keeps the native context menu clickable after leaving the HUD surface", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    const openMenuFromNative = mocks.listeners.get(
+      "scribe:agent-hud:context-menu",
+    );
+    expect(openMenuFromNative).toBeDefined();
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    expect(menuElement().hidden).toBe(false);
+
+    hudElement().dispatchEvent(new Event("pointerleave"));
+    await flushPromises();
+
+    expect(menuElement().hidden).toBe(false);
+
+    hideHudButton().click();
+    await flushPromises();
+
+    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+  });
+
+  it("hides the HUD as soon as the native context menu item is pressed", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Need approval")],
+      workingSessionIds: [],
+      waitingSessionIds: ["session-1"],
+    });
+    await flushPromises();
+
+    const openMenuFromNative = mocks.listeners.get(
+      "scribe:agent-hud:context-menu",
+    );
+    expect(openMenuFromNative).toBeDefined();
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    hideHudButton().dispatchEvent(
+      new MouseEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+
+    expect(localStorage.getItem("scribe:agent-hud:enabled")).toBe("false");
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+  });
+
   it("shows an active-count badge when sessions work behind a needs-input one", async () => {
     await loadAgentHud();
 
