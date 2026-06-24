@@ -4381,7 +4381,9 @@ input:focus-visible,
 .command-palette-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  /* Above the titlebar chrome (drag layer 100, tab bar 101, sidebar toggle
+   * 110) so the scrim dims the tabs too. Matches the dialog system (112). */
+  z-index: 112;
   display: flex;
   align-items: flex-start;
   justify-content: center;
