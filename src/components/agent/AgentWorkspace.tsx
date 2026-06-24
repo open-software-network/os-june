@@ -761,10 +761,23 @@ type AgentSessionContinuity = {
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
   reviewableIssueReports: Record<string, PendingIssueReport>;
+  submittingIssueReportSessionIds: string[];
+};
+
+type IssueReportDeliveryResult =
+  | { sent: true }
+  | { sent: false; errorMessage: string };
+
+type IssueReportDeliverySettledDetail = {
+  sessionId: string;
+  report: PendingIssueReport;
+  result: IssueReportDeliveryResult;
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
+const ISSUE_REPORT_DELIVERY_SETTLED_EVENT =
+  "june-agent-issue-report-delivery-settled";
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
 
 function sessionComposerDraftKey(sessionId: string) {
@@ -812,9 +825,7 @@ function captureSessionContinuity(state: {
     if (pending.length > 0) activeIds.add(sessionId);
   }
   for (const sessionId of Object.keys(state.reviewableIssueReports)) {
-    if (!state.submittingIssueReportSessionIds.has(sessionId)) {
-      activeIds.add(sessionId);
-    }
+    activeIds.add(sessionId);
   }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
@@ -831,14 +842,56 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
-    reviewableIssueReports: Object.fromEntries(
-      Object.entries(state.reviewableIssueReports).filter(
-        ([sessionId]) =>
-          activeIds.has(sessionId) &&
-          !state.submittingIssueReportSessionIds.has(sessionId),
+    reviewableIssueReports: pick(state.reviewableIssueReports),
+    submittingIssueReportSessionIds: [
+      ...state.submittingIssueReportSessionIds,
+    ].filter((sessionId) => activeIds.has(sessionId)),
+  };
+}
+
+function updateContinuityAfterIssueReportDelivery(
+  detail: IssueReportDeliverySettledDetail,
+) {
+  if (!sessionContinuity) return;
+  const reviewableIssueReports = {
+    ...sessionContinuity.reviewableIssueReports,
+  };
+  if (
+    detail.result.sent &&
+    reviewableIssueReports[detail.sessionId] === detail.report
+  ) {
+    delete reviewableIssueReports[detail.sessionId];
+  } else if (!detail.result.sent) {
+    reviewableIssueReports[detail.sessionId] =
+      reviewableIssueReports[detail.sessionId] ?? detail.report;
+  }
+  sessionContinuity = captureSessionContinuity({
+    sessionItems: sessionContinuity.sessionItems,
+    pendingMessages: sessionContinuity.pendingMessages,
+    workingSessionIds: new Set(sessionContinuity.workingSessionIds),
+    waitingSessionIds: new Set(sessionContinuity.waitingSessionIds),
+    runtimeSessionIds: sessionContinuity.runtimeSessionIds,
+    liveEvents: sessionContinuity.liveEvents,
+    titleOverrides: sessionContinuity.titleOverrides,
+    reviewableIssueReports,
+    submittingIssueReportSessionIds: new Set(
+      sessionContinuity.submittingIssueReportSessionIds.filter(
+        (sessionId) => sessionId !== detail.sessionId,
       ),
     ),
-  };
+  });
+}
+
+function dispatchIssueReportDeliverySettled(
+  detail: IssueReportDeliverySettledDetail,
+) {
+  updateContinuityAfterIssueReportDelivery(detail);
+  window.dispatchEvent(
+    new CustomEvent<IssueReportDeliverySettledDetail>(
+      ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+      { detail },
+    ),
+  );
 }
 
 function issueReportDescription(report: PendingIssueReport) {
@@ -1153,8 +1206,12 @@ export function AgentWorkspace({
     reviewableIssueReports,
   );
   const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
-    useState<Set<string>>(() => new Set());
-  const submittingIssueReportSessionIdsRef = useRef<Set<string>>(new Set());
+    useState<Set<string>>(
+      () => new Set(continuity?.submittingIssueReportSessionIds ?? []),
+    );
+  const submittingIssueReportSessionIdsRef = useRef<Set<string>>(
+    submittingIssueReportSessionIds,
+  );
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -1196,6 +1253,37 @@ export function AgentWorkspace({
     submittingIssueReportSessionIdsRef.current = next;
     setSubmittingIssueReportSessionIds(next);
   }
+
+  useEffect(() => {
+    function onIssueReportDeliverySettled(event: Event) {
+      const detail = (event as CustomEvent<IssueReportDeliverySettledDetail>)
+        .detail;
+      if (!detail?.sessionId) return;
+      setIssueReportSubmitting(detail.sessionId, false);
+      if (detail.result.sent) {
+        if (
+          reviewableIssueReportsRef.current[detail.sessionId] === detail.report
+        ) {
+          setReviewableIssueReport(detail.sessionId, null);
+        }
+        return;
+      }
+      if (!reviewableIssueReportsRef.current[detail.sessionId]) {
+        setReviewableIssueReport(detail.sessionId, detail.report);
+      }
+      setError(detail.result.errorMessage, { sessionId: detail.sessionId });
+    }
+
+    window.addEventListener(
+      ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+      onIssueReportDeliverySettled,
+    );
+    return () =>
+      window.removeEventListener(
+        ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+        onIssueReportDeliverySettled,
+      );
+  }, [setError]);
 
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
@@ -2444,7 +2532,7 @@ export function AgentWorkspace({
   async function deliverIssueReport(
     sessionId: string,
     report: PendingIssueReport,
-  ): Promise<boolean> {
+  ): Promise<IssueReportDeliveryResult> {
     let agentDiagnosis: string | undefined;
     try {
       const messages = await listHermesSessionMessages(sessionId);
@@ -2475,12 +2563,11 @@ export function AgentWorkspace({
           sessionId,
         });
       }
-      return true;
+      return { sent: true };
     } catch (err) {
-      setError(`The issue report could not be sent. ${messageFromError(err)}`, {
-        sessionId,
-      });
-      return false;
+      const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
+      setError(errorMessage, { sessionId });
+      return { sent: false, errorMessage };
     }
   }
 
@@ -2489,13 +2576,20 @@ export function AgentWorkspace({
     const report = reviewableIssueReportsRef.current[sessionId];
     if (!report) return;
     setIssueReportSubmitting(sessionId, true);
+    let result: IssueReportDeliveryResult | undefined;
     try {
-      const sent = await deliverIssueReport(sessionId, report);
-      if (sent && reviewableIssueReportsRef.current[sessionId] === report) {
+      result = await deliverIssueReport(sessionId, report);
+      if (
+        result.sent &&
+        reviewableIssueReportsRef.current[sessionId] === report
+      ) {
         setReviewableIssueReport(sessionId, null);
       }
     } finally {
       setIssueReportSubmitting(sessionId, false);
+      if (result) {
+        dispatchIssueReportDeliverySettled({ sessionId, report, result });
+      }
     }
   }
 
