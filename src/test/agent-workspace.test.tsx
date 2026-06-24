@@ -1433,6 +1433,82 @@ describe("AgentWorkspace", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
+  it("does not promote a queued report follow-up after resume fails", async () => {
+    const user = userEvent.setup();
+    const report = {
+      category: "bug" as const,
+      description: "The recorder crashes after long meetings",
+      followUps: [],
+      attachmentNames: [],
+      attachmentPaths: [],
+    };
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.reject(new Error("runtime mapping lost"));
+      }
+      return Promise.resolve({});
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "The recorder failed while saving.",
+        timestamp: "2026-06-11T10:00:10Z",
+      },
+    ]);
+
+    const { unmount } = render(
+      <AgentWorkspace initialSession={existingSession} />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("june-agent-issue-report-delivery-settled", {
+          detail: {
+            sessionId: "session-1",
+            report,
+            result: {
+              sent: false,
+              errorMessage: "The issue report could not be sent. Network down.",
+            },
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    await user.type(await screen.findByRole("textbox"), "It also drops audio");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-1",
+        cols: 96,
+      }),
+    );
+    expect(await screen.findByText("runtime mapping lost")).toBeInTheDocument();
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    expect(screen.queryByText(/Follow-up added/)).toBeNull();
+
+    const messageFetchesBeforeRemount =
+      mocks.listHermesSessionMessages.mock.calls.length;
+    unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        messageFetchesBeforeRemount,
+      ),
+    );
+    await act(() => Promise.resolve());
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    expect(screen.queryByText(/Follow-up added/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Send message first" }),
+    ).toBeDisabled();
+  });
+
   it("does not show a failed issue report banner after switching away", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

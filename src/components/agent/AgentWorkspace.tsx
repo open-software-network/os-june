@@ -2789,6 +2789,16 @@ export function AgentWorkspace({
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    const queuedIssueReport = options?.issueReport;
+    const clearQueuedIssueReport = () => {
+      if (
+        queuedIssueReport &&
+        pendingIssueReportsRef.current.get(storedSessionId) ===
+          queuedIssueReport
+      ) {
+        pendingIssueReportsRef.current.delete(storedSessionId);
+      }
+    };
     if (options?.issueReport) {
       pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
     }
@@ -2819,17 +2829,28 @@ export function AgentWorkspace({
       }),
       2500,
     ).catch(() => undefined);
-    const runtimeSessionId =
-      created?.session_id ??
-      runtimeSessionIds[storedSessionId] ??
-      (
-        await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-          session_id: storedSessionId,
-          cols: 96,
-        })
-      ).session_id;
-    if (!runtimeSessionId)
+    let runtimeSessionId: string | undefined;
+    try {
+      runtimeSessionId =
+        created?.session_id ??
+        runtimeSessionIds[storedSessionId] ??
+        (
+          await gateway.request<HermesRuntimeSessionResponse>(
+            "session.resume",
+            {
+              session_id: storedSessionId,
+              cols: 96,
+            },
+          )
+        ).session_id;
+    } catch (err) {
+      clearQueuedIssueReport();
+      throw err;
+    }
+    if (!runtimeSessionId) {
+      clearQueuedIssueReport();
       throw new Error("Hermes did not resume the session.");
+    }
     const createdAt = new Date().toISOString();
     // A new session (no target id) means the hero is handing over to a fresh
     // thread — arm the composer glide. Sending into an existing session leaves
@@ -2959,7 +2980,7 @@ export function AgentWorkspace({
     } catch (err) {
       // A queued report must not outlive its failed prompt; submit() re-arms
       // issue-report mode so the retry can queue it again.
-      pendingIssueReportsRef.current.delete(storedSessionId);
+      clearQueuedIssueReport();
       // The prompt never entered the session, so its optimistic bubble must
       // not linger — a retained pending message renders below every later
       // persisted message and reads as a send the agent ignored.
