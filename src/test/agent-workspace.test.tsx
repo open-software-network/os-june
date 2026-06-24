@@ -714,7 +714,6 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     first.unmount();
     render(<AgentWorkspace />);
 
@@ -739,6 +738,71 @@ describe("AgentWorkspace", () => {
         sessionId: "session-2",
       }),
     );
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
+  it("does not restore a report after leaving during successful delivery", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    let resolveDelivery: ((value: { received: boolean }) => void) | undefined;
+    mocks.submitIssueReport.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDelivery = resolve;
+        }),
+    );
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "The recorder failed while saving.",
+        timestamp: "2026-06-11T10:00:10Z",
+      },
+    ]);
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    await user.type(
+      await screen.findByRole("textbox"),
+      "The recorder crashes after long meetings",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+    expect(await screen.findByText("Sending")).toBeInTheDocument();
+
+    first.unmount();
+    await act(async () => {
+      resolveDelivery?.({ received: true });
+      await Promise.resolve();
+    });
+    const sessionLoadsBeforeRemount =
+      mocks.listHermesSessions.mock.calls.length;
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(
+        sessionLoadsBeforeRemount,
+      ),
+    );
+    expect(screen.queryByText(/Report ready/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send report" })).toBeNull();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 

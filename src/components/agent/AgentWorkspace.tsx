@@ -802,6 +802,7 @@ function captureSessionContinuity(state: {
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
   reviewableIssueReports: Record<string, PendingIssueReport>;
+  submittingIssueReportSessionIds: Set<string>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
     ...state.workingSessionIds,
@@ -811,7 +812,9 @@ function captureSessionContinuity(state: {
     if (pending.length > 0) activeIds.add(sessionId);
   }
   for (const sessionId of Object.keys(state.reviewableIssueReports)) {
-    activeIds.add(sessionId);
+    if (!state.submittingIssueReportSessionIds.has(sessionId)) {
+      activeIds.add(sessionId);
+    }
   }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
@@ -828,7 +831,13 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
-    reviewableIssueReports: pick(state.reviewableIssueReports),
+    reviewableIssueReports: Object.fromEntries(
+      Object.entries(state.reviewableIssueReports).filter(
+        ([sessionId]) =>
+          activeIds.has(sessionId) &&
+          !state.submittingIssueReportSessionIds.has(sessionId),
+      ),
+    ),
   };
 }
 
@@ -1167,29 +1176,25 @@ export function AgentWorkspace({
     sessionId: string,
     report: PendingIssueReport | null,
   ) {
-    setReviewableIssueReports((current) => {
-      const next = { ...current };
-      if (report) {
-        next[sessionId] = report;
-      } else {
-        delete next[sessionId];
-      }
-      reviewableIssueReportsRef.current = next;
-      return next;
-    });
+    const next = { ...reviewableIssueReportsRef.current };
+    if (report) {
+      next[sessionId] = report;
+    } else {
+      delete next[sessionId];
+    }
+    reviewableIssueReportsRef.current = next;
+    setReviewableIssueReports(next);
   }
 
   function setIssueReportSubmitting(sessionId: string, submitting: boolean) {
-    setSubmittingIssueReportSessionIds((current) => {
-      const next = new Set(current);
-      if (submitting) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      submittingIssueReportSessionIdsRef.current = next;
-      return next;
-    });
+    const next = new Set(submittingIssueReportSessionIdsRef.current);
+    if (submitting) {
+      next.add(sessionId);
+    } else {
+      next.delete(sessionId);
+    }
+    submittingIssueReportSessionIdsRef.current = next;
+    setSubmittingIssueReportSessionIds(next);
   }
 
   useEffect(() => {
@@ -1976,6 +1981,8 @@ export function AgentWorkspace({
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
         reviewableIssueReports: reviewableIssueReportsRef.current,
+        submittingIssueReportSessionIds:
+          submittingIssueReportSessionIdsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -2677,12 +2684,10 @@ export function AgentWorkspace({
         const issueReport = pendingIssueReportsRef.current.get(storedSessionId);
         if (issueReport) {
           pendingIssueReportsRef.current.delete(storedSessionId);
+          setReviewableIssueReport(storedSessionId, issueReport);
         }
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
-          if (issueReport) {
-            setReviewableIssueReport(storedSessionId, issueReport);
-          }
         }, 300);
       }
     });
