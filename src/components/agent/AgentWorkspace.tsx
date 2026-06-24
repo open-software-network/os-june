@@ -778,10 +778,18 @@ type IssueReportDeliverySettledDetail = {
   result: IssueReportDeliveryResult;
 };
 
+type IssueReportFollowUpSubmitFailedDetail = {
+  sessionId: string;
+  queuedReport: PendingIssueReport;
+  restoreReport?: PendingIssueReport;
+};
+
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
 const ISSUE_REPORT_DELIVERY_SETTLED_EVENT =
   "june-agent-issue-report-delivery-settled";
+const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
+  "june-agent-issue-report-follow-up-submit-failed";
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
 
 function sessionComposerDraftKey(sessionId: string) {
@@ -908,6 +916,39 @@ function updateContinuityAfterIssueReportDelivery(
   });
 }
 
+function updateContinuityAfterIssueReportFollowUpSubmitFailed(
+  detail: IssueReportFollowUpSubmitFailedDetail,
+) {
+  if (!sessionContinuity) return;
+  const pendingIssueReports = { ...sessionContinuity.pendingIssueReports };
+  if (pendingIssueReports[detail.sessionId] === detail.queuedReport) {
+    delete pendingIssueReports[detail.sessionId];
+  }
+  const reviewableIssueReports = {
+    ...sessionContinuity.reviewableIssueReports,
+  };
+  if (detail.restoreReport && !reviewableIssueReports[detail.sessionId]) {
+    reviewableIssueReports[detail.sessionId] = detail.restoreReport;
+  }
+  sessionContinuity = captureSessionContinuity({
+    sessionItems: sessionContinuity.sessionItems,
+    pendingMessages: sessionContinuity.pendingMessages,
+    workingSessionIds: new Set(sessionContinuity.workingSessionIds),
+    waitingSessionIds: new Set(sessionContinuity.waitingSessionIds),
+    runtimeSessionIds: sessionContinuity.runtimeSessionIds,
+    liveEvents: sessionContinuity.liveEvents,
+    titleOverrides: sessionContinuity.titleOverrides,
+    pendingIssueReports,
+    reviewableIssueReports,
+    diagnosisRefreshIssueReportSessionIds: new Set(
+      sessionContinuity.diagnosisRefreshIssueReportSessionIds,
+    ),
+    submittingIssueReportSessionIds: new Set(
+      sessionContinuity.submittingIssueReportSessionIds,
+    ),
+  });
+}
+
 function dispatchIssueReportDeliverySettled(
   detail: IssueReportDeliverySettledDetail,
 ) {
@@ -915,6 +956,18 @@ function dispatchIssueReportDeliverySettled(
   window.dispatchEvent(
     new CustomEvent<IssueReportDeliverySettledDetail>(
       ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
+      { detail },
+    ),
+  );
+}
+
+function dispatchIssueReportFollowUpSubmitFailed(
+  detail: IssueReportFollowUpSubmitFailedDetail,
+) {
+  updateContinuityAfterIssueReportFollowUpSubmitFailed(detail);
+  window.dispatchEvent(
+    new CustomEvent<IssueReportFollowUpSubmitFailedDetail>(
+      ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
       { detail },
     ),
   );
@@ -1385,15 +1438,43 @@ export function AgentWorkspace({
       setError(detail.result.errorMessage, { sessionId: detail.sessionId });
     }
 
+    function onIssueReportFollowUpSubmitFailed(event: Event) {
+      const detail = (
+        event as CustomEvent<IssueReportFollowUpSubmitFailedDetail>
+      ).detail;
+      if (!detail?.sessionId) return;
+      if (
+        pendingIssueReportsRef.current.get(detail.sessionId) ===
+        detail.queuedReport
+      ) {
+        pendingIssueReportsRef.current.delete(detail.sessionId);
+      }
+      if (
+        detail.restoreReport &&
+        !reviewableIssueReportsRef.current[detail.sessionId]
+      ) {
+        setReviewableIssueReport(detail.sessionId, detail.restoreReport);
+      }
+    }
+
     window.addEventListener(
       ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
       onIssueReportDeliverySettled,
     );
-    return () =>
+    window.addEventListener(
+      ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
+      onIssueReportFollowUpSubmitFailed,
+    );
+    return () => {
       window.removeEventListener(
         ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
         onIssueReportDeliverySettled,
       );
+      window.removeEventListener(
+        ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
+        onIssueReportFollowUpSubmitFailed,
+      );
+    };
   }, [setError]);
 
   useEffect(() => {
@@ -2414,6 +2495,7 @@ export function AgentWorkspace({
       | {
           sessionId: string;
           report: PendingIssueReport;
+          queuedReport?: PendingIssueReport;
           deliveryWasSubmitting: boolean;
         }
       | undefined;
@@ -2460,6 +2542,7 @@ export function AgentWorkspace({
         clearedIssueReportReview = {
           sessionId: reportFollowUpSessionId,
           report: reportFollowUp,
+          queuedReport: nextIssueReport,
           deliveryWasSubmitting: submittingIssueReportSessionIdsRef.current.has(
             reportFollowUpSessionId,
           ),
@@ -2502,23 +2585,33 @@ export function AgentWorkspace({
           current.length ? current : attachments,
         );
       }
-      if (
-        clearedIssueReportReview &&
-        (!clearedIssueReportReview.deliveryWasSubmitting ||
+      if (clearedIssueReportReview) {
+        const shouldRestoreIssueReportReview =
+          !clearedIssueReportReview.deliveryWasSubmitting ||
           submittingIssueReportSessionIdsRef.current.has(
             clearedIssueReportReview.sessionId,
           ) ||
           deferredFailedIssueReportDeliverySessionIdsRef.current.has(
             clearedIssueReportReview.sessionId,
-          ))
-      ) {
-        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
-          clearedIssueReportReview.sessionId,
-        );
-        setReviewableIssueReport(
-          clearedIssueReportReview.sessionId,
-          clearedIssueReportReview.report,
-        );
+          );
+        if (clearedIssueReportReview.queuedReport) {
+          dispatchIssueReportFollowUpSubmitFailed({
+            sessionId: clearedIssueReportReview.sessionId,
+            queuedReport: clearedIssueReportReview.queuedReport,
+            ...(shouldRestoreIssueReportReview
+              ? { restoreReport: clearedIssueReportReview.report }
+              : {}),
+          });
+        }
+        if (shouldRestoreIssueReportReview) {
+          deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+            clearedIssueReportReview.sessionId,
+          );
+          setReviewableIssueReport(
+            clearedIssueReportReview.sessionId,
+            clearedIssueReportReview.report,
+          );
+        }
       }
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
