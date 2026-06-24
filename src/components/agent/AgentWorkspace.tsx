@@ -2481,7 +2481,7 @@ export function AgentWorkspace({
     setIssueReportSubmitting(sessionId, true);
     try {
       const sent = await deliverIssueReport(sessionId, report);
-      if (sent) {
+      if (sent && reviewableIssueReportsRef.current[sessionId] === report) {
         setReviewableIssueReport(sessionId, null);
       }
     } finally {

@@ -2777,6 +2777,11 @@ input:focus-visible,
   opacity: 0.62;
 }
 
+.agent-composer-notice-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .agent-composer-notice-button-spinner {
   flex-shrink: 0;
 }
