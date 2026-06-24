@@ -50,12 +50,13 @@ describe("tab navigation snapshots", () => {
     expect(navEquals(base, { view: "agent", agentSessionId: "s2" })).toBe(
       false,
     );
+    // The title is fallback display metadata, not tab identity.
     expect(
       navEquals(
         { view: "agent", agentSessionId: "s1", agentSessionTitle: "First" },
         { view: "agent", agentSessionId: "s1", agentSessionTitle: "Second" },
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       navEquals(
         {

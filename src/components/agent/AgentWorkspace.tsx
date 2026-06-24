@@ -2548,10 +2548,32 @@ export function AgentWorkspace({
       message_count: 1,
       ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
     };
-    onSessionSelected?.(optimisticSession);
+    if (!targetSessionId) onSessionSelected?.(optimisticSession);
     setHermesSessionItems((current) => {
-      if (current.some((session) => session.id === storedSessionId))
-        return current;
+      const existingSession = current.find(
+        (session) => session.id === storedSessionId,
+      );
+      if (existingSession) {
+        const mergedSession: HermesSessionInfo = targetSessionId
+          ? {
+              ...existingSession,
+              ...(existingSession.title?.trim()
+                ? { preview: displayContent }
+                : {}),
+              last_active: createdAt,
+              message_count:
+                typeof existingSession.message_count === "number"
+                  ? existingSession.message_count + 1
+                  : optimisticSession.message_count,
+              ...(targetSessionModelId && !existingSession.model?.trim()
+                ? { model: targetSessionModelId }
+                : {}),
+            }
+          : { ...existingSession, ...optimisticSession };
+        return current.map((session) =>
+          session.id === storedSessionId ? mergedSession : session,
+        );
+      }
       return [optimisticSession, ...current];
     });
     const pendingUserMessage: HermesSessionMessage = {

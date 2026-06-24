@@ -71,7 +71,6 @@ export function navEquals(a: TabNav, b: TabNav): boolean {
     case "agent":
       return (
         a.agentSessionId === b.agentSessionId &&
-        a.agentSessionTitle === b.agentSessionTitle &&
         agentOriginEquals(a.agentOrigin, b.agentOrigin)
       );
     default:
