@@ -1012,14 +1012,10 @@ function messageAfterIssueReportDiagnosisBoundary(
   report: PendingIssueReport,
 ) {
   if (!report.diagnosisStartedAt) return true;
-  if (message.timestamp === undefined) return false;
-  const messageTime =
-    typeof message.timestamp === "number"
-      ? message.timestamp
-      : Date.parse(message.timestamp);
+  const messageTime = hermesMessageTimestampMs(message);
   const boundaryTime = Date.parse(report.diagnosisStartedAt);
   if (!Number.isFinite(boundaryTime)) return true;
-  return Number.isFinite(messageTime) && messageTime >= boundaryTime;
+  return messageTime !== undefined && messageTime >= boundaryTime;
 }
 
 /** Test hook: the snapshot is module state, so a test that unmounts with a
