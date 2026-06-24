@@ -70,9 +70,22 @@ const mocks = vi.hoisted(() => ({
   osAccountsTopUp: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
+  ensureHermesBridgeSession: vi.fn(),
+  hermesAgentCliAccess: vi.fn(),
+  hermesBridgeFilesystemSnapshot: vi.fn(),
+  hermesBridgeStatus: vi.fn(),
+  listAgentTasks: vi.fn(),
+  listHermesSessionMessages: vi.fn(),
+  listHermesSessions: vi.fn(),
+  listVeniceModels: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
+  providerModelSettings: vi.fn(),
+  startHermesBridge: vi.fn(),
   startPeriodicScribeUpdateChecks: vi.fn(),
+  suggestAgentSessionTitle: vi.fn(),
+  gatewayRequest: vi.fn(),
+  gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -86,6 +99,27 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
+}));
+
+vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
+  listHermesSessionMessages: mocks.listHermesSessionMessages,
+  listHermesSessions: mocks.listHermesSessions,
+  titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
+}));
+
+vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
+  HermesGatewayClient: class {
+    connect = vi.fn();
+    close = vi.fn();
+    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+      mocks.gatewayEventHandlers.add(handler);
+      return () => mocks.gatewayEventHandlers.delete(handler);
+    });
+    onClose = vi.fn(() => vi.fn());
+    request = mocks.gatewayRequest;
+  },
 }));
 
 vi.mock("../app/update-decision", async () => {
@@ -132,21 +166,16 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
-  // The agent workspace mounts at launch; a quiet, not-running bridge keeps
-  // these tests focused on the meetings surfaces.
-  hermesBridgeStatus: vi.fn(async () => ({ running: false })),
-  listAgentTasks: vi.fn(async () => ({ items: [] })),
+  ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
+  hermesAgentCliAccess: mocks.hermesAgentCliAccess,
+  hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
+  hermesBridgeStatus: mocks.hermesBridgeStatus,
+  listAgentTasks: mocks.listAgentTasks,
   scribeVerifyUrl: vi.fn(async () => ""),
-  providerModelSettings: vi.fn(async () => ({
-    settings: { generationModel: "" },
-  })),
-  hermesAgentCliAccess: vi.fn(async () => ({ enabled: false })),
-  listVeniceModels: vi.fn(async () => ({
-    mode: "generation",
-    modelType: "text",
-    selectedModel: "",
-    models: [],
-  })),
+  providerModelSettings: mocks.providerModelSettings,
+  listVeniceModels: mocks.listVeniceModels,
+  startHermesBridge: mocks.startHermesBridge,
+  suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
 }));
 
 const now = "2026-05-19T10:00:00Z";
@@ -220,7 +249,46 @@ describe("App shortcuts", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.ensureHermesBridgeSession.mockResolvedValue({});
+    mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.listAgentTasks.mockResolvedValue({ items: [] });
+    mocks.listHermesSessionMessages.mockResolvedValue([]);
+    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "",
+      models: [],
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: { generationModel: "" },
+    });
+    mocks.startHermesBridge.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
     mocks.startPeriodicScribeUpdateChecks.mockReturnValue(vi.fn());
+    mocks.suggestAgentSessionTitle.mockImplementation(async (prompt: string) => ({
+      title: prompt,
+    }));
+    mocks.gatewayEventHandlers.clear();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-2" });
+      }
+      return Promise.resolve({});
+    });
     mocks.listeners.clear();
     mocks.listen.mockImplementation(
       async (
@@ -271,6 +339,58 @@ describe("App shortcuts", () => {
     } finally {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
     }
+  });
+
+  it("keeps a newly started chat attached to its tab before sessions hydrate", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessions.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: HERO_GREETING }),
+    ).toBeInTheDocument();
+
+    window.dispatchEvent(
+      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+        detail: { prompt: "plan the release" },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "plan the release",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
+        0,
+      ),
+    );
+
+    const chatTab = await screen.findByRole("tab", {
+      name: "plan the release",
+    });
+    expect(chatTab).toHaveAttribute("data-active", "true");
+
+    await user.click(screen.getByRole("button", { name: "New tab" }));
+    expect(
+      await screen.findByRole("heading", { name: HERO_GREETING }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "1", metaKey: true });
+
+    await waitFor(() =>
+      expect(screen.getAllByText("plan the release").length).toBeGreaterThan(
+        0,
+      ),
+    );
+    expect(
+      screen.queryByRole("heading", { name: HERO_GREETING }),
+    ).not.toBeInTheDocument();
   });
 
   it("creates a loose note with Command-Shift-N but ignores bare n", async () => {

@@ -52,6 +52,12 @@ describe("tab navigation snapshots", () => {
     );
     expect(
       navEquals(
+        { view: "agent", agentSessionId: "s1", agentSessionTitle: "First" },
+        { view: "agent", agentSessionId: "s1", agentSessionTitle: "Second" },
+      ),
+    ).toBe(false);
+    expect(
+      navEquals(
         {
           view: "agent",
           agentSessionId: "s1",

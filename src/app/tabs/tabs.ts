@@ -20,6 +20,7 @@ export type TabNav = {
   folderId?: string;
   // view === "agent"
   agentSessionId?: string;
+  agentSessionTitle?: string;
   agentOrigin?: AgentOrigin;
 };
 
@@ -70,6 +71,7 @@ export function navEquals(a: TabNav, b: TabNav): boolean {
     case "agent":
       return (
         a.agentSessionId === b.agentSessionId &&
+        a.agentSessionTitle === b.agentSessionTitle &&
         agentOriginEquals(a.agentOrigin, b.agentOrigin)
       );
     default:

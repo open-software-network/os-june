@@ -737,6 +737,7 @@ export type AgentWorkspaceOrigin = {
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
   origin?: AgentWorkspaceOrigin;
+  onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -835,6 +836,7 @@ export function resetAgentSessionContinuity() {
 export function AgentWorkspace({
   initialSession,
   origin,
+  onSessionSelected,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -1213,6 +1215,10 @@ export function AgentWorkspace({
       ),
     [hermesSessionItems, selectedHermesSessionId],
   );
+  useEffect(() => {
+    if (selectedHermesSessionId && !selectedHermesSession) return;
+    onSessionSelected?.(selectedHermesSession);
+  }, [onSessionSelected, selectedHermesSession, selectedHermesSessionId]);
   const activeGenerationModelId =
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
@@ -2533,21 +2539,20 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = storedSessionId;
     setSelectedHermesSessionId(storedSessionId);
     setSelectedTaskId(undefined);
+    const optimisticSession: HermesSessionInfo = {
+      id: storedSessionId,
+      title: sessionDisplayTitle,
+      preview: displayContent,
+      started_at: createdAt,
+      last_active: createdAt,
+      message_count: 1,
+      ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+    };
+    onSessionSelected?.(optimisticSession);
     setHermesSessionItems((current) => {
       if (current.some((session) => session.id === storedSessionId))
         return current;
-      return [
-        {
-          id: storedSessionId,
-          title: sessionDisplayTitle,
-          preview: displayContent,
-          started_at: createdAt,
-          last_active: createdAt,
-          message_count: 1,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-        },
-        ...current,
-      ];
+      return [optimisticSession, ...current];
     });
     const pendingUserMessage: HermesSessionMessage = {
       id: `pending:user:${Date.now()}`,

@@ -213,9 +213,14 @@ type RecordingInactivityPrompt = {
   expiresAt: number;
 };
 
+function agentSessionTabTitle(session?: HermesSessionInfo): string | undefined {
+  return session?.title?.trim() || session?.preview?.trim() || undefined;
+}
+
 // The icon + label a tab shows for a snapshot. Titles for entity views (note,
 // project, agent session) are looked up live from the loaded data, so a tab's
-// label tracks renames without storing a stale copy.
+// label tracks renames. Agent tabs also carry a fallback title so a newly
+// created session is identifiable before the session list hydrates.
 function tabMeta(
   nav: TabNav,
   notes: NoteListItemDto[],
@@ -246,7 +251,10 @@ function tabMeta(
         ? sessions.find((s) => s.id === nav.agentSessionId)
         : undefined;
       return {
-        title: session?.title?.trim() || "New session",
+        title:
+          agentSessionTabTitle(session) ||
+          nav.agentSessionTitle?.trim() ||
+          "New session",
         icon: <IconBubble3 size={TAB_ICON_SIZE} />,
       };
     }
@@ -566,6 +574,10 @@ export function App() {
       folderId: activeView === "folders" ? state.selectedFolderId : undefined,
       agentSessionId:
         activeView === "agent" ? activeAgentSession?.id : undefined,
+      agentSessionTitle:
+        activeView === "agent"
+          ? agentSessionTabTitle(activeAgentSession)
+          : undefined,
       agentOrigin: activeView === "agent" ? agentOrigin : undefined,
     }),
     [
@@ -575,6 +587,8 @@ export function App() {
       originAllNotes,
       state.selectedFolderId,
       activeAgentSession?.id,
+      activeAgentSession?.preview,
+      activeAgentSession?.title,
       agentOrigin,
     ],
   );
@@ -635,7 +649,10 @@ export function App() {
       }
       if (nav.view === "agent") {
         const session = nav.agentSessionId
-          ? agentSessions.find((s) => s.id === nav.agentSessionId)
+          ? (agentSessions.find((s) => s.id === nav.agentSessionId) ?? {
+              id: nav.agentSessionId,
+              title: nav.agentSessionTitle,
+            })
           : undefined;
         setActiveAgentSession(session);
       } else {
@@ -2787,6 +2804,7 @@ export function App() {
                 // session bar, so they persist while the chat scrolls beneath.
                 <AgentWorkspace
                   initialSession={activeAgentSession}
+                  onSessionSelected={setActiveAgentSession}
                   origin={
                     agentOriginFolder
                       ? {
