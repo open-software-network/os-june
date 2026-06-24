@@ -744,7 +744,8 @@ type AgentWorkspaceProps = {
 // state that exists nowhere outside this component: the optimistic list entry
 // (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
 // the working/waiting flags that drive the reconcile poll, the stored→runtime
-// session mapping, the buffered live events, and the title override.
+// session mapping, the buffered live events, the title override, and any
+// review-ready issue report draft waiting for the user to send.
 // Navigating away (e.g. to Settings) unmounts the workspace; without this
 // snapshot the remount restores only the selected id from localStorage, and a
 // session whose first turn hasn't persisted renders as an empty "Untitled
@@ -759,6 +760,7 @@ type AgentSessionContinuity = {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  reviewableIssueReports: Record<string, PendingIssueReport>;
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
@@ -799,6 +801,7 @@ function captureSessionContinuity(state: {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  reviewableIssueReports: Record<string, PendingIssueReport>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
     ...state.workingSessionIds,
@@ -806,6 +809,9 @@ function captureSessionContinuity(state: {
   ]);
   for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
     if (pending.length > 0) activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.reviewableIssueReports)) {
+    activeIds.add(sessionId);
   }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
@@ -822,6 +828,7 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
+    reviewableIssueReports: pick(state.reviewableIssueReports),
   };
 }
 
@@ -1132,9 +1139,9 @@ export function AgentWorkspace({
   );
   const [reviewableIssueReports, setReviewableIssueReports] = useState<
     Record<string, PendingIssueReport>
-  >({});
+  >(() => continuity?.reviewableIssueReports ?? {});
   const reviewableIssueReportsRef = useRef<Record<string, PendingIssueReport>>(
-    {},
+    reviewableIssueReports,
   );
   const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
     useState<Set<string>>(() => new Set());
@@ -1961,6 +1968,7 @@ export function AgentWorkspace({
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
+        reviewableIssueReports: reviewableIssueReportsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
