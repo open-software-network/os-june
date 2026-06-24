@@ -189,8 +189,9 @@ export function BillingSettingsSection({
     }
   }
 
-  // Only the states reachable from inside the app: past_due and zero credits
-  // park the whole app on the funding gate, so settings never renders them.
+  // Render status rows only for live subscriptions. Past-due users with
+  // remaining credits can still reach settings, but zero-credit billing
+  // recovery is owned by the funding gate.
   const subscription = account.subscription;
   const subscriptionRow =
     subscription?.status === "trialing"
