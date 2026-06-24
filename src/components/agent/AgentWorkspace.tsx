@@ -1248,6 +1248,9 @@ export function AgentWorkspace({
   const issueReportDiagnosisRefreshesRef = useRef<Map<string, Promise<void>>>(
     new Map(),
   );
+  const deferredFailedIssueReportDeliverySessionIdsRef = useRef<Set<string>>(
+    new Set(),
+  );
   const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
     useState<Set<string>>(
       () => new Set(continuity?.submittingIssueReportSessionIds ?? []),
@@ -1334,6 +1337,7 @@ export function AgentWorkspace({
     const issueReport = pendingIssueReportsRef.current.get(sessionId);
     if (!issueReport) return false;
     pendingIssueReportsRef.current.delete(sessionId);
+    deferredFailedIssueReportDeliverySessionIdsRef.current.delete(sessionId);
     setReviewableIssueReport(sessionId, issueReport);
     if (options.queueDiagnosisRefresh) {
       queueIssueReportDiagnosisRefresh(sessionId);
@@ -1361,6 +1365,9 @@ export function AgentWorkspace({
       if (!detail?.sessionId) return;
       setIssueReportSubmitting(detail.sessionId, false);
       if (detail.result.sent) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+          detail.sessionId,
+        );
         if (
           reviewableIssueReportsRef.current[detail.sessionId] === detail.report
         ) {
@@ -1368,10 +1375,11 @@ export function AgentWorkspace({
         }
         return;
       }
-      if (
-        !pendingIssueReportsRef.current.has(detail.sessionId) &&
-        !reviewableIssueReportsRef.current[detail.sessionId]
-      ) {
+      if (pendingIssueReportsRef.current.has(detail.sessionId)) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.add(
+          detail.sessionId,
+        );
+      } else if (!reviewableIssueReportsRef.current[detail.sessionId]) {
         setReviewableIssueReport(detail.sessionId, detail.report);
       }
       setError(detail.result.errorMessage, { sessionId: detail.sessionId });
@@ -2469,6 +2477,11 @@ export function AgentWorkspace({
           ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
         },
       );
+      if (reportFollowUpSessionId) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+          reportFollowUpSessionId,
+        );
+      }
       setError(null);
       setBusyNotice(null);
     } catch (err) {
@@ -2494,8 +2507,14 @@ export function AgentWorkspace({
         (!clearedIssueReportReview.deliveryWasSubmitting ||
           submittingIssueReportSessionIdsRef.current.has(
             clearedIssueReportReview.sessionId,
+          ) ||
+          deferredFailedIssueReportDeliverySessionIdsRef.current.has(
+            clearedIssueReportReview.sessionId,
           ))
       ) {
+        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(
+          clearedIssueReportReview.sessionId,
+        );
         setReviewableIssueReport(
           clearedIssueReportReview.sessionId,
           clearedIssueReportReview.report,
