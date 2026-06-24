@@ -103,6 +103,24 @@ describe("shouldBlockOnFunding", () => {
     ).toBe(true);
   });
 
+  it("allows zero-credit users while subscription state is unknown", () => {
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldBlockOnFunding(
+        signedIn({
+          balance: { credits: 0, usdMillis: 0 },
+          subscription: { subscribed: true },
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("allows unknown credit snapshots and lets metered actions decide", () => {
     expect(shouldBlockOnFunding(signedIn({ balance: { usdMillis: 0 } }))).toBe(
       false,
