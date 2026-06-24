@@ -745,7 +745,9 @@ type AgentWorkspaceProps = {
 // (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
 // the working/waiting flags that drive the reconcile poll, the stored→runtime
 // session mapping, the buffered live events, the title override, and any
-// review-ready issue report draft waiting for the user to send.
+// queued issue report draft, the review-ready report waiting for the user to
+// send, and the delayed diagnosis refresh that makes the final June answer
+// available to the report payload.
 // Navigating away (e.g. to Settings) unmounts the workspace; without this
 // snapshot the remount restores only the selected id from localStorage, and a
 // session whose first turn hasn't persisted renders as an empty "Untitled
@@ -760,7 +762,9 @@ type AgentSessionContinuity = {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  pendingIssueReports: Record<string, PendingIssueReport>;
   reviewableIssueReports: Record<string, PendingIssueReport>;
+  diagnosisRefreshIssueReportSessionIds: string[];
   submittingIssueReportSessionIds: string[];
 };
 
@@ -814,7 +818,9 @@ function captureSessionContinuity(state: {
   runtimeSessionIds: Record<string, string>;
   liveEvents: Record<string, LiveHermesEvent[]>;
   titleOverrides: Record<string, string>;
+  pendingIssueReports: Record<string, PendingIssueReport>;
   reviewableIssueReports: Record<string, PendingIssueReport>;
+  diagnosisRefreshIssueReportSessionIds: Set<string>;
   submittingIssueReportSessionIds: Set<string>;
 }): AgentSessionContinuity | null {
   const activeIds = new Set([
@@ -825,6 +831,15 @@ function captureSessionContinuity(state: {
     if (pending.length > 0) activeIds.add(sessionId);
   }
   for (const sessionId of Object.keys(state.reviewableIssueReports)) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.pendingIssueReports)) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of state.diagnosisRefreshIssueReportSessionIds) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of state.submittingIssueReportSessionIds) {
     activeIds.add(sessionId);
   }
   if (activeIds.size === 0) return null;
@@ -842,7 +857,11 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
+    pendingIssueReports: pick(state.pendingIssueReports),
     reviewableIssueReports: pick(state.reviewableIssueReports),
+    diagnosisRefreshIssueReportSessionIds: [
+      ...state.diagnosisRefreshIssueReportSessionIds,
+    ].filter((sessionId) => activeIds.has(sessionId)),
     submittingIssueReportSessionIds: [
       ...state.submittingIssueReportSessionIds,
     ].filter((sessionId) => activeIds.has(sessionId)),
@@ -856,12 +875,17 @@ function updateContinuityAfterIssueReportDelivery(
   const reviewableIssueReports = {
     ...sessionContinuity.reviewableIssueReports,
   };
+  const pendingIssueReports = { ...sessionContinuity.pendingIssueReports };
+  const diagnosisRefreshIssueReportSessionIds = new Set(
+    sessionContinuity.diagnosisRefreshIssueReportSessionIds,
+  );
   if (
     detail.result.sent &&
     reviewableIssueReports[detail.sessionId] === detail.report
   ) {
     delete reviewableIssueReports[detail.sessionId];
-  } else if (!detail.result.sent) {
+    diagnosisRefreshIssueReportSessionIds.delete(detail.sessionId);
+  } else if (!detail.result.sent && !pendingIssueReports[detail.sessionId]) {
     reviewableIssueReports[detail.sessionId] =
       reviewableIssueReports[detail.sessionId] ?? detail.report;
   }
@@ -873,7 +897,9 @@ function updateContinuityAfterIssueReportDelivery(
     runtimeSessionIds: sessionContinuity.runtimeSessionIds,
     liveEvents: sessionContinuity.liveEvents,
     titleOverrides: sessionContinuity.titleOverrides,
+    pendingIssueReports,
     reviewableIssueReports,
+    diagnosisRefreshIssueReportSessionIds,
     submittingIssueReportSessionIds: new Set(
       sessionContinuity.submittingIssueReportSessionIds.filter(
         (sessionId) => sessionId !== detail.sessionId,
@@ -1197,13 +1223,25 @@ export function AgentWorkspace({
   // diagnostic turn finishes, it moves to reviewableIssueReports so the user
   // can add context or send it.
   const pendingIssueReportsRef = useRef<Map<string, PendingIssueReport>>(
-    new Map(),
+    new Map(Object.entries(continuity?.pendingIssueReports ?? {})),
   );
   const [reviewableIssueReports, setReviewableIssueReports] = useState<
     Record<string, PendingIssueReport>
   >(() => continuity?.reviewableIssueReports ?? {});
   const reviewableIssueReportsRef = useRef<Record<string, PendingIssueReport>>(
     reviewableIssueReports,
+  );
+  const [
+    diagnosisRefreshIssueReportSessionIds,
+    setDiagnosisRefreshIssueReportSessionIds,
+  ] = useState<Set<string>>(
+    () => new Set(continuity?.diagnosisRefreshIssueReportSessionIds ?? []),
+  );
+  const diagnosisRefreshIssueReportSessionIdsRef = useRef<Set<string>>(
+    diagnosisRefreshIssueReportSessionIds,
+  );
+  const issueReportDiagnosisRefreshesRef = useRef<Map<string, Promise<void>>>(
+    new Map(),
   );
   const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
     useState<Set<string>>(
@@ -1243,6 +1281,63 @@ export function AgentWorkspace({
     setReviewableIssueReports(next);
   }
 
+  function setIssueReportDiagnosisRefreshing(
+    sessionId: string,
+    refreshing: boolean,
+  ) {
+    const next = new Set(diagnosisRefreshIssueReportSessionIdsRef.current);
+    if (refreshing) {
+      next.add(sessionId);
+    } else {
+      next.delete(sessionId);
+    }
+    diagnosisRefreshIssueReportSessionIdsRef.current = next;
+    setDiagnosisRefreshIssueReportSessionIds(next);
+  }
+
+  function queueIssueReportDiagnosisRefresh(sessionId: string, delayMs = 300) {
+    setIssueReportDiagnosisRefreshing(sessionId, true);
+    let refresh: Promise<void>;
+    refresh = new Promise<void>((resolve) => {
+      window.setTimeout(() => {
+        void refreshHermesSession(sessionId).finally(resolve);
+      }, delayMs);
+    }).finally(() => {
+      if (issueReportDiagnosisRefreshesRef.current.get(sessionId) === refresh) {
+        issueReportDiagnosisRefreshesRef.current.delete(sessionId);
+        setIssueReportDiagnosisRefreshing(sessionId, false);
+      }
+    });
+    issueReportDiagnosisRefreshesRef.current.set(sessionId, refresh);
+    return refresh;
+  }
+
+  function waitForIssueReportDiagnosisRefresh(sessionId: string) {
+    if (!diagnosisRefreshIssueReportSessionIdsRef.current.has(sessionId)) {
+      return Promise.resolve();
+    }
+    return (
+      issueReportDiagnosisRefreshesRef.current.get(sessionId) ??
+      queueIssueReportDiagnosisRefresh(sessionId)
+    );
+  }
+
+  function promotePendingIssueReportToReview(
+    sessionId: string,
+    options: { queueDiagnosisRefresh: boolean },
+  ) {
+    const issueReport = pendingIssueReportsRef.current.get(sessionId);
+    if (!issueReport) return false;
+    pendingIssueReportsRef.current.delete(sessionId);
+    setReviewableIssueReport(sessionId, issueReport);
+    if (options.queueDiagnosisRefresh) {
+      queueIssueReportDiagnosisRefresh(sessionId);
+    } else {
+      setIssueReportDiagnosisRefreshing(sessionId, false);
+    }
+    return true;
+  }
+
   function setIssueReportSubmitting(sessionId: string, submitting: boolean) {
     const next = new Set(submittingIssueReportSessionIdsRef.current);
     if (submitting) {
@@ -1268,7 +1363,10 @@ export function AgentWorkspace({
         }
         return;
       }
-      if (!reviewableIssueReportsRef.current[detail.sessionId]) {
+      if (
+        !pendingIssueReportsRef.current.has(detail.sessionId) &&
+        !reviewableIssueReportsRef.current[detail.sessionId]
+      ) {
         setReviewableIssueReport(detail.sessionId, detail.report);
       }
       setError(detail.result.errorMessage, { sessionId: detail.sessionId });
@@ -1284,6 +1382,12 @@ export function AgentWorkspace({
         onIssueReportDeliverySettled,
       );
   }, [setError]);
+
+  useEffect(() => {
+    for (const sessionId of diagnosisRefreshIssueReportSessionIdsRef.current) {
+      queueIssueReportDiagnosisRefresh(sessionId);
+    }
+  }, []);
 
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
@@ -1974,6 +2078,9 @@ export function AgentWorkspace({
           setSessionWorking(selectedHermesSessionId, true);
         }
         if (sessionHasAssistantAfterLatestUser(combined)) {
+          promotePendingIssueReportToReview(selectedHermesSessionId, {
+            queueDiagnosisRefresh: false,
+          });
           const wasActive = sessionHasActiveWork(
             selectedHermesSessionId,
             workingSessionIdsRef.current,
@@ -2071,7 +2178,10 @@ export function AgentWorkspace({
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
         titleOverrides: sessionTitleOverridesRef.current,
+        pendingIssueReports: Object.fromEntries(pendingIssueReportsRef.current),
         reviewableIssueReports: reviewableIssueReportsRef.current,
+        diagnosisRefreshIssueReportSessionIds:
+          diagnosisRefreshIssueReportSessionIdsRef.current,
         submittingIssueReportSessionIds:
           submittingIssueReportSessionIdsRef.current,
       });
@@ -2591,6 +2701,7 @@ export function AgentWorkspace({
     setIssueReportSubmitting(sessionId, true);
     let result: IssueReportDeliveryResult | undefined;
     try {
+      await waitForIssueReportDiagnosisRefresh(sessionId);
       result = await deliverIssueReport(sessionId, report);
       if (
         result.sent &&
@@ -2791,14 +2902,15 @@ export function AgentWorkspace({
         }
         // The diagnostic turn is over (even on error): let the user append
         // anything June's summary surfaced before sending the bundled report.
-        const issueReport = pendingIssueReportsRef.current.get(storedSessionId);
-        if (issueReport) {
-          pendingIssueReportsRef.current.delete(storedSessionId);
-          setReviewableIssueReport(storedSessionId, issueReport);
+        const promotedIssueReport = promotePendingIssueReportToReview(
+          storedSessionId,
+          { queueDiagnosisRefresh: true },
+        );
+        if (!promotedIssueReport) {
+          window.setTimeout(() => {
+            void refreshHermesSession(storedSessionId);
+          }, 300);
         }
-        window.setTimeout(() => {
-          void refreshHermesSession(storedSessionId);
-        }, 300);
       }
     });
     const unlisten = () => {
@@ -3086,6 +3198,9 @@ export function AgentWorkspace({
       if (
         sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
       ) {
+        promotePendingIssueReportToReview(sessionId, {
+          queueDiagnosisRefresh: false,
+        });
         const wasActive = sessionHasActiveWork(
           sessionId,
           workingSessionIdsRef.current,
