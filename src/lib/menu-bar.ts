@@ -8,6 +8,7 @@ export const AGENT_MENU_BAR_OPEN_SESSION_EVENT =
   "scribe:menu-bar:open-agent-session";
 export const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT =
   "scribe:menu-bar:set-agent-hud";
+export const CLOSE_TAB_EVENT = "scribe://close-tab";
 export const OPEN_SETTINGS_EVENT = "scribe://open-settings";
 
 export type AgentMenuBarSessionStatus = "idle" | "running" | "waitingForUser";

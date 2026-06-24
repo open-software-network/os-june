@@ -22,6 +22,9 @@ use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
+const CLOSE_TAB_MENU_ID: &str = "close_tab";
+const CLOSE_TAB_EVENT: &str = "scribe://close-tab";
+const CLOSE_WINDOW_MENU_ID: &str = "close_window_main";
 const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
 const OPEN_SETTINGS_EVENT: &str = "scribe://open-settings";
 
@@ -111,6 +114,14 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
+                return;
+            }
+            if event.id().as_ref() == CLOSE_TAB_MENU_ID {
+                let _ = app.emit(CLOSE_TAB_EVENT, ());
+                return;
+            }
+            if event.id().as_ref() == CLOSE_WINDOW_MENU_ID {
+                close_main_window(app);
                 return;
             }
             if event.id().as_ref() == OPEN_SETTINGS_MENU_ID {
@@ -353,7 +364,22 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         handle,
         "File",
         true,
-        &[&PredefinedMenuItem::close_window(handle, None)?],
+        &[
+            &MenuItem::with_id(
+                handle,
+                CLOSE_TAB_MENU_ID,
+                "Close tab",
+                true,
+                Some("CmdOrCtrl+W"),
+            )?,
+            &MenuItem::with_id(
+                handle,
+                CLOSE_WINDOW_MENU_ID,
+                "Close window",
+                true,
+                Some("CmdOrCtrl+Shift+W"),
+            )?,
+        ],
     )?;
     let edit_menu = Submenu::with_items(
         handle,
@@ -383,8 +409,6 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         &[
             &PredefinedMenuItem::minimize(handle, None)?,
             &PredefinedMenuItem::maximize(handle, None)?,
-            &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::close_window(handle, None)?,
         ],
     )?;
     let help_menu = Submenu::with_id_and_items(handle, HELP_SUBMENU_ID, "Help", true, &[])?;
@@ -434,6 +458,15 @@ fn focus_main_window(app: tauri::AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+fn close_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "macos")]
+        let _ = window.hide();
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.close();
     }
 }
 

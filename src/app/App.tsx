@@ -133,6 +133,7 @@ import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
   AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
+  CLOSE_TAB_EVENT,
   OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
   emitAgentMenuBarState,
@@ -691,7 +692,7 @@ export function App() {
   // agent workspace opens on the hero instead of restoring the last
   // conversation. Mirrors handleNewAgentSession (applyNav alone would only swap
   // state, leaving the previous chat on screen under a "New chat" label).
-  function armNewChatLive() {
+  const armNewChatLive = useCallback(() => {
     restoreTargetRef.current = { view: "agent" };
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
@@ -703,7 +704,7 @@ export function App() {
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT),
       );
     }, 0);
-  }
+  }, []);
 
   // The "+" / ⌘T affordance: a new tab is always a fresh chat.
   function openNewChatTab() {
@@ -719,28 +720,31 @@ export function App() {
     armNewChatLive();
   }
 
-  function closeTab(id: string) {
-    if (tabs.length <= 1) {
-      // Never leave the strip empty — reset the sole tab to a fresh chat.
-      const fresh = { id: makeTabId(), nav: defaultNav() };
-      setTabs([fresh]);
-      setActiveTabId(fresh.id);
-      armNewChatLive();
-      return;
-    }
-    const index = tabs.findIndex((tab) => tab.id === id);
-    if (index < 0) return;
-    const next = tabs.filter((tab) => tab.id !== id);
-    setTabs(next);
-    if (id === activeTabId) {
-      // Focus the right neighbor, falling back to the left — browser behavior.
-      const neighbor = next[index] ?? next[index - 1];
-      if (neighbor) {
-        setActiveTabId(neighbor.id);
-        applyNav(neighbor.nav);
+  const closeTab = useCallback(
+    (id: string) => {
+      if (tabs.length <= 1) {
+        // Never leave the strip empty — reset the sole tab to a fresh chat.
+        const fresh = { id: makeTabId(), nav: defaultNav() };
+        setTabs([fresh]);
+        setActiveTabId(fresh.id);
+        armNewChatLive();
+        return;
       }
-    }
-  }
+      const index = tabs.findIndex((tab) => tab.id === id);
+      if (index < 0) return;
+      const next = tabs.filter((tab) => tab.id !== id);
+      setTabs(next);
+      if (id === activeTabId) {
+        // Focus the right neighbor, falling back to the left — browser behavior.
+        const neighbor = next[index] ?? next[index - 1];
+        if (neighbor) {
+          setActiveTabId(neighbor.id);
+          applyNav(neighbor.nav);
+        }
+      }
+    },
+    [activeTabId, applyNav, armNewChatLive, tabs],
+  );
 
   // Keep only the given tab, focusing it. From the tab right-click menu.
   function closeOtherTabs(id: string) {
@@ -778,7 +782,23 @@ export function App() {
     );
   }
 
-  // Tab keyboard shortcuts: ⌘T new, ⌘[ / ⌘] cycle, ⌘1-9 jump (9 = last).
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen(CLOSE_TAB_EVENT, () => closeTab(activeTabId)).then(
+      (cleanup) => {
+        if (aborted) cleanup();
+        else unlisten = cleanup;
+      },
+    );
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [activeTabId, closeTab]);
+
+  // Tab keyboard shortcuts: ⌘T new, ⌘W close, ⌘[ / ⌘] cycle, ⌘1-9 jump
+  // (9 = last).
   // isPrimaryShortcut handles the cross-platform modifier (⌘ on mac, Ctrl on
   // Windows) and rejects Alt/Shift. No dependency array — re-bound each render
   // so it closes over current tabs, matching the search/new-note effects below.
@@ -790,6 +810,11 @@ export function App() {
       if (key.toLowerCase() === "t") {
         event.preventDefault();
         openNewChatTab();
+        return;
+      }
+      if (key.toLowerCase() === "w") {
+        event.preventDefault();
+        closeTab(activeTabId);
         return;
       }
       if (key === "]" || key === "}") {
