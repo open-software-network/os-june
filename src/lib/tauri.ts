@@ -1248,7 +1248,7 @@ export type AccountStatus = {
   /** Absent when the subscription state couldn't be determined — distinct
    * from `{ subscribed: false }`. */
   subscription?: AccountSubscription;
-  /** The accounts portal origin, where the free-trial flow lives. */
+  /** The accounts portal origin, where funding and billing live. */
   portalUrl?: string;
 };
 
@@ -1291,40 +1291,6 @@ export async function osAccountsOpenPortal() {
 
 export async function osAccountsReferralSummary() {
   return invoke<ReferralSummary>("os_accounts_referral_summary");
-}
-
-export type TrialCheckoutResult = {
-  outcome: "checkoutOpened" | "alreadySubscribed";
-};
-
-export type TrialCheckoutPreparedResult = {
-  outcome: "ready" | "alreadySubscribed";
-};
-
-/** Pre-mints the free-trial Stripe Checkout session and caches it in the
- * Rust core, so the next start call only has to open the browser. Call it
- * while the user is reading the trial pitch; failures are safe to swallow,
- * the start path falls back to minting on the spot. */
-export async function osAccountsPrepareTrialCheckout() {
-  return invoke<TrialCheckoutPreparedResult>(
-    "os_accounts_prepare_trial_checkout",
-  );
-}
-
-/** Mints the free-trial Stripe Checkout session with the user's own token and
- * opens it in the system browser — no portal detour. Rejects with code
- * `trial_checkout_needs_reauth` when the stored grant lacks the billing
- * scope (callers re-run sign-in and retry), and with other codes when the
- * direct path is unavailable (subscriptions disabled, network); callers
- * answer those with the portal fallback. */
-export async function osAccountsStartTrialCheckout() {
-  return invoke<TrialCheckoutResult>("os_accounts_start_trial_checkout");
-}
-
-/** Bring the app window back to the foreground — used when checkout completes
- * in the browser so the user lands back in June. */
-export async function focusMainWindow() {
-  return invoke<void>("focus_main_window");
 }
 
 export async function dictationSettings() {

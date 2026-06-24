@@ -14878,7 +14878,7 @@ input:focus-visible,
   gap: var(--sp-2);
 }
 
-/* The wizard's in-flight rows (sign-in handoff, trial checkout) keep the
+/* The wizard's in-flight rows (sign-in handoff, waiting states) keep the
    terracotta primary's exact footprint but fade it flat: a disabled-feeling
    tint of the button it replaces, not a raised control. Flows that still have
    active backend work can keep a terracotta spinner as the live part. */
@@ -14961,9 +14961,9 @@ input:focus-visible,
   text-underline-offset: 2px;
 }
 
-/* Trial gate — same card chrome as the sign-in gate, slightly wider so the
-   timeline details breathe. */
-.trial-card {
+/* Wider welcome-card variant for onboarding steps and funding prompts that
+   need more room than the sign-in gate. */
+.wide-card {
   width: min(100%, 360px);
 }
 
@@ -14991,182 +14991,14 @@ input:focus-visible,
   margin-inline: auto;
 }
 
-/* The trial success step lays its privacy recap out as a 3-up row, so it
- * needs more width than the 360px trial card — but, like the welcome step,
- * the continue button stays in a centered, button-width column. */
-.trial-card-done {
-  width: min(100%, 540px);
-}
-
-.trial-card-done .welcome-providers {
-  width: 100%;
-  max-width: 320px;
-  margin-inline: auto;
-}
-
-.trial-timeline {
-  display: flex;
-  flex-direction: column;
-  margin: var(--sp-2) 0 0;
-  padding: 0;
-  list-style: none;
-  text-align: left;
-}
-
-.trial-timeline li {
-  position: relative;
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  column-gap: var(--sp-3);
-  align-items: start;
-  padding-bottom: var(--sp-4);
-}
-
-.trial-timeline li:last-child {
-  padding-bottom: 0;
-}
-
-/* Connector between step icons. */
-.trial-timeline li:not(:last-child)::before {
-  content: "";
-  position: absolute;
-  left: 13.5px;
-  top: 32px;
-  bottom: 4px;
-  width: 1px;
-  background: var(--border);
-}
-
-.trial-timeline-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--card);
-  color: var(--muted-foreground);
-}
-
-.trial-timeline-label {
-  display: block;
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-.trial-timeline-date {
-  color: var(--warm-strong);
-}
-
-/* The charge date is the step that matters — echo the terracotta there. */
-.trial-timeline li:last-child .trial-timeline-icon {
-  border-color: color-mix(in oklch, var(--warm-strong) 30%, transparent);
-  background: color-mix(in oklch, var(--warm-soft) 35%, var(--card));
-  color: var(--warm-strong);
-}
-
-.trial-timeline-detail {
-  display: block;
-  margin-top: 2px;
-  font-size: var(--fs-md);
-  line-height: 1.5;
-  color: var(--muted-foreground);
-}
-
-.trial-hint {
+.funding-hint {
   margin: 0;
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   text-align: center;
 }
 
-/* Linear-style: three short, symmetric columns framed by faded-edge
- * dividers. The privacy headline lives in the card subtitle instead of a
- * third in-section heading, so the recap carries just two type styles
- * (label + detail) rather than stacking heading/label/detail. Everything is
- * centered, so it reads balanced under the hero. Static — no animation. */
-.trial-privacy-recap {
-  position: relative;
-  margin: var(--sp-1) 0;
-  padding: var(--sp-5) 0;
-  text-align: center;
-}
-
-/* Hairline dividers top and bottom, brightest in the middle and dissolving
- * at both ends — frames the row without a hard boxed-in border. */
-.trial-privacy-recap::before,
-.trial-privacy-recap::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    to right,
-    transparent,
-    var(--border) 50%,
-    transparent
-  );
-}
-
-.trial-privacy-recap::before {
-  top: 0;
-}
-
-.trial-privacy-recap::after {
-  bottom: 0;
-}
-
-.trial-privacy-recap ul {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--sp-5);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.trial-privacy-recap li {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: var(--sp-1);
-}
-
-/* Same 28px outlined chip as the welcome points and trial-timeline rows, so
- * the icons read as one family across the flow. */
-.trial-privacy-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  margin-bottom: var(--sp-1);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--card);
-  color: var(--warm-strong);
-}
-
-.trial-privacy-label {
-  display: block;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  font-weight: 600;
-}
-
-.trial-privacy-detail {
-  display: block;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
-  text-wrap: pretty;
-}
-
-.trial-gate-link {
+.funding-gate-link {
   padding: 0;
   border: 0;
   background: none;
@@ -15178,8 +15010,8 @@ input:focus-visible,
 }
 
 /* Onboarding wizard ---------------------------------------------------
- * Four welcome-cards in a row: sign in, permissions, trial, try it.
- * Each step reuses the account/trial gate chrome (welcome-card,
+ * Welcome-cards in a row: sign in, permissions, try it.
+ * Each step reuses the account gate chrome (welcome-card,
  * welcome-mark, welcome-title) so first-run looks like the app greeting
  * the user, not a separate tour. */
 
@@ -15362,7 +15194,7 @@ input:focus-visible,
 }
 
 /* Welcome screen's what-is-June rows: same 28px icon-chip anatomy as the
- * trial timeline and permission rows, minus the connectors. */
+ * permission rows, minus the connectors. */
 .onboarding-points {
   margin: var(--sp-2) 0 0;
   padding: 0;
@@ -15424,8 +15256,7 @@ input:focus-visible,
 
 /* Permissions: one bordered card, one row per permission — icon chip, a
  * line of copy, the grant affordance. A granted row trades its icon for a
- * check and tints terracotta, the trial timeline's "this one matters"
- * treatment doing done-state duty. */
+ * check and tints terracotta. */
 .onboarding-perms {
   margin: var(--sp-2) 0 0;
   padding: var(--sp-1);

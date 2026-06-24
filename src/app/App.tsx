@@ -18,7 +18,7 @@ import type {
   ReactNode,
 } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
-import { TrialGate } from "../components/account/TrialGate";
+import { FundingGate } from "../components/account/FundingGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -164,7 +164,7 @@ import {
   markOnboardingComplete,
   shouldReplayOnboarding,
 } from "../lib/onboarding";
-import { shouldBlockOnSignIn, shouldBlockOnTrial } from "../lib/account-gate";
+import { shouldBlockOnFunding, shouldBlockOnSignIn } from "../lib/account-gate";
 import {
   checkScribeUpdate,
   relaunchScribe,
@@ -488,7 +488,7 @@ export function App() {
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
   const finishingSessionsRef = useRef<Set<string>>(new Set());
   // A dev build without the OS Accounts env vars (fresh workspace, no .env)
-  // can never complete sign-in, so the sign-in and trial gates would be dead
+  // can never complete sign-in, so the account gates would be dead
   // ends — skip them and let account-dependent features surface their own
   // errors. Release builds always gate; so do dev builds once configured.
   const devAccountsUnconfigured =
@@ -497,21 +497,23 @@ export function App() {
     (accountLoading || !!accountError || !account.configured);
   const signInRequired =
     !devAccountsUnconfigured && shouldBlockOnSignIn(account);
-  const trialRequired =
-    !devAccountsUnconfigured && !signInRequired && shouldBlockOnTrial(account);
+  const fundingRequired =
+    !devAccountsUnconfigured &&
+    !signInRequired &&
+    shouldBlockOnFunding(account);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
   });
-  // The wizard handles sign-in and the free trial itself, so it gates on
-  // onboarding state alone; AccountGate/TrialGate remain for users who
-  // finished onboarding and later signed out or lapsed.
+  // The wizard handles sign-in, permissions, and hands-on practice. Funding
+  // only blocks once the account snapshot positively reports no spendable
+  // credits.
   const onboardingRequired = !accountLoading && !onboardingDone;
   // Onboarding counts as blocked so bootstrap, update checks, and the eager
   // permission probes hold off until the wizard finishes — the wizard owns
   // the permission prompts while it's on screen.
   const appBlocked =
-    accountLoading || signInRequired || trialRequired || onboardingRequired;
+    accountLoading || signInRequired || fundingRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -2573,7 +2575,6 @@ export function App() {
         <OnboardingFlow
           account={account}
           onAccountChanged={handleAccountChanged}
-          onRefreshAccount={refreshAccount}
           onComplete={() => {
             markOnboardingComplete();
             setOnboardingDone(true);
@@ -2601,7 +2602,7 @@ export function App() {
     );
   }
 
-  if (trialRequired) {
+  if (fundingRequired) {
     return (
       <main className="account-gate-shell">
         <div
@@ -2610,7 +2611,7 @@ export function App() {
           data-tauri-drag-region
           onPointerDown={handleTitlebarPointerDown}
         />
-        <TrialGate
+        <FundingGate
           account={account}
           onRefresh={refreshAccount}
           onSignOut={() => void handleSignOut()}

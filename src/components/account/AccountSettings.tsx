@@ -173,7 +173,7 @@ export function BillingSettingsSection({
     try {
       await osAccountsTopUp();
       setBillingStatus(
-        "Opened OS Accounts. Your balance updates after checkout.",
+        "Opened OS Accounts. Check again here after adding credits.",
       );
     } catch (error) {
       setBillingStatus(messageFromError(error));
@@ -189,8 +189,8 @@ export function BillingSettingsSection({
     }
   }
 
-  // Only the states reachable from inside the app: past_due and canceled park
-  // the whole app on the trial gate, so settings never renders them.
+  // Only the states reachable from inside the app: past_due and zero credits
+  // park the whole app on the funding gate, so settings never renders them.
   const subscription = account.subscription;
   const subscriptionRow =
     subscription?.status === "trialing"
@@ -225,7 +225,7 @@ export function BillingSettingsSection({
         Billing
       </h2>
       <p className="settings-group-description">
-        Managed by OpenSoftware. Your balance updates after checkout.
+        Manage credits and subscription details in OpenSoftware.
       </p>
       {billingStatus ? (
         <p className="settings-status">{billingStatus}</p>
