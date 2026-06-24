@@ -178,6 +178,7 @@ pub fn run() {
             hermes_bridge::update_hermes_bridge_skill,
             hermes_bridge::toggle_hermes_bridge_toolset,
             hermes_bridge::update_hermes_bridge_messaging_platform,
+            hermes_bridge::open_hermes_whatsapp_setup_terminal,
             hermes_bridge::hermes_agent_cli_access,
             hermes_bridge::set_hermes_agent_cli_access,
             commands::get_microphone_permission_state,

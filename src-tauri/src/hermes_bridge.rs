@@ -1199,6 +1199,20 @@ pub async fn update_hermes_bridge_messaging_platform(
 }
 
 #[tauri::command]
+pub fn open_hermes_whatsapp_setup_terminal(
+    bridge: State<'_, HermesBridge>,
+) -> Result<(), AppError> {
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections.first() else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Start the agent before opening WhatsApp pairing.",
+        ));
+    };
+    open_whatsapp_setup_terminal(connection)
+}
+
+#[tauri::command]
 pub async fn hermes_bridge_sessions(
     bridge: State<'_, HermesBridge>,
     request: HermesSessionsRequest,
@@ -1956,6 +1970,93 @@ fn open_gateway_start_log(hermes_home: &Path) -> Option<(std::fs::File, std::fs:
     );
     let clone = file.try_clone().ok()?;
     Some((file, clone))
+}
+
+fn open_whatsapp_setup_terminal(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = build_whatsapp_setup_terminal_applescript(connection);
+        Command::new("osascript")
+            .args(script_args(&script))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                AppError::new(
+                    "whatsapp_setup_terminal_failed",
+                    format!("Could not open WhatsApp pairing in Terminal. {error}"),
+                )
+            })?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = connection;
+        Err(AppError::new(
+            "whatsapp_setup_terminal_unsupported",
+            "WhatsApp pairing must be run from a terminal on this platform.",
+        ))
+    }
+}
+
+fn script_args(script: &[String]) -> Vec<&str> {
+    script
+        .iter()
+        .flat_map(|line| ["-e", line.as_str()])
+        .collect()
+}
+
+fn build_whatsapp_setup_terminal_applescript(connection: &HermesBridgeConnection) -> Vec<String> {
+    let shell_command = build_whatsapp_setup_shell_command(connection);
+    vec![
+        "tell application \"Terminal\"".to_string(),
+        "activate".to_string(),
+        format!("do script {}", applescript_string_literal(&shell_command)),
+        "end tell".to_string(),
+    ]
+}
+
+fn build_whatsapp_setup_shell_command(connection: &HermesBridgeConnection) -> String {
+    let hermes_home = shell_single_quote(&connection.hermes_home);
+    let hermes_command = shell_single_quote(&connection.command);
+    format!(
+        "export HERMES_HOME={home}; cd {home}; {command} whatsapp; printf '\\nWhatsApp setup finished. You can close this window.\\n'",
+        home = hermes_home,
+        command = hermes_command,
+    )
+}
+
+fn applescript_string_literal(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' | '"' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+fn shell_single_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\"'\"'");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 async fn hermes_connection_json(
@@ -3869,6 +3970,42 @@ mod tests {
             Some("1")
         );
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
+    }
+
+    #[test]
+    fn whatsapp_setup_terminal_command_quotes_paths() {
+        let connection = HermesBridgeConnection {
+            base_url: "http://127.0.0.1:1".to_string(),
+            ws_url: "ws://127.0.0.1:1/api/ws".to_string(),
+            token: "session-token".to_string(),
+            port: 1,
+            command: "/Applications/June's Hermes/bin/hermes".to_string(),
+            hermes_home: "/Users/test/Application Support/June Hermes".to_string(),
+            cwd: None,
+            provider_proxy_port: 2,
+            pid: 3,
+            sandboxed: true,
+            full_mode: false,
+        };
+
+        let shell_command = build_whatsapp_setup_shell_command(&connection);
+
+        assert!(shell_command
+            .contains("export HERMES_HOME='/Users/test/Application Support/June Hermes'"));
+        assert!(shell_command.contains("'/Applications/June'\"'\"'s Hermes/bin/hermes' whatsapp"));
+        assert!(shell_command.contains("WhatsApp setup finished."));
+    }
+
+    #[test]
+    fn applescript_string_literal_escapes_terminal_command() {
+        assert_eq!(
+            applescript_string_literal("say \"hi\" \\"),
+            "\"say \\\"hi\\\" \\\\\""
+        );
+        assert_eq!(
+            applescript_string_literal("first\nsecond"),
+            "\"first\\nsecond\""
+        );
     }
 
     #[test]

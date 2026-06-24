@@ -1088,6 +1088,10 @@ export async function updateHermesBridgeMessagingPlatform(input: {
   );
 }
 
+export async function openHermesWhatsAppSetupTerminal() {
+  return invoke<void>("open_hermes_whatsapp_setup_terminal");
+}
+
 /** `fullMode` is an explicit mode choice: passing it restarts a running
  * runtime whose mode differs (the sandbox is applied at spawn). Omit it to
  * reuse whatever is running — fresh starts are always sandboxed. */
