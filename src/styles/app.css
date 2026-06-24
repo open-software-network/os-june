@@ -1210,6 +1210,121 @@ input:focus-visible,
   text-decoration: none;
 }
 
+.agent-photon-setup {
+  display: grid;
+  gap: var(--sp-4);
+  margin-top: var(--sp-5);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.agent-photon-setup-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+.agent-photon-setup-header h4 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.agent-photon-setup-header p,
+.agent-photon-setup-note {
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.agent-photon-setup-header > span {
+  border-radius: var(--r-pill);
+  padding: 2px var(--sp-2);
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.agent-photon-setup-header > span[data-state="complete"] {
+  color: var(--success);
+}
+
+.agent-photon-setup-header > span[data-state="needs-retry"] {
+  color: var(--destructive);
+}
+
+.agent-photon-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.agent-photon-setup-actions button,
+.agent-photon-device-code a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-4);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font: inherit;
+  text-decoration: none;
+}
+
+.agent-photon-setup-actions button:disabled {
+  opacity: 0.55;
+}
+
+.agent-photon-device-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--background);
+}
+
+.agent-photon-device-code div {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-photon-device-code span {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-photon-device-code code {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+}
+
+.agent-photon-log {
+  max-height: 220px;
+  margin: 0;
+  padding: var(--sp-3);
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .agent-messaging-fields {
   margin-top: var(--sp-6);
 }

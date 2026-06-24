@@ -82,6 +82,7 @@ import {
   hermesBridgeMessagingPlatforms,
   hermesBridgeFilePreview,
   hermesBridgeFileText,
+  hermesPhotonSetupStatus,
   hermesAgentCliAccess,
   hermesBridgeSkills,
   hermesBridgeStatus,
@@ -97,6 +98,7 @@ import {
   sendAgentMessage,
   setHermesAgentCliAccess,
   setVeniceModel,
+  startHermesPhotonSetup,
   startHermesBridge,
   submitIssueReport,
   suggestAgentSessionTitle,
@@ -108,6 +110,7 @@ import {
   type HermesBridgeStatus,
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
+  type HermesPhotonSetupStatus,
   type ImportedHermesFile,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
@@ -5691,6 +5694,7 @@ export function MessagingPanel({
             platform={selected}
             saving={saving}
             onEditEnv={onEditEnv}
+            onRefresh={onRefresh}
             onSaveEnv={onSaveEnv}
             onToggle={onToggle}
           />
@@ -5831,6 +5835,7 @@ function MessagingPlatformDetail({
   platform,
   saving,
   onEditEnv,
+  onRefresh,
   onSaveEnv,
   onToggle,
 }: {
@@ -5838,10 +5843,88 @@ function MessagingPlatformDetail({
   platform: HermesMessagingPlatformInfo | null;
   saving: string | null;
   onEditEnv: (key: string, value: string) => void;
+  onRefresh: () => void;
   onSaveEnv: (platform: HermesMessagingPlatformInfo) => void;
   onToggle: (platform: HermesMessagingPlatformInfo, enabled: boolean) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [photonPhone, setPhotonPhone] = useState("");
+  const [photonStatus, setPhotonStatus] =
+    useState<HermesPhotonSetupStatus | null>(null);
+  const [photonLoading, setPhotonLoading] = useState(false);
+  const [photonError, setPhotonError] = useState<string | null>(null);
+  const refreshAfterPhotonSetupRef = useRef(false);
+  const isPhoton = platform?.id === "photon";
+
+  useEffect(() => {
+    if (!isPhoton) {
+      setPhotonStatus(null);
+      setPhotonError(null);
+      refreshAfterPhotonSetupRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    setPhotonLoading(true);
+    hermesPhotonSetupStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setPhotonStatus(status);
+          setPhotonError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setPhotonError(messageFromError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setPhotonLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPhoton]);
+
+  useEffect(() => {
+    if (!isPhoton || !photonStatus?.running) return;
+    const timer = window.setInterval(() => {
+      void refreshPhotonSetupStatus();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [isPhoton, photonStatus?.running]);
+
+  useEffect(() => {
+    if (!isPhoton || !refreshAfterPhotonSetupRef.current) return;
+    if (photonSetupExitCode(photonStatus) !== 0) return;
+    refreshAfterPhotonSetupRef.current = false;
+    onRefresh();
+  }, [isPhoton, onRefresh, photonStatus]);
+
+  async function refreshPhotonSetupStatus() {
+    setPhotonLoading(true);
+    try {
+      const status = await hermesPhotonSetupStatus();
+      setPhotonStatus(status);
+      setPhotonError(null);
+    } catch (err) {
+      setPhotonError(messageFromError(err));
+    } finally {
+      setPhotonLoading(false);
+    }
+  }
+
+  async function startPhotonSetup() {
+    setPhotonLoading(true);
+    try {
+      const status = await startHermesPhotonSetup({ phone: photonPhone });
+      refreshAfterPhotonSetupRef.current = true;
+      setPhotonStatus(status);
+      setPhotonError(null);
+    } catch (err) {
+      setPhotonError(messageFromError(err));
+    } finally {
+      setPhotonLoading(false);
+    }
+  }
+
   if (!platform) {
     return (
       <div className="agent-messaging-detail">
@@ -5899,6 +5982,17 @@ function MessagingPlatformDetail({
             Open setup guide
           </a>
         ) : null}
+        {isPhoton ? (
+          <PhotonSetupPanel
+            error={photonError}
+            loading={photonLoading}
+            phone={photonPhone}
+            status={photonStatus}
+            onPhoneChange={setPhotonPhone}
+            onRefresh={() => void refreshPhotonSetupStatus()}
+            onStart={() => void startPhotonSetup()}
+          />
+        ) : null}
         <MessagingFieldGroup
           title="Required"
           fields={required}
@@ -5953,6 +6047,138 @@ function MessagingPlatformDetail({
       </footer>
     </div>
   );
+}
+
+function PhotonSetupPanel({
+  error,
+  loading,
+  phone,
+  status,
+  onPhoneChange,
+  onRefresh,
+  onStart,
+}: {
+  error: string | null;
+  loading: boolean;
+  phone: string;
+  status: HermesPhotonSetupStatus | null;
+  onPhoneChange: (phone: string) => void;
+  onRefresh: () => void;
+  onStart: () => void;
+}) {
+  const exitCode = photonSetupExitCode(status);
+  const running = Boolean(status?.running);
+  const deviceAuth = photonDeviceAuth(status?.lines ?? []);
+  const canStart = isE164Phone(phone) && !running && !loading;
+  const statusLabel = running
+    ? "Running"
+    : exitCode === 0
+      ? "Complete"
+      : exitCode != null
+        ? "Needs retry"
+        : "Not started";
+
+  return (
+    <section className="agent-photon-setup" aria-label="Photon setup">
+      <div className="agent-photon-setup-header">
+        <div>
+          <h4>Photon setup</h4>
+          <p>
+            Connect iMessage through Photon with a one-time device-code login.
+            June opens Photon in your browser, provisions a project, registers
+            your phone, and installs the local sidecar.
+          </p>
+        </div>
+        <span data-state={statusLabel.toLowerCase().replaceAll(" ", "-")}>
+          {statusLabel}
+        </span>
+      </div>
+      <label className="agent-messaging-field">
+        <span>Your iMessage phone number</span>
+        <input
+          type="tel"
+          value={phone}
+          placeholder="+15551234567"
+          disabled={running}
+          onChange={(event) => onPhoneChange(event.currentTarget.value)}
+        />
+        <small>
+          Use E.164 format. Re-running setup is safe after a partial login or
+          interrupted project setup.
+        </small>
+      </label>
+      <div className="agent-photon-setup-actions">
+        <button type="button" disabled={loading} onClick={onRefresh}>
+          {loading ? "Checking..." : "Refresh status"}
+        </button>
+        <button
+          type="button"
+          className="primary-action primary-solid"
+          disabled={!canStart}
+          onClick={onStart}
+        >
+          {running ? "Running setup..." : "Start setup"}
+        </button>
+      </div>
+      {deviceAuth ? (
+        <div className="agent-photon-device-code">
+          <div>
+            <span>Device code</span>
+            <code>{deviceAuth.code}</code>
+          </div>
+          <a href={deviceAuth.url} target="_blank" rel="noreferrer">
+            Open Photon
+          </a>
+        </div>
+      ) : null}
+      {running ? (
+        <p className="agent-photon-setup-note">
+          Approve the device-code page in your browser. June will keep checking
+          while setup finishes.
+        </p>
+      ) : exitCode === 0 ? (
+        <p className="agent-photon-setup-note">
+          Photon setup completed. The messaging catalog will refresh with the
+          saved credentials.
+        </p>
+      ) : exitCode != null ? (
+        <p className="agent-photon-setup-note">
+          Photon setup stopped before finishing. Run setup again to reuse
+          completed steps and continue recovery.
+        </p>
+      ) : null}
+      {error ? (
+        <p className="settings-row-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {status?.lines.length ? (
+        <pre className="agent-photon-log" aria-label="Photon setup log">
+          {status.lines.join("\n")}
+        </pre>
+      ) : null}
+    </section>
+  );
+}
+
+function photonSetupExitCode(status: HermesPhotonSetupStatus | null) {
+  return status?.exitCode ?? status?.exit_code ?? null;
+}
+
+function photonDeviceAuth(lines: string[]) {
+  let url: string | null = null;
+  let code: string | null = null;
+  for (const line of lines) {
+    const urlMatch = line.match(/Open this URL:\s+(https?:\/\/\S+)/);
+    if (urlMatch) url = urlMatch[1];
+    const codeMatch = line.match(/Enter the code:\s+([A-Za-z0-9-]+)/);
+    if (codeMatch) code = codeMatch[1];
+  }
+  return url && code ? { url, code } : null;
+}
+
+function isE164Phone(value: string) {
+  return /^\+[1-9]\d{6,14}$/.test(value.trim());
 }
 
 function MessagingFieldGroup({

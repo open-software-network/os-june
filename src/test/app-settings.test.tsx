@@ -34,7 +34,9 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeSkills: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
+  hermesPhotonSetupStatus: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
+  startHermesPhotonSetup: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
@@ -70,7 +72,9 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
+  hermesPhotonSetupStatus: mocks.hermesPhotonSetupStatus,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
+  startHermesPhotonSetup: mocks.startHermesPhotonSetup,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
@@ -344,6 +348,20 @@ describe("AppSettings", () => {
     mocks.hermesBridgeSkills.mockResolvedValue([]);
     mocks.hermesBridgeToolsets.mockResolvedValue([]);
     mocks.hermesBridgeMessagingPlatforms.mockResolvedValue({ platforms: [] });
+    mocks.hermesPhotonSetupStatus.mockResolvedValue({
+      running: false,
+      exitCode: null,
+      lines: [],
+    });
+    mocks.startHermesPhotonSetup.mockResolvedValue({
+      running: true,
+      exitCode: null,
+      pid: 1234,
+      lines: [
+        "Open this URL: https://app.photon.example/device",
+        "Enter the code: JUNE-1234",
+      ],
+    });
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -1733,6 +1751,73 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("starts Photon setup from messaging settings", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        {
+          id: "photon",
+          name: "iMessage via Photon",
+          description: "Send and receive iMessage through Photon.",
+          docsUrl: "https://docs.example.com/photon",
+          enabled: false,
+          configured: false,
+          gatewayRunning: true,
+          state: "not_configured",
+          envVars: [
+            {
+              key: "PHOTON_PROJECT_ID",
+              prompt: "Project ID",
+              required: true,
+            },
+            {
+              key: "PHOTON_PROJECT_SECRET",
+              prompt: "Project secret",
+              required: true,
+              isPassword: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    await user.click(screen.getByRole("button", { name: "Messaging" }));
+
+    expect(await screen.findByText("Photon setup")).toBeInTheDocument();
+    const startButton = screen.getByRole("button", { name: "Start setup" });
+    expect(startButton).toBeDisabled();
+
+    await user.type(
+      screen.getByLabelText(/Your iMessage phone number/i),
+      "+15551234567",
+    );
+    await user.click(startButton);
+
+    await waitFor(() =>
+      expect(mocks.startHermesPhotonSetup).toHaveBeenCalledWith({
+        phone: "+15551234567",
+      }),
+    );
+    expect(await screen.findByText("JUNE-1234")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open Photon" }),
+    ).toHaveAttribute("href", "https://app.photon.example/device");
   });
 
   it("toggles the agent HUD from Agent settings", async () => {
