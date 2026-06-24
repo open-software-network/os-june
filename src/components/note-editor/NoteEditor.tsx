@@ -801,6 +801,7 @@ function ProcessingProgressIndicator({
     (stage) => stage.status === status,
   );
   const label = processingMessage(status) ?? "Processing audio...";
+  const progressValueText = `${processingStageLabel(status)} stage in progress`;
   const classes = ["note-processing-progress", className]
     .filter(Boolean)
     .join(" ");
@@ -837,6 +838,7 @@ function ProcessingProgressIndicator({
         className="note-processing-progress-track"
         role="progressbar"
         aria-label="Note processing progress"
+        aria-valuetext={progressValueText}
       />
       <ol className="note-processing-progress-steps" aria-hidden="true">
         {PROCESSING_STAGES.map((stage, index) => {
@@ -874,6 +876,17 @@ function processingStageStatus(
       return status;
     default:
       return null;
+  }
+}
+
+function processingStageLabel(status: ProcessingStageStatus): string {
+  switch (status) {
+    case "validating":
+      return "Audio";
+    case "transcribing":
+      return "Transcript";
+    case "generating":
+      return "Summary";
   }
 }
 

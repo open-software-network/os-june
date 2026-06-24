@@ -262,7 +262,7 @@ describe("NoteEditor", () => {
     );
     expect(
       screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toBeInTheDocument();
+    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
     expect(screen.getByText("Previous system transcript")).toBeInTheDocument();
   });
 
@@ -282,7 +282,7 @@ describe("NoteEditor", () => {
     );
     expect(
       screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toBeInTheDocument();
+    ).toHaveAttribute("aria-valuetext", "Transcript stage in progress");
     expect(screen.queryByText("No transcript is available yet.")).toBeNull();
   });
 
@@ -583,7 +583,7 @@ describe("NoteEditor", () => {
     expect(status).toHaveTextContent("+1");
     expect(
       screen.getByRole("progressbar", { name: "Note processing progress" }),
-    ).toBeInTheDocument();
+    ).toHaveAttribute("aria-valuetext", "Summary stage in progress");
   });
 
   it("starts recording immediately without a consent gate", async () => {
