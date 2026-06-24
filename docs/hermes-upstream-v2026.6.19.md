@@ -61,4 +61,4 @@ No required app code migration was found for the existing June agent, skills, me
 - Expose Automation Blueprints by deciding how they fit with June's Routines editor instead of routing users to raw cron fields.
 - Expose image editing by wiring existing file/image attachments into the upstream `image_generate` edit inputs.
 - Expose background subagent watch handles by adding UI for pending work, completion events, and reopened sessions.
-- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces.
+- Keep upstream dashboard profile builder and Skills Hub browsing hidden until June has native product surfaces for profile scope, skill provenance, permissions, updates, rollback, and local edit handling. See `docs/adr/0003-hermes-dashboard-surfaces.md`.
