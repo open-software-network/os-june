@@ -117,7 +117,7 @@ pub fn run() {
                 return;
             }
             if event.id().as_ref() == CLOSE_TAB_MENU_ID {
-                let _ = app.emit(CLOSE_TAB_EVENT, ());
+                emit_close_tab_if_main_window_focused(app);
                 return;
             }
             if event.id().as_ref() == CLOSE_WINDOW_MENU_ID {
@@ -289,7 +289,7 @@ fn single_instance_enabled_for_build(debug_assertions: bool, force_dev: bool) ->
 
 #[cfg(all(test, desktop))]
 mod tests {
-    use super::single_instance_enabled_for_build;
+    use super::{should_emit_close_tab_event, single_instance_enabled_for_build};
 
     #[test]
     fn single_instance_is_disabled_for_dev_builds_by_default() {
@@ -304,6 +304,13 @@ mod tests {
     #[test]
     fn single_instance_remains_enabled_for_release_builds() {
         assert!(single_instance_enabled_for_build(false, false));
+    }
+
+    #[test]
+    fn close_tab_menu_emits_only_when_main_window_focus_is_known_true() {
+        assert!(should_emit_close_tab_event(Some(true)));
+        assert!(!should_emit_close_tab_event(Some(false)));
+        assert!(!should_emit_close_tab_event(None));
     }
 }
 
@@ -468,6 +475,21 @@ fn close_main_window(app: &tauri::AppHandle) {
         #[cfg(not(target_os = "macos"))]
         let _ = window.close();
     }
+}
+
+fn emit_close_tab_if_main_window_focused(app: &tauri::AppHandle) {
+    if should_emit_close_tab_event(main_window_focus_state(app)) {
+        let _ = app.emit_to("main", CLOSE_TAB_EVENT, ());
+    }
+}
+
+fn main_window_focus_state(app: &tauri::AppHandle) -> Option<bool> {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+}
+
+fn should_emit_close_tab_event(main_window_focused: Option<bool>) -> bool {
+    main_window_focused == Some(true)
 }
 
 #[tauri::command]
