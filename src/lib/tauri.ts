@@ -125,6 +125,7 @@ export type DictationSettingsDto = {
   microphone: DictationMicrophoneSetting;
   style: DictationStyle;
   language?: string;
+  completionSoundEnabled: boolean;
 };
 
 export type DictationSettingsResponse = {
@@ -1368,6 +1369,12 @@ export async function setDictationStyle(style: DictationStyle) {
 export async function setDictationLanguage(language?: string) {
   return invoke<DictationSettingsDto>("set_dictation_language", {
     language: language || undefined,
+  });
+}
+
+export async function setDictationCompletionSound(enabled: boolean) {
+  return invoke<DictationSettingsDto>("set_dictation_completion_sound", {
+    enabled,
   });
 }
 

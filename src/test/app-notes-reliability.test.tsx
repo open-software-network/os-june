@@ -268,6 +268,7 @@ describe("notes recording reliability", () => {
         },
         microphone: {},
         style: "standard",
+        completionSoundEnabled: true,
       },
     });
     mocks.listDictationHistory.mockResolvedValue({

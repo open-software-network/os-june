@@ -84,6 +84,7 @@ describe("DictationHistoryView", () => {
         },
         microphone: {},
         style: "standard",
+        completionSoundEnabled: true,
       },
     });
     Object.defineProperty(navigator, "clipboard", {
@@ -196,6 +197,7 @@ describe("DictationHistoryView", () => {
         },
         microphone: {},
         style: "formal",
+        completionSoundEnabled: true,
       },
     });
     mocks.listDictionaryEntries.mockResolvedValue([]);
@@ -229,6 +231,7 @@ describe("DictationHistoryView", () => {
         },
         microphone: {},
         style: "casualLowercase",
+        completionSoundEnabled: true,
       },
     });
     mocks.listDictionaryEntries.mockResolvedValue([
