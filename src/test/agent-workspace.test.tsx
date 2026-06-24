@@ -502,7 +502,7 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("wraps a submitted issue report for June and files it after the turn", async () => {
+  it("wraps a submitted issue report for June and waits for explicit send", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -576,6 +576,10 @@ describe("AgentWorkspace", () => {
       }
     });
 
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
     await waitFor(() =>
       expect(mocks.submitIssueReport).toHaveBeenCalledWith({
         category: "bug",
@@ -593,6 +597,92 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     // Drain the post-terminal refresh timer before the test ends so its
     // session refetch cannot land inside a later test's render.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
+  it("appends report follow-ups before filing", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    await user.type(
+      await screen.findByRole("textbox"),
+      "The recorder crashes after long meetings",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+
+    await user.type(
+      await screen.findByRole("textbox"),
+      "It also loses the transcript",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => {
+      const promptSubmits = mocks.gatewayRequest.mock.calls.filter(
+        ([method]) => method === "prompt.submit",
+      );
+      const followUpSubmit = promptSubmits[promptSubmits.length - 1]?.[1] as {
+        session_id: string;
+        text: string;
+      };
+      expect(followUpSubmit).toEqual({
+        session_id: "runtime-session-2",
+        text: "It also loses the transcript",
+      });
+    });
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    expect(await screen.findByText(/Follow-up added/)).toBeInTheDocument();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "The added note points to transcript persistence.",
+        timestamp: "2026-06-11T10:00:20Z",
+      },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description:
+          "The recorder crashes after long meetings\n\nFollow-up comments:\n1. It also loses the transcript",
+        agentDiagnosis: "The added note points to transcript persistence.",
+        attachmentNames: [],
+        attachmentPaths: [],
+        sessionId: "session-2",
+      }),
+    );
+    expect(
+      await screen.findByText(/Your report was sent to the June team/),
+    ).toBeInTheDocument();
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
@@ -644,6 +734,9 @@ describe("AgentWorkspace", () => {
         handler({ type: "turn.completed", session_id: "runtime-session-2" });
       }
     });
+    await user.click(
+      await screen.findByRole("button", { name: "Send report" }),
+    );
     await waitFor(() => expect(mocks.submitIssueReport).toHaveBeenCalled());
 
     act(() => {

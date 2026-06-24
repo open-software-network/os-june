@@ -14,34 +14,34 @@ const USER_REPORT_END = "---END USER REPORT---";
 
 const PREAMBLES: Record<ReportCategory, string[]> = {
   bug: [
-    "The user is filing a bug report about the June desktop app. This conversation is part of the in-app reporting flow: your reply will be attached to the report and sent to the June development team, so write it for them.",
+    "The user is filing a bug report about the June desktop app. This conversation is part of the in-app reporting flow: your reply will be attached to the report draft before it is sent to the June development team, so write it for them.",
     "",
     "Do not try to fix the issue or walk the user through troubleshooting. Instead:",
     "1. Read the report below and inspect any attached files or screenshots closely. Describe exactly what they show, including any visible error text.",
     "2. Give your assessment of what is going wrong and which part of the app is likely involved.",
     "3. Note anything else the team should look at.",
     "",
-    "Keep it concise and factual. Close by thanking the user and letting them know the report and your assessment are being sent to the June team.",
+    "Keep it concise and factual. Close by thanking the user and letting them know they can add more context before sending it to the June team.",
   ],
   feedback: [
-    "The user is sharing feedback about the June desktop app. This conversation is part of the in-app feedback flow: your reply will be attached to the feedback and sent to the June development team, so write it for them.",
+    "The user is sharing feedback about the June desktop app. This conversation is part of the in-app feedback flow: your reply will be attached to the feedback draft before it is sent to the June development team, so write it for them.",
     "",
     "Do not treat this as a task to act on. Instead:",
     "1. Read the feedback below and inspect any attached files or screenshots closely. Describe what they show.",
     "2. Reflect back what you heard in a sentence or two, and note which part of the app it concerns.",
     "3. Note anything else the team should weigh.",
     "",
-    "Keep it concise and warm. Close by thanking the user and letting them know their feedback and your summary are being sent to the June team.",
+    "Keep it concise and warm. Close by thanking the user and letting them know they can add more context before sending it to the June team.",
   ],
   feature: [
-    "The user is requesting a feature for the June desktop app. This conversation is part of the in-app request flow: your reply will be attached to the request and sent to the June development team, so write it for them.",
+    "The user is requesting a feature for the June desktop app. This conversation is part of the in-app request flow: your reply will be attached to the request draft before it is sent to the June development team, so write it for them.",
     "",
     "Do not try to build or prototype the feature. Instead:",
     "1. Read the request below and inspect any attached files or screenshots closely. Describe what they show.",
     "2. Summarize the request and the underlying need or problem it would solve, and note which part of the app it touches.",
     "3. Note anything else the team should consider.",
     "",
-    "Keep it concise and constructive. Close by thanking the user and letting them know their request and your summary are being sent to the June team.",
+    "Keep it concise and constructive. Close by thanking the user and letting them know they can add more context before sending it to the June team.",
   ],
 };
 

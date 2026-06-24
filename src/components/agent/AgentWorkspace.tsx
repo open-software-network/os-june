@@ -657,6 +657,7 @@ export type AgentNewSessionDetail = {
 type PendingIssueReport = {
   category: ReportCategory;
   description: string;
+  followUps: string[];
   attachmentNames: string[];
   /** Workspace paths captured at submit, so the files can be uploaded with
    * the report even after the composer clears its attachment chips. */
@@ -821,6 +822,36 @@ function captureSessionContinuity(state: {
     runtimeSessionIds: pick(state.runtimeSessionIds),
     liveEvents: pick(state.liveEvents),
     titleOverrides: pick(state.titleOverrides),
+  };
+}
+
+function issueReportDescription(report: PendingIssueReport) {
+  const followUps = report.followUps
+    .map((followUp) => followUp.trim())
+    .filter(Boolean);
+  if (followUps.length === 0) return report.description;
+  return [
+    report.description,
+    "",
+    "Follow-up comments:",
+    ...followUps.map((followUp, index) => `${index + 1}. ${followUp}`),
+  ].join("\n");
+}
+
+function appendIssueReportFollowUp(
+  report: PendingIssueReport,
+  followUp: string,
+  attachmentNames: string[],
+  attachmentPaths: string[],
+): PendingIssueReport {
+  return {
+    ...report,
+    followUps: [
+      ...report.followUps,
+      followUp.trim() || "No follow-up text was typed; see the attachments.",
+    ],
+    attachmentNames: [...report.attachmentNames, ...attachmentNames],
+    attachmentPaths: [...report.attachmentPaths, ...attachmentPaths],
   };
 }
 
@@ -1093,11 +1124,21 @@ export function AgentWorkspace({
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
   const newSessionModeRef = useRef(newSessionMode);
-  // sessionId -> the report captured at submit time, delivered to the June
-  // team once the agent's diagnostic turn reaches a terminal event.
+  // sessionId -> the report captured for the active report turn. Once June's
+  // diagnostic turn finishes, it moves to reviewableIssueReports so the user
+  // can add context or send it.
   const pendingIssueReportsRef = useRef<Map<string, PendingIssueReport>>(
     new Map(),
   );
+  const [reviewableIssueReports, setReviewableIssueReports] = useState<
+    Record<string, PendingIssueReport>
+  >({});
+  const reviewableIssueReportsRef = useRef<Record<string, PendingIssueReport>>(
+    {},
+  );
+  const [submittingIssueReportSessionIds, setSubmittingIssueReportSessionIds] =
+    useState<Set<string>>(() => new Set());
+  const submittingIssueReportSessionIdsRef = useRef<Set<string>>(new Set());
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -1114,6 +1155,35 @@ export function AgentWorkspace({
   // A category to seed into the composer chip once the editor is ready, set by
   // startNewTask for the sidebar/settings report entry points.
   const pendingSeedCategoryRef = useRef<ReportCategory | null>(null);
+
+  function setReviewableIssueReport(
+    sessionId: string,
+    report: PendingIssueReport | null,
+  ) {
+    setReviewableIssueReports((current) => {
+      const next = { ...current };
+      if (report) {
+        next[sessionId] = report;
+      } else {
+        delete next[sessionId];
+      }
+      reviewableIssueReportsRef.current = next;
+      return next;
+    });
+  }
+
+  function setIssueReportSubmitting(sessionId: string, submitting: boolean) {
+    setSubmittingIssueReportSessionIds((current) => {
+      const next = new Set(current);
+      if (submitting) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      submittingIssueReportSessionIdsRef.current = next;
+      return next;
+    });
+  }
 
   useEffect(() => {
     runtimeSessionIdsRef.current = runtimeSessionIds;
@@ -1299,6 +1369,12 @@ export function AgentWorkspace({
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
       : null;
+  const visibleIssueReportReview = selectedHermesSessionId
+    ? reviewableIssueReports[selectedHermesSessionId]
+    : undefined;
+  const visibleIssueReportSubmitting = selectedHermesSessionId
+    ? submittingIssueReportSessionIds.has(selectedHermesSessionId)
+    : false;
   // Holds the prior render's heroMode. Read by both the composer auto-grow
   // effect (to skip its glide across a hero transition) and the hero→dock FLIP
   // below (to detect the hero handoff); the FLIP effect, which runs last, is
@@ -2079,6 +2155,13 @@ export function AgentWorkspace({
     // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
+    const reportFollowUpSessionId =
+      !reportCategory && selectedHermesSessionId
+        ? selectedHermesSessionId
+        : null;
+    const reportFollowUp = reportFollowUpSessionId
+      ? reviewableIssueReportsRef.current[reportFollowUpSessionId]
+      : undefined;
     const submittedDraftKey = composerDraftKeyRef.current;
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
@@ -2088,8 +2171,31 @@ export function AgentWorkspace({
     setSubmitting(true);
     let clearedDraft = false;
     let clearedAttachments = false;
+    let clearedIssueReportReview:
+      | { sessionId: string; report: PendingIssueReport }
+      | undefined;
     try {
       const prepared = await prepareComposerSubmission(message, attachments);
+      const nextIssueReport: PendingIssueReport | undefined = reportCategory
+        ? {
+            category: reportCategory,
+            // An attachments-only send has no typed text, but the server
+            // requires a description; the report must not bounce there.
+            description:
+              prepared.typedMessage ||
+              "No description was typed; see the attachments.",
+            followUps: [],
+            attachmentNames: attachments.map((attachment) => attachment.name),
+            attachmentPaths: attachments.map((attachment) => attachment.path),
+          }
+        : reportFollowUp
+          ? appendIssueReportFollowUp(
+              reportFollowUp,
+              prepared.typedMessage,
+              attachments.map((attachment) => attachment.name),
+              attachments.map((attachment) => attachment.path),
+            )
+          : undefined;
       if (
         draftRef.current.trim() === message &&
         categoryRef.current === reportCategory
@@ -2106,6 +2212,13 @@ export function AgentWorkspace({
         setComposerAttachments([]);
         clearedAttachments = true;
       }
+      if (reportFollowUpSessionId && reportFollowUp) {
+        setReviewableIssueReport(reportFollowUpSessionId, null);
+        clearedIssueReportReview = {
+          sessionId: reportFollowUpSessionId,
+          report: reportFollowUp,
+        };
+      }
       setIssueReportNotice(null);
       await submitHermesSession(
         reportCategory
@@ -2115,24 +2228,7 @@ export function AgentWorkspace({
         {
           displayContent: prepared.displayContent,
           titleContent: prepared.titleContent,
-          ...(reportCategory
-            ? {
-                issueReport: {
-                  category: reportCategory,
-                  // An attachments-only send has no typed text, but the server
-                  // requires a description; the report must not bounce there.
-                  description:
-                    prepared.typedMessage ||
-                    "No description was typed; see the attachments.",
-                  attachmentNames: attachments.map(
-                    (attachment) => attachment.name,
-                  ),
-                  attachmentPaths: attachments.map(
-                    (attachment) => attachment.path,
-                  ),
-                },
-              }
-            : {}),
+          ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
         },
       );
       setError(null);
@@ -2153,6 +2249,12 @@ export function AgentWorkspace({
       if (clearedAttachments) {
         setComposerAttachments((current) =>
           current.length ? current : attachments,
+        );
+      }
+      if (clearedIssueReportReview) {
+        setReviewableIssueReport(
+          clearedIssueReportReview.sessionId,
+          clearedIssueReportReview.report,
         );
       }
       if (isSessionBusyError(err)) {
@@ -2317,7 +2419,7 @@ export function AgentWorkspace({
   async function deliverIssueReport(
     sessionId: string,
     report: PendingIssueReport,
-  ) {
+  ): Promise<boolean> {
     let agentDiagnosis: string | undefined;
     try {
       const messages = await listHermesSessionMessages(sessionId);
@@ -2335,7 +2437,7 @@ export function AgentWorkspace({
     try {
       await submitIssueReport({
         category: report.category,
-        description: report.description,
+        description: issueReportDescription(report),
         agentDiagnosis,
         attachmentNames: report.attachmentNames,
         attachmentPaths: report.attachmentPaths,
@@ -2348,10 +2450,27 @@ export function AgentWorkspace({
           sessionId,
         });
       }
+      return true;
     } catch (err) {
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId,
       });
+      return false;
+    }
+  }
+
+  async function sendReviewableIssueReport(sessionId: string) {
+    if (submittingIssueReportSessionIdsRef.current.has(sessionId)) return;
+    const report = reviewableIssueReportsRef.current[sessionId];
+    if (!report) return;
+    setIssueReportSubmitting(sessionId, true);
+    try {
+      const sent = await deliverIssueReport(sessionId, report);
+      if (sent) {
+        setReviewableIssueReport(sessionId, null);
+      }
+    } finally {
+      setIssueReportSubmitting(sessionId, false);
     }
   }
 
@@ -2399,7 +2518,7 @@ export function AgentWorkspace({
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
-    if (options?.issueReport && !targetSessionId) {
+    if (options?.issueReport) {
       pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
     }
     if (!targetSessionId) {
@@ -2538,8 +2657,8 @@ export function AgentWorkspace({
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }
-        // The diagnostic turn is over (even on error): file the report now so
-        // the user's description isn't lost to a failed investigation.
+        // The diagnostic turn is over (even on error): let the user append
+        // anything June's summary surfaced before sending the bundled report.
         const issueReport = pendingIssueReportsRef.current.get(storedSessionId);
         if (issueReport) {
           pendingIssueReportsRef.current.delete(storedSessionId);
@@ -2547,7 +2666,7 @@ export function AgentWorkspace({
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
           if (issueReport) {
-            void deliverIssueReport(storedSessionId, issueReport);
+            setReviewableIssueReport(storedSessionId, issueReport);
           }
         }, 300);
       }
@@ -2569,7 +2688,7 @@ export function AgentWorkspace({
       });
     } catch (err) {
       // A queued report must not outlive its failed prompt; submit() re-arms
-      // issue-report mode so the retry files it again.
+      // issue-report mode so the retry can queue it again.
       pendingIssueReportsRef.current.delete(storedSessionId);
       // The prompt never entered the session, so its optimistic bubble must
       // not linger — a retained pending message renders below every later
@@ -3798,6 +3917,34 @@ export function AgentWorkspace({
               <DotSpinner />
               {busyNotice ?? SESSION_BUSY_NOTICE}
             </motion.p>
+          ) : visibleIssueReportReview ? (
+            <motion.div
+              key="issue-report-review"
+              className="agent-composer-notice agent-composer-notice-action"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span>
+                {visibleIssueReportReview.followUps.length
+                  ? "Follow-up added. Add more context in chat, or send it to the June team."
+                  : "Report ready. Add more context in chat, or send it to the June team."}
+              </span>
+              {selectedHermesSessionId ? (
+                <button
+                  type="button"
+                  className="agent-composer-notice-button"
+                  disabled={visibleIssueReportSubmitting}
+                  onClick={() =>
+                    void sendReviewableIssueReport(selectedHermesSessionId)
+                  }
+                >
+                  {visibleIssueReportSubmitting ? "Sending" : "Send report"}
+                </button>
+              ) : null}
+            </motion.div>
           ) : visibleIssueReportNotice ? (
             <motion.p
               key="issue-report-notice"

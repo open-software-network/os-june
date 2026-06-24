@@ -2747,6 +2747,33 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+.agent-composer-notice-action {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.agent-composer-notice-button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  padding: var(--sp-1) var(--sp-2);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-composer-notice-button:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--foreground) 32%, var(--border));
+  background: color-mix(in oklch, var(--card) 88%, var(--muted));
+}
+
+.agent-composer-notice-button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
 /* No per-state / collapsed overrides or left transition needed: the single
  * max(--sidebar-w-current, --sp-3) rule above already tracks the card edge in
  * every state, and animating that one variable tweens it in lockstep. */
