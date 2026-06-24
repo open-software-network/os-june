@@ -1068,6 +1068,11 @@ export function AgentWorkspace({
     },
     [],
   );
+  const clearErrorForSession = useCallback((sessionId: string) => {
+    setErrorState((current) =>
+      current?.sessionId === sessionId ? null : current,
+    );
+  }, []);
   const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
   const heroGreetingConsumedRef = useRef(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
@@ -1588,6 +1593,9 @@ export function AgentWorkspace({
       : undefined;
   const visibleIssueReportHasUnsentContext = Boolean(
     visibleIssueReportReview && (draft.trim() || attachments.length),
+  );
+  const visibleIssueReportImportingFiles = Boolean(
+    visibleIssueReportReview && importingFiles,
   );
   // Holds the prior render's heroMode. Read by both the composer auto-grow
   // effect (to skip its glide across a hero transition) and the hero→dock FLIP
@@ -2679,6 +2687,7 @@ export function AgentWorkspace({
         attachmentPaths: report.attachmentPaths,
         sessionId,
       });
+      clearErrorForSession(sessionId);
       if (selectedHermesSessionIdRef.current === sessionId) {
         setIssueReportNotice({
           message:
@@ -4182,6 +4191,7 @@ export function AgentWorkspace({
                 className="agent-composer-notice-button"
                 disabled={
                   visibleIssueReportReview.submitting ||
+                  visibleIssueReportImportingFiles ||
                   visibleIssueReportHasUnsentContext
                 }
                 onClick={() =>
@@ -4190,14 +4200,17 @@ export function AgentWorkspace({
                   )
                 }
               >
-                {visibleIssueReportReview.submitting ? (
+                {visibleIssueReportReview.submitting ||
+                visibleIssueReportImportingFiles ? (
                   <DotSpinner className="agent-composer-notice-button-spinner" />
                 ) : null}
                 {visibleIssueReportReview.submitting
                   ? "Sending"
-                  : visibleIssueReportHasUnsentContext
-                    ? "Send message first"
-                    : "Send report"}
+                  : visibleIssueReportImportingFiles
+                    ? "Attaching files"
+                    : visibleIssueReportHasUnsentContext
+                      ? "Send message first"
+                      : "Send report"}
               </button>
             </motion.div>
           ) : visibleIssueReportNotice ? (

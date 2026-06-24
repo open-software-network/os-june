@@ -1397,6 +1397,153 @@ describe("AgentWorkspace", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
+  it("clears a failed issue report banner after a successful retry", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    mocks.submitIssueReport
+      .mockRejectedValueOnce(new Error("upstream_provider_failed"))
+      .mockResolvedValue({ received: true });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "The recorder failed while saving.",
+        timestamp: "2026-06-11T10:00:10Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    await user.type(
+      await screen.findByRole("textbox"),
+      "The recorder crashes after long meetings",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+    expect(await screen.findByText("Sending")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/The issue report could not be sent/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/upstream_provider_failed/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    expect(
+      await screen.findByText(/Your report was sent to the June team/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/The issue report could not be sent/)).toBeNull();
+    expect(screen.queryByText(/upstream_provider_failed/)).toBeNull();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
+  it("keeps report sending disabled while attachment imports are pending", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    let resolveImport:
+      | ((file: {
+          name: string;
+          path: string;
+          rootLabel: string;
+          size: number;
+          previewDataUrl: null;
+        }) => void)
+      | undefined;
+    mocks.importHermesBridgeFileBytes.mockImplementationOnce((name: string) =>
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      }).then(() => ({
+        name,
+        path: `/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${name}`,
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: null,
+      })),
+    );
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Bug report")).toBeInTheDocument();
+    await user.type(
+      await screen.findByRole("textbox"),
+      "The recorder crashes after long meetings",
+    );
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+      }
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+
+    const form = document.querySelector(".agent-composer");
+    expect(form).not.toBeNull();
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: {
+        files: [new File(["logs"], "logs.txt", { type: "text/plain" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
+        "logs.txt",
+        expect.any(Uint8Array),
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Attaching files" }),
+    ).toBeDisabled();
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveImport?.({
+        name: "logs.txt",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/logs.txt",
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("logs.txt")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Send message first" }),
+    ).toBeDisabled();
+    expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
   it("labels anonymous-only agent models as anonymous mode", async () => {
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
