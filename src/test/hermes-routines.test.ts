@@ -7,6 +7,7 @@ import {
   resumeRoutine,
   triggerRoutine,
   updateRoutine,
+  UNRESTRICTED_ROUTINE_TOOLSETS,
 } from "../lib/hermes-routines";
 
 const mocks = vi.hoisted(() => ({
@@ -135,6 +136,22 @@ describe("Routines Hermes integration", () => {
     expect(mocks.ensureHermesBridgeGateway).not.toHaveBeenCalled();
     expect(mocks.updateHermesBridgeCronJob).toHaveBeenCalledWith("routine-1", {
       name: "Renamed",
+    });
+  });
+
+  it("ensures the persistent gateway before a prompt-only routine edit", async () => {
+    await updateRoutine("routine-1", { prompt: "Summarize this week." });
+    expect(mocks.ensureHermesBridgeGateway).toHaveBeenCalledTimes(1);
+    expect(mocks.updateHermesBridgeCronJob).toHaveBeenCalledWith("routine-1", {
+      prompt: "Summarize this week.",
+    });
+  });
+
+  it("ensures the persistent gateway before an unrestricted-only routine edit", async () => {
+    await updateRoutine("routine-1", { unrestricted: true });
+    expect(mocks.ensureHermesBridgeGateway).toHaveBeenCalledTimes(1);
+    expect(mocks.updateHermesBridgeCronJob).toHaveBeenCalledWith("routine-1", {
+      enabled_toolsets: UNRESTRICTED_ROUTINE_TOOLSETS,
     });
   });
 

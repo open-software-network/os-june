@@ -187,6 +187,14 @@ export type RoutineUpdates = {
   unrestricted?: boolean;
 };
 
+/** Update keys that are purely cosmetic and have no effect on a future run,
+ * so editing only these can stay on the bridge-only path. Everything else
+ * (schedule, prompt, the toolset/script fields `unrestricted` expands to, and
+ * any field added later) must go through withScheduler so an unloaded gateway
+ * gets brought back up — otherwise the edit is "saved but never fires".
+ * Safe-by-default: a key not listed here forces the scheduler. */
+const BRIDGE_ONLY_SAFE_UPDATE_KEYS = new Set<string>(["name"]);
+
 export async function updateRoutine(
   jobId: string,
   updates: RoutineUpdates,
@@ -202,7 +210,12 @@ export async function updateRoutine(
     payload.script = null;
     payload.no_agent = false;
   }
-  const run = updates.schedule !== undefined ? withScheduler : withBridge;
+  // Require the gateway whenever the edit touches any future-run-affecting
+  // field; only edits limited to bridge-only-safe keys may skip it.
+  const touchesRunAffectingField = Object.keys(payload).some(
+    (key) => !BRIDGE_ONLY_SAFE_UPDATE_KEYS.has(key),
+  );
+  const run = touchesRunAffectingField ? withScheduler : withBridge;
   const record = await run(() =>
     updateHermesBridgeCronJob(jobId, payload),
   );
