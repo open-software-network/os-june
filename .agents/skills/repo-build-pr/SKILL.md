@@ -90,6 +90,7 @@ Use a draft PR for the first publish.
    git push -u origin "$(git branch --show-current)"
    ```
 5. Open a draft PR against the chosen base. The PR body should include:
+   - task ID from the prompt or live issue data, including `Closes <TASK-ID>` when a tracker Issue exists
    - what changed
    - why it changed
    - validation run

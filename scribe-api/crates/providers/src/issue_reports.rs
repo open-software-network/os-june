@@ -478,6 +478,7 @@ fn is_missing_label(message: &str) -> bool {
 }
 
 const ISSUE_TITLE_MAX_CHARS: usize = 120;
+const MAX_SPLIT_ISSUES: usize = 10;
 
 /// Strips the report form's field labels so a line's *content* drives the
 /// title: "What happened: X" yields "X", and a bare label line yields ""
@@ -525,7 +526,7 @@ fn prefixed_issue_title(summary: &str) -> String {
 fn issue_create_entries(report: &IssueReport) -> Vec<IssueCreateEntry> {
     if let Some(diagnosis) = report.agent_diagnosis.as_deref() {
         let split_issues = split_agent_diagnosis(diagnosis);
-        if split_issues.len() > 1 {
+        if split_issues.len() > 1 && split_issues.len() <= MAX_SPLIT_ISSUES {
             let total = split_issues.len();
             return split_issues
                 .into_iter()
@@ -913,6 +914,38 @@ mod issue_title_tests {
                 .body_markdown
                 .contains("Likely the audio capture thread.")
         );
+    }
+
+    #[test]
+    fn issue_entries_fall_back_when_split_diagnosis_exceeds_cap() {
+        let diagnosis = (1..=11)
+            .map(|index| format!("Issue {index}: Generated issue {index}\nDetails {index}."))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let report = IssueReport {
+            user_id: UserId("usr_test".to_string()),
+            description: "The report contains many generated findings.".to_string(),
+            agent_diagnosis: Some(diagnosis),
+            attachment_names: vec![],
+            attachments: vec![],
+            session_id: None,
+            app_version: None,
+            platform: None,
+        };
+
+        let entries = issue_create_entries(&report);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].title,
+            "June report: The report contains many generated findings."
+        );
+        assert!(
+            entries[0]
+                .body_markdown
+                .contains("Issue 11: Generated issue 11")
+        );
+        assert!(!entries[0].body_markdown.contains("- Split issue:"));
     }
 }
 
