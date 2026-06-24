@@ -521,6 +521,20 @@ pub fn start_on_app_start(app: &tauri::App) {
     });
 }
 
+#[tauri::command]
+pub async fn ensure_hermes_bridge_gateway(
+    bridge: State<'_, HermesBridge>,
+) -> Result<(), AppError> {
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections.first() else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running.",
+        ));
+    };
+    start_hermes_gateway_if_needed(connection).await
+}
+
 async fn start_hermes_bridge_inner(
     app: &AppHandle,
     bridge: &HermesBridge,

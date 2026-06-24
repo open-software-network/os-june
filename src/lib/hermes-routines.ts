@@ -1,6 +1,7 @@
 import {
   createHermesBridgeCronJob,
   deleteHermesBridgeCronJob,
+  ensureHermesBridgeGateway,
   hermesBridgeCronJobAction,
   hermesBridgeCronJobs,
   hermesBridgeStatus,
@@ -98,10 +99,13 @@ export function routineUnrestricted(
 }
 
 /** The dashboard API lives on the bridge process, so make sure one is up
- * before calling — same lazy-start the gateway client used to do. */
+ * before calling. Cron jobs are actually fired by Hermes's launchd-managed
+ * gateway, so routine operations also ensure that persistent gateway is
+ * registered before touching the jobs API. */
 async function withBridge<T>(run: () => Promise<T>): Promise<T> {
   const status = await hermesBridgeStatus();
   if (!status.running) await startHermesBridge();
+  await ensureHermesBridgeGateway();
   return run();
 }
 

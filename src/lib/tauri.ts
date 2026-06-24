@@ -867,6 +867,10 @@ export async function hermesBridgeStatus() {
   return invoke<HermesBridgeStatus>("hermes_bridge_status");
 }
 
+export async function ensureHermesBridgeGateway() {
+  return invoke<void>("ensure_hermes_bridge_gateway");
+}
+
 export async function hermesBridgeSkills() {
   return invoke<HermesSkillInfo[]>("hermes_bridge_skills");
 }
