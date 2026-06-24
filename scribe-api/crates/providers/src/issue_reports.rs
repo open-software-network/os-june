@@ -524,7 +524,9 @@ fn prefixed_issue_title(summary: &str) -> String {
 }
 
 fn issue_create_entries(report: &IssueReport) -> Vec<IssueCreateEntry> {
-    if let Some(diagnosis) = report.agent_diagnosis.as_deref() {
+    if report_allows_split(report)
+        && let Some(diagnosis) = report.agent_diagnosis.as_deref()
+    {
         let split_issues = split_agent_diagnosis(diagnosis);
         if split_issues.len() > 1 && split_issues.len() <= MAX_SPLIT_ISSUES {
             let total = split_issues.len();
@@ -543,6 +545,15 @@ fn issue_create_entries(report: &IssueReport) -> Vec<IssueCreateEntry> {
         title: issue_title(&report.description),
         body_markdown: issue_body(report),
     }]
+}
+
+fn report_allows_split(report: &IssueReport) -> bool {
+    report
+        .category
+        .as_deref()
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+        .is_none_or(|category| category == "bug")
 }
 
 fn split_agent_diagnosis(diagnosis: &str) -> Vec<SplitDiagnosisIssue> {
@@ -712,6 +723,9 @@ fn append_metadata(body: &mut String, report: &IssueReport, split: Option<(usize
     if let Some((index, total)) = split {
         let _ = writeln!(body, "- Split issue: {index} of {total}");
     }
+    if let Some(category) = report.category.as_deref().filter(|v| !v.is_empty()) {
+        let _ = writeln!(body, "- Category: {category}");
+    }
     let _ = writeln!(body, "- Reporter: `{}`", report.user_id.0);
     if let Some(session_id) = report.session_id.as_deref().filter(|v| !v.is_empty()) {
         let _ = writeln!(body, "- Session: `{session_id}`");
@@ -745,6 +759,7 @@ fn log_issue_report_delivery_failed(report: &IssueReport, reason: &str, org: &st
         agent_diagnosis = report.agent_diagnosis.as_deref().unwrap_or(""),
         attachment_names = ?report.attachment_names,
         attachments = ?report.attachments,
+        category = report.category.as_deref().unwrap_or(""),
         session_id = report.session_id.as_deref().unwrap_or(""),
         app_version = report.app_version.as_deref().unwrap_or(""),
         platform = report.platform.as_deref().unwrap_or(""),
@@ -761,6 +776,7 @@ fn log_issue_report_without_sink(report: &IssueReport) {
         // The Debug impl reports name/type/length only — uploaded bytes
         // never reach the logs.
         attachments = ?report.attachments,
+        category = report.category.as_deref().unwrap_or(""),
         session_id = report.session_id.as_deref().unwrap_or(""),
         app_version = report.app_version.as_deref().unwrap_or(""),
         platform = report.platform.as_deref().unwrap_or(""),
@@ -848,6 +864,7 @@ mod issue_title_tests {
     fn issue_entries_split_multi_issue_agent_diagnosis() {
         let report = IssueReport {
             user_id: UserId("usr_test".to_string()),
+            category: Some("bug".to_string()),
             description:
                 "Routines chat clips overflowing text. Should model controls be in routines?"
                     .to_string(),
@@ -893,9 +910,43 @@ mod issue_title_tests {
     }
 
     #[test]
+    fn issue_entries_keep_non_bug_reports_single() {
+        let report = IssueReport {
+            user_id: UserId("usr_test".to_string()),
+            category: Some("feature".to_string()),
+            description: "Please add separate controls for routine models.".to_string(),
+            agent_diagnosis: Some(
+                "Issue 1: Clipped chat box in Routines\nText overflow is clipped.\n\nIssue 2: Model control in Routines chat\nThis is a product question."
+                    .to_string(),
+            ),
+            attachment_names: vec![],
+            attachments: vec![],
+            session_id: None,
+            app_version: None,
+            platform: None,
+        };
+
+        let entries = issue_create_entries(&report);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].title,
+            "June report: Please add separate controls for routine models."
+        );
+        assert!(
+            entries[0]
+                .body_markdown
+                .contains("Issue 2: Model control in Routines chat")
+        );
+        assert!(entries[0].body_markdown.contains("- Category: feature"));
+        assert!(!entries[0].body_markdown.contains("- Split issue:"));
+    }
+
+    #[test]
     fn issue_entries_keep_single_issue_without_multiple_sections() {
         let report = IssueReport {
             user_id: UserId("usr_test".to_string()),
+            category: None,
             description: "The recorder freezes".to_string(),
             agent_diagnosis: Some("Likely the audio capture thread.".to_string()),
             attachment_names: vec![],
@@ -924,6 +975,7 @@ mod issue_title_tests {
             .join("\n\n");
         let report = IssueReport {
             user_id: UserId("usr_test".to_string()),
+            category: None,
             description: "The report contains many generated findings.".to_string(),
             agent_diagnosis: Some(diagnosis),
             attachment_names: vec![],
@@ -959,6 +1011,7 @@ mod os_platform_tests {
     fn report() -> IssueReport {
         IssueReport {
             user_id: UserId("usr_test".to_string()),
+            category: Some("bug".to_string()),
             description: "The recorder freezes\nwhen I pause it".to_string(),
             agent_diagnosis: Some("Likely the audio capture thread".to_string()),
             attachment_names: vec!["screenshot.png".to_string()],

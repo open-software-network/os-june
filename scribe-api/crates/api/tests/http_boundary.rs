@@ -139,6 +139,7 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
             "/v1/issue-reports",
             multipart_body([
                 text_part("description", "The recorder freezes after a long meeting"),
+                text_part("category", "feedback"),
                 text_part(
                     "agentDiagnosis",
                     "Likely the audio capture thread is blocked",
@@ -175,6 +176,7 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
         reports[0].description,
         "The recorder freezes after a long meeting"
     );
+    assert_eq!(reports[0].category.as_deref(), Some("feedback"));
     assert_eq!(
         reports[0].agent_diagnosis.as_deref(),
         Some("Likely the audio capture thread is blocked")
