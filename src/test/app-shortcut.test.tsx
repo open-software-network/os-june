@@ -339,6 +339,16 @@ describe("App shortcuts", () => {
     );
     expect(closeTabListenerCount()).toBe(1);
 
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
+    expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    dialog.remove();
+
     mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
 
     await waitFor(() =>

@@ -806,12 +806,13 @@ export function App() {
   useEffect(() => {
     let aborted = false;
     let unlisten: (() => void) | undefined;
-    void listen(CLOSE_TAB_EVENT, () => closeTab(activeTabIdRef.current)).then(
-      (cleanup) => {
-        if (aborted) cleanup();
-        else unlisten = cleanup;
-      },
-    );
+    void listen(CLOSE_TAB_EVENT, () => {
+      if (document.querySelector('[role="dialog"]')) return;
+      closeTab(activeTabIdRef.current);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
     return () => {
       aborted = true;
       unlisten?.();
