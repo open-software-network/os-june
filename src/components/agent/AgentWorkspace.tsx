@@ -2364,7 +2364,12 @@ export function AgentWorkspace({
           current.length ? current : attachments,
         );
       }
-      if (clearedIssueReportReview) {
+      if (
+        clearedIssueReportReview &&
+        submittingIssueReportSessionIdsRef.current.has(
+          clearedIssueReportReview.sessionId,
+        )
+      ) {
         setReviewableIssueReport(
           clearedIssueReportReview.sessionId,
           clearedIssueReportReview.report,
