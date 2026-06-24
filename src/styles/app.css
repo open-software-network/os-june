@@ -2754,6 +2754,9 @@ input:focus-visible,
 
 .agent-composer-notice-button {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--card);
@@ -2772,6 +2775,10 @@ input:focus-visible,
 .agent-composer-notice-button:disabled {
   cursor: default;
   opacity: 0.62;
+}
+
+.agent-composer-notice-button-spinner {
+  flex-shrink: 0;
 }
 
 /* No per-state / collapsed overrides or left transition needed: the single

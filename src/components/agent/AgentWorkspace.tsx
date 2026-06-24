@@ -1376,12 +1376,19 @@ export function AgentWorkspace({
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
       : null;
-  const visibleIssueReportReview = selectedHermesSessionId
+  const selectedIssueReportReview = selectedHermesSessionId
     ? reviewableIssueReports[selectedHermesSessionId]
     : undefined;
-  const visibleIssueReportSubmitting = selectedHermesSessionId
-    ? submittingIssueReportSessionIds.has(selectedHermesSessionId)
-    : false;
+  const visibleIssueReportReview =
+    selectedHermesSessionId && selectedIssueReportReview
+      ? {
+          report: selectedIssueReportReview,
+          sessionId: selectedHermesSessionId,
+          submitting: submittingIssueReportSessionIds.has(
+            selectedHermesSessionId,
+          ),
+        }
+      : undefined;
   // Holds the prior render's heroMode. Read by both the composer auto-grow
   // effect (to skip its glide across a hero transition) and the hero→dock FLIP
   // below (to detect the hero handoff); the FLIP effect, which runs last, is
@@ -3936,22 +3943,27 @@ export function AgentWorkspace({
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
               <span>
-                {visibleIssueReportReview.followUps.length
+                {visibleIssueReportReview.report.followUps.length
                   ? "Follow-up added. Add more context in chat, or send it to the June team."
                   : "Report ready. Add more context in chat, or send it to the June team."}
               </span>
-              {selectedHermesSessionId ? (
-                <button
-                  type="button"
-                  className="agent-composer-notice-button"
-                  disabled={visibleIssueReportSubmitting}
-                  onClick={() =>
-                    void sendReviewableIssueReport(selectedHermesSessionId)
-                  }
-                >
-                  {visibleIssueReportSubmitting ? "Sending" : "Send report"}
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="agent-composer-notice-button"
+                disabled={visibleIssueReportReview.submitting}
+                onClick={() =>
+                  void sendReviewableIssueReport(
+                    visibleIssueReportReview.sessionId,
+                  )
+                }
+              >
+                {visibleIssueReportReview.submitting ? (
+                  <DotSpinner className="agent-composer-notice-button-spinner" />
+                ) : null}
+                {visibleIssueReportReview.submitting
+                  ? "Sending"
+                  : "Send report"}
+              </button>
             </motion.div>
           ) : visibleIssueReportNotice ? (
             <motion.p
