@@ -15,6 +15,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   HERO_GREETINGS,
+  SkillsToolsPanel,
   resetAgentSessionContinuity,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
@@ -313,6 +314,129 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
+  });
+
+  it("lets users cancel a clean skill editor without making changes", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SkillsToolsPanel
+        loading={false}
+        query=""
+        saving={null}
+        skills={[
+          {
+            name: "editing-skill",
+            description: "Drafts responses.",
+            category: "Writing",
+            enabled: true,
+          },
+        ]}
+        toolsets={[]}
+        onQueryChange={vi.fn()}
+        onRefresh={vi.fn()}
+        onToggleSkill={vi.fn()}
+        onToggleToolset={vi.fn()}
+        onOpenSkill={async (skill) => ({
+          name: skill.name,
+          relativePath: `${skill.name}/SKILL.md`,
+          content: "# Editing skill\n\nDo the work.",
+        })}
+        onSaveSkill={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /editing-skill/i }));
+    const editor = await screen.findByRole("textbox", {
+      name: "editing-skill skill Markdown",
+    });
+    expect(editor).toHaveValue("# Editing skill\n\nDo the work.");
+
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel).toBeEnabled();
+    await user.click(cancel);
+
+    expect(
+      screen.queryByRole("textbox", {
+        name: "editing-skill skill Markdown",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Skills and tools" }),
+    ).toBeInTheDocument();
+  });
+
+  it("confirms before canceling dirty skill edits", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SkillsToolsPanel
+        loading={false}
+        query=""
+        saving={null}
+        skills={[
+          {
+            name: "editing-skill",
+            description: "Drafts responses.",
+            category: "Writing",
+            enabled: true,
+          },
+        ]}
+        toolsets={[]}
+        onQueryChange={vi.fn()}
+        onRefresh={vi.fn()}
+        onToggleSkill={vi.fn()}
+        onToggleToolset={vi.fn()}
+        onOpenSkill={async (skill) => ({
+          name: skill.name,
+          relativePath: `${skill.name}/SKILL.md`,
+          content: "# Editing skill\n\nDo the work.",
+        })}
+        onSaveSkill={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /editing-skill/i }));
+    const editor = await screen.findByRole("textbox", {
+      name: "editing-skill skill Markdown",
+    });
+    await user.type(editor, "\nAdd more detail.");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Discard skill edits?",
+    });
+    expect(
+      screen.getByRole("textbox", {
+        name: "editing-skill skill Markdown",
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Discard skill edits?" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", {
+        name: "editing-skill skill Markdown",
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const confirmDialog = await screen.findByRole("dialog", {
+      name: "Discard skill edits?",
+    });
+    await user.click(
+      within(confirmDialog).getByRole("button", { name: "Discard" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("textbox", {
+          name: "editing-skill skill Markdown",
+        }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("honors a pending New Session request instead of selecting existing work", async () => {

@@ -7313,7 +7313,7 @@ export function SkillsToolsPanel({
           skill={selectedSkill}
           value={skillDraft}
           onBack={requestCloseSkillEditor}
-          onCancel={() => setSkillDraft(skillDocument?.content ?? "")}
+          onCancel={requestCloseSkillEditor}
           onChange={setSkillDraft}
           onSave={() => void saveSkill()}
         />
@@ -7469,24 +7469,19 @@ function SkillEditorPanel({
           <p className="agent-skill-editor-readonly-note">
             Read-only. This skill loads from ~/.agents/skills. Edit it on disk.
           </p>
-        ) : (
-          <>
-            <button
-              type="button"
-              disabled={!dirty || saving || loading}
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={!dirty || saving || loading || !document}
-              onClick={onSave}
-            >
-              {saving ? "Saving..." : "Save changes"}
-            </button>
-          </>
+        ) : null}
+        <button type="button" disabled={saving} onClick={onCancel}>
+          Cancel
+        </button>
+        {readOnly ? null : (
+          <button
+            type="button"
+            className="primary-action primary-solid"
+            disabled={!dirty || saving || loading || !document}
+            onClick={onSave}
+          >
+            {saving ? "Saving..." : "Save changes"}
+          </button>
         )}
       </footer>
     </section>
