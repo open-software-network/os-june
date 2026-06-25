@@ -552,6 +552,14 @@ fn issue_title(description: &str) -> String {
     prefixed_issue_title(first_line)
 }
 
+/// Title from the diagnosis the report model already wrote. The report
+/// prompt asks June to open with an `Issue 1: <short title>` heading, so a
+/// single-issue report carries a model-written title we can lift verbatim
+/// instead of slicing the first content line out of the raw description.
+fn diagnosis_issue_title(diagnosis: &str) -> Option<String> {
+    diagnosis.lines().find_map(parse_issue_heading)
+}
+
 fn prefixed_issue_title(summary: &str) -> String {
     let summary = summary.trim();
     let mut title = String::with_capacity(ISSUE_TITLE_MAX_CHARS + 16);
@@ -567,6 +575,7 @@ fn prefixed_issue_title(summary: &str) -> String {
 }
 
 fn issue_create_entries(report: &IssueReport) -> Vec<IssueCreateEntry> {
+    let mut single_diagnosis_title = None;
     if let Some(diagnosis) = report.agent_diagnosis.as_deref() {
         let split_issues = split_agent_diagnosis(diagnosis);
         if split_issues.len() > 1 && split_issues.len() <= MAX_SPLIT_ISSUES {
@@ -580,10 +589,21 @@ fn issue_create_entries(report: &IssueReport) -> Vec<IssueCreateEntry> {
                 })
                 .collect();
         }
+        // Single-issue diagnosis: reuse the model's `Issue 1:` heading as the
+        // title; fall back to the description when the heading is absent. A
+        // diagnosis that split into more sections than the cap files as one
+        // combined issue, so its first heading would undersell the rest —
+        // keep the description-derived title there.
+        if split_issues.is_empty() {
+            single_diagnosis_title = diagnosis_issue_title(diagnosis);
+        }
     }
 
     vec![IssueCreateEntry {
-        title: issue_title(&report.description),
+        title: single_diagnosis_title.map_or_else(
+            || issue_title(&report.description),
+            |title| prefixed_issue_title(&title),
+        ),
         body_markdown: issue_body(report),
     }]
 }
@@ -826,7 +846,10 @@ impl IssueReportSink for LogIssueReportSink {
 
 #[cfg(test)]
 mod issue_title_tests {
-    use super::{issue_create_entries, issue_title, issue_type_for_report, split_agent_diagnosis};
+    use super::{
+        diagnosis_issue_title, issue_create_entries, issue_title, issue_type_for_report,
+        split_agent_diagnosis,
+    };
     use scribe_domain::{IssueReport, UserId};
 
     #[test]
@@ -1044,6 +1067,45 @@ mod issue_title_tests {
             entries[0]
                 .body_markdown
                 .contains("Likely the audio capture thread.")
+        );
+    }
+
+    #[test]
+    fn diagnosis_issue_title_lifts_the_first_issue_heading() {
+        let diagnosis =
+            "**Issue 1 — Recorder freezes on pause:**\nThe audio capture thread stalls.";
+        assert_eq!(
+            diagnosis_issue_title(diagnosis).as_deref(),
+            Some("Recorder freezes on pause")
+        );
+        assert_eq!(diagnosis_issue_title("Just some prose, no heading."), None);
+    }
+
+    #[test]
+    fn issue_entries_use_single_diagnosis_heading_as_title() {
+        let report = IssueReport {
+            user_id: UserId("usr_test".to_string()),
+            category: Some("feature".to_string()),
+            description: "Can the report titles read better in the tracker?".to_string(),
+            agent_diagnosis: Some(
+                "Issue 1: Model-written report titles\nReuse the diagnosis heading as the tracker title."
+                    .to_string(),
+            ),
+            attachment_names: vec![],
+            attachments: vec![],
+            session_id: None,
+            app_version: None,
+            platform: None,
+        };
+
+        let entries = issue_create_entries(&report);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "June report: Model-written report titles");
+        assert!(
+            entries[0]
+                .body_markdown
+                .contains("Can the report titles read better")
         );
     }
 
