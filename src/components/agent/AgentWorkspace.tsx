@@ -8,6 +8,7 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
@@ -4860,6 +4861,16 @@ export function AgentWorkspace({
     });
   }
 
+  function editUserPrompt(text: string) {
+    composerEditorRef.current?.setContent(text, null);
+    setDraft(text);
+    setCategory(null);
+    draftRef.current = text;
+    categoryRef.current = null;
+    setComposerAttachments([]);
+    rememberComposerDraft(composerDraftKeyRef.current, text, null, []);
+  }
+
   function setComposerAttachments(
     nextValue:
       | AgentAttachment[]
@@ -6153,6 +6164,7 @@ export function AgentWorkspace({
             void branchFromMessage(selectedHermesSessionId, messageId)
           }
           branchingMessageId={branchingMessageId}
+          onEditUserPrompt={editUserPrompt}
         />
       ))}
       {workingSessionIds.has(selectedHermesSessionId) &&
@@ -6265,6 +6277,7 @@ export function AgentWorkspace({
                 sessionUnrestricted(selectedTask.hermesSessionId),
               );
             }}
+            onEditUserPrompt={editUserPrompt}
           />
         ))}
         {workingTaskIds.has(selectedTask.id) &&
@@ -8445,6 +8458,7 @@ function AgentChatTurnRow({
   onThinkingOpenChange,
   onTopUp,
   onBranch,
+  onEditUserPrompt,
   branchingMessageId,
   turn,
 }: {
@@ -8478,6 +8492,7 @@ function AgentChatTurnRow({
   onOpenArtifact?: (artifact: AgentArtifact) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
+  onEditUserPrompt?: (text: string) => void;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
@@ -8516,6 +8531,8 @@ function AgentChatTurnRow({
     activeThinkingKey !== undefined &&
     thinkingOpen(activeThinkingKey);
   const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
+  const [copied, setCopied] = useState(false);
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const wasRunning = wasThinkingRunningRef.current;
@@ -8541,24 +8558,92 @@ function AgentChatTurnRow({
     toolParts.length,
   ]);
 
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const contextParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "context" }> =>
       part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const copyText = copyableTextForTurn(turn);
+  const userPromptText = turn.role === "user" ? copyText : "";
 
-  // Feature 07: the per-turn "Branch from here" control. Rendered only on
-  // Hermes-session rows (which pass `onBranch`); the action self-disables when
-  // the turn id is not a persisted message id (see isBranchableMessageId).
+  async function copyTurn() {
+    if (!copyText) return;
+    try {
+      if (!navigator.clipboard?.writeText) return;
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyResetTimerRef.current = undefined;
+      }, 1400);
+    } catch {
+      // Clipboard can fail in restricted contexts; leave the transcript alone.
+    }
+  }
+
+  // Per-turn transcript actions. Branch is rendered only on Hermes-session rows
+  // (which pass `onBranch`); it self-disables when the turn id is not a
+  // persisted message id (see isBranchableMessageId).
   const branchAction = onBranch ? (
-    <div className="agent-turn-actions">
-      <BranchFromHereAction
-        messageId={turn.id}
-        onBranch={onBranch}
-        submitting={branchingMessageId === turn.id}
-      />
-    </div>
+    <BranchFromHereAction
+      messageId={turn.id}
+      onBranch={onBranch}
+      submitting={branchingMessageId === turn.id}
+    />
   ) : null;
+  const copyAction = copyText ? (
+    <button
+      type="button"
+      className="agent-turn-action"
+      aria-label={copied ? "Copied message" : "Copy message"}
+      title={copied ? "Copied" : "Copy message"}
+      data-copied={copied ? "true" : undefined}
+      onClick={() => void copyTurn()}
+    >
+      {copied ? (
+        <IconCheckmark1Small size={13} aria-hidden />
+      ) : (
+        <IconClipboard size={13} aria-hidden />
+      )}
+      <span>{copied ? "Copied" : "Copy"}</span>
+    </button>
+  ) : null;
+  const editAction =
+    turn.role === "user" &&
+    !turn.isScheduledRun &&
+    userPromptText &&
+    onEditUserPrompt ? (
+      <button
+        type="button"
+        className="agent-turn-action"
+        aria-label="Edit message"
+        title="Edit message"
+        onClick={() => onEditUserPrompt(userPromptText)}
+      >
+        <IconPencilLine size={13} aria-hidden />
+        <span>Edit</span>
+      </button>
+    ) : null;
+  const turnActions =
+    copyAction || editAction || branchAction ? (
+      <div className="agent-turn-actions">
+        {copyAction}
+        {editAction}
+        {branchAction}
+      </div>
+    ) : null;
 
   if (
     contextParts.length &&
@@ -8599,7 +8684,7 @@ function AgentChatTurnRow({
             />
           ))}
         </div>
-        {branchAction}
+        {turnActions}
       </article>
     );
   }
@@ -8693,13 +8778,39 @@ function AgentChatTurnRow({
             <span className="text-shimmer">Thinking…</span>
           </p>
         ) : (
-          // No branch action on an empty/in-flight turn — there is nothing to
-          // fork from yet.
-          branchAction
+          // No actions on an empty/in-flight turn. There is nothing useful to
+          // copy or fork from yet.
+          turnActions
         )}
       </div>
     </article>
   );
+}
+
+function copyableTextForTurn(turn: AgentChatTurn): string {
+  if (turn.role === "user") return userPromptTextForTurn(turn);
+  if (turn.role !== "assistant") return "";
+  return turn.parts
+    .filter(
+      (part): part is Extract<AgentChatPart, { type: "text" }> =>
+        part.type === "text",
+    )
+    .map((part) => stripAgentCliAccessRequest(part.text).trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function userPromptTextForTurn(turn: AgentChatTurn): string {
+  return turn.parts
+    .filter(
+      (part): part is Extract<AgentChatPart, { type: "text" }> =>
+        part.type === "text",
+    )
+    .map((part) => displayedComposerUserMessageText(part.text).trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 }
 
 function ContextCompactionPart({
