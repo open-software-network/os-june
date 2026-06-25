@@ -555,6 +555,7 @@ export type HermesSessionMessage = {
   reasoning_details?: unknown;
   codex_reasoning_items?: unknown;
   codex_message_items?: unknown;
+  client_insert_after_message_id?: string | null;
 };
 
 export type HermesSessionMessagesResponse = {

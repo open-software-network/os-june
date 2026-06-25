@@ -145,14 +145,16 @@ export function buildAgentChatTurns(
   toolEvents: AgentToolEventDto[],
   liveEvents: LiveHermesEvent[] = [],
 ): AgentChatTurn[] {
-  const turns = messages.map(messageToTurn);
+  const turnOrder = new Map<string, number>();
+  const turns = messages.map((message, index) => {
+    const turn = messageToTurn(message);
+    turnOrder.set(turn.id, index);
+    return turn;
+  });
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  assignMissingTurnOrder(turns, turnOrder, messages.length);
+  return filterAndSortChatTurns(turns, turnOrder);
 }
 
 export function buildHermesSessionChatTurns(
@@ -161,14 +163,16 @@ export function buildHermesSessionChatTurns(
 ): AgentChatTurn[] {
   const turns: AgentChatTurn[] = [];
   const toolResults = new Map<string, HermesSessionMessage>();
+  const turnOrder = new Map<string, number>();
 
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.role === "tool") {
       const id = message.tool_call_id ?? message.id;
       toolResults.set(id, message);
       const turn =
         lastAssistantTurn(turns) ??
         createAssistantTurn(turns, messageTimestamp(message));
+      if (!turnOrder.has(turn.id)) turnOrder.set(turn.id, messageIndex);
       upsertToolPart(turn.parts, {
         id,
         name: toolActivityLabel(message.tool_name ?? undefined),
@@ -243,15 +247,97 @@ export function buildHermesSessionChatTurns(
 
     if (turn.parts.length) {
       turns.push(turn);
+      turnOrder.set(turn.id, messageIndex);
     }
   }
 
   appendLiveHermesEvents(turns, liveEvents);
+  assignMissingTurnOrder(turns, turnOrder, messages.length);
+  return filterAndSortChatTurns(turns, turnOrder);
+}
+
+const PENDING_USER_ASSISTANT_ORDER_SKEW_MS = 1500;
+
+function filterAndSortChatTurns(
+  turns: AgentChatTurn[],
+  turnOrder: Map<string, number>,
+) {
   return turns
     .filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
     )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort((a, b) => compareAgentChatTurns(a, b, turnOrder));
+}
+
+function assignMissingTurnOrder(
+  turns: AgentChatTurn[],
+  turnOrder: Map<string, number>,
+  offset: number,
+) {
+  turns.forEach((turn, index) => {
+    if (!turnOrder.has(turn.id)) turnOrder.set(turn.id, offset + index);
+  });
+}
+
+function compareAgentChatTurns(
+  a: AgentChatTurn,
+  b: AgentChatTurn,
+  turnOrder: Map<string, number>,
+) {
+  const sourceOrder = (turnOrder.get(a.id) ?? 0) - (turnOrder.get(b.id) ?? 0);
+  const aMs = turnTimestampMs(a.createdAt);
+  const bMs = turnTimestampMs(b.createdAt);
+
+  if (
+    sourceOrder !== 0 &&
+    shouldKeepPendingUserSourceOrder(a, b, aMs, bMs)
+  ) {
+    return sourceOrder;
+  }
+
+  if (aMs !== undefined && bMs !== undefined && aMs !== bMs) {
+    return aMs - bMs;
+  }
+
+  const lexical = a.createdAt.localeCompare(b.createdAt);
+  if ((aMs === undefined || bMs === undefined) && lexical !== 0) {
+    return lexical;
+  }
+
+  const roleOrder = chatTurnRoleOrder(a.role) - chatTurnRoleOrder(b.role);
+  if (roleOrder !== 0) return roleOrder;
+  return sourceOrder;
+}
+
+function shouldKeepPendingUserSourceOrder(
+  a: AgentChatTurn,
+  b: AgentChatTurn,
+  aMs: number | undefined,
+  bMs: number | undefined,
+) {
+  if (aMs === undefined || bMs === undefined) return false;
+  if (Math.abs(aMs - bMs) > PENDING_USER_ASSISTANT_ORDER_SKEW_MS) {
+    return false;
+  }
+  return (
+    (isPendingUserTurn(a) && b.role === "assistant") ||
+    (isPendingUserTurn(b) && a.role === "assistant")
+  );
+}
+
+function isPendingUserTurn(turn: AgentChatTurn) {
+  return turn.role === "user" && turn.id.startsWith("pending:user:");
+}
+
+function chatTurnRoleOrder(role: AgentChatTurn["role"]) {
+  if (role === "system") return 0;
+  if (role === "user") return 1;
+  return 2;
+}
+
+function turnTimestampMs(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
