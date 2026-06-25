@@ -275,6 +275,7 @@ import {
   type AgentChatTurn,
   type LiveHermesEvent,
 } from "../../lib/agent-chat-runtime";
+import { toolActivityLabel } from "../../lib/agent-tool-labels";
 import {
   buildAgentChatGallery,
   buildAgentErrorGallery,
@@ -10445,16 +10446,6 @@ function stringValue(value: unknown, preserveWhitespace = false) {
   return undefined;
 }
 
-function humanizeToolName(value: string) {
-  return value
-    .replace(/^tools?[._-]/i, "")
-    .replaceAll("_", " ")
-    .replaceAll("-", " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
 function capabilityMatches(
   item: HermesSkillInfo | HermesToolsetInfo | HermesMessagingPlatformInfo,
   query: string,
@@ -10797,7 +10788,8 @@ function agentStatusSummaryFromHermesEvent(
       stringValue(payload?.name) ??
       stringValue(payload?.tool_name) ??
       stringValue(payload?.tool);
-    return name ? `Using ${humanizeToolName(name)}.` : "Using a tool.";
+    const label = toolActivityLabel(name, payload);
+    return label === "Tool" ? "Using a tool." : `Using ${label}.`;
   }
   if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
     return "Thinking.";

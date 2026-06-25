@@ -33,6 +33,7 @@ import type {
   AgentActivityPhase,
   AgentActivityRecord,
 } from "../../lib/hermes-activity-store";
+import { toolActivityLabel } from "../../lib/agent-tool-labels";
 import type {
   AgentArtifact,
   ArtifactAction,
@@ -385,7 +386,7 @@ function ActivityRow({
           </span>
           {record.phase === "running" && nonEmpty(record.currentTool) ? (
             <span className="agent-activity-row-tool">
-              {record.currentTool}
+              {toolActivityLabel(record.currentTool)}
             </span>
           ) : null}
           {record.pendingActionCount > 0 ? (
@@ -585,7 +586,7 @@ function SubagentRow({
           </span>
           {working && nonEmpty(subagent.currentTool) ? (
             <span className="agent-activity-subagent-tool">
-              {subagent.currentTool}
+              {toolActivityLabel(subagent.currentTool)}
             </span>
           ) : null}
           {Number.isFinite(lastEventAt) ? (

@@ -855,6 +855,30 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.status).toBe("complete");
   });
 
+  it("labels live terminal tool rows by the activity in their payload", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "terminal",
+            command: "curl https://example.com/docs",
+          },
+        },
+      ],
+    );
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Browsing",
+      status: "running",
+    });
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],

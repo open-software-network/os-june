@@ -14,6 +14,7 @@ import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
 import { STEER_EVENT_TYPE, steeringPartText } from "./hermes-session-steer";
 import { parseHermesMode } from "./hermes-control-plane";
+import { toolActivityLabel } from "./agent-tool-labels";
 
 export type LiveHermesEvent = HermesGatewayEvent & {
   receivedAt: string;
@@ -218,7 +219,7 @@ export function buildHermesSessionChatTurns(
         turn.parts.push({
           type: "tool",
           id: call.id,
-          name: humanizeToolName(call.name),
+          name: toolActivityLabel(call.name, call.arguments),
           text:
             textFromHermesContent(result?.content) ??
             stringifyObject(call.arguments) ??
@@ -546,14 +547,14 @@ function appendLiveHermesEvents(
         currentAssistant.status = "complete";
       }
       const payload = event.payload as Record<string, unknown> | undefined;
+      const name =
+        stringValue(payload?.name) ??
+        stringValue(payload?.tool_name) ??
+        stringValue(payload?.tool) ??
+        "tool";
       upsertToolPart(currentAssistant.parts, {
         id: toolEventKey(event),
-        name: humanizeToolName(
-          stringValue(payload?.name) ??
-            stringValue(payload?.tool_name) ??
-            stringValue(payload?.tool) ??
-            "tool",
-        ),
+        name: toolActivityLabel(name, payload),
         text,
         status,
       });
@@ -1345,12 +1346,4 @@ function timestampString(value: unknown) {
     return value.toISOString();
   }
   return new Date().toISOString();
-}
-
-function humanizeToolName(value: string) {
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
