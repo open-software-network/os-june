@@ -1,0 +1,28 @@
+{
+  "name": "subagent-background-completion",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A background subagent that finishes while the parent is elsewhere, referenced only by a `handle` (no subagent_id) and a parent_session_id that differs from the frame session_id. Exercises the handle alias and parent-session correlation. Every frame -> background_activity (phases progress, complete).",
+  "frames": [
+    {
+      "type": "subagent.progress",
+      "session_id": "sess-parent",
+      "payload": {
+        "handle": "bg-h-7",
+        "parent_session_id": "sess-parent",
+        "tool": "read_file",
+        "summary": "Indexing files in the background"
+      }
+    },
+    {
+      "type": "subagent.complete",
+      "session_id": "sess-parent",
+      "payload": {
+        "handle": "bg-h-7",
+        "parent_session_id": "sess-parent",
+        "summary": "Background indexing finished: 128 files"
+      }
+    }
+  ]
+}

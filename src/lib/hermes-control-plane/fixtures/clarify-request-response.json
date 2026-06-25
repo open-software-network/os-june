@@ -1,0 +1,23 @@
+{
+  "name": "clarify-request-response",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A clarify prompt and its answer. clarify.request -> pending_action/clarify. clarify.response is not a new pending action; classifier routes it to unsupported today (locked as honest current behavior).",
+  "frames": [
+    {
+      "type": "clarify.request",
+      "session_id": "sess-clarify",
+      "payload": {
+        "request_id": "cl-1",
+        "question": "Which config file should I edit?",
+        "choices": ["vite.config.ts", "tsconfig.json"]
+      }
+    },
+    {
+      "type": "clarify.response",
+      "session_id": "sess-clarify",
+      "payload": { "request_id": "cl-1", "answer": "vite.config.ts" }
+    }
+  ]
+}

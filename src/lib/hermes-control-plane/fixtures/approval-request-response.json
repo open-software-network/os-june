@@ -1,0 +1,24 @@
+{
+  "name": "approval-request-response",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "An approval prompt and its resolution. approval.request -> pending_action/approval. approval.response is NOT a new pending action; the classifier currently routes it to unsupported (locked here as honest current behavior).",
+  "frames": [
+    {
+      "type": "approval.request",
+      "session_id": "sess-approval",
+      "payload": {
+        "request_id": "ap-1",
+        "tool_name": "shell",
+        "command": "rm -rf build",
+        "description": "Delete the build directory"
+      }
+    },
+    {
+      "type": "approval.response",
+      "session_id": "sess-approval",
+      "payload": { "request_id": "ap-1", "approved": true }
+    }
+  ]
+}

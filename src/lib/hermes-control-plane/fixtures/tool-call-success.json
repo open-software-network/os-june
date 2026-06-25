@@ -1,0 +1,32 @@
+{
+  "name": "tool-call-success",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A tool call that runs to completion. Expected kind for every frame: tool (phases start, progress, complete).",
+  "frames": [
+    {
+      "type": "tool.start",
+      "session_id": "sess-tool-ok",
+      "payload": {
+        "tool_call_id": "tc-1",
+        "name": "read_file",
+        "arguments": { "path": "/workspace/src/index.ts" }
+      }
+    },
+    {
+      "type": "tool.progress",
+      "session_id": "sess-tool-ok",
+      "payload": { "tool_call_id": "tc-1", "output": "reading 42 lines" }
+    },
+    {
+      "type": "tool.complete",
+      "session_id": "sess-tool-ok",
+      "payload": {
+        "tool_call_id": "tc-1",
+        "result": "export const answer = 42;",
+        "status": "ok"
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "name": "subagent-lifecycle",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A delegated subagent's full lifecycle: start, tool, thinking, progress, complete. Every frame -> background_activity, with phases start, tool, thinking, progress, complete.",
+  "frames": [
+    {
+      "type": "subagent.start",
+      "session_id": "sess-sub",
+      "payload": {
+        "subagent_id": "sub-1",
+        "goal": "Research how the gateway reconnects",
+        "parent_session_id": "sess-sub"
+      }
+    },
+    {
+      "type": "subagent.tool",
+      "session_id": "sess-sub",
+      "payload": {
+        "subagent_id": "sub-1",
+        "tool_name": "grep",
+        "tool_preview": "rg reconnect"
+      }
+    },
+    {
+      "type": "subagent.thinking",
+      "session_id": "sess-sub",
+      "payload": {
+        "subagent_id": "sub-1",
+        "delta": "considering the close handler"
+      }
+    },
+    {
+      "type": "subagent.progress",
+      "session_id": "sess-sub",
+      "payload": {
+        "subagent_id": "sub-1",
+        "summary": "Found the reconnect path"
+      }
+    },
+    {
+      "type": "subagent.complete",
+      "session_id": "sess-sub",
+      "payload": {
+        "subagent_id": "sub-1",
+        "summary": "Reconnect is coalesced via connectPromise"
+      }
+    }
+  ]
+}

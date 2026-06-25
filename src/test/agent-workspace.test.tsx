@@ -24,6 +24,10 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
+import { classifyHermesEvent } from "../lib/hermes-control-plane";
+import { hermesArtifactStore } from "../lib/hermes-artifact-store";
+import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
+import { pendingActionStore } from "../lib/hermes-pending-actions";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -190,6 +194,12 @@ describe("AgentWorkspace", () => {
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
     resetAgentSessionContinuity();
+    // Feature 14: the artifact store is a process-wide singleton; drop the
+    // session rows these tests touch so one test's artifacts don't leak into
+    // the next.
+    for (const id of ["session-1", "session-2", "runtime-session-2"]) {
+      hermesArtifactStore.clearSession(id);
+    }
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
@@ -252,7 +262,14 @@ describe("AgentWorkspace", () => {
       content: `# ${name}\n\nUse ${name}.`,
     }));
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
-    mocks.hermesBridgeFilePreview.mockResolvedValue(null);
+    // Mirrors the Rust image_preview_data_url: an image path yields a
+    // data url, anything else null. Feature 19's structured image.attach reads
+    // the bytes through this command at attach time.
+    mocks.hermesBridgeFilePreview.mockImplementation(async (path: string) =>
+      /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path)
+        ? "data:image/png;base64,cHJldmlldw=="
+        : null,
+    );
     mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
@@ -3214,8 +3231,13 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    // Scope to the composer editor by its label: a still-working restored
+    // session also renders the feature 06 steer input (another textbox), so a
+    // bare textbox query would be ambiguous here.
     await waitFor(() =>
-      expect(screen.getByRole("textbox").textContent).toBe(""),
+      expect(
+        screen.getByRole("textbox", { name: "Message June" }).textContent,
+      ).toBe(""),
     );
   });
 
@@ -3534,6 +3556,132 @@ describe("AgentWorkspace", () => {
       ),
     ).toBeInTheDocument();
     expect(mocks.explainAgentApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires a pending approval and explains when its runtime session is gone", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+    // The runtime that asked for the approval has ended: answering it makes the
+    // gateway reply 404 "Session not found" (the wire error the bridge builds).
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "approval.respond") {
+        return Promise.reject(
+          new Error(
+            'Hermes API returned 404 Not Found: {"detail":"Session not found"}',
+          ),
+        );
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-gone",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    // The event registered a "Needs you" row for this request.
+    expect(
+      pendingActionStore
+        .openRecords()
+        .some((record) => record.requestId === "approval-gone"),
+    ).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Approve once" }));
+
+    // The request can never be answered now, so June retires the dead-end card
+    // (the "Needs you" row and the inline prompt) instead of leaving a "Respond"
+    // that 404s. Before the fix this record lingered after the failed respond.
+    await waitFor(() =>
+      expect(
+        pendingActionStore
+          .openRecords()
+          .some((record) => record.requestId === "approval-gone"),
+      ).toBe(false),
+    );
+    // The raw "Hermes API returned 404 ... Session not found" wire error is
+    // never surfaced to the user.
+    expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
+  });
+
+  it("resumes the runtime to load usage when the cached session is gone", async () => {
+    const user = userEvent.setup();
+    let resumeCount = 0;
+    mocks.gatewayRequest.mockImplementation(
+      (method: string, params?: { session_id?: string }) => {
+        if (method === "session.resume") {
+          resumeCount += 1;
+          // First resume serves the send flow; the second is the usage retry
+          // after the cached runtime reports "session not found".
+          return Promise.resolve({
+            session_id: resumeCount === 1 ? "runtime-stale" : "runtime-fresh",
+          });
+        }
+        if (method === "session.usage") {
+          if (params?.session_id === "runtime-fresh") {
+            return Promise.resolve({
+              model: "zai-org-glm-5-2",
+              context_used: 100,
+              context_max: 1000,
+            });
+          }
+          return Promise.reject(new Error("session not found"));
+        }
+        return Promise.resolve({});
+      },
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    // Send into the existing session so it caches a (soon-stale) runtime id.
+    await user.type(screen.getByRole("textbox"), "do something long");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ session_id: "runtime-stale" }),
+      ),
+    );
+
+    // Opening Usage hits the stale runtime, gets "session not found", resumes
+    // for a fresh runtime, and retries — so the panel renders real metrics.
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Usage" }));
+
+    expect(await screen.findByText("zai-org-glm-5-2")).toBeInTheDocument();
+    expect(screen.getByText("100 / 1,000 (10%)")).toBeInTheDocument();
+    expect(resumeCount).toBe(2);
   });
 
   it("falls back to static copy when the explanation call fails", async () => {
@@ -4340,6 +4488,82 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  // SKIPPED while the Agent activity drawer's entry point is hidden
+  // (ACTIVITY_DRAWER_ENABLED=false in AgentWorkspace, parking the open-wrong-
+  // session bug). These two reach feature 14's artifacts timeline THROUGH the
+  // drawer toggle, which no longer renders. The artifacts section itself stays
+  // covered by agent-artifacts-section.test.tsx; un-skip when the flag flips back.
+  it.skip("shows a tool-touched file in the activity drawer's artifacts timeline and opens it in the preview flow", async () => {
+    const user = userEvent.setup();
+    const reportPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.scribe/hermes/workspace/timeline.md";
+    mocks.hermesBridgeFileText.mockResolvedValue("# Timeline\n\nBody.");
+
+    render(<AgentWorkspace />);
+    // Wait for the workspace (and the auto-selected existing session) to settle.
+    await screen.findByRole("button", { name: "Show agent activity" });
+
+    // Feed the SAME singleton store the live classify site feeds: a
+    // tool.complete that wrote a file under the selected session (session-1).
+    act(() => {
+      const event = classifyHermesEvent({
+        type: "tool.complete",
+        session_id: "session-1",
+        payload: { name: "write_file", path: reportPath },
+      });
+      hermesArtifactStore.record(event, "sandboxed");
+    });
+
+    // Open the activity drawer; its Artifacts section lists the file.
+    await user.click(
+      screen.getByRole("button", { name: "Show agent activity" }),
+    );
+    const artifacts = await screen.findByRole("region", { name: "Artifacts" });
+    expect(within(artifacts).getByText("timeline.md")).toBeInTheDocument();
+    // Sandboxed session => the path-safety label reads "sandboxed".
+    expect(within(artifacts).getByText(/sandbox/i)).toBeInTheDocument();
+
+    // Clicking the artifact routes into the EXISTING preview flow, which
+    // fetches the file text via the bridge command.
+    await user.click(
+      within(artifacts).getByRole("button", { name: /timeline\.md/i }),
+    );
+    await waitFor(() =>
+      expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath),
+    );
+  });
+
+  // SKIPPED: see the note above. Reaches the artifacts timeline through the
+  // hidden activity drawer toggle; un-skip when ACTIVITY_DRAWER_ENABLED is true.
+  it.skip("marks a failed file access as failed in the artifacts timeline", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    await screen.findByRole("button", { name: "Show agent activity" });
+
+    act(() => {
+      const event = classifyHermesEvent({
+        type: "tool.complete",
+        session_id: "session-1",
+        payload: {
+          name: "read_file",
+          path: "/root/secret.txt",
+          error: "permission denied",
+        },
+      });
+      hermesArtifactStore.record(event, "unrestricted");
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Show agent activity" }),
+    );
+    const artifacts = await screen.findByRole("region", { name: "Artifacts" });
+    const row = within(artifacts).getByRole("listitem");
+    expect(row).toHaveAttribute("data-action", "failed");
+    expect(within(row).getByText(/failed/i)).toBeInTheDocument();
+    // An unrestricted session's real path is labeled as such.
+    expect(within(row).getByText(/unrestricted/i)).toBeInTheDocument();
+  });
+
   it("lists every surfaced file behind the session bar files button", async () => {
     const user = userEvent.setup();
     const workspaceRoot =
@@ -4706,6 +4930,131 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
     );
+  });
+
+  it("attaches a dropped image to the session via image.attach and marks it attached", async () => {
+    // Feature 19: on submit, an imported image is sent to the session through
+    // the structured image.attach RPC, the chip flips to "Attached", and the
+    // attachment lands in the artifact timeline — without the base64 ever
+    // reaching the sanitized trace export.
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "what is in this image?");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
+        session_id: "runtime-session-1",
+        mime_type: "image/png",
+        data_base64: "cHJldmlldw==",
+      }),
+    );
+    // image.attach precedes prompt.submit for the same turn.
+    const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "image.attach",
+    );
+    const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(attachIndex).toBeGreaterThanOrEqual(0);
+    expect(submitIndex).toBeGreaterThan(attachIndex);
+
+    // The artifact timeline gets an "attached" image, keyed to the session.
+    await waitFor(() => {
+      const records = hermesArtifactStore.getRecordsForSession("session-1");
+      expect(
+        records.some(
+          (record) => record.action === "attached" && record.kind === "image",
+        ),
+      ).toBe(true);
+    });
+
+    // The sanitized trace export records the attach but NEVER the base64.
+    const trace = JSON.stringify(
+      hermesTraceBuffer.exportSanitizedTrace("session-1"),
+    );
+    expect(trace).toContain("image.attach");
+    expect(trace).not.toContain("cHJldmlldw==");
+    expect(trace).not.toContain("data_base64");
+  });
+
+  it("blocks the prompt and warns when an image attach fails", async () => {
+    // A failed image.attach must not silently send the prompt with a missing
+    // image: the send is blocked, the chip surfaces the failure, and the
+    // composer text is restored for a retry.
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "image.attach") {
+        return Promise.reject(new Error("attach exploded"));
+      }
+      return Promise.resolve({});
+    });
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith(
+        "tauri://drag-drop",
+        expect.any(Function),
+      ),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [
+          "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
+        ],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "edit this image");
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
+
+    // The attach was attempted and rejected; prompt.submit must NOT have run.
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method]) => method === "image.attach",
+        ),
+      ).toBe(true),
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method]) => method === "prompt.submit",
+      ),
+    ).toBe(false);
+    // The chip is restored with the failure visible.
+    expect(await screen.findByText("Couldn't attach")).toBeInTheDocument();
   });
 
   it("imports DOM-dropped files by uploading their bytes", async () => {
@@ -5738,5 +6087,204 @@ describe("AgentWorkspace", () => {
     expect(onBack).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect(onOpenProjects).toHaveBeenCalled();
+  });
+
+  // Feature 10: a model change must reach the LIVE session through Hermes
+  // command.dispatch (/model …), not just rewrite the default — and the UI must
+  // never claim the running session switched unless Hermes accepted it.
+  describe("active-session model switching (feature 10)", () => {
+    const toolCapableCatalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+
+    it("dispatches /model to the open session and confirms the switch", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      mocks.setVeniceModel.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Choose text model",
+      });
+      await user.click(
+        within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
+      );
+
+      // The model is overridden for this chat only and persisted on the bridge.
+      await waitFor(() =>
+        expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+          sessionId: "session-1",
+          model: "kimi-k2-6",
+        }),
+      );
+      // The global default is left untouched.
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+      // …AND the live session is switched via command.dispatch (/model …).
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+          session_id: "session-1",
+          command: "/model kimi-k2-6",
+        }),
+      );
+      expect(
+        await screen.findByText("Switched this session to Kimi K2.6."),
+      ).toBeInTheDocument();
+    });
+
+    it("changes only the default when no session is active and does not dispatch", async () => {
+      // Hero with a pending-new-session marker: no session is open, so the
+      // composer shows the model trigger without auto-creating a session.
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      mocks.setVeniceModel.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+
+      render(<AgentWorkspace />);
+
+      // Hero (no open session): the composer still carries the model trigger.
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Choose text model",
+      });
+      await user.click(
+        within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
+      );
+
+      await waitFor(() =>
+        expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+          "generation",
+          "kimi-k2-6",
+        ),
+      );
+      expect(
+        await screen.findByText(
+          "Default model updated. It applies to new sessions.",
+        ),
+      ).toBeInTheDocument();
+      // No live session, so nothing is dispatched to the gateway.
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+        "command.dispatch",
+        expect.anything(),
+      );
+    });
+
+    it("shows a failure notice and does not claim success when the dispatch is rejected", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      mocks.setVeniceModel.mockResolvedValue(undefined);
+      mocks.gatewayRequest.mockImplementation((method: string) => {
+        if (method === "command.dispatch") {
+          return Promise.reject(new Error("model switch refused"));
+        }
+        if (method === "session.resume") {
+          return Promise.resolve({ session_id: "runtime-session-1" });
+        }
+        return Promise.resolve({});
+      });
+      const user = userEvent.setup();
+
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Choose text model",
+      });
+      await user.click(
+        within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
+      );
+
+      expect(
+        await screen.findByText(
+          "Could not switch the running session. This chat will use the new model next time.",
+        ),
+      ).toBeInTheDocument();
+      // Never the success copy when Hermes rejected the switch.
+      expect(
+        screen.queryByText("Switched this session to Kimi K2.6."),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps tool-incapable models out of the picker for the agent", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: [
+          ...toolCapableCatalog,
+          {
+            provider: "venice",
+            id: "e2ee-no-tools",
+            name: "Enclave Mini",
+            modelType: "text",
+            privacy: "e2ee",
+            traits: ["e2ee"],
+            capabilities: [],
+          },
+        ],
+      });
+      const user = userEvent.setup();
+
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(
+        await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Choose text model",
+      });
+      // The tool-less model is filtered out everywhere, including the full
+      // catalog behind All models — the agent can never pick it.
+      await user.click(
+        within(dialog).getByRole("button", { name: "All models" }),
+      );
+      const panel = await screen.findByRole("group", {
+        name: "All text models",
+      });
+      expect(
+        within(panel).queryByRole("option", { name: /Enclave Mini/ }),
+      ).not.toBeInTheDocument();
+    });
   });
 });

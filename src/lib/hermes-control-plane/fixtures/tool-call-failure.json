@@ -1,0 +1,33 @@
+{
+  "name": "tool-call-failure",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A tool call that fails. Hermes reports the failure inside the tool.complete payload (status/error fields), so the frame still classifies as tool/complete, not error. Expected kind for every frame: tool.",
+  "frames": [
+    {
+      "type": "tool.start",
+      "session_id": "sess-tool-err",
+      "payload": {
+        "tool_call_id": "tc-2",
+        "name": "shell",
+        "arguments": { "command": "pnpm build" }
+      }
+    },
+    {
+      "type": "tool.progress",
+      "session_id": "sess-tool-err",
+      "payload": { "tool_call_id": "tc-2", "output": "compiling..." }
+    },
+    {
+      "type": "tool.complete",
+      "session_id": "sess-tool-err",
+      "payload": {
+        "tool_call_id": "tc-2",
+        "status": "error",
+        "error": "exit code 1",
+        "result": "TS2322: Type 'string' is not assignable to type 'number'."
+      }
+    }
+  ]
+}

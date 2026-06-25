@@ -1,0 +1,18 @@
+{
+  "name": "session-busy-4009",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "The 4009 'session busy' condition. CANONICALLY this is a JSON-RPC rejection (HermesGatewayError code 4009, detected by isSessionBusyError) returned to a mutating request such as prompt.submit while a turn is running, NOT an event notification. It therefore never flows through classifyHermesEvent on the response path. This fixture models the case where a gateway surfaces the same condition as an in-band error event so the classifier's error branch carries the 4009 code: expected kind error, code 4009. The replay test additionally documents the RPC-rejection path in a dedicated assertion.",
+  "frames": [
+    {
+      "type": "error",
+      "session_id": "sess-busy",
+      "payload": {
+        "message": "session busy",
+        "code": 4009,
+        "recoverable": true
+      }
+    }
+  ]
+}

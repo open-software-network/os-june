@@ -1,0 +1,20 @@
+{
+  "name": "gateway-disconnect-reconnect",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "The transport dropping and recovering. NOTE: real disconnect/reconnect is a WebSocket close handled by hermes-gateway.ts (onClose), not a classified gateway event. IF Hermes ever emits these as in-band frames they have no classifier branch today -> unsupported. gateway.ready (the post-reconnect handshake) DOES classify as lifecycle. Locked as honest current behavior; replay test asserts each frame is defined with a known kind and the bespoke types are unsupported with rawType set.",
+  "frames": [
+    {
+      "type": "gateway.disconnected",
+      "session_id": "sess-conn",
+      "payload": { "reason": "network change", "code": 1006 }
+    },
+    {
+      "type": "gateway.reconnecting",
+      "session_id": "sess-conn",
+      "payload": { "attempt": 1 }
+    },
+    { "type": "gateway.ready" }
+  ]
+}

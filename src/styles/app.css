@@ -1504,6 +1504,85 @@ input:focus-visible,
   color: var(--destructive) !important;
 }
 
+/* Sudo execution-mode line: a quiet inline note under the command, tinted by
+ * blast radius. Sandboxed stays neutral; unrestricted picks up the warm accent
+ * so the wider access reads at a glance. */
+.agent-sudo-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: fit-content;
+  margin-top: var(--sp-3) !important;
+  color: var(--muted-foreground) !important;
+  font-size: var(--fs-xs) !important;
+}
+
+.agent-sudo-mode[data-mode="unrestricted"] {
+  color: var(--warm-strong) !important;
+}
+
+/* Secret key label: "Key" eyebrow + monospace name (already redacted when it
+ * looks sensitive). */
+.agent-secret-key {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3) !important;
+  font-size: var(--fs-sm) !important;
+}
+
+.agent-secret-key > span {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-secret-key > code {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.agent-secret-form {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.agent-secret-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-secret-input {
+  width: 100%;
+  min-height: var(--control-md, 36px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  color: var(--foreground);
+  font: inherit;
+  /* Mono so the (masked) length reads consistently. */
+  font-family: var(--font-mono);
+}
+
+.agent-secret-input:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.agent-secret-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The reassurance line under the input — smaller and quieter than the body. */
+.agent-secret-note {
+  margin-top: 0 !important;
+  color: var(--muted-foreground) !important;
+  font-size: var(--fs-xs) !important;
+}
+
 .agent-safety-panel h3 {
   margin: 0;
   font-size: var(--fs-md);
@@ -1567,6 +1646,60 @@ input:focus-visible,
 
 .agent-user-turn-eyebrow svg {
   color: var(--muted-foreground);
+}
+
+/* Feature 07: the per-turn "Branch from here" control. Quiet by default and
+ * revealed on hover/focus so it doesn't clutter the transcript, mirroring the
+ * restraint of the tool-row affordances. The user turn right-aligns its bubble,
+ * so the actions row wraps full-width beneath and right-aligns to match. */
+.agent-user-turn {
+  flex-wrap: wrap;
+}
+
+.agent-turn-actions {
+  display: flex;
+  width: 100%;
+  margin-top: var(--sp-1);
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+
+.agent-user-turn .agent-turn-actions {
+  justify-content: flex-end;
+}
+
+.agent-user-turn:hover .agent-turn-actions,
+.agent-user-turn:focus-within .agent-turn-actions,
+.agent-assistant-turn:hover .agent-turn-actions,
+.agent-assistant-turn:focus-within .agent-turn-actions {
+  opacity: 1;
+}
+
+.agent-turn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-turn-action:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.agent-turn-action:disabled {
+  /* Keep it visible-but-inert so the explanatory title still reaches the user
+   * (a fully hidden control can't explain why it's unavailable). */
+  cursor: default;
+  opacity: 0.55;
 }
 
 .agent-assistant-empty {
@@ -1785,6 +1918,45 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
+/* Feature 06: the "Steering" system item recording a mid-run instruction. Quiet
+ * one-line row in the same muted register as the context-compaction summary, so
+ * a redirect reads as a beat in the transcript rather than a message bubble. */
+.agent-steering-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: min(760px, 100%);
+  padding: 0 var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-lg);
+}
+
+.agent-steering-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.agent-steering-label {
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+
+.agent-steering-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-steering-item time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-lg);
+}
+
 /* Expanded summary reads at body size, same as the row above it. */
 .agent-context-summary > .agent-markdown {
   overflow: auto;
@@ -1796,6 +1968,44 @@ input:focus-visible,
 
 .agent-context-summary:not([open]) > .agent-markdown {
   display: none;
+}
+
+/* Context-compaction dialog (feature 08). Confirmation copy, then a success or
+   error body, inside the shared .dialog-card. */
+.agent-compact-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.agent-compact-explainer {
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+}
+
+.agent-compact-caveat {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.agent-compact-success {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.agent-compact-success-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.agent-compact-savings {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
 }
 
 .agent-hermes-note {
@@ -2445,6 +2655,961 @@ input:focus-visible,
 .agent-session-files[aria-pressed="true"] svg {
   color: var(--muted-foreground);
 }
+
+/* Session usage / context / cost panel (feature 09). A centered modal over the
+ * session, modeled on the command palette: scrim + frosted popover card. */
+.agent-usage-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-7) var(--sp-6);
+  background: var(--scrim);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.agent-usage-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(80vh, 560px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-usage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-usage-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.agent-usage-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.agent-usage-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-5);
+  overflow-y: auto;
+}
+
+.agent-usage-body[aria-busy="true"] {
+  opacity: 0.6;
+}
+
+.agent-usage-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-3) var(--sp-5);
+  margin: 0;
+}
+
+.agent-usage-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+  min-width: 0;
+}
+
+.agent-usage-metric dt {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-usage-metric dd {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+[data-unavailable="true"] {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.agent-usage-context {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.agent-usage-context-head,
+.agent-usage-cost-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.agent-usage-context-label,
+.agent-usage-cost-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.agent-usage-context-reading,
+.agent-usage-cost-value {
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-usage-bar {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  overflow: hidden;
+}
+
+.agent-usage-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+}
+
+.agent-usage-cost {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-usage-cost-value {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.agent-usage-cost-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-usage-tool-costs {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.agent-usage-tool-costs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.agent-usage-tool-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.agent-usage-tool-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-usage-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  font-size: var(--fs-md);
+}
+
+.agent-usage-retry {
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+/* Feature 04: the global "Needs you" tray. A floating card pinned to the
+ * top-right of the workspace so outstanding actions across every session stay
+ * in view without stealing the whole header. Sits above the session chrome. */
+.agent-pending-tray {
+  position: absolute;
+  /* Stacks below the feature-11 activity toggle (a ~32px pill pinned to the
+   * top-right corner) so the two top-right surfaces never overlap. */
+  top: calc(var(--sp-4) + var(--sp-12));
+  right: var(--sp-4);
+  z-index: 20;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(70vh, 460px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-pending-tray-header {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-pending-tray[data-collapsed="true"] .agent-pending-tray-header {
+  border-bottom: none;
+}
+
+.agent-pending-tray-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-pending-tray-title {
+  flex: 1;
+  text-align: left;
+}
+
+.agent-pending-tray-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-pending-tray-count-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.agent-pending-tray-list {
+  margin: 0;
+  padding: var(--sp-2);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  overflow-y: auto;
+}
+
+.agent-pending-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+/* A stale row (unconfirmed after a reconnect) stays visible but reads as
+ * lower-confidence — dimmed and dashed rather than hidden. */
+.agent-pending-row[data-stale="true"] {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+.agent-pending-row-icon {
+  display: inline-flex;
+  color: var(--muted-foreground);
+  margin-top: var(--sp-px);
+}
+
+.agent-pending-row-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.agent-pending-row-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.agent-pending-row-type {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.agent-pending-row-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-pending-row-mode[data-mode="unrestricted"] {
+  color: var(--warm-strong);
+}
+
+.agent-pending-row-stale {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.agent-pending-row-session {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.agent-pending-row-title {
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-pending-row-age {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-pending-row-desc {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.agent-pending-row-action {
+  align-self: center;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-pending-row-action:hover {
+  background: var(--accent);
+}
+
+/* Feature 11: the floating toggle that opens the activity drawer. Pinned to
+ * the top-right corner; the "Needs you" tray (also top-right) stacks just
+ * below it so the two never overlap. Hidden while the drawer is open (the
+ * drawer itself opens top-left, clear of the tray). */
+.agent-activity-toggle {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  z-index: 19;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-pill);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-activity-toggle:hover {
+  background: var(--accent);
+}
+
+.agent-activity-toggle-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Feature 11: the Agent activity drawer — a toggled observability panel that
+ * lists what every session's agent is doing. Shares the tray's popover look,
+ * but is anchored just below the workspace header so it can coexist with the
+ * "Needs you" tray (which floats top-right and only appears when blocked). */
+.agent-activity-drawer {
+  position: absolute;
+  top: var(--sp-4);
+  left: var(--sp-4);
+  z-index: 20;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(70vh, 520px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-activity-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agent-activity-drawer-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.agent-activity-drawer-title {
+  flex: 1;
+}
+
+.agent-activity-drawer-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-activity-drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-1);
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.agent-activity-drawer-close:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.agent-activity-drawer-state {
+  margin: 0;
+  padding: var(--sp-5) var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.agent-activity-drawer-list {
+  margin: 0;
+  padding: var(--sp-2);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  overflow-y: auto;
+}
+
+.agent-activity-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+/* A finished or errored row reads as past-tense — slightly dimmed so live
+ * sessions hold the eye. */
+.agent-activity-row[data-phase="complete"] {
+  opacity: 0.75;
+}
+
+.agent-activity-row-icon {
+  display: inline-flex;
+  margin-top: var(--sp-px);
+  color: var(--muted-foreground);
+}
+
+.agent-activity-row-icon[data-phase="running"] {
+  color: var(--primary);
+}
+
+.agent-activity-row-icon[data-phase="waiting"] {
+  color: var(--warm-strong);
+}
+
+.agent-activity-row-icon[data-phase="error"] {
+  color: var(--destructive);
+}
+
+.agent-activity-row-icon[data-phase="complete"] {
+  color: var(--success);
+}
+
+.agent-activity-row-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.agent-activity-row-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.agent-activity-row-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-row-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-activity-row-mode[data-mode="unrestricted"] {
+  color: var(--warm-strong);
+}
+
+.agent-activity-row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-activity-row-phase {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-activity-row-phase[data-phase="waiting"] {
+  color: var(--warm-strong);
+}
+
+.agent-activity-row-phase[data-phase="error"] {
+  color: var(--destructive);
+}
+
+.agent-activity-row-tool {
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 14ch;
+}
+
+.agent-activity-row-pending,
+.agent-activity-row-subagents,
+.agent-activity-row-age {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-activity-row-pending {
+  color: var(--warm-strong);
+}
+
+.agent-activity-row-model {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.agent-activity-row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+.agent-activity-row-action:hover {
+  background: var(--accent);
+}
+
+.agent-activity-row-action-stop:hover {
+  color: var(--destructive);
+}
+
+/* ─── Feature 12: background subagent watch ────────────────────────────────
+ * The "Background work" sub-list nested under a parent session row. Spans the
+ * full row width (the parent row is a 3-column grid) and indents so the
+ * subagents read as children of the session. Kept distinct from feature 14's
+ * artifact section. */
+.agent-activity-subagents {
+  grid-column: 1 / -1;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) 0 0 var(--sp-2);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-activity-subagent {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: var(--sp-2);
+}
+
+.agent-activity-subagent[data-phase="complete"] {
+  opacity: 0.75;
+}
+
+.agent-activity-subagent-icon {
+  display: inline-flex;
+  margin-top: var(--sp-px);
+  color: var(--muted-foreground);
+}
+
+.agent-activity-subagent-icon[data-phase="error"] {
+  color: var(--destructive);
+}
+
+.agent-activity-subagent-icon[data-phase="complete"] {
+  color: var(--success);
+}
+
+.agent-activity-subagent-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+}
+
+.agent-activity-subagent-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.agent-activity-subagent-task {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-subagent-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-activity-subagent-status {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-activity-subagent-status[data-phase="error"] {
+  color: var(--destructive);
+}
+
+.agent-activity-subagent-status[data-phase="blocked"] {
+  color: var(--warm-strong);
+}
+
+.agent-activity-subagent-tool {
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 14ch;
+}
+
+.agent-activity-subagent-age {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-activity-subagent-summary {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Feature 13: per-subagent stop control. Sits in feature 12's reserved actions
+ * slot, sized down from the parent row's stop button so it reads as a child
+ * affordance. */
+.agent-activity-subagent-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.agent-activity-subagent-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+.agent-activity-subagent-stop:hover {
+  color: var(--destructive);
+}
+
+/* The optimistic "stopping" overlay: the status reads muted until a terminal
+ * event reconciles the row. */
+.agent-activity-subagent-status[data-stopping="true"] {
+  color: var(--muted-foreground);
+}
+
+/* ---- Feature 14: Artifacts (files touched) timeline ----
+ * A distinct region below the session list. Reuses the drawer's tokens so it
+ * reads as part of the same surface; rows are buttons routing into the
+ * existing file preview/download flow. */
+.agent-artifacts-section {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-artifacts-header {
+  padding: var(--sp-3) var(--sp-4) var(--sp-1);
+}
+
+.agent-artifacts-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.agent-artifacts-title {
+  flex: 1;
+}
+
+.agent-artifacts-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-artifacts-list {
+  margin: 0;
+  padding: var(--sp-2);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  overflow-y: auto;
+  max-height: 200px;
+}
+
+.agent-artifacts-row {
+  border-radius: var(--r-md);
+}
+
+.agent-artifacts-button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-artifacts-button:hover {
+  background: var(--accent);
+  border-color: var(--border-subtle);
+}
+
+.agent-artifacts-icon {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+
+/* A failed access reads in the destructive hue so it stands apart from the
+ * files that were actually written/read. */
+.agent-artifacts-row[data-action="failed"] .agent-artifacts-icon,
+.agent-artifacts-action[data-action="failed"] {
+  color: var(--destructive);
+}
+
+.agent-artifacts-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-px);
+}
+
+.agent-artifacts-name {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifacts-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-artifacts-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.agent-artifacts-safety {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+/* Path-safety hues mirror the mode pill on the session rows: an unrestricted
+ * real path warms, a remote location stays muted, a sandboxed copy is calm. */
+.agent-artifacts-safety[data-safety="unrestricted"] {
+  color: var(--warm-strong);
+}
+
+.agent-artifacts-safety[data-safety="sandboxed"] {
+  color: var(--success);
+}
+
 /* The whole thinking layer sits at body size — muted color (not a size
  * step-down) is what separates it from the answer. */
 .agent-reasoning {
@@ -2747,6 +3912,82 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+/* Feature 06: the steer input shown above the composer box while June works.
+ * Centered on the same chat measure as the notice/box so it reads as part of
+ * the composer column, and quiet enough not to compete with the Stop control
+ * in the box below. */
+.agent-composer-steer {
+  width: fit-content;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin: 0 auto var(--sp-2);
+}
+
+.agent-composer-steer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--muted) 68%, var(--card));
+}
+
+.agent-composer-steer-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-composer-steer-input {
+  flex: 1 1 auto;
+  min-width: 18ch;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.agent-composer-steer-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.agent-composer-steer-input:focus {
+  outline: none;
+}
+
+.agent-composer-steer-send {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--brand);
+  color: var(--primary-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-steer-send:hover {
+  background: color-mix(in oklch, var(--brand) 88%, black);
+}
+
+.agent-composer-steer-send:disabled {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  cursor: default;
+}
+
+.agent-composer-steer-error {
+  margin: var(--sp-2) 0 0;
+  padding: 0 var(--sp-3);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
 .agent-composer-notice-action {
   flex-wrap: wrap;
   justify-content: center;
@@ -2792,6 +4033,285 @@ input:focus-visible,
 
 .agent-composer[data-drop-active="true"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Unsupported Hermes event notice: a quiet, recoverable banner at the top of
+ * the timeline. Uses the destructive-soft surface (same family as other
+ * attention states) without shouting — the event is recoverable, not fatal. */
+.agent-unsupported-notice {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-start;
+  margin: 0 auto var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  border: 1px solid color-mix(in oklch, var(--destructive) 28%, transparent);
+  border-radius: var(--r-md);
+  background: var(--destructive-soft);
+  color: var(--foreground);
+}
+
+.agent-unsupported-notice-icon {
+  display: flex;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--destructive);
+}
+
+.agent-unsupported-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-unsupported-notice-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.agent-unsupported-notice-text {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+}
+
+.agent-unsupported-notice-dev {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, var(--card));
+  font-size: var(--fs-sm);
+}
+
+.agent-unsupported-notice-dev > div {
+  display: contents;
+}
+
+.agent-unsupported-notice-dev dt {
+  color: var(--muted-foreground);
+}
+
+.agent-unsupported-notice-dev dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.agent-unsupported-notice-dev code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+
+.agent-unsupported-notice-dev pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-unsupported-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.agent-unsupported-notice-action {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.agent-unsupported-notice-action:hover {
+  background: var(--accent);
+}
+
+.agent-unsupported-notice-action:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 1px;
+}
+
+/* Dev/debug raw Hermes trace panel (feature 15). A bottom-anchored overlay
+ * pinned to the viewport; never ships to users (gated on import.meta.env.DEV). */
+.hermes-trace-panel {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 60%;
+  padding: var(--sp-4) var(--sp-5);
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: 0 -8px 24px
+    color-mix(in oklch, var(--foreground) 12%, transparent);
+}
+
+.hermes-trace-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.hermes-trace-panel-title {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.hermes-trace-panel-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: flex-end;
+}
+
+.hermes-trace-panel-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.hermes-trace-panel-field select {
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.hermes-trace-panel-button {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.hermes-trace-panel-button:hover {
+  background: var(--accent);
+}
+
+.hermes-trace-panel-button:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 1px;
+}
+
+.hermes-trace-panel-close {
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.hermes-trace-panel-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.hermes-trace-panel-empty {
+  margin: var(--sp-2) 0;
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
+}
+
+.hermes-trace-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.hermes-trace-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+}
+
+.hermes-trace-row[data-unsupported="true"] {
+  border-color: color-mix(in oklch, var(--destructive) 36%, transparent);
+  background: var(--destructive-soft);
+}
+
+.hermes-trace-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+
+.hermes-trace-row-direction {
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-xs);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  text-transform: capitalize;
+}
+
+.hermes-trace-row-type {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.hermes-trace-row-kind {
+  color: var(--muted-foreground);
+}
+
+.hermes-trace-row-time {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.hermes-trace-row-message {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--destructive);
+}
+
+.hermes-trace-row-payload {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .agent-composer[data-hidden="true"] {
@@ -3250,6 +4770,27 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Structured attach status (feature 19): a small word after the filename for
+ * the terminal attached/failed states. Imported/pending show nothing. */
+.agent-attachment-status {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.agent-attachment-status[data-attach-status="failed"] {
+  color: var(--destructive);
+}
+
+.agent-attachment-status[data-attach-status="attached"] {
+  color: var(--success);
+}
+
+/* A failed attach tints the chip so the row reads as needing attention. */
+.agent-attachment-chip[data-attach-status="failed"] {
+  background: var(--destructive-soft);
 }
 
 .agent-attachment-chip button {
@@ -7570,6 +9111,55 @@ input:focus-visible,
   margin-top: var(--sp-5);
 }
 
+/* Feature 07: the calm "Branched from <title>" confirmation. Neutral-toned
+ * (this is reassurance, not an error) and laid out like the error banner so
+ * the two read as a consistent family. */
+.agent-main > .agent-branched-banner {
+  margin-top: var(--sp-5);
+}
+
+.agent-branched-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.agent-branched-banner svg {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.agent-branched-banner p {
+  margin: 0;
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-branched-banner button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.agent-branched-banner button:hover {
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
 .agent-error-banner {
   display: flex;
   align-items: center;
@@ -8205,6 +9795,434 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-md);
   line-height: 1.5;
+}
+
+/* Installed skills (Hermes admin surface). A native settings section: reuses
+ * the settings-group / settings-card chrome, with a purpose-built toolbar,
+ * category chips, lifecycle banner, and skill rows. Tokens only — matches the
+ * agent capability list visually while reading as plain settings. */
+.installed-skills-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.installed-skills-mode-note {
+  color: var(--muted-foreground);
+}
+
+.installed-skills-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.installed-skills-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.installed-skills-search-icon {
+  position: absolute;
+  left: var(--sp-3);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.installed-skills-search input {
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.installed-skills-search input:focus {
+  border-color: var(--ring-focus);
+}
+
+.installed-skills-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.installed-skills-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.installed-skills-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.installed-skills-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-px) var(--sp-3);
+  min-height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.installed-skills-chip[aria-pressed="true"] {
+  background: var(--secondary);
+  color: var(--foreground);
+  border-color: transparent;
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+.installed-skills-chip-count {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.installed-skills-chip[aria-pressed="true"] .installed-skills-chip-count {
+  color: var(--foreground);
+}
+
+.installed-skills-inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.installed-skills-body {
+  padding: 0 var(--sp-5);
+}
+
+.installed-skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.installed-skill-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: start;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.installed-skill-row:last-child {
+  border-bottom: 0;
+}
+
+.installed-skill-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.installed-skill-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.installed-skill-name {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.installed-skill-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.installed-skill-source[data-source="bundled"] {
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+  color: var(--foreground);
+}
+
+.installed-skill-source[data-source="hub"] {
+  background: color-mix(in oklch, var(--ring-focus) 22%, transparent);
+  color: var(--foreground);
+}
+
+.installed-skill-source[data-source="external"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.installed-skill-version {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.installed-skill-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.installed-skill-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.installed-skill-description-muted {
+  font-style: italic;
+}
+
+.installed-skill-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.installed-skill-meta-item {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installed-skill-restriction {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+}
+
+.installed-skill-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.installed-skill-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-top: 1px;
+}
+
+.installed-skill-open {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.installed-skill-open:hover {
+  color: var(--foreground);
+  background: var(--surface-subtle);
+}
+
+.installed-skill-toggle {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.installed-skill-timing {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* Lifecycle banner + durable notifications. Three tones from existing tokens. */
+.installed-skills-lifecycle {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.installed-skills-lifecycle[data-tone="warning"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.installed-skills-lifecycle[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.installed-skills-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.installed-skills-lifecycle[data-tone="warning"]
+  .installed-skills-lifecycle-eyebrow {
+  color: var(--warm-strong);
+}
+
+.installed-skills-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.installed-skills-notifications {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+}
+
+.installed-skills-notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.installed-skills-notification[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.installed-skills-notification-text {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.installed-skills-notification-dismiss {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.installed-skills-notification-dismiss:hover {
+  color: var(--foreground);
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+/* Empty / error / loading states. */
+.installed-skills-empty,
+.installed-skills-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+}
+
+.installed-skills-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.installed-skills-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.installed-skills-empty-description {
+  margin: 0;
+  max-width: 360px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.installed-skills-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.installed-skill-skeleton {
+  grid-template-columns: 1fr;
+}
+
+.installed-skill-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.installed-skill-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
+.installed-skill-skeleton-line + .installed-skill-skeleton-line {
+  width: 70%;
 }
 
 /* Dictionary toolbar — small search left (reuses .folders-search), primary

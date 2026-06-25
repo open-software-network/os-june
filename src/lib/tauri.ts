@@ -1105,6 +1105,16 @@ export async function stopHermesBridge() {
   return invoke<HermesBridgeStatus>("stop_hermes_bridge");
 }
 
+/** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
+ * window. `unrestricted` mirrors the session's mode so the debug session runs
+ * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */
+export async function openHermesTuiDebug(input: {
+  sessionId: string;
+  unrestricted: boolean;
+}) {
+  return invoke<void>("open_hermes_tui_debug", { request: input });
+}
+
 export async function listNotes(folderId?: string) {
   return invoke<ListNotesResponse>("list_notes", { request: { folderId } });
 }

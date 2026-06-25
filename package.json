@@ -19,6 +19,8 @@
     "test:rust:coverage": "cargo llvm-cov --manifest-path src-tauri/Cargo.toml --all-targets --html --output-dir src-tauri/target/llvm-cov/html",
     "test:scribe-api": "cd scribe-api && cargo test --all-targets --all-features --locked -- --test-threads=1",
     "test:scribe-api:coverage": "cd scribe-api && cargo llvm-cov --workspace --all-features --html --output-dir target/llvm-cov/html",
+    "test:hermes-smoke": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-smoke.ts",
+    "hermes:upgrade-check": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-upgrade-check.ts",
     "version:bump": "node scripts/bump-version.mjs",
     "lint": "tsc --noEmit",
     "format": "prettier --check \"src/**/*.{ts,tsx,css}\" \"src-tauri/tauri*.conf.json\" \"package.json\" \"tsconfig.json\" \"vite.config.ts\" \"index.html\" \"README.md\""

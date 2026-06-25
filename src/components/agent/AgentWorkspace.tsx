@@ -2,6 +2,8 @@ import { listen } from "@tauri-apps/api/event";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
+import { IconBolt } from "central-icons/IconBolt";
+import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
@@ -19,6 +21,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
 import { IconAnonymous } from "central-icons/IconAnonymous";
+import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCameraSparkle } from "central-icons/IconCameraSparkle";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
@@ -27,11 +30,13 @@ import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
+import { IconCheckCircle2 } from "central-icons/IconCheckCircle2";
 import { IconConcise } from "central-icons/IconConcise";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconGauge } from "central-icons/IconGauge";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconHistory } from "central-icons/IconHistory";
@@ -61,6 +66,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { BackButton } from "../ui/BackButton";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -91,6 +97,7 @@ import {
   listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
+  openHermesTuiDebug,
   osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
@@ -144,6 +151,56 @@ import {
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
 import {
+  classifyHermesEvent,
+  createHermesMethods,
+  hermesModeFor,
+  isHermesFeatureSupported,
+  isSensitiveKey,
+  type HermesMode,
+} from "../../lib/hermes-control-plane";
+import {
+  attachImageToSession,
+  attachmentStateFrom,
+  pendingImageAttachments,
+  type HermesAttachmentState,
+} from "../../lib/hermes-image-attach";
+import {
+  parseSessionUsage,
+  type SessionUsage,
+} from "../../lib/hermes-session-usage";
+import {
+  parseCompressSessionResult,
+  type CompressSessionResult,
+} from "../../lib/hermes-session-compress";
+import {
+  isBranchableMessageId,
+  parseBranchSessionResult,
+  type BranchSessionResult,
+} from "../../lib/hermes-session-branch";
+import {
+  normalizeSteerText,
+  steerErrorNotice,
+  steeringLiveEvent,
+} from "../../lib/hermes-session-steer";
+import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
+import { pendingActionStore } from "../../lib/hermes-pending-actions";
+import { hermesActivityStore } from "../../lib/hermes-activity-store";
+import {
+  hermesArtifactStore,
+  // The store's record shape collides by name with this file's local
+  // `AgentArtifact` (the file-viewer card), so alias it.
+  type AgentArtifact as TimelineArtifact,
+} from "../../lib/hermes-artifact-store";
+import { SessionUsagePanel } from "./SessionUsagePanel";
+import { PendingActionTray } from "./PendingActionTray";
+import {
+  AgentActivityDrawer,
+  AgentArtifactsSection,
+} from "./AgentActivityDrawer";
+import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
+import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
+import { HermesTracePanel } from "./HermesTracePanel";
+import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
@@ -151,6 +208,7 @@ import {
   type ModelPrivacyBadge,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
+import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import {
   contextLabel,
@@ -200,6 +258,10 @@ import {
   sessionUnrestricted,
 } from "../../lib/agent-session-modes";
 import {
+  HERMES_TUI_DEBUG_WARNING,
+  hermesTuiDebugAvailable,
+} from "../../lib/hermes-tui-debug";
+import {
   AGENT_CLI_ACCESS_ENABLED_MESSAGE,
   hasAgentCliAccessRequest,
   stripAgentCliAccessRequest,
@@ -242,6 +304,19 @@ const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
 // so the match is stable. Other errors (downloads, renames…) have no single
 // retryable action, so they only offer dismiss.
 const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
+
+// A pending request (approval/sudo/secret/clarify) can only be answered by the
+// runtime process that asked for it. When that runtime ends, the session's data
+// still loads, but the gateway answers "Session not found" on respond — the
+// request is now permanently unanswerable. Every respond handler treats this as
+// terminal: it retires the dead-end card and shows SESSION_GONE_MESSAGE rather
+// than leaking the raw "Hermes API returned 404 ... Session not found" error.
+const SESSION_GONE_MESSAGE =
+  "This session has ended, so the request can no longer be answered.";
+
+function isSessionGoneError(message: string): boolean {
+  return message.toLowerCase().includes("session not found");
+}
 
 // Dev-tools response gallery handle. Registered at module scope so
 // __agentGallery() exists from app launch — registering it inside the component
@@ -695,7 +770,25 @@ type AgentArtifact = {
 
 type AgentAttachment = ImportedHermesFile & {
   id: string;
+  /** Structured attach status (feature 19). Tracks whether this import has been
+   * sent to the model via image.attach: imported (ready) → attached (acked) →
+   * or failed. Carries file refs only, never the image bytes. Files stay
+   * `imported` (they only ride along as a path in the prompt). */
+  attach: HermesAttachmentState;
 };
+
+/** Thrown when a structured image attach fails so the prompt is NOT sent with a
+ * missing image (feature 19). Carries the attachments with their failed status
+ * so submit()'s catch can restore the chips showing what didn't go through. */
+class AttachBlockedError extends Error {
+  constructor(
+    message: string,
+    readonly attachments: AgentAttachment[],
+  ) {
+    super(message);
+    this.name = "AttachBlockedError";
+  }
+}
 
 type PreparedComposerSubmission = {
   displayContent: string;
@@ -1147,6 +1240,27 @@ export function AgentWorkspace({
   // in the composer notice slot until dismissed by the next send.
   const [issueReportNotice, setIssueReportNotice] =
     useState<AgentWorkspaceNotice | null>(null);
+  // Honest result of the last model switch (feature 10): scoped to the session
+  // it acted on so it survives background refreshes and disappears when the
+  // user moves to another conversation. A null sessionId means it reports a
+  // default-only change shown on the hero.
+  const [modelSwitchNotice, setModelSwitchNotice] = useState<{
+    message: string;
+    sessionId: string | null;
+  } | null>(null);
+  // Feature 07: after a successful fork, the banner that tells the user the
+  // freshly-opened session was branched from another. Keyed by the NEW
+  // session's id so it shows only while that session is selected, then clears
+  // itself once they navigate away.
+  const [branchedNotice, setBranchedNotice] = useState<{
+    sessionId: string;
+    sourceTitle: string;
+  } | null>(null);
+  // Which message a branch is currently in flight for, so its action shows a
+  // disabled/working state and double-clicks can't fork twice.
+  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(
+    null,
+  );
   const [bridge, setBridge] = useState<HermesBridgeStatus>({
     running: false,
   });
@@ -1315,6 +1429,13 @@ export function AgentWorkspace({
   const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [artifactPanel, setArtifactPanel] =
     useState<AgentArtifactPanelState | null>(null);
+  // The session whose usage/cost panel is open, or null. Self-contained for
+  // feature 09; feature 11's activity drawer will later host the same panel.
+  const [usagePanelSessionId, setUsagePanelSessionId] = useState<string | null>(
+    null,
+  );
+  // The session whose context-compaction dialog is open, or null (feature 08).
+  const [compactSessionId, setCompactSessionId] = useState<string | null>(null);
   // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
   // the conversation's own artifacts so the viewer can be exercised at will.
   const [devArtifacts, setDevArtifacts] = useState<AgentArtifact[]>([]);
@@ -1323,6 +1444,14 @@ export function AgentWorkspace({
   >({});
   const [clarifySubmitting, setClarifySubmitting] = useState<
     Record<string, string>
+  >({});
+  // Sudo records which choice (approve/deny) is in flight per request id;
+  // secret records only that a submit is in flight (NEVER the value).
+  const [sudoSubmitting, setSudoSubmitting] = useState<
+    Record<string, "approve" | "deny">
+  >({});
+  const [secretSubmitting, setSecretSubmitting] = useState<
+    Record<string, true>
   >({});
   // Whether "Agent CLI access" (Settings, Agent tab) is on — drives the
   // in-chat request card June can raise via its soul token. undefined until
@@ -1664,6 +1793,11 @@ export function AgentWorkspace({
         return next;
       });
       clearSessionActivity(sessionId);
+      // Feature 11: a deleted session has no activity to show, so drop its row
+      // from the activity drawer's store as well.
+      hermesActivityStore.clearSession(sessionId);
+      // Feature 14: likewise drop its artifact timeline.
+      hermesArtifactStore.clearSession(sessionId);
       sessionGatewayUnlistenRef.current.get(sessionId)?.();
       liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
       setLiveEvents(liveEventsRef.current);
@@ -1782,6 +1916,176 @@ export function AgentWorkspace({
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
       : null;
+  // The model-switch notice (feature 10) shows on the session it acted on; a
+  // null sessionId is the default-only notice, shown while no session is open.
+  const visibleModelSwitchNotice =
+    modelSwitchNotice &&
+    modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
+      ? modelSwitchNotice.message
+      : null;
+  // Unsupported Hermes events for the selected session surface a generic,
+  // recoverable notice (and sanitized dev details). Subscribing to the store's
+  // version re-derives the notice whenever a new unsupported frame lands.
+  const unsupportedStoreVersion = useSyncExternalStore(
+    unsupportedEventStore.subscribe,
+    unsupportedEventStore.getVersion,
+    unsupportedEventStore.getVersion,
+  );
+  const unsupportedNotice = useMemo(
+    () => unsupportedEventStore.activeNotice(selectedHermesSessionId),
+    // `unsupportedStoreVersion` is the change signal; the lookup reads live state.
+    [unsupportedStoreVersion, selectedHermesSessionId],
+  );
+  // Feature 04: the global "Needs you" tray. Subscribing to the store's version
+  // re-derives the open rows whenever an action is recorded or resolved; the
+  // tray is one top-level surface visible across every session.
+  const pendingActionsVersion = useSyncExternalStore(
+    pendingActionStore.subscribe,
+    pendingActionStore.getVersion,
+    pendingActionStore.getVersion,
+  );
+  const pendingActionRecords = useMemo(
+    () => pendingActionStore.openRecords(),
+    // `pendingActionsVersion` is the change signal; the read returns live rows.
+    [pendingActionsVersion],
+  );
+  // Resolve a session id to its display title for a tray row, falling back to
+  // the raw id when the session isn't in the loaded list (unknown title must
+  // never crash or blank the row).
+  const titleForPendingSession = useCallback(
+    (sessionId: string) =>
+      hermesSessionItems.find((session) => session.id === sessionId)?.title,
+    [hermesSessionItems],
+  );
+  // Clicking a tray row opens the owning session and best-effort focuses the
+  // inline card for that request. Selecting the session reuses the same recipe
+  // the deep-link path uses; the scroll is deferred a frame so the transcript
+  // for the newly-selected session has mounted. If the exact card isn't found
+  // (e.g. not yet rendered), the transcript still auto-scrolls to the latest
+  // turn where a fresh pending action lives — see the limitation note.
+  const handleOpenPendingAction = useCallback(
+    ({ sessionId, requestId }: { sessionId: string; requestId: string }) => {
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
+      setActivePanel("chat");
+      selectedHermesSessionIdRef.current = sessionId;
+      setSelectedHermesSessionId(sessionId);
+      setSelectedTaskId(undefined);
+      // Defer past this render + the transcript mount so the card exists.
+      window.requestAnimationFrame(() => {
+        const card = document.querySelector(
+          `[data-pending-request="${CSS.escape(requestId)}"]`,
+        );
+        if (card) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      });
+    },
+    [],
+  );
+
+  // Feature 11: the Agent activity drawer. Subscribing to the activity store's
+  // version re-derives the rows whenever any session's activity changes; the
+  // drawer is one toggled, top-level surface that shows every session at once.
+  //
+  // TEMPORARILY HIDDEN: the drawer's "open session" routes by the row's id,
+  // which is the ephemeral runtime session id, not the durable stored id, so it
+  // opens the wrong session (or none). Until that runtime->stored resolution is
+  // fixed, the entry-point toggle is gated off below. The whole feature (drawer,
+  // subagent watch, stop, artifacts timeline) stays mounted and tested; flip
+  // this flag back to true to restore it.
+  const ACTIVITY_DRAWER_ENABLED = false;
+  const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
+  const activityStoreVersion = useSyncExternalStore(
+    hermesActivityStore.subscribe,
+    hermesActivityStore.getVersion,
+    hermesActivityStore.getVersion,
+  );
+  const activityRecords = useMemo(
+    () => hermesActivityStore.getRecords(),
+    // `activityStoreVersion` is the change signal; the read returns live rows.
+    [activityStoreVersion],
+  );
+  // The store only knows the count once a session has reported activity; treat a
+  // never-touched store as "loading" so the very first paint shows a spinner
+  // copy rather than the empty state flashing before any event lands.
+  const activityStatus: "loading" | "ready" =
+    activityStoreVersion === 0 ? "loading" : "ready";
+  // Open a session from a drawer row: reuse the same select recipe the tray's
+  // open-action uses (clear new-session mode, switch panel + selection).
+  const openSessionFromDrawer = useCallback((sessionId: string) => {
+    newSessionModeRef.current = false;
+    setNewSessionMode(false);
+    setActivePanel("chat");
+    selectedHermesSessionIdRef.current = sessionId;
+    setSelectedHermesSessionId(sessionId);
+    setSelectedTaskId(undefined);
+  }, []);
+  // Drawer Steer routes into feature 06's live steer flow: open the session and
+  // focus the composer's steer input (the `ComposerSteerInput` that calls
+  // `steerActiveSession`). The drawer only offers Steer for sessions that are
+  // actually steerable (see `canSteerSession` below, aligned with
+  // `workingSessionIds`), so that input is guaranteed to be mounted — no more
+  // dead end on a waiting/blocked session where the input never rendered. Fall
+  // back to the main composer editor if the steer input isn't found.
+  const steerSessionFromDrawer = useCallback(
+    (sessionId: string) => {
+      openSessionFromDrawer(sessionId);
+      window.requestAnimationFrame(() => {
+        const steerInput = document.querySelector<HTMLInputElement>(
+          ".agent-composer-steer-input",
+        );
+        if (steerInput) steerInput.focus();
+        else composerEditorRef.current?.focus();
+      });
+    },
+    [openSessionFromDrawer],
+  );
+  // Count of sessions currently doing work — the toggle badge. Re-derived from
+  // the same version signal as the rows.
+  const activeAgentCount = useMemo(
+    () => hermesActivityStore.activeCount(),
+    [activityStoreVersion],
+  );
+  // Resolve a session's model from the loaded session list for the drawer (no
+  // provider is tracked on the session record, so only `model` is supplied;
+  // feature 09's usage panel remains the authority for full cost/provider).
+  const modelForActivitySession = useCallback(
+    (sessionId: string) => {
+      const model = hermesSessionItems.find(
+        (session) => session.id === sessionId,
+      )?.model;
+      return model ? { model } : undefined;
+    },
+    [hermesSessionItems],
+  );
+
+  // Feature 14: the per-session artifact timeline behind the drawer's
+  // "Artifacts" section. Mirrors the activity-store wiring above: subscribe to
+  // the singleton's version, and read the SELECTED session's artifacts (the one
+  // the user is viewing) so the section tracks the conversation in front of
+  // them. A click adapts the record onto the existing artifact-panel preview
+  // flow (see `openTimelineArtifact`).
+  const artifactStoreVersion = useSyncExternalStore(
+    hermesArtifactStore.subscribe,
+    hermesArtifactStore.getVersion,
+    hermesArtifactStore.getVersion,
+  );
+  const timelineArtifacts = useMemo(
+    () =>
+      selectedHermesSessionId
+        ? hermesArtifactStore.getRecordsForSession(selectedHermesSessionId)
+        : [],
+    // `artifactStoreVersion` is the change signal; the read returns live rows.
+    [selectedHermesSessionId, artifactStoreVersion],
+  );
+
+  // Feature 15: the dev/debug raw-trace panel. Holds the session it was opened
+  // for; `undefined` means closed. Dev-gated where it renders (HermesTracePanel
+  // returns null in production), so this state is inert in shipped builds.
+  const [rawTraceSession, setRawTraceSession] = useState<string | undefined>(
+    undefined,
+  );
   const selectedIssueReportReview = selectedHermesSessionId
     ? reviewableIssueReports[selectedHermesSessionId]
     : undefined;
@@ -2135,60 +2439,116 @@ export function AgentWorkspace({
     void loadGenerationModel();
   }
 
+  // Switching the model always writes the global text-model default (Settings'
+  // model rows and this pill refresh through the same changed event). When a
+  // session is open, it ALSO switches that live session via Hermes
+  // command.dispatch (/model …) — and the UI only claims the running session
+  // moved when Hermes accepts the dispatch (feature 10). The gateway result is
+  // the source of truth: raw model.switch/model.changed frames classify as
+  // unsupported, so there is no confirming event to wait on.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
-    try {
-      const sessionId = newSessionModeRef.current
-        ? undefined
-        : selectedHermesSessionIdRef.current;
-      if (sessionId) {
-        const previousModel = hermesSessionItemsRef.current.find(
-          (session) => session.id === sessionId,
-        )?.model;
-        const previousOverride = sessionModelOverridesRef.current[sessionId];
-        sessionModelOverridesRef.current = {
-          ...sessionModelOverridesRef.current,
-          [sessionId]: modelId,
-        };
-        setHermesSessionItems((current) =>
-          current.map((session) =>
-            session.id === sessionId
-              ? { ...session, model: modelId }
-              : session,
-          ),
-        );
-        try {
-          await ensureHermesBridgeSession({ sessionId, model: modelId });
-        } catch (err) {
-          if (previousOverride) {
-            sessionModelOverridesRef.current = {
-              ...sessionModelOverridesRef.current,
-              [sessionId]: previousOverride,
-            };
-          } else {
-            const { [sessionId]: _removed, ...remainingOverrides } =
-              sessionModelOverridesRef.current;
-            sessionModelOverridesRef.current = remainingOverrides;
-          }
-          setHermesSessionItems((current) =>
-            current.map((session) =>
-              session.id === sessionId && session.model === modelId
-                ? { ...session, model: previousModel }
-                : session,
-            ),
-          );
-          throw err;
-        }
+    const chosen = generationModels.find((model) => model.id === modelId);
+    // Defense in depth: the picker already hides tool-less models, but the
+    // agent bricks without function calling, so refuse one rather than switch.
+    if (chosen && !modelSupportsTools(chosen)) {
+      setError(
+        `${chosen.name} can't run June's tools, so it can't be used for the agent.`,
+      );
+      return;
+    }
+    const modelName = chosen?.name ?? modelId;
+    const sessionId = newSessionModeRef.current
+      ? undefined
+      : selectedHermesSessionIdRef.current;
+
+    // No open chat: changing the model updates the global generation default.
+    if (!sessionId) {
+      try {
+        await setVeniceModel("generation", modelId);
+        defaultGenerationModelIdRef.current = modelId;
+        setDefaultGenerationModelId(modelId);
+        dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
+        setError(null);
+      } catch (err) {
+        setError(messageFromError(err));
         return;
       }
-
-      await setVeniceModel("generation", modelId);
-      defaultGenerationModelIdRef.current = modelId;
-      setDefaultGenerationModelId(modelId);
-      dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
-    } catch (err) {
-      setError(messageFromError(err));
+      setModelSwitchNotice({
+        message: resolveModelSwitchOutcome({
+          hasActiveSession: false,
+          dispatchSucceeded: false,
+          modelName,
+        }).notice,
+        sessionId: null,
+      });
+      return;
     }
+
+    // Open chat: override the model for THIS chat only (never the global
+    // default), persist it on the bridge, and ALSO dispatch /model to the live
+    // session so the running turn switches immediately. The per-chat override
+    // is the source of truth for the next session; the dispatch is best-effort.
+    const previousModel = hermesSessionItemsRef.current.find(
+      (session) => session.id === sessionId,
+    )?.model;
+    const previousOverride = sessionModelOverridesRef.current[sessionId];
+    sessionModelOverridesRef.current = {
+      ...sessionModelOverridesRef.current,
+      [sessionId]: modelId,
+    };
+    setHermesSessionItems((current) =>
+      current.map((session) =>
+        session.id === sessionId ? { ...session, model: modelId } : session,
+      ),
+    );
+    try {
+      await ensureHermesBridgeSession({ sessionId, model: modelId });
+    } catch (err) {
+      // Roll back the optimistic override + session model, then surface it.
+      if (previousOverride) {
+        sessionModelOverridesRef.current = {
+          ...sessionModelOverridesRef.current,
+          [sessionId]: previousOverride,
+        };
+      } else {
+        const { [sessionId]: _removed, ...remainingOverrides } =
+          sessionModelOverridesRef.current;
+        sessionModelOverridesRef.current = remainingOverrides;
+      }
+      setHermesSessionItems((current) =>
+        current.map((session) =>
+          session.id === sessionId && session.model === modelId
+            ? { ...session, model: previousModel }
+            : session,
+        ),
+      );
+      setError(messageFromError(err));
+      return;
+    }
+    let dispatchSucceeded = false;
+    try {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      await createHermesMethods(gateway).switchActiveSessionModel({
+        mode: hermesModeFor(sessionId),
+        sessionId,
+        model: modelId,
+      });
+      dispatchSucceeded = true;
+    } catch {
+      // The per-chat override is saved; the notice explains the running session
+      // is unchanged and the new model applies next session.
+      dispatchSucceeded = false;
+    }
+    setError(null);
+    setModelSwitchNotice({
+      message: resolveModelSwitchOutcome({
+        hasActiveSession: true,
+        dispatchSucceeded,
+        modelName,
+      }).notice,
+      sessionId,
+    });
   }
 
   useEffect(() => {
@@ -2279,6 +2639,11 @@ export function AgentWorkspace({
       removeHermesSessionLocally,
     };
     gatewayCloseHandlerRef.current = (fullMode: boolean) => {
+      // Feature 04: a disconnect is NOT a resolution — pending actions must
+      // survive it. markDisconnected is intentionally a no-op on state; the
+      // reconcile after a successful reconnect (below) is what marks anything
+      // unconfirmed as stale rather than dropping it.
+      pendingActionStore.markDisconnected();
       void recoverFromGatewayClose(fullMode);
     };
   });
@@ -2730,6 +3095,7 @@ export function AgentWorkspace({
         {
           displayContent: prepared.displayContent,
           titleContent: prepared.titleContent,
+          attachments,
           ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
         },
       );
@@ -2754,8 +3120,13 @@ export function AgentWorkspace({
         );
       }
       if (clearedAttachments) {
+        // A blocked image attach carries the failed-status chips so the user
+        // sees which image didn't go through; fall back to the originals
+        // otherwise.
+        const restore =
+          err instanceof AttachBlockedError ? err.attachments : attachments;
         setComposerAttachments((current) =>
-          current.length ? current : attachments,
+          current.length ? current : restore,
         );
       }
       if (clearedIssueReportReview) {
@@ -2845,6 +3216,10 @@ export function AgentWorkspace({
         ...imported.map((file) => ({
           ...file,
           id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
+          // Seed the structured attach status (feature 19). Images become
+          // `kind:"image"`, status `imported` — eligible for image.attach on
+          // the next submit. No bytes are kept here.
+          attach: attachmentStateFrom(file),
         })),
       ]);
       setError(null);
@@ -3018,6 +3393,93 @@ export function AgentWorkspace({
     }
   }
 
+  /**
+   * Attach this turn's pending images to the live session via image.attach
+   * (feature 19), updating each chip's status and feeding the artifact timeline.
+   * The base64 is read on demand from the workspace file (hermesBridgeFilePreview
+   * returns a data url), passed straight to the typed attachImage, and discarded;
+   * it never lands on composer state and the trace entry is redacted to a byte
+   * count. Throws a single blocking error if any image failed so the prompt is
+   * not sent with a missing image.
+   */
+  async function attachPendingImages(
+    gateway: HermesGatewayClient,
+    runtimeSessionId: string,
+    storedSessionId: string,
+    turnAttachments: AgentAttachment[],
+  ) {
+    const pending = pendingImageAttachments(
+      turnAttachments.map((attachment) => attachment.attach),
+    );
+    if (!pending.length) return;
+    const methods = createHermesMethods(gateway);
+    const deps = {
+      attachImage: methods.attachImage,
+      readImageData: (path: string) => hermesBridgeFilePreview(path),
+      isSupported: () => isHermesFeatureSupported("image.attach"),
+    };
+    const mode = hermesModeFor(storedSessionId);
+    const failures: string[] = [];
+    // The submit() flow has already cleared the composer chips by the time this
+    // runs; track the per-attachment status here so a blocking failure can
+    // restore the chips WITH their failed status (not the stale imported one).
+    const nextStates = new Map<string, HermesAttachmentState>();
+    for (const attachment of pending) {
+      const result = await attachImageToSession(
+        attachment,
+        runtimeSessionId,
+        deps,
+      );
+      // The RPC keys off the runtime (live process) session id, but the chip
+      // state, artifact timeline, and trace all key off the STORED session id —
+      // the identity the rest of the UI uses (event handler, drawer, trace
+      // panel). Re-stamp the result's session id to the stored one.
+      const state: HermesAttachmentState = {
+        ...result.state,
+        sessionId: storedSessionId,
+      };
+      nextStates.set(attachment.localId, state);
+      // Reflect the new status on the matching chip if it is still mounted
+      // (matched by localId, stable across the submit). Refs/ids only, no bytes.
+      setComposerAttachments((current) =>
+        current.map((item) =>
+          item.attach.localId === attachment.localId
+            ? { ...item, attach: state }
+            : item,
+        ),
+      );
+      if (result.artifact) {
+        hermesArtifactStore.recordArtifact(
+          { ...result.artifact, sessionId: storedSessionId },
+          mode,
+        );
+      }
+      if (result.trace) {
+        hermesTraceBuffer.recordOutbound({
+          ...result.trace,
+          sessionId: storedSessionId,
+        });
+      }
+      // A gated-off runtime returns an error notice but leaves status
+      // `imported` (the path-in-prompt fallback still carries the image) — that
+      // is not a blocking failure.
+      if (result.state.status === "failed" && result.error) {
+        failures.push(result.error);
+      }
+    }
+    if (failures.length) {
+      // Carry the failed-status chips so submit()'s catch restores them with
+      // the failure visible and the user can retry or remove them.
+      throw new AttachBlockedError(
+        failures[0],
+        turnAttachments.map((item) => {
+          const next = nextStates.get(item.attach.localId);
+          return next ? { ...item, attach: next } : item;
+        }),
+      );
+    }
+  }
+
   async function submitHermesSession(
     content: string,
     explicitSession?: HermesSessionInfo,
@@ -3025,6 +3487,11 @@ export function AgentWorkspace({
       issueReport?: PendingIssueReport;
       displayContent?: string;
       titleContent?: string;
+      /** Imported attachments for this turn. Image attachments are sent to the
+       * session via the structured image.attach flow (feature 19) once the
+       * session id is known and before prompt.submit; a failed attach throws to
+       * block the send so the user can retry. */
+      attachments?: AgentAttachment[];
     },
   ) {
     const displayContent = options?.displayContent ?? content;
@@ -3136,6 +3603,18 @@ export function AgentWorkspace({
       clearQueuedIssueReport();
       throw new Error("Hermes did not resume the session.");
     }
+    // Feature 19: send any imported images to the session through the
+    // structured image.attach flow before the prompt, so the model/tools see
+    // them as first-class inputs (not just a path mentioned in prose) and an
+    // image-edit prompt names a concrete source. A failed attach throws here,
+    // which the submit() catch turns into a restored composer the user can
+    // retry — the prompt is NOT sent with a silently-missing image.
+    await attachPendingImages(
+      gateway,
+      runtimeSessionId,
+      storedSessionId,
+      options?.attachments ?? [],
+    );
     const createdAt = new Date().toISOString();
     // A new session (no target id) means the hero is handing over to a fresh
     // thread — arm the composer glide. Sending into an existing session leaves
@@ -3200,6 +3679,54 @@ export function AgentWorkspace({
       )
         return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
+      // Run every live frame through the typed control plane alongside the
+      // existing string-based handling below. This is the first consumer of
+      // the classifier: it doesn't drive rendering yet (later features migrate
+      // families onto it incrementally), but it proves the live path is typed
+      // and surfaces any raw type June can't yet model. Unknown frames classify
+      // as `unsupported` rather than being dropped, so a Hermes upgrade that
+      // adds an event shows up in dev instead of silently doing nothing.
+      const classified = classifyHermesEvent(liveEvent);
+      // Feature 15: record every inbound frame (raw type + the kind it
+      // classified to) into the bounded, sanitized trace buffer so the dev/debug
+      // trace panel can reconstruct the session. recordInbound re-classifies and
+      // sanitizes internally; nothing raw is retained.
+      hermesTraceBuffer.recordInbound(liveEvent);
+      if (classified.kind === "unsupported") {
+        // Feed the bounded per-session store so the user gets a recoverable
+        // notice (when this is the active session) and developers get a
+        // sanitized, issue-report-safe export. The payload is already sanitized
+        // by the classifier; nothing raw is retained or logged.
+        unsupportedEventStore.record(classified);
+        if (import.meta.env.DEV) {
+          console.debug(
+            "[hermes] unsupported event",
+            classified.rawType,
+            classified.sanitizedPayload,
+          );
+        }
+      } else if (classified.kind === "pending_action") {
+        // Feature 04: aggregate this blocker into the global "Needs you" tray,
+        // keyed by mode + session + request. The session's mode comes from its
+        // recorded opt-in (sudo carries its own; the rest derive it here). A
+        // fresh event for a known request also re-confirms a row that went
+        // stale across a reconnect (see the store's reconcile logic).
+        pendingActionStore.record(classified, hermesModeFor(storedSessionId));
+      }
+      // Feature 11: roll EVERY classified event into the global activity store
+      // that backs the Agent activity drawer. The store is total and ignores
+      // unattributable events, so one unconditional call covers all kinds; it
+      // derives the session's phase (running/waiting/background/error/complete),
+      // current tool, and subagent count from the normalized event — never from
+      // the raw frame (raw JSON belongs to feature 15's trace panel).
+      hermesActivityStore.record(classified, hermesModeFor(storedSessionId));
+      // Feature 14: extract any file/artifact reference this event carries into
+      // the per-session artifact timeline behind the drawer's "Artifacts"
+      // section. The store is total and only acts on `tool` completions that
+      // name a known file/url field (conservative — never parses prose), so one
+      // unconditional call is safe for every kind. Mode rides along so each
+      // artifact can show its blast radius (sandboxed copy vs unrestricted path).
+      hermesArtifactStore.record(classified, hermesModeFor(storedSessionId));
       const nextSessionEvents = [
         ...(liveEventsRef.current[storedSessionId] ?? []),
         liveEvent,
@@ -3221,6 +3748,13 @@ export function AgentWorkspace({
         status === "completed" || status === "failed" || status === "cancelled"
           ? clearSessionActivity(storedSessionId)
           : undefined;
+      if (activityCounts) {
+        // Feature 04: the session reached a terminal state (completed, a
+        // terminal error, or an interrupt) — the agent is no longer blocked, so
+        // any of its outstanding "Needs you" rows are moot. Clear them so the
+        // tray never shows a dead blocker for a finished session.
+        pendingActionStore.resolveSession(storedSessionId);
+      }
       if (status) {
         dispatchAgentSessionStatus({
           sessionId: storedSessionId,
@@ -3256,6 +3790,16 @@ export function AgentWorkspace({
     };
     sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
     try {
+      // Feature 15: record the outbound prompt.submit in the trace buffer. Its
+      // params are sanitized before storage (the text is the user's own prompt,
+      // kept; any secret-like value would be masked). This is the primary
+      // outbound call from this surface; other RPCs go direct via
+      // gateway.request and are not yet traced (see feature 15 notes).
+      hermesTraceBuffer.recordOutbound({
+        sessionId: storedSessionId,
+        method: "prompt.submit",
+        params: { session_id: runtimeSessionId, text: content },
+      });
       await gateway.request("prompt.submit", {
         session_id: runtimeSessionId,
         text: content,
@@ -3264,6 +3808,13 @@ export function AgentWorkspace({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
       });
     } catch (err) {
+      // Record the rejection so the trace panel shows failed outbound calls
+      // alongside the inbound stream. messageFromError yields a user-safe string.
+      hermesTraceBuffer.recordError({
+        sessionId: storedSessionId,
+        method: "prompt.submit",
+        message: messageFromError(err),
+      });
       // A queued report must not outlive its failed prompt; submit() re-arms
       // issue-report mode so the retry can queue it again.
       clearQueuedIssueReport();
@@ -3327,6 +3878,72 @@ export function AgentWorkspace({
     return gateway;
   }
 
+  // Fetches normalized usage/cost for one session (feature 09). Routes through
+  // the gateway matching the session's recorded write-access mode, calls the
+  // typed session.usage wrapper, and parses the raw result defensively. The
+  // panel injects this so it stays decoupled from the gateway and reusable by
+  // feature 11's activity drawer.
+  const fetchSessionUsage = useCallback(
+    async (storedSessionId: string): Promise<SessionUsage> => {
+      const gateway = await ensureHermesGateway(
+        sessionUnrestricted(storedSessionId),
+      );
+      const methods = createHermesMethods(gateway);
+      const usageFor = async (runtimeId: string) =>
+        parseSessionUsage(
+          storedSessionId,
+          await methods.getSessionUsage({ sessionId: runtimeId }),
+        );
+      // session.usage reads the LIVE runtime, keyed by the runtime id — not the
+      // stored id the panel passes. Use the cached runtime if it is still alive;
+      // if it has been torn down between turns ("session not found"), resume the
+      // session to spin up a fresh runtime and retry once. Mirrors the send
+      // flow's cached-or-resume resolution (see submit()).
+      const cached = runtimeSessionIdsRef.current[storedSessionId];
+      if (cached) {
+        try {
+          return await usageFor(cached);
+        } catch (err) {
+          if (!isSessionGoneError(messageFromError(err))) throw err;
+        }
+      }
+      const resumed = await gateway.request<HermesRuntimeSessionResponse>(
+        "session.resume",
+        { session_id: storedSessionId, cols: 96 },
+      );
+      const runtimeSessionId = resumed.session_id;
+      if (!runtimeSessionId) {
+        throw new Error("Hermes did not resume the session.");
+      }
+      setRuntimeSessionIds((current) => ({
+        ...current,
+        [storedSessionId]: runtimeSessionId,
+      }));
+      return usageFor(runtimeSessionId);
+    },
+    // Stable closure over refs and imported helpers; deps intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // Compacts one session's context (feature 08). Routes through the gateway
+  // matching the session's recorded write-access mode, calls the typed
+  // session.compress wrapper, and parses the raw result defensively so the
+  // dialog can show token savings when reported. The dialog injects this so it
+  // stays decoupled from the gateway, mirroring fetchSessionUsage.
+  const compressSessionContext = useCallback(
+    async (sessionId: string): Promise<CompressSessionResult> => {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      const raw = await createHermesMethods(gateway).compressSession({
+        sessionId,
+      });
+      return parseCompressSessionResult(sessionId, raw);
+    },
+    // Same stable-closure rationale as fetchSessionUsage above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   // "Try again" on a connection-shaped error banner: rebuild the bridge +
   // gateway connection and reload sessions, surfacing whatever still fails.
   async function retryGatewayConnection() {
@@ -3381,6 +3998,11 @@ export function AgentWorkspace({
     } finally {
       gatewayRecoveringRef.current.delete(fullMode);
     }
+    // Feature 04: the gateway is back. Any pending action not re-announced by a
+    // fresh event is now unverifiable across the drop, so mark it stale —
+    // visible but visually distinct — rather than silently dropping a possible
+    // blocker. A re-announced request flips its row back to open in the feed.
+    pendingActionStore.reconcileAfterReconnect();
     for (const sessionId of activeSessionIds) {
       void refreshHermesSession(sessionId);
     }
@@ -3584,10 +4206,13 @@ export function AgentWorkspace({
         session_id: sessionId,
         payload: { request_id: requestId, choice },
       });
+      // Feature 04: the user just answered this approval — clear its global
+      // "Needs you" row immediately (the response itself is the resolution).
+      pendingActionStore.resolveRequest(sessionId, requestId);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
-      if (message.toLowerCase().includes("session not found")) {
+      if (isSessionGoneError(message)) {
         // The runtime session is gone. Scrub only the affected session/task —
         // including its waiting flag, so the "Needs you" badge clears —
         // without clobbering other healthy sessions' working state or live
@@ -3607,9 +4232,14 @@ export function AgentWorkspace({
           liveEventKey,
         );
         setLiveEvents(liveEventsRef.current);
+        // The request can never be answered now — retire its card so neither the
+        // "Needs you" tray nor the inline prompt offers a dead-end "Respond".
+        pendingActionStore.resolveRequest(sessionId, requestId);
         void loadHermesSessions();
+        setError(SESSION_GONE_MESSAGE, { sessionId });
+      } else {
+        setError(message, { sessionId });
       }
-      setError(message, { sessionId });
     } finally {
       setApprovalSubmitting((current) => {
         const next = { ...current };
@@ -3636,11 +4266,117 @@ export function AgentWorkspace({
         type: "clarify.response",
         payload: { request_id: requestId, answer },
       });
+      // Feature 04: the user answered the clarification — clear its tray row.
+      pendingActionStore.resolveRequest(liveEventKey, requestId);
       setError(null);
     } catch (err) {
-      setError(messageFromError(err));
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        // The runtime is gone, so this clarification can never be answered —
+        // retire its card and say so plainly instead of leaking the raw 404.
+        pendingActionStore.resolveRequest(liveEventKey, requestId);
+        setError(SESSION_GONE_MESSAGE);
+      } else {
+        setError(message);
+      }
     } finally {
       setClarifySubmitting((current) => {
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+    }
+  }
+
+  // Sudo (privilege escalation) is resolved through the typed control-plane
+  // method (sudo.respond), not a hand-written request, so the wire shape stays
+  // in one place. The optimistic sudo.response event flips the card to
+  // resolved before the gateway round-trips.
+  async function respondToSudo(
+    liveEventKey: string,
+    sessionId: string,
+    requestId: string,
+    approved: boolean,
+    mode?: HermesMode,
+    unrestricted = false,
+  ) {
+    setSudoSubmitting((current) => ({
+      ...current,
+      [requestId]: approved ? "approve" : "deny",
+    }));
+    try {
+      const gateway = await ensureHermesGateway(unrestricted);
+      await createHermesMethods(gateway).respondToSudo({
+        sessionId,
+        requestId,
+        approved,
+        mode,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "sudo.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, granted: approved, mode },
+      });
+      // Feature 04: the user resolved the sudo prompt — clear its tray row.
+      pendingActionStore.resolveRequest(sessionId, requestId);
+      setError(null);
+    } catch (err) {
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        // The runtime is gone, so this prompt can never be answered — retire
+        // its card and say so plainly instead of leaking the raw 404.
+        pendingActionStore.resolveRequest(sessionId, requestId);
+        setError(SESSION_GONE_MESSAGE, { sessionId });
+      } else {
+        setError(message, { sessionId });
+      }
+    } finally {
+      setSudoSubmitting((current) => {
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+    }
+  }
+
+  // Secret entry: the value arrives here only to be handed to the gateway via
+  // the typed secret.respond method, and is never stored, logged, or placed on
+  // an event. The optimistic secret.response carries ONLY a `provided` flag.
+  async function respondToSecret(
+    liveEventKey: string,
+    sessionId: string,
+    requestId: string,
+    value: string,
+    unrestricted = false,
+  ) {
+    setSecretSubmitting((current) => ({ ...current, [requestId]: true }));
+    try {
+      const gateway = await ensureHermesGateway(unrestricted);
+      await createHermesMethods(gateway).respondToSecret({
+        sessionId,
+        requestId,
+        value,
+      });
+      pushLiveEvent(liveEventKey, {
+        type: "secret.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, provided: true },
+      });
+      // Feature 04: the user provided the secret — clear its tray row.
+      pendingActionStore.resolveRequest(sessionId, requestId);
+      setError(null);
+    } catch (err) {
+      const message = messageFromError(err);
+      if (isSessionGoneError(message)) {
+        // The runtime is gone, so this secret prompt can never be answered —
+        // retire its card and say so plainly instead of leaking the raw 404.
+        pendingActionStore.resolveRequest(sessionId, requestId);
+        setError(SESSION_GONE_MESSAGE, { sessionId });
+      } else {
+        setError(message, { sessionId });
+      }
+    } finally {
+      setSecretSubmitting((current) => {
         const next = { ...current };
         delete next[requestId];
         return next;
@@ -3668,6 +4404,55 @@ export function AgentWorkspace({
     }
   }
 
+  // Feature 07: fork the conversation into a NEW session that starts from the
+  // given message, through the typed control-plane method (session.branch).
+  // The source session is never mutated. The returned session id is
+  // AUTHORITATIVE — we open whatever the gateway minted, never a local guess —
+  // and the new session inherits the source's write-access mode so a follow-up
+  // routes to the right runtime. On failure the UI stays in the source session
+  // with an actionable banner.
+  async function branchFromMessage(sessionId: string, fromMessageId: string) {
+    if (branchingMessageId) return;
+    setBranchingMessageId(fromMessageId);
+    const sourceTitle =
+      hermesSessionItems.find((session) => session.id === sessionId)?.title ??
+      "this session";
+    const unrestricted = sessionUnrestricted(sessionId);
+    try {
+      const gateway = await ensureHermesGateway(unrestricted);
+      const raw = await createHermesMethods(gateway).branchSession({
+        sessionId,
+        fromMessageId,
+      });
+      const result: BranchSessionResult | undefined = parseBranchSessionResult(
+        raw,
+        { sourceSessionId: sessionId, sourceMessageId: fromMessageId },
+      );
+      if (!result) {
+        throw new Error("Hermes did not return a branched session.");
+      }
+      // Carry the source session's write-access mode onto the fork so its
+      // follow-ups route to the matching runtime (mirrors session.create).
+      rememberSessionMode(result.sessionId, unrestricted);
+      // Open the fork. Selecting it triggers the message-fetch effect, which
+      // fills the forked transcript. The source session is left untouched.
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
+      setSelectedTaskId(undefined);
+      selectedHermesSessionIdRef.current = result.sessionId;
+      setSelectedHermesSessionId(result.sessionId);
+      setActivePanel("chat");
+      setBranchedNotice({ sessionId: result.sessionId, sourceTitle });
+      setError(null);
+      await loadHermesSessions();
+    } catch (err) {
+      // Leave the UI in the source session; surface the failure there.
+      setError(messageFromError(err), { sessionId });
+    } finally {
+      setBranchingMessageId(null);
+    }
+  }
+
   function pushLiveEvent(key: string, event: HermesGatewayEvent) {
     const liveEvent = { ...event, receivedAt: new Date().toISOString() };
     const nextEvents = [...(liveEventsRef.current[key] ?? []), liveEvent].slice(
@@ -3678,6 +4463,33 @@ export function AgentWorkspace({
       [key]: nextEvents,
     };
     setLiveEvents(liveEventsRef.current);
+  }
+
+  // Feature 06: steer a STILL-WORKING session with a mid-run instruction,
+  // through the dedicated typed control-plane method (session.steer) — never
+  // prompt.submit, which the gateway rejects with 4009 while a turn runs. On a
+  // gateway ack we record the user's instruction as a local "Steering" system
+  // item in the transcript (pushed onto the same live-event channel Hermes
+  // frames use, so it orders and survives re-renders for free). Rejections
+  // bubble to the caller (the composer input) so it can keep the unsent text
+  // and show recoverable copy; the typed wrapper stays the only seam that knows
+  // the wire shape.
+  async function steerActiveSession(sessionId: string, text: string) {
+    const instruction = normalizeSteerText(text);
+    if (!instruction) return;
+    const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+    await createHermesMethods(gateway).steerSession({
+      sessionId,
+      text: instruction,
+    });
+    pushLiveEvent(
+      sessionId,
+      steeringLiveEvent({
+        sessionId,
+        text: instruction,
+        receivedAt: new Date().toISOString(),
+      }),
+    );
   }
 
   async function startNewTask(request?: AgentNewSessionDetail) {
@@ -3894,6 +4706,14 @@ export function AgentWorkspace({
     // it). The interrupt then fires below to actually halt the runtime agent.
     sessionGatewayUnlistenRef.current.get(sessionId)?.();
     const activityCounts = clearSessionActivity(sessionId);
+    // Feature 11: the per-session listener is gone, so no terminal frame will
+    // reach the activity store to retire this row. Record a synthetic terminal
+    // lifecycle so the drawer flips the session out of "running" the instant
+    // the user clicks stop (the row persists, now reading as complete).
+    hermesActivityStore.record(
+      { kind: "lifecycle", sessionId, status: "cancelled" },
+      hermesModeFor(sessionId),
+    );
     dispatchAgentSessionStatus({
       sessionId,
       title:
@@ -3927,6 +4747,30 @@ export function AgentWorkspace({
       // the transcript reflects the partial turn.
       void refreshHermesSession(sessionId);
     }
+  }
+
+  // Feature 13: interrupt ONE background subagent from the activity drawer. The
+  // drawer already vetted the target (active subagent, trustworthy id/handle,
+  // confirmed when mid file/tool work) and owns the optimistic "stopping"
+  // overlay, so this just routes the call to the gateway that owns the parent
+  // session. `subagentId` is the trustworthy Hermes id/handle; the RPC's
+  // session id is the runtime id (as the whole-session interrupt uses). The
+  // promise is returned so the drawer can reconcile: a rejection (the subagent
+  // already finished) drops the overlay and the row settles from the event
+  // stream rather than showing a noisy failure.
+  async function stopHermesSubagent({
+    sessionId,
+    subagentId,
+  }: {
+    sessionId: string;
+    subagentId: string;
+  }): Promise<unknown> {
+    const runtimeSessionId = runtimeSessionIds[sessionId] ?? sessionId;
+    const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+    return createHermesMethods(gateway).interruptSubagent({
+      sessionId: runtimeSessionId,
+      subagentId,
+    });
   }
 
   async function retryTask(taskId: string) {
@@ -4285,6 +5129,31 @@ export function AgentWorkspace({
   const openArtifact = (artifact: AgentArtifact) =>
     setArtifactPanel({ view: "file", artifact });
 
+  // Feature 14: open an artifact from the drawer's timeline. The timeline's
+  // record (hermes-artifact-store's AgentArtifact) is a different, richer shape
+  // than the file-viewer's local AgentArtifact, so adapt it onto the EXISTING
+  // preview flow rather than building a second viewer: a filesystem-backed
+  // artifact opens in the same `AgentArtifactPanel` (which fetches via
+  // hermes_bridge_file_preview / _file_text), and a remote url opens in the
+  // browser. A failed access has nothing to preview, so it stays inert.
+  const openTimelineArtifact = useCallback((artifact: TimelineArtifact) => {
+    if (artifact.action === "failed") return;
+    if (artifact.kind === "url") {
+      if (artifact.path) window.open(artifact.path, "_blank", "noopener");
+      return;
+    }
+    if (!artifact.path) return;
+    setArtifactPanel({
+      view: "file",
+      artifact: {
+        name: artifact.displayName ?? artifact.path,
+        path: artifact.path,
+        rootLabel: artifact.mode === "unrestricted" ? "Local" : "Workspace",
+        size: null,
+      },
+    });
+  }, []);
+
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep
   // the scroller pinned to the bottom.
@@ -4553,8 +5422,31 @@ export function AgentWorkspace({
             >
               {visibleIssueReportNotice}
             </motion.p>
+          ) : visibleModelSwitchNotice ? (
+            <motion.p
+              key="model-switch-notice"
+              className="agent-composer-notice"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              {visibleModelSwitchNotice}
+            </motion.p>
           ) : null}
         </AnimatePresence>
+        {selectedHermesSessionId &&
+        workingSessionIds.has(selectedHermesSessionId) ? (
+          // Feature 06: while June works, offer a compact steer input so the
+          // user can redirect the running turn. Stop still owns the send slot
+          // below — this sits above the box and leaves that untouched.
+          <ComposerSteerInput
+            onSteer={(text) =>
+              steerActiveSession(selectedHermesSessionId, text)
+            }
+          />
+        ) : null}
         <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
@@ -4562,7 +5454,8 @@ export function AgentWorkspace({
                 <span
                   key={attachment.id}
                   className="agent-attachment-chip"
-                  title={attachment.name}
+                  data-attach-status={attachment.attach.status}
+                  title={attachment.attach.error ?? attachment.name}
                 >
                   {attachment.previewDataUrl ? (
                     <img
@@ -4576,6 +5469,14 @@ export function AgentWorkspace({
                   <span className="agent-attachment-name">
                     {attachment.name}
                   </span>
+                  {attachmentStatusLabel(attachment.attach) ? (
+                    <span
+                      className="agent-attachment-status"
+                      data-attach-status={attachment.attach.status}
+                    >
+                      {attachmentStatusLabel(attachment.attach)}
+                    </span>
+                  ) : null}
                   <button
                     type="button"
                     aria-label={`Remove ${attachment.name}`}
@@ -4873,6 +5774,37 @@ export function AgentWorkspace({
     />
   ) : !newSessionMode && selectedHermesSessionId ? (
     <div ref={listRef} className="agent-timeline">
+      <UnsupportedEventNotice
+        notice={unsupportedNotice}
+        // Dev/debug context gates the raw-trace affordance. Reuse the same DEV
+        // signal feature 01 used; feature 15 can swap in a richer debug toggle.
+        debugEnabled={import.meta.env.DEV}
+        onOpenRawTrace={(sessionId) => {
+          // Feature 15: open the dev/debug raw trace panel for this session.
+          // The panel itself is dev-gated (renders null in production), so this
+          // is inert in shipped builds even if the affordance were reached.
+          setRawTraceSession(sessionId);
+        }}
+        onStopSession={() => void stopHermesSession(selectedHermesSessionId)}
+        onReportIssue={() => {
+          // The sanitized, secret-free trace bundle for this session is the
+          // payload an issue report should attach (payload previews come from
+          // `sanitizePayload`; there is no real reporting surface yet — see the
+          // feature 15 notes). Logged in dev until that surface lands.
+          if (import.meta.env.DEV) {
+            console.debug(
+              "[hermes] report issue trace bundle",
+              hermesTraceBuffer.exportSanitizedTrace(selectedHermesSessionId),
+            );
+          }
+        }}
+      />
+      <HermesTracePanel
+        buffer={hermesTraceBuffer}
+        open={rawTraceSession !== undefined}
+        sessionId={rawTraceSession}
+        onClose={() => setRawTraceSession(undefined)}
+      />
       {hermesTurns.map((turn) => (
         <AgentChatTurnRow
           key={turn.id}
@@ -4881,6 +5813,8 @@ export function AgentWorkspace({
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
           clarifySubmitting={clarifySubmitting}
+          sudoSubmitting={sudoSubmitting}
+          secretSubmitting={secretSubmitting}
           cliAccess={{
             enabled: cliAccessEnabled,
             submitting: cliAccessSubmitting,
@@ -4912,6 +5846,29 @@ export function AgentWorkspace({
               sessionUnrestricted(selectedHermesSessionId),
             )
           }
+          onSudo={(part, approved) =>
+            void respondToSudo(
+              selectedHermesSessionId,
+              part.sessionId ?? selectedHermesSessionId,
+              part.id,
+              approved,
+              part.mode,
+              sessionUnrestricted(selectedHermesSessionId),
+            )
+          }
+          onSecret={(part, value) =>
+            void respondToSecret(
+              selectedHermesSessionId,
+              part.sessionId ?? selectedHermesSessionId,
+              part.id,
+              value,
+              sessionUnrestricted(selectedHermesSessionId),
+            )
+          }
+          onBranch={(messageId) =>
+            void branchFromMessage(selectedHermesSessionId, messageId)
+          }
+          branchingMessageId={branchingMessageId}
         />
       ))}
       {workingSessionIds.has(selectedHermesSessionId) &&
@@ -4966,6 +5923,8 @@ export function AgentWorkspace({
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
             clarifySubmitting={clarifySubmitting}
+            sudoSubmitting={sudoSubmitting}
+            secretSubmitting={secretSubmitting}
             cliAccess={{
               enabled: cliAccessEnabled,
               submitting: cliAccessSubmitting,
@@ -4999,6 +5958,29 @@ export function AgentWorkspace({
                 sessionUnrestricted(selectedTask.hermesSessionId),
               )
             }
+            onSudo={(part, approved) => {
+              const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
+              if (!sessionId) return;
+              void respondToSudo(
+                selectedTask.id,
+                sessionId,
+                part.id,
+                approved,
+                part.mode,
+                sessionUnrestricted(selectedTask.hermesSessionId),
+              );
+            }}
+            onSecret={(part, value) => {
+              const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
+              if (!sessionId) return;
+              void respondToSecret(
+                selectedTask.id,
+                sessionId,
+                part.id,
+                value,
+                sessionUnrestricted(selectedTask.hermesSessionId),
+              );
+            }}
           />
         ))}
         {workingTaskIds.has(selectedTask.id) &&
@@ -5016,6 +5998,60 @@ export function AgentWorkspace({
       data-artifact-panel={artifactPanel ? "open" : undefined}
       data-hero={heroMode ? "true" : undefined}
     >
+      {/* Feature 04: the one global "Needs you" tray. Mounted at the top level
+          of the workspace (not inside a single session view) so outstanding
+          actions from EVERY session stay visible; a row click opens the owning
+          session. Renders nothing when nothing is pending. */}
+      <PendingActionTray
+        records={pendingActionRecords}
+        titleForSession={titleForPendingSession}
+        onOpenAction={handleOpenPendingAction}
+        now={Date.now()}
+      />
+      {/* Feature 11: the Agent activity drawer and its toggle. One top-level
+          surface (like the tray) so it shows every session's live activity, not
+          just the selected one. The toggle is hidden while the drawer is open
+          (the drawer carries its own close control) and surfaces the count of
+          sessions currently doing work.
+          Gated by ACTIVITY_DRAWER_ENABLED (currently false): with no toggle the
+          drawer is unreachable, since nothing else flips activityDrawerOpen to
+          true. See the flag's note for the open-wrong-session bug it parks. */}
+      {ACTIVITY_DRAWER_ENABLED && !activityDrawerOpen ? (
+        <button
+          type="button"
+          className="agent-activity-toggle"
+          onClick={() => setActivityDrawerOpen(true)}
+          aria-label="Show agent activity"
+        >
+          <IconBolt size={15} ariaHidden />
+          <span className="agent-activity-toggle-label">Activity</span>
+          {activeAgentCount > 0 ? (
+            <span className="agent-activity-toggle-count" aria-hidden>
+              {activeAgentCount}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
+      <AgentActivityDrawer
+        open={activityDrawerOpen}
+        records={activityRecords}
+        status={activityStatus}
+        now={Date.now()}
+        titleForSession={titleForPendingSession}
+        modelForSession={modelForActivitySession}
+        onOpenSession={openSessionFromDrawer}
+        onSteerSession={steerSessionFromDrawer}
+        canSteerSession={(sessionId) => workingSessionIds.has(sessionId)}
+        onStopSession={(sessionId) => void stopHermesSession(sessionId)}
+        onStopSubagent={stopHermesSubagent}
+        onClose={() => setActivityDrawerOpen(false)}
+        footer={
+          <AgentArtifactsSection
+            artifacts={timelineArtifacts}
+            onOpenArtifact={openTimelineArtifact}
+          />
+        }
+      />
       {!heroMode &&
       !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
@@ -5047,6 +6083,32 @@ export function AgentWorkspace({
           onDelete={
             !newSessionMode && selectedHermesSessionId
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
+              : undefined
+          }
+          onShowUsage={
+            !newSessionMode && selectedHermesSessionId
+              ? () => setUsagePanelSessionId(selectedHermesSessionId)
+              : undefined
+          }
+          onCompactContext={
+            !newSessionMode && selectedHermesSessionId
+              ? () => setCompactSessionId(selectedHermesSessionId)
+              : undefined
+          }
+          // Dev builds only: open the raw Hermes TUI on this exact session,
+          // under the same sandbox/unrestricted mode June used for it. Lets a
+          // developer tell a June adapter/UI bug apart from a Hermes one.
+          onOpenTuiDebug={
+            hermesTuiDebugAvailable() &&
+            !newSessionMode &&
+            selectedHermesSessionId
+              ? () => {
+                  setError(null);
+                  void openHermesTuiDebug({
+                    sessionId: selectedHermesSessionId,
+                    unrestricted: sessionUnrestricted(selectedHermesSessionId),
+                  }).catch((err: unknown) => setError(messageFromError(err)));
+                }
               : undefined
           }
         />
@@ -5134,6 +6196,13 @@ export function AgentWorkspace({
                   onDismiss={() => setError(null)}
                 />
               ) : null}
+              {branchedNotice &&
+              branchedNotice.sessionId === selectedHermesSessionId ? (
+                <AgentBranchedBanner
+                  sourceTitle={branchedNotice.sourceTitle}
+                  onDismiss={() => setBranchedNotice(null)}
+                />
+              ) : null}
               {detailContent}
               {composer}
             </section>
@@ -5158,6 +6227,36 @@ export function AgentWorkspace({
                 document.querySelector(".app-shell") ?? document.body,
               )
             : null}
+          {usagePanelSessionId
+            ? createPortal(
+                <div
+                  className="agent-usage-overlay"
+                  role="presentation"
+                  onClick={(event) => {
+                    if (event.target === event.currentTarget) {
+                      setUsagePanelSessionId(null);
+                    }
+                  }}
+                >
+                  <SessionUsagePanel
+                    sessionId={usagePanelSessionId}
+                    fetchUsage={fetchSessionUsage}
+                    onClose={() => setUsagePanelSessionId(null)}
+                  />
+                </div>,
+                document.querySelector(".app-shell") ?? document.body,
+              )
+            : null}
+          {/* Dialog portals to document.body itself, so it is mounted directly
+              rather than wrapped in an overlay like the usage panel. */}
+          {compactSessionId ? (
+            <SessionCompactDialog
+              open
+              sessionId={compactSessionId}
+              compress={compressSessionContext}
+              onClose={() => setCompactSessionId(null)}
+            />
+          ) : null}
         </>
       )}
     </section>
@@ -5803,6 +6902,9 @@ function AgentSessionBar({
   onToggleArtifacts,
   onRename,
   onDelete,
+  onShowUsage,
+  onCompactContext,
+  onOpenTuiDebug,
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
@@ -5813,6 +6915,11 @@ function AgentSessionBar({
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
   onDelete?: () => void;
+  onShowUsage?: () => void;
+  onCompactContext?: () => void;
+  /** Developer-only: open this session in Hermes' raw TUI. Undefined (and the
+   * menu item absent) in production builds. */
+  onOpenTuiDebug?: () => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title ?? "");
@@ -5843,7 +6950,9 @@ function AgentSessionBar({
     if (onRename && next && next !== title) onRename(next);
   }
 
-  const hasMenu = Boolean(onRename || onDelete);
+  const hasMenu = Boolean(
+    onRename || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
+  );
 
   return (
     <div className="detail-bar agent-session-bar" data-tauri-drag-region>
@@ -5947,6 +7056,32 @@ function AgentSessionBar({
                 className="sidebar-identity-menu agent-session-menu"
                 role="menu"
               >
+                {onShowUsage ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onShowUsage();
+                    }}
+                  >
+                    <IconGauge size={14} />
+                    Usage
+                  </button>
+                ) : null}
+                {onCompactContext ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onCompactContext();
+                    }}
+                  >
+                    <IconConcise size={14} />
+                    Compact context
+                  </button>
+                ) : null}
                 {onRename ? (
                   <button
                     type="button"
@@ -5974,6 +7109,25 @@ function AgentSessionBar({
                     <IconTrashCan size={14} />
                     Delete session
                   </button>
+                ) : null}
+                {onOpenTuiDebug ? (
+                  <>
+                    <div className="context-menu-separator" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      // Debug-only fallback: resume this session in Hermes' raw
+                      // TUI to tell a June adapter/UI bug from a Hermes one.
+                      title={HERMES_TUI_DEBUG_WARNING}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenTuiDebug();
+                      }}
+                    >
+                      <IconConsole size={14} />
+                      Debug with Hermes TUI
+                    </button>
+                  </>
                 ) : null}
               </div>
             ) : null}
@@ -6965,9 +8119,13 @@ function AgentResponseGallery({
               artifacts={section.artifacts}
               approvalSubmitting={{}}
               clarifySubmitting={{}}
+              sudoSubmitting={{}}
+              secretSubmitting={{}}
               thinkingOpen={(key) => thinkingOpenByKey[key] ?? false}
               onApproval={galleryNoop}
               onClarify={galleryNoop}
+              onSudo={galleryNoop}
+              onSecret={galleryNoop}
               onDownloadArtifact={galleryNoop}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
@@ -6984,20 +8142,28 @@ function AgentChatTurnRow({
   approvalSubmitting,
   artifacts,
   clarifySubmitting,
+  sudoSubmitting,
+  secretSubmitting,
   cliAccess,
   thinkingOpen,
   onApproval,
   onClarify,
+  onSudo,
+  onSecret,
   onDownloadArtifact,
   onOpenArtifact,
   onThinkingOpenChange,
   onTopUp,
+  onBranch,
+  branchingMessageId,
   turn,
 }: {
   activeThinkingKey?: string;
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
+  sudoSubmitting: Record<string, "approve" | "deny">;
+  secretSubmitting: Record<string, true>;
   /** State + handler for June's in-chat Agent CLI access request card.
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
@@ -7010,10 +8176,25 @@ function AgentChatTurnRow({
     part: Extract<AgentChatPart, { type: "clarify" }>,
     answer: string,
   ) => void;
+  onSudo: (
+    part: Extract<AgentChatPart, { type: "sudo" }>,
+    approved: boolean,
+  ) => void;
+  onSecret: (
+    part: Extract<AgentChatPart, { type: "secret" }>,
+    value: string,
+  ) => void;
   onDownloadArtifact?: (artifact: AgentArtifact) => void;
   onOpenArtifact?: (artifact: AgentArtifact) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
+  /** Fork the conversation from this turn into a new session (feature 07).
+   * Optional: only Hermes-session rows pass it — task rows and the dev gallery
+   * omit it, so the action is absent there. */
+  onBranch?: (messageId: string) => void;
+  /** The message id a branch is currently in flight for, so its action shows a
+   * working/disabled state. */
+  branchingMessageId?: string | null;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -7076,6 +8257,19 @@ function AgentChatTurnRow({
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
 
+  // Feature 07: the per-turn "Branch from here" control. Rendered only on
+  // Hermes-session rows (which pass `onBranch`); the action self-disables when
+  // the turn id is not a persisted message id (see isBranchableMessageId).
+  const branchAction = onBranch ? (
+    <div className="agent-turn-actions">
+      <BranchFromHereAction
+        messageId={turn.id}
+        onBranch={onBranch}
+        submitting={branchingMessageId === turn.id}
+      />
+    </div>
+  ) : null;
+
   if (
     contextParts.length &&
     turn.parts.every((part) => part.type === "context")
@@ -7115,6 +8309,7 @@ function AgentChatTurnRow({
             />
           ))}
         </div>
+        {branchAction}
       </article>
     );
   }
@@ -7171,10 +8366,30 @@ function AgentChatTurnRow({
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
+          ) : part.type === "sudo" ? (
+            <SudoPart
+              key={`${turn.id}:sudo:${part.id}`}
+              part={part}
+              submitting={sudoSubmitting[part.id]}
+              onSudo={onSudo}
+            />
+          ) : part.type === "secret" ? (
+            <SecretPart
+              key={`${turn.id}:secret:${part.id}`}
+              part={part}
+              submitting={secretSubmitting[part.id]}
+              onSecret={onSecret}
+            />
           ) : part.type === "notice" ? (
             <CreditsNoticePart
               key={`${turn.id}:notice:${index}`}
               onTopUp={onTopUp}
+            />
+          ) : part.type === "steering" ? (
+            <SteeringPart
+              key={`${turn.id}:steering:${index}`}
+              createdAt={turn.createdAt}
+              part={part}
             />
           ) : null,
         )}
@@ -7187,7 +8402,11 @@ function AgentChatTurnRow({
           <p className="agent-assistant-empty">
             <span className="text-shimmer">Thinking…</span>
           </p>
-        ) : null}
+        ) : (
+          // No branch action on an empty/in-flight turn — there is nothing to
+          // fork from yet.
+          branchAction
+        )}
       </div>
     </article>
   );
@@ -7219,6 +8438,185 @@ function ContextCompactionPart({
   );
 }
 
+/**
+ * Confirmation + result dialog for session context compaction (feature 08).
+ *
+ * Decoupled from the gateway like {@link SessionUsagePanel}: it takes a
+ * `compress(sessionId)` that already calls the typed `session.compress` wrapper
+ * and returns a normalized {@link CompressSessionResult}. That keeps the dialog
+ * trivially testable and lets AgentWorkspace own the gateway plumbing.
+ *
+ * The flow is three honest phases:
+ * - `idle`: explain what compaction does. The copy never claims the original
+ *   transcript is kept verbatim; it warns "Older messages may be summarized."
+ * - `working`: the compress call is in flight; the action shows a busy label.
+ * - `done` / `error`: on success, a "Context compacted" item (plus token
+ *   savings when the result reports before/after). On failure, a clear message
+ *   — and a busy-specific one when Hermes rejects mid-run with 4009 — with a
+ *   "Try again". Nothing crashes and no savings are invented.
+ */
+export function SessionCompactDialog({
+  open,
+  sessionId,
+  compress,
+  onClose,
+}: {
+  open: boolean;
+  sessionId: string;
+  compress: (sessionId: string) => Promise<CompressSessionResult>;
+  onClose: () => void;
+}) {
+  const [phase, setPhase] = useState<"idle" | "working" | "done" | "error">(
+    "idle",
+  );
+  const [result, setResult] = useState<CompressSessionResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Guards against a resolve landing after a newer run or after close/reopen.
+  const requestSeq = useRef(0);
+
+  // Reset to the confirmation each time the dialog (re)opens so a prior run's
+  // result or error never leaks into a fresh session's confirmation.
+  useEffect(() => {
+    if (open) {
+      requestSeq.current++;
+      setPhase("idle");
+      setResult(null);
+      setErrorMessage(null);
+    }
+  }, [open]);
+
+  function runCompaction() {
+    const seq = ++requestSeq.current;
+    setPhase("working");
+    setErrorMessage(null);
+    compress(sessionId).then(
+      (next) => {
+        if (seq !== requestSeq.current) return;
+        setResult(next);
+        setPhase("done");
+      },
+      (err) => {
+        if (seq !== requestSeq.current) return;
+        setErrorMessage(
+          isSessionBusyError(err)
+            ? "June is running right now. Wait for the current turn to finish, then compact context."
+            : "Couldn't compact context. Please try again.",
+        );
+        setPhase("error");
+      },
+    );
+  }
+
+  const working = phase === "working";
+
+  return (
+    <Dialog
+      open={open}
+      onClose={() => {
+        if (!working) onClose();
+      }}
+      title="Compact context"
+      leading={<IconConcise size={16} aria-hidden />}
+      width={440}
+      disableBackdropClose={working}
+      footer={
+        phase === "done" ? (
+          <button type="button" className="primary-action" onClick={onClose}>
+            Done
+          </button>
+        ) : phase === "error" ? (
+          <>
+            <button type="button" className="primary-action" onClick={onClose}>
+              Close
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={runCompaction}
+            >
+              Try again
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={onClose}
+              disabled={working}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={runCompaction}
+              disabled={working}
+            >
+              {working ? "Compacting…" : "Compact context"}
+            </button>
+          </>
+        )
+      }
+    >
+      <div className="agent-compact-body">
+        {phase === "done" ? (
+          <CompactSuccess result={result} />
+        ) : phase === "error" ? (
+          <InlineNotice
+            className="agent-compact-error"
+            tone="destructive"
+            role="alert"
+            body={errorMessage ?? "Couldn't compact context. Please try again."}
+          />
+        ) : (
+          <>
+            <p className="agent-compact-explainer">
+              This summarizes older context so the agent can continue with a
+              smaller working memory.
+            </p>
+            <p className="agent-compact-caveat">
+              Older messages may be summarized. The agent keeps a reference
+              summary rather than the full earlier transcript.
+            </p>
+          </>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Success body for {@link SessionCompactDialog}: a confirmation line, plus the
+ * before/after token reading ONLY when the result reported both (never a
+ * guessed or partial figure). */
+function CompactSuccess({ result }: { result: CompressSessionResult | null }) {
+  const before = result?.beforeTokens;
+  const after = result?.afterTokens;
+  const hasSavings = before !== undefined && after !== undefined;
+  const saved = hasSavings ? Math.max(0, before - after) : undefined;
+
+  return (
+    <div className="agent-compact-success" role="status">
+      <p className="agent-compact-success-line">
+        <IconCheckCircle2 size={15} aria-hidden />
+        Context compacted
+      </p>
+      {hasSavings ? (
+        <p className="agent-compact-savings">
+          {before.toLocaleString()} to {after.toLocaleString()} tokens
+          {saved !== undefined && saved > 0
+            ? ` (${saved.toLocaleString()} saved)`
+            : ""}
+        </p>
+      ) : (
+        <p className="agent-compact-savings" data-unavailable="true">
+          The agent now continues with a smaller working memory.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // The shared .error-banner tint, with actions: dismiss always, and "Try again"
 // when the failure is connection-shaped and reconnecting can actually fix it.
 function AgentErrorBanner({
@@ -7243,6 +8641,27 @@ function AgentErrorBanner({
           <IconCrossMedium size={14} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// Feature 07: confirms the freshly-opened session was forked from another, so
+// the user understands why they're suddenly in a new (but pre-populated)
+// thread. role="status" (not "alert") — this is reassurance, not an error.
+function AgentBranchedBanner({
+  sourceTitle,
+  onDismiss,
+}: {
+  sourceTitle: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="agent-branched-banner" role="status">
+      <IconBranchSimple size={14} aria-hidden />
+      <p>Branched from {sourceTitle}</p>
+      <button type="button" aria-label="Dismiss" onClick={onDismiss}>
+        <IconCrossMedium size={14} />
+      </button>
     </div>
   );
 }
@@ -7279,6 +8698,107 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
   );
 }
 
+/**
+ * Compact instruction input shown while a session is working (feature 06). It
+ * lets the user steer the running turn through the dedicated `session.steer`
+ * method (injected as `onSteer`) WITHOUT touching the Stop control that owns the
+ * send slot. Submit (Enter or the send button) sends the trimmed text; a blank
+ * instruction is inert. On success the field clears; on a rejection it keeps the
+ * unsent text and shows a clear, recoverable message (busy / dropped connection
+ * / generic) so a failed steer never crashes the composer.
+ */
+export function ComposerSteerInput({
+  onSteer,
+}: {
+  onSteer: (text: string) => Promise<unknown>;
+}) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const trimmed = normalizeSteerText(text);
+
+  async function send() {
+    if (!trimmed || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await onSteer(trimmed);
+      setText("");
+    } catch (err) {
+      // Keep the typed text so the user can retry without retyping; explain
+      // the failure in recoverable terms instead of throwing.
+      setError(steerErrorNotice(err));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="agent-composer-steer">
+      <form
+        className="agent-composer-steer-row"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void send();
+        }}
+      >
+        <span className="agent-composer-steer-icon" aria-hidden>
+          <IconArrowCornerDownRight size={14} />
+        </span>
+        <input
+          type="text"
+          className="agent-composer-steer-input"
+          aria-label="Add instruction"
+          placeholder="Add an instruction while June works"
+          value={text}
+          disabled={sending}
+          onChange={(event) => {
+            setText(event.target.value);
+            if (error) setError(null);
+          }}
+        />
+        <button
+          type="submit"
+          className="agent-composer-steer-send"
+          aria-label="Send instruction"
+          title="Send instruction"
+          disabled={!trimmed || sending}
+        >
+          {sending ? <Spinner /> : <IconArrowUp size={14} />}
+        </button>
+      </form>
+      {error ? (
+        <p className="agent-composer-steer-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** A "Steering" system item (feature 06): the instruction the user redirected
+ * June toward mid-run, recorded quietly in the transcript so the conversation
+ * shows what changed course. Mirrors {@link ContextCompactionPart}'s quiet,
+ * timestamped system-row styling. */
+function SteeringPart({
+  createdAt,
+  part,
+}: {
+  createdAt: string;
+  part: Extract<AgentChatPart, { type: "steering" }>;
+}) {
+  return (
+    <div className="agent-steering-item">
+      <span className="agent-steering-icon" aria-hidden>
+        <IconArrowCornerDownRight size={14} />
+      </span>
+      <span className="agent-steering-label">Steering</span>
+      <span className="agent-steering-text">{part.text}</span>
+      <time>{relativeDate(createdAt)}</time>
+    </div>
+  );
+}
+
 function ClarifyPart({
   onClarify,
   part,
@@ -7296,7 +8816,13 @@ function ClarifyPart({
   const disabled = part.status !== "pending" || submitting !== undefined;
 
   return (
-    <article className="agent-clarify-card" data-status={part.status}>
+    <article
+      className="agent-clarify-card"
+      data-status={part.status}
+      // Feature 04: scroll target so the "Needs you" tray can focus this exact
+      // card after opening the session (`part.id` is the requestId).
+      data-pending-request={part.id}
+    >
       <span className="agent-tool-icon">
         <IconBubbleWide size={14} />
       </span>
@@ -7528,7 +9054,12 @@ function ApprovalPart({
   }
 
   return (
-    <article className="agent-approval-card" data-status={part.status}>
+    <article
+      className="agent-approval-card"
+      data-status={part.status}
+      // Feature 04: tray scroll target (see ClarifyPart).
+      data-pending-request={part.id}
+    >
       <span className="agent-tool-icon">
         <IconShieldCheck size={14} />
       </span>
@@ -7655,6 +9186,302 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
     return pending ? "Approving permanently" : "Always approved";
   if (choice === "deny") return pending ? "Denying" : "Denied";
   return "Resolved";
+}
+
+/** The per-message "Branch from here" action (feature 07). Forks the
+ * conversation into a NEW session that starts from this message, leaving the
+ * source session untouched. Message-level branching is honest only when the
+ * turn is backed by a persisted Hermes message id; for in-flight/synthetic
+ * turns the button is disabled and explains that the fork point is available
+ * once the message is saved (see {@link isBranchableMessageId}). The branch
+ * itself flows through the typed `branchSession` method via `onBranch`. */
+export function BranchFromHereAction({
+  messageId,
+  onBranch,
+  submitting,
+}: {
+  messageId: string;
+  onBranch: (messageId: string) => void;
+  submitting?: boolean;
+}) {
+  const branchable = isBranchableMessageId(messageId);
+  const disabled = submitting || !branchable;
+  return (
+    <button
+      type="button"
+      className="agent-turn-action"
+      // The disabled reason is honest, not silent: a synthetic/in-flight turn
+      // has no persisted id Hermes can fork from yet.
+      title={
+        branchable
+          ? "Branch from here"
+          : "Branching is available once the message is saved"
+      }
+      aria-label="Branch from here"
+      disabled={disabled}
+      onClick={() => onBranch(messageId)}
+    >
+      <IconBranchSimple size={13} aria-hidden />
+      <span>Branch from here</span>
+    </button>
+  );
+}
+
+/** A privilege-escalation prompt (`sudo.request`). Approval is EXPLICIT: the
+ * card surfaces the command and reason Hermes gave (degrading gracefully when
+ * either is absent) and shows the execution mode so the user understands the
+ * blast radius before granting. Resolution flows through the typed
+ * `respondToSudo` method. Mirrors the approval card chrome. */
+export function SudoPart({
+  onSudo,
+  part,
+  submitting,
+}: {
+  onSudo: (
+    part: Extract<AgentChatPart, { type: "sudo" }>,
+    approved: boolean,
+  ) => void;
+  part: Extract<AgentChatPart, { type: "sudo" }>;
+  submitting?: "approve" | "deny";
+}) {
+  const disabled = Boolean(submitting) || part.status !== "pending";
+  const resolved = part.status !== "pending" || submitting !== undefined;
+  // Absent mode defaults to the safe direction (sandboxed) so the card never
+  // implies more access than is being granted.
+  const mode: HermesMode = part.mode ?? "sandboxed";
+  const unrestricted = mode === "unrestricted";
+  const decided =
+    part.approved ?? (submitting ? submitting === "approve" : undefined);
+
+  return (
+    <article
+      className="agent-approval-card"
+      data-status={part.status}
+      // Feature 04: tray scroll target (see ClarifyPart).
+      data-pending-request={part.id}
+    >
+      <span className="agent-tool-icon">
+        {unrestricted ? (
+          <IconShieldCrossed size={14} />
+        ) : (
+          <IconShieldCheck size={14} />
+        )}
+      </span>
+      <div>
+        <div className="agent-tool-title">
+          <span>Privilege escalation requested</span>
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
+            {part.status === "pending" ? "Waiting" : "Resolved"}
+          </span>
+        </div>
+        <p>
+          {part.reason ??
+            "June needs elevated permissions before it can continue."}
+        </p>
+        {part.command ? <pre>{part.command}</pre> : null}
+        <p
+          className="agent-sudo-mode"
+          data-mode={mode}
+          title={
+            unrestricted
+              ? "Runs with full write access, outside June's sandbox."
+              : "Runs inside June's write sandbox."
+          }
+        >
+          {unrestricted ? (
+            <IconShieldCrossed size={12} aria-hidden />
+          ) : (
+            <IconShieldCheck size={12} aria-hidden />
+          )}
+          {unrestricted
+            ? "Will run unrestricted (full write access)"
+            : "Will run sandboxed (limited write access)"}
+        </p>
+        {resolved ? (
+          <p
+            className="agent-approval-result"
+            data-choice={decided ? "once" : "deny"}
+          >
+            {decided ? (
+              <IconCheckmark1Small size={14} />
+            ) : (
+              <IconCrossMedium size={14} />
+            )}
+            {decided
+              ? submitting
+                ? "Approving"
+                : "Approved"
+              : submitting
+                ? "Denying"
+                : "Denied"}
+          </p>
+        ) : (
+          <div className="agent-approval-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={disabled}
+              onClick={() => onSudo(part, true)}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost agent-approval-deny"
+              disabled={disabled}
+              onClick={() => onSudo(part, false)}
+            >
+              Deny
+            </button>
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/** A `secret.request` prompt. SECURITY: the entered value lives ONLY in this
+ * component's local state, is sent straight to the gateway via the typed
+ * `respondToSecret` method, and is wiped on submit, cancel, and unmount. It is
+ * never logged, never placed on a part/event, and never echoed (the input is a
+ * password field). The requested key name is redacted when it looks sensitive
+ * so a token name can't leak into the transcript either. */
+export function SecretPart({
+  onSecret,
+  onCancel,
+  part,
+  submitting,
+}: {
+  onSecret: (
+    part: Extract<AgentChatPart, { type: "secret" }>,
+    value: string,
+  ) => void;
+  onCancel?: (part: Extract<AgentChatPart, { type: "secret" }>) => void;
+  part: Extract<AgentChatPart, { type: "secret" }>;
+  submitting?: true;
+}) {
+  const [value, setValue] = useState("");
+  const inputId = useId();
+  const disabled = part.status !== "pending" || submitting !== undefined;
+  const label = part.keyName ? redactedKeyName(part.keyName) : undefined;
+
+  // Defense in depth: clear the entered value if the card unmounts (navigation,
+  // resolution) so it never lingers in a detached React tree.
+  useEffect(() => {
+    return () => setValue("");
+  }, []);
+
+  function submit() {
+    const entered = value;
+    if (!entered) return;
+    // Hand the value off, then immediately wipe local state — the value never
+    // outlives the submit call here.
+    onSecret(part, entered);
+    setValue("");
+  }
+
+  function cancel() {
+    setValue("");
+    onCancel?.(part);
+  }
+
+  return (
+    <article
+      className="agent-approval-card"
+      data-status={part.status}
+      // Feature 04: tray scroll target (see ClarifyPart).
+      data-pending-request={part.id}
+    >
+      <span className="agent-tool-icon">
+        <IconLock size={14} />
+      </span>
+      <div>
+        <div className="agent-tool-title">
+          <span>Secret requested</span>
+          <span
+            className="agent-tool-live-status"
+            data-status={part.status === "pending" ? "running" : "complete"}
+          >
+            {part.status === "pending" ? "Waiting" : "Provided"}
+          </span>
+        </div>
+        <p>
+          {part.reason ?? "June needs a secret value before it can continue."}
+        </p>
+        {label ? (
+          <p className="agent-secret-key">
+            <span>Key</span>
+            <code>{label}</code>
+          </p>
+        ) : null}
+        {part.status === "pending" ? (
+          <form
+            className="agent-secret-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit();
+            }}
+          >
+            <label htmlFor={inputId} className="agent-secret-label">
+              Secret value
+            </label>
+            <input
+              id={inputId}
+              type="password"
+              className="agent-secret-input"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              // The browser must never store or suggest this value.
+              data-1p-ignore
+              data-lpignore="true"
+              disabled={disabled}
+              value={value}
+              placeholder="Paste the value"
+              onChange={(event) => setValue(event.currentTarget.value)}
+            />
+            <p className="agent-secret-note">
+              Sent straight to the agent and never saved, logged, or shown.
+            </p>
+            <div className="agent-approval-actions">
+              <button
+                type="submit"
+                className="btn btn-secondary"
+                disabled={disabled || !value}
+              >
+                {submitting ? "Submitting" : "Submit"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost agent-approval-deny"
+                disabled={submitting !== undefined}
+                onClick={cancel}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <p className="agent-approval-result" data-choice="once">
+            <IconCheckmark1Small size={14} />
+            Secret provided
+          </p>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/** Masks a requested key name when it matches the shared sensitive-key pattern
+ * (TOKEN, API_KEY, SECRET, PASSWORD, PRIVATE_KEY, CREDENTIAL), so even the
+ * label can't leak a token name into the transcript. Benign names (e.g.
+ * GITHUB_USERNAME) pass through unchanged. */
+function redactedKeyName(keyName: string) {
+  return isSensitiveKey(keyName) ? "[redacted]" : keyName;
 }
 
 function AgentThinkingGroup({
@@ -9000,6 +10827,20 @@ function sameAgentAttachments(
     left.length === right.length &&
     left.every((attachment, index) => attachment.id === right[index]?.id)
   );
+}
+
+/** Short, sentence-case status word for an attachment chip (feature 19). Empty
+ * for the resting imported/pending states — the chip already reads as "ready";
+ * only the terminal attached/failed states earn a label. No dashes. */
+function attachmentStatusLabel(state: HermesAttachmentState): string {
+  switch (state.status) {
+    case "attached":
+      return "Attached";
+    case "failed":
+      return "Couldn't attach";
+    default:
+      return "";
+  }
 }
 
 function commandTokensForResolutions(

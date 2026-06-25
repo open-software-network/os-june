@@ -1,0 +1,28 @@
+{
+  "name": "sudo-request-response",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "A privilege-escalation prompt and its resolution. sudo.request -> pending_action/sudo carrying the mode. sudo.response is not modeled as a gateway event yet; classifier routes it to unsupported today (locked as honest current behavior; feature 03 wires the response method).",
+  "frames": [
+    {
+      "type": "sudo.request",
+      "session_id": "sess-sudo",
+      "payload": {
+        "request_id": "su-1",
+        "command": "apt-get install ripgrep",
+        "reason": "ripgrep is required to search the dependency tree",
+        "mode": "unrestricted"
+      }
+    },
+    {
+      "type": "sudo.response",
+      "session_id": "sess-sudo",
+      "payload": {
+        "request_id": "su-1",
+        "granted": true,
+        "mode": "unrestricted"
+      }
+    }
+  ]
+}

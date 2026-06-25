@@ -1,0 +1,23 @@
+{
+  "name": "future-unknown-event",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "Intentionally-unknown event types a future Hermes might emit. The contract: each -> unsupported with rawType set (never undefined, never a dropped sentinel), and the carried payload is sanitized. This is the regression net that proves a Hermes upgrade is VISIBLE, not silently ignored. SECURITY: the second frame hides a long token under a benign `note` key; the sanitized payload must not contain it. Token is an OBVIOUSLY FAKE placeholder.",
+  "_leakCanary": "FAKE-FUTURE-TOKEN-do-not-use-dddddddddddddddddddddddddddd",
+  "frames": [
+    {
+      "type": "some.future.event",
+      "session_id": "sess-future",
+      "payload": { "whatever": true, "count": 3 }
+    },
+    {
+      "type": "experimental.capability",
+      "session_id": "sess-future",
+      "payload": {
+        "feature": "voice",
+        "note": "FAKE-FUTURE-TOKEN-do-not-use-dddddddddddddddddddddddddddd"
+      }
+    }
+  ]
+}

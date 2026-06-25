@@ -1,0 +1,20 @@
+{
+  "name": "image-attachment",
+  "hermesVersion": "v2026.6.19",
+  "recordedFrom": "tui-gateway",
+  "sanitized": true,
+  "_note": "An image attachment event. image.attach is listed in RawHermesEventName but has NO classifier branch yet, so it currently classifies as unsupported (carrying a sanitized payload). This is a GAP feature 19 will close. Locked here as honest current behavior; the replay test asserts unsupported with rawType set so the event is never silently dropped.",
+  "frames": [
+    {
+      "type": "image.attach",
+      "session_id": "sess-image",
+      "payload": {
+        "image_id": "img-1",
+        "mime_type": "image/png",
+        "width": 1280,
+        "height": 720,
+        "alt": "Screenshot of the failing test output"
+      }
+    }
+  ]
+}

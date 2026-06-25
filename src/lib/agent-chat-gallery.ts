@@ -417,6 +417,71 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
+      label: "Sudo: pending (unrestricted)",
+      description:
+        "Privilege-escalation prompt. Explicit approve/deny, with the execution mode shown so the blast radius is clear.",
+      turns: [
+        assistantTurn("sudo-pending", [
+          {
+            type: "sudo",
+            id: "sudo-pending",
+            command: "apt-get install ripgrep",
+            reason: "ripgrep is required to search the dependency tree",
+            mode: "unrestricted",
+            status: "pending",
+          },
+        ]),
+      ],
+    },
+    {
+      label: "Sudo: approved",
+      description: "Resolved sudo request showing the granted decision.",
+      turns: [
+        assistantTurn("sudo-approved", [
+          {
+            type: "sudo",
+            id: "sudo-approved",
+            command: "chmod +x ./scripts/build.sh",
+            reason: "Make the build script executable",
+            mode: "sandboxed",
+            approved: true,
+            status: "resolved",
+          },
+        ]),
+      ],
+    },
+    {
+      label: "Secret: pending",
+      description:
+        "Secret request with a secure (masked) input. The value is never persisted, logged, or echoed. Only the key name (redacted when sensitive) and reason show.",
+      turns: [
+        assistantTurn("secret-pending", [
+          {
+            type: "secret",
+            id: "secret-pending",
+            keyName: "OPENAI_API_KEY",
+            reason: "Needed to call the OpenAI API on your behalf",
+            status: "pending",
+          },
+        ]),
+      ],
+    },
+    {
+      label: "Secret: provided",
+      description: "Resolved secret request. No value is ever shown.",
+      turns: [
+        assistantTurn("secret-provided", [
+          {
+            type: "secret",
+            id: "secret-provided",
+            keyName: "DATABASE_PASSWORD",
+            reason: "Needed to connect to your database",
+            status: "resolved",
+          },
+        ]),
+      ],
+    },
+    {
       label: "Empty: thinking placeholder",
       description:
         "An assistant turn with no parts yet shows the shimmering “Thinking…” fallback.",
