@@ -20,12 +20,21 @@ pub struct WebSearchRequest {
     /// `brave` (default) or `google`; omitted means brave.
     #[serde(default)]
     pub provider: Option<WebSearchProvider>,
+    /// Stable per-call id the client reuses across retries. It scopes the
+    /// metering idempotency key so a genuine repeat search is charged while a
+    /// dropped-response retry is not double-charged.
+    #[serde(default)]
+    pub request_id: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebFetchRequest {
     pub url: String,
+    /// Stable per-call id the client reuses across retries; see
+    /// [`WebSearchRequest::request_id`].
+    #[serde(default)]
+    pub request_id: String,
 }
 
 pub(crate) async fn search(
@@ -34,6 +43,7 @@ pub(crate) async fn search(
     Json(request): Json<WebSearchRequest>,
 ) -> Result<Json<ApiResponse<WebSearchResults>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let request_id = require_request_id(&request.request_id)?;
     let query = request.query.trim().to_string();
     if query.is_empty() {
         return Err(ApiError::bad_request("query_required"));
@@ -46,6 +56,7 @@ pub(crate) async fn search(
         .web()
         .search(WebSearchParams {
             user_id,
+            request_id,
             query,
             limit,
             provider: request.provider.unwrap_or_default(),
@@ -60,6 +71,7 @@ pub(crate) async fn fetch(
     Json(request): Json<WebFetchRequest>,
 ) -> Result<Json<ApiResponse<WebFetchResult>>, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
+    let request_id = require_request_id(&request.request_id)?;
     let url = request.url.trim().to_string();
     if url.is_empty() {
         return Err(ApiError::bad_request("url_required"));
@@ -68,8 +80,25 @@ pub(crate) async fn fetch(
     if !is_http_url(&url) {
         return Err(ApiError::bad_request("url_must_be_http"));
     }
-    let output = state.web().fetch(WebFetchParams { user_id, url }).await?;
+    let output = state
+        .web()
+        .fetch(WebFetchParams {
+            user_id,
+            request_id,
+            url,
+        })
+        .await?;
     Ok(Json(ApiResponse::ok(output.result)))
+}
+
+/// Validates the client-supplied idempotency id shared by both web endpoints.
+fn require_request_id(raw: &str) -> Result<String, ApiError> {
+    let request_id = raw.trim().to_string();
+    if request_id.is_empty() {
+        return Err(ApiError::bad_request("request_id_required"));
+    }
+    validation::validate_text_len("request_id", &request_id, validation::MAX_ID_CHARS)?;
+    Ok(request_id)
 }
 
 /// Only http(s) URLs reach the upstream scraper. Rejecting other schemes here

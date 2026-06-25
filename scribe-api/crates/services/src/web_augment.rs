@@ -70,11 +70,15 @@ impl WebAugmentService {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
             credits: charge_credits,
-            // Hash the query so a client retry of the same search settles
-            // against the same hold instead of double-charging.
+            // The client-supplied request_id scopes idempotency to one logical
+            // call: a dropped-response retry reuses it (no double charge),
+            // while a genuine repeat search uses a fresh id and is charged. The
+            // query hash guards against a client reusing an id for a different
+            // query.
             idempotency_key: format!(
-                "web_search:{}:{}",
+                "web_search:{}:{}:{}",
                 params.user_id.0,
+                params.request_id,
                 sha256_hex(params.query.as_bytes())
             ),
         })
@@ -105,8 +109,9 @@ impl WebAugmentService {
             action_token: authorization.action_token,
             credits: charge_credits,
             idempotency_key: format!(
-                "web_fetch:{}:{}",
+                "web_fetch:{}:{}:{}",
                 params.user_id.0,
+                params.request_id,
                 sha256_hex(params.url.as_bytes())
             ),
         })
@@ -119,6 +124,8 @@ impl WebAugmentService {
 #[derive(Clone, Debug)]
 pub struct WebSearchParams {
     pub user_id: UserId,
+    /// Stable per-call id scoping the metering idempotency key.
+    pub request_id: String,
     pub query: String,
     pub limit: Option<u32>,
     pub provider: WebSearchProvider,
@@ -133,6 +140,8 @@ pub struct WebSearchOutput {
 #[derive(Clone, Debug)]
 pub struct WebFetchParams {
     pub user_id: UserId,
+    /// Stable per-call id scoping the metering idempotency key.
+    pub request_id: String,
     pub url: String,
 }
 
@@ -276,6 +285,7 @@ mod tests {
         let output = service(os_accounts.clone(), Arc::new(FixedFetcher))
             .search(WebSearchParams {
                 user_id: UserId("usr_1".to_string()),
+                request_id: "req_1".to_string(),
                 query: "rust async".to_string(),
                 limit: Some(5),
                 provider: WebSearchProvider::Brave,
@@ -294,7 +304,7 @@ mod tests {
                 Call::Charge {
                     credits: 20,
                     idempotency_key: concat!(
-                        "web_search:usr_1:",
+                        "web_search:usr_1:req_1:",
                         // sha256("rust async")
                         "1b8fc221f0427ee9913341d4d6909e7fc1edb5a0e459ae0a79dad67c9aeba18a",
                     )
@@ -305,11 +315,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeat_search_with_fresh_request_id_uses_a_distinct_charge_key() {
+        // Regression: keying on user+query alone made a genuine repeat search
+        // collide with the prior settlement and replay as free. A fresh
+        // request_id must produce a distinct key so each real call is charged.
+        let os_accounts = Arc::new(RecordingOsAccounts::new(true));
+        let service = service(os_accounts.clone(), Arc::new(FixedFetcher));
+        for request_id in ["req_1", "req_2"] {
+            service
+                .search(WebSearchParams {
+                    user_id: UserId("usr_1".to_string()),
+                    request_id: request_id.to_string(),
+                    query: "rust async".to_string(),
+                    limit: Some(5),
+                    provider: WebSearchProvider::Brave,
+                })
+                .await
+                .expect("search succeeds");
+        }
+
+        let charge_keys = os_accounts
+            .events()
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Charge {
+                    idempotency_key, ..
+                } => Some(idempotency_key),
+                Call::Authorize { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(charge_keys.len(), 2);
+        assert_ne!(charge_keys[0], charge_keys[1]);
+    }
+
+    #[tokio::test]
     async fn blocked_fetch_returns_invalid_input_and_does_not_charge() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let result = service(os_accounts.clone(), Arc::new(BlockedFetcher))
             .fetch(WebFetchParams {
                 user_id: UserId("usr_1".to_string()),
+                request_id: "req_1".to_string(),
                 url: "https://x.com/post".to_string(),
             })
             .await;

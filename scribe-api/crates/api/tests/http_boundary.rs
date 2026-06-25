@@ -263,7 +263,7 @@ async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), 
 async fn integration_web_search_returns_enveloped_results() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/search",
-        &serde_json::json!({ "query": "rust async", "limit": 5 }),
+        &serde_json::json!({ "query": "rust async", "limit": 5, "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -281,7 +281,7 @@ async fn integration_web_search_returns_enveloped_results() -> Result<(), Box<dy
 async fn integration_web_search_requires_auth() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/search",
-        &serde_json::json!({ "query": "rust async" }),
+        &serde_json::json!({ "query": "rust async", "requestId": "req-1" }),
         None,
     )?)
     .await;
@@ -297,7 +297,7 @@ async fn integration_web_search_requires_auth() -> Result<(), Box<dyn Error>> {
 async fn integration_web_search_rejects_blank_query() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/search",
-        &serde_json::json!({ "query": "   " }),
+        &serde_json::json!({ "query": "   ", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -310,10 +310,26 @@ async fn integration_web_search_rejects_blank_query() -> Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
+async fn integration_web_search_requires_request_id() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/search",
+        &serde_json::json!({ "query": "rust async" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "request_id_required");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "https://example.com/post" }),
+        &serde_json::json!({ "url": "https://example.com/post", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -330,7 +346,7 @@ async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> 
 async fn integration_web_fetch_blocked_site_returns_bad_request() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "https://x.com/some/post" }),
+        &serde_json::json!({ "url": "https://x.com/some/post", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -347,7 +363,7 @@ async fn integration_web_fetch_blocked_site_returns_bad_request() -> Result<(), 
 async fn integration_web_fetch_rejects_non_http_url() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "file:///etc/passwd" }),
+        &serde_json::json!({ "url": "file:///etc/passwd", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
