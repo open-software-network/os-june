@@ -94,7 +94,10 @@ impl OsPlatformIssueReportSink {
                     continue;
                 }
             };
-            let form = reqwest::multipart::Form::new().part("file", part);
+            let form = reqwest::multipart::Form::new()
+                .text("is_public", "true")
+                .text("purpose", "attachment")
+                .part("file", part);
             let uploaded: Result<FellowEnvelope<FellowFile>, _> = async {
                 self.http
                     .post(format!("{}/v1/files", self.api_url))
@@ -182,6 +185,46 @@ impl OsPlatformIssueReportSink {
         .await
     }
 
+    async fn create_issue(
+        &self,
+        destination: IssueCreateDestination,
+        report: &IssueReport,
+        file_ids: &[String],
+    ) -> Result<FellowEnvelope<FellowIssue>, DomainError> {
+        match destination {
+            IssueCreateDestination::Project => self.create_project_issue(report, file_ids).await,
+            IssueCreateDestination::OrgFallback => self.create_org_issue(report, file_ids).await,
+        }
+    }
+
+    async fn create_issue_allowing_attachment_fallback(
+        &self,
+        destination: IssueCreateDestination,
+        report: &IssueReport,
+        file_ids: &[String],
+    ) -> Result<(FellowEnvelope<FellowIssue>, usize), DomainError> {
+        let envelope = self.create_issue(destination, report, file_ids).await?;
+        if envelope.success
+            || file_ids.is_empty()
+            || !envelope
+                .message
+                .as_deref()
+                .is_some_and(is_file_attachment_rejection)
+        {
+            return Ok((envelope, file_ids.len()));
+        }
+
+        tracing::warn!(
+            message = envelope.message.as_deref().unwrap_or(""),
+            destination = destination.as_str(),
+            attachments = file_ids.len(),
+            "issue_reports: os-platform rejected attached files; retrying issue create without attachments"
+        );
+        self.create_issue(destination, report, &[])
+            .await
+            .map(|retry| (retry, 0))
+    }
+
     async fn create_org_issue(
         &self,
         report: &IssueReport,
@@ -200,13 +243,22 @@ impl OsPlatformIssueReportSink {
         report: &IssueReport,
         file_ids: &[String],
         project_message: &str,
-    ) -> Option<FellowEnvelope<FellowIssue>> {
-        match self.create_org_issue(report, file_ids).await {
-            Ok(envelope) if envelope.success => Some(envelope),
+    ) -> Option<(FellowEnvelope<FellowIssue>, usize)> {
+        match self
+            .create_issue_allowing_attachment_fallback(
+                IssueCreateDestination::OrgFallback,
+                report,
+                file_ids,
+            )
+            .await
+        {
+            Ok((envelope, attached_file_count)) if envelope.success => {
+                Some((envelope, attached_file_count))
+            }
             Ok(envelope) => {
                 tracing::error!(
                     project_message,
-                    org_message = envelope.message.as_deref().unwrap_or(""),
+                    org_message = envelope.0.message.as_deref().unwrap_or(""),
                     "issue_reports: os-platform rejected both project and org issue creates"
                 );
                 self.fallback_to_log(report, "project_and_org_create_rejected");
@@ -377,11 +429,20 @@ impl IssueReportSink for OsPlatformIssueReportSink {
     async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
         let file_ids = self.upload_attachments(&report).await;
 
-        let (envelope, destination) = match self.create_project_issue(&report, &file_ids).await {
-            Ok(project_envelope) if project_envelope.success => {
-                (project_envelope, IssueCreateDestination::Project)
-            }
-            Ok(project_envelope) => {
+        let (envelope, destination, attached_file_count) = match self
+            .create_issue_allowing_attachment_fallback(
+                IssueCreateDestination::Project,
+                &report,
+                &file_ids,
+            )
+            .await
+        {
+            Ok((project_envelope, attached_file_count)) if project_envelope.success => (
+                project_envelope,
+                IssueCreateDestination::Project,
+                attached_file_count,
+            ),
+            Ok((project_envelope, _)) => {
                 let project_message = project_envelope.message.as_deref().unwrap_or("");
                 tracing::warn!(
                     message = project_message,
@@ -395,7 +456,7 @@ impl IssueReportSink for OsPlatformIssueReportSink {
                 else {
                     return Ok(());
                 };
-                (envelope, IssueCreateDestination::OrgFallback)
+                (envelope.0, IssueCreateDestination::OrgFallback, envelope.1)
             }
             Err(_) => {
                 let project_message = "project_create_transport_or_envelope_error";
@@ -411,7 +472,7 @@ impl IssueReportSink for OsPlatformIssueReportSink {
                 else {
                     return Ok(());
                 };
-                (envelope, IssueCreateDestination::OrgFallback)
+                (envelope.0, IssueCreateDestination::OrgFallback, envelope.1)
             }
         };
         let issue = envelope.data.as_ref();
@@ -421,12 +482,16 @@ impl IssueReportSink for OsPlatformIssueReportSink {
         tracing::info!(
             issue = issue.map_or("", |issue| issue.external_id.as_str()),
             user_id = %report.user_id.0,
-            attachments = file_ids.len(),
+            attachments = attached_file_count,
             destination = destination.as_str(),
             "issue_reports: report filed as an os-platform issue"
         );
         Ok(())
     }
+}
+
+fn is_file_attachment_rejection(message: &str) -> bool {
+    message.contains("file must be public to attach")
 }
 
 fn is_missing_label(message: &str) -> bool {
@@ -797,6 +862,49 @@ mod os_platform_tests {
                 "type": "bug",
                 "status": "todo",
                 "file_ids": ["fil_1"],
+            })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
+            .and(body_partial_json(serde_json::json!({
+                "label_slugs": ["bug"],
+            })))
+            .respond_with(labels_set())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_retries_without_attachments_when_files_are_private() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_private" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "file_ids": ["fil_private"],
+            })))
+            .respond_with(issue_rejected("file must be public to attach"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "file_ids": [],
             })))
             .respond_with(issue_created())
             .expect(1)
