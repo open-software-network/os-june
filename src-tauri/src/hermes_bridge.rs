@@ -63,6 +63,14 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
 "#;
 
+/// Kept in both config.yaml (`agent.system_prompt`) and SOUL.md so the
+/// runtime sees the rule whether it builds from config first or persona files
+/// first. This steers public-web work away from shell/code/browser fallbacks,
+/// which are the sources of approval prompts and the least reliable web path.
+const JUNE_WEB_BROWSING_POLICY_MD: &str = r#"
+Internet browsing: for ordinary public web research, use the native web tools. Search with web_search and read pages with web_extract. Do not ask the user for permission to run code, Python, curl, wget, or browser automation just to search the web or fetch a public page. Use terminal, code execution, browser automation, or computer control for browsing only when the user explicitly asks for that tool, a site requires interactive authenticated browser state, or the native web tools fail; then say what failed before changing approach.
+"#;
+
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
 /// machine (for unrestricted spawns: would engage for sandboxed sessions),
 /// so the soul never describes protections the machine can't provide (the
@@ -3252,6 +3260,31 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
     "context_engine",
 ];
 
+/// Toolsets enabled for ordinary June chat sessions through Hermes'
+/// `platform_toolsets.cli` config. This mirrors Hermes' useful desktop
+/// defaults while intentionally leaving out browser automation and
+/// code-execution: public-web lookup should go through `web`, and local code
+/// tasks can still use terminal/file tools without the extra programmatic web
+/// fallback that triggered approval prompts.
+const JUNE_INTERACTIVE_TOOLSETS: &[&str] = &[
+    "web",
+    "terminal",
+    "file",
+    "vision",
+    "image_gen",
+    "tts",
+    "skills",
+    "todo",
+    "memory",
+    "context_engine",
+    "session_search",
+    "clarify",
+    "delegation",
+    "cronjob",
+    "messaging",
+    "computer_use",
+];
+
 fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
@@ -3263,6 +3296,7 @@ fn sync_hermes_config(
         &model,
         &base_url,
         provider_proxy_token,
+        &JUNE_INTERACTIVE_TOOLSETS.join(", "),
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs(),
     );
@@ -3278,6 +3312,7 @@ fn render_hermes_config(
     model: &str,
     base_url: &str,
     provider_proxy_token: &str,
+    cli_toolsets: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
 ) -> String {
@@ -3299,15 +3334,18 @@ fn render_hermes_config(
   api_mode: chat_completions
 agent:
   max_turns: 90
+  system_prompt: {system_prompt}
 display:
   skin: mono
 platform_toolsets:
+  cli: [{cli_toolsets}]
   cron: [{cron_toolsets}]
 skills:
 {skills_block}"#,
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+        system_prompt = yaml_string(JUNE_WEB_BROWSING_POLICY_MD.trim()),
     )
 }
 
@@ -3347,9 +3385,9 @@ fn sync_june_soul(
         } else {
             JUNE_SOUL_CLI_BLOCKED_MD
         };
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
+        format!("{JUNE_SOUL_MD}{JUNE_WEB_BROWSING_POLICY_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
     } else {
-        JUNE_SOUL_MD.to_string()
+        format!("{JUNE_SOUL_MD}{JUNE_WEB_BROWSING_POLICY_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -4081,10 +4119,20 @@ mod tests {
             PathBuf::from("/Users/dev/.agents/skills"),
             PathBuf::from("/shared/team-skills"),
         ];
-        let config =
-            render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web, memory", &dirs);
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web, terminal",
+            "web, memory",
+            &dirs,
+        );
 
         assert!(config.contains("model:\n  default: \"glm\""));
+        assert!(config.contains("  system_prompt: \"Internet browsing:"));
+        assert!(config.contains("web_search"));
+        assert!(config.contains("web_extract"));
+        assert!(config.contains("  cli: [web, terminal]"));
         assert!(config.contains("  cron: [web, memory]"));
         assert!(config.contains(
             "skills:\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
@@ -4093,7 +4141,7 @@ mod tests {
 
     #[test]
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
-        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[]);
+        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", "web", &[]);
 
         assert!(config.contains("skills:\n  external_dirs: []\n"));
         assert!(!config.contains("    - "));
@@ -4372,6 +4420,24 @@ mod tests {
     }
 
     #[test]
+    fn synced_config_uses_native_web_tools_for_interactive_browsing() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_hermes_config(home.path(), 4242, "proxy-token").expect("sync config");
+
+        let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
+        assert!(config.contains(&format!("cli: [{}]", JUNE_INTERACTIVE_TOOLSETS.join(", "))));
+        assert!(config.contains("system_prompt: \"Internet browsing:"));
+        assert!(config.contains("Search with web_search and read pages with web_extract"));
+        for toolset in ["browser", "code_execution"] {
+            assert!(
+                !JUNE_INTERACTIVE_TOOLSETS.contains(&toolset),
+                "interactive browsing should default away from {toolset}",
+            );
+        }
+    }
+
+    #[test]
     fn sync_june_soul_replaces_default_hermes_identity() {
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -4385,6 +4451,9 @@ mod tests {
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(soul.contains("Open Software"));
+        assert!(soul.contains("use the native web tools"));
+        assert!(soul.contains("web_search"));
+        assert!(soul.contains("web_extract"));
         assert!(!soul.contains("Nous Research"));
     }
 
@@ -4437,6 +4506,7 @@ mod tests {
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
+        assert!(soul.contains("use the native web tools"));
         assert!(!soul.contains("Seatbelt"));
         assert!(!soul.contains("sandbox"));
     }
