@@ -3034,7 +3034,12 @@ export function AgentWorkspace({
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = draft.trim();
-    if ((!message && !attachments.length) || submitting || importingFiles)
+    if (
+      (!message && !attachments.length) ||
+      submitting ||
+      importingFiles ||
+      selectedHermesSessionIsProvisional
+    )
       return;
     // The composer's category chip makes this a report: wrap the prompt to
     // frame it for the team and queue the delivery. Captured before the
@@ -5863,6 +5868,7 @@ export function AgentWorkspace({
                   disabled={
                     submitting ||
                     importingFiles ||
+                    selectedHermesSessionIsProvisional ||
                     (!draft.trim() && !attachments.length)
                   }
                   aria-label={

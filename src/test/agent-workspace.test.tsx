@@ -5477,6 +5477,70 @@ describe("AgentWorkspace", () => {
     expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
   });
 
+  it("restores the hero when optimistic session creation fails", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    let rejectCreate: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return new Promise((_, reject) => {
+          rejectCreate = () => reject(new Error("create failed"));
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      await user.type(await screen.findByRole("textbox"), "first task");
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+
+      await waitFor(() => expect(rejectCreate).toBeDefined());
+      await waitFor(() =>
+        expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument(),
+      );
+      expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
+
+      act(() => rejectCreate?.());
+
+      expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+      expect(screen.getByText(/create failed/)).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByRole("textbox").textContent ?? "").toContain(
+          "first task",
+        ),
+      );
+      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+        expect.stringMatching(/^pending:new-session:/),
+      );
+      expect(
+        sessionDetails.some(
+          (detail) =>
+            detail.selectedSessionId?.startsWith("pending:new-session:") ||
+            detail.sessions.some((session) =>
+              session.id.startsWith("pending:new-session:"),
+            ),
+        ),
+      ).toBe(false);
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
+  });
+
   it("prefills the composer from a prefill shortcut without submitting", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
