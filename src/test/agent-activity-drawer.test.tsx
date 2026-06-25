@@ -76,7 +76,7 @@ describe("AgentActivityDrawer", () => {
     expect(rows).toHaveLength(1);
     const row = rows[0];
     expect(within(row).getByText("Refactor auth")).toBeInTheDocument();
-    expect(within(row).getByText(/read_file/)).toBeInTheDocument();
+    expect(within(row).getByText("Reading files")).toBeInTheDocument();
     // Phase is conveyed in text, sentence case.
     expect(within(row).getByText(/running/i)).toBeInTheDocument();
   });
@@ -145,7 +145,7 @@ describe("AgentActivityDrawer", () => {
     const toolSub = screen.getByText("Research reconnect").closest("li");
     expect(toolSub).not.toBeNull();
     expect(
-      within(toolSub as HTMLElement).getByText("grep"),
+      within(toolSub as HTMLElement).getByText("Searching files"),
     ).toBeInTheDocument();
   });
 

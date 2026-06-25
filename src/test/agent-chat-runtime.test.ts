@@ -855,6 +855,108 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.status).toBe("complete");
   });
 
+  it("labels live terminal tool rows by the activity in their payload", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "terminal",
+            command: "curl https://example.com/docs",
+          },
+        },
+      ],
+    );
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Browsing",
+      status: "running",
+    });
+  });
+
+  it("keeps inferred tool labels when progress frames omit the tool name", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "terminal",
+            command: "curl https://example.com/docs",
+          },
+        },
+        {
+          type: "tool.progress",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: {
+            tool_id: "tool-1",
+            output: "Fetched 42 lines",
+          },
+        },
+        {
+          type: "tool.complete",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: {
+            tool_id: "tool-1",
+            result: "Done",
+          },
+        },
+      ],
+    );
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Browsing",
+      status: "complete",
+    });
+    expect(tool?.type === "tool" ? tool.text : "").toContain(
+      "Fetched 42 lines",
+    );
+  });
+
+  it("keeps inferred labels when persisted tool result messages arrive", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T10:00:00.000Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "list_files",
+              arguments: { path: "src" },
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "list_files",
+        content: "src/App.tsx",
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Reading files",
+      status: "complete",
+    });
+    expect(tool?.type === "tool" ? tool.text : "").toContain("src/App.tsx");
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],
