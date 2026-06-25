@@ -698,6 +698,19 @@ const HERO_SHORTCUT_COUNT = 3;
 // the deck advances (300ms fade + 2 × 90ms stagger, see .agent-hero-chip).
 const HERO_ROTATE_MS = 8000;
 const HERO_CHIP_SWAP_MS = 500;
+const PROVISIONAL_HERMES_SESSION_PREFIX = "pending:new-session:";
+
+function makeProvisionalHermesSessionId() {
+  return `${PROVISIONAL_HERMES_SESSION_PREFIX}${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
+function isProvisionalHermesSessionId(sessionId?: string | null) {
+  return Boolean(
+    sessionId && sessionId.startsWith(PROVISIONAL_HERMES_SESSION_PREFIX),
+  );
+}
 
 // Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
 // is the identity permutation: tests that mock Math.random get the curated
@@ -1818,6 +1831,9 @@ export function AgentWorkspace({
       ),
     [hermesSessionItems, selectedHermesSessionId],
   );
+  const selectedHermesSessionIsProvisional = isProvisionalHermesSessionId(
+    selectedHermesSessionId,
+  );
   const activeGenerationModelId =
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
@@ -2601,6 +2617,7 @@ export function AgentWorkspace({
   // beats landing on the hero screen.
   useEffect(() => {
     if (selectedHermesSessionId) {
+      if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
       writeLastOpenSessionId(selectedHermesSessionId);
     }
   }, [selectedHermesSessionId]);
@@ -2612,10 +2629,18 @@ export function AgentWorkspace({
     // real fetch lands.
     if (!hermesSessionsHydrated) return;
     dispatchAgentSessionsChanged({
-      sessions: hermesSessionItems,
-      selectedSessionId: selectedHermesSessionId,
-      workingSessionIds: Array.from(workingSessionIds),
-      waitingSessionIds: Array.from(waitingSessionIds),
+      sessions: hermesSessionItems.filter(
+        (session) => !isProvisionalHermesSessionId(session.id),
+      ),
+      selectedSessionId: isProvisionalHermesSessionId(selectedHermesSessionId)
+        ? undefined
+        : selectedHermesSessionId,
+      workingSessionIds: Array.from(workingSessionIds).filter(
+        (sessionId) => !isProvisionalHermesSessionId(sessionId),
+      ),
+      waitingSessionIds: Array.from(waitingSessionIds).filter(
+        (sessionId) => !isProvisionalHermesSessionId(sessionId),
+      ),
     });
   }, [
     hermesSessionsHydrated,
@@ -2680,6 +2705,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
+    if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     let cancelled = false;
     listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
@@ -2756,6 +2782,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
+    if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     void loadFilesystemSnapshot();
   }, [bridge.running, selectedHermesSessionId, selectedHermesMessages.length]);
 
@@ -3480,6 +3507,175 @@ export function AgentWorkspace({
     }
   }
 
+  function startOptimisticHermesSession({
+    displayContent,
+    model,
+    title,
+  }: {
+    displayContent: string;
+    model?: string;
+    title: string;
+  }) {
+    const sessionId = makeProvisionalHermesSessionId();
+    const createdAt = new Date().toISOString();
+    const userMessage: HermesSessionMessage = {
+      id: `pending:user:${Date.now()}`,
+      role: "user",
+      content: displayContent,
+      timestamp: createdAt,
+    };
+    heroExitViaThreadRef.current = true;
+    newSessionModeRef.current = false;
+    setNewSessionMode(false);
+    selectedHermesSessionIdRef.current = sessionId;
+    setSelectedHermesSessionId(sessionId);
+    setSelectedTaskId(undefined);
+    setHermesSessionItems((current) => [
+      {
+        id: sessionId,
+        title,
+        preview: displayContent,
+        started_at: createdAt,
+        last_active: createdAt,
+        message_count: 1,
+        ...(model ? { model } : {}),
+      },
+      ...current,
+    ]);
+    setPendingHermesMessages((current) => {
+      const next = {
+        ...current,
+        [sessionId]: [...(current[sessionId] ?? []), userMessage],
+      };
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    setSessionWorking(sessionId, true);
+    setSessionWaiting(sessionId, false);
+    dispatchAgentSessionStatus({
+      title,
+      prompt: displayContent,
+      status: "starting",
+      summary: "Starting June.",
+    });
+    return { createdAt, id: sessionId, userMessage };
+  }
+
+  function migrateOptimisticHermesSession({
+    createdAt,
+    displayContent,
+    fromSessionId,
+    model,
+    title,
+    toSessionId,
+  }: {
+    createdAt: string;
+    displayContent: string;
+    fromSessionId: string;
+    model?: string;
+    title: string;
+    toSessionId: string;
+  }) {
+    if (fromSessionId === toSessionId) return;
+    setHermesSessionItems((current) => {
+      const replacement: HermesSessionInfo = {
+        id: toSessionId,
+        title,
+        preview: displayContent,
+        started_at: createdAt,
+        last_active: createdAt,
+        message_count: 1,
+        ...(model ? { model } : {}),
+      };
+      let replaced = false;
+      const next = current.flatMap((session) => {
+        if (session.id === toSessionId) return [];
+        if (session.id === fromSessionId) {
+          replaced = true;
+          return [{ ...session, ...replacement }];
+        }
+        return [session];
+      });
+      return replaced ? next : [replacement, ...next];
+    });
+    setHermesSessionMessages((current) =>
+      moveRecordKey(current, fromSessionId, toSessionId),
+    );
+    setPendingHermesMessages((current) => {
+      const next = moveRecordKey(current, fromSessionId, toSessionId);
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    liveEventsRef.current = moveRecordKey(
+      liveEventsRef.current,
+      fromSessionId,
+      toSessionId,
+    );
+    setLiveEvents(liveEventsRef.current);
+    setWorkingSessionIds((current) => {
+      const next = new Set(current);
+      if (next.delete(fromSessionId)) next.add(toSessionId);
+      workingSessionIdsRef.current = next;
+      return next;
+    });
+    setWaitingSessionIds((current) => {
+      const next = new Set(current);
+      if (next.delete(fromSessionId)) next.add(toSessionId);
+      waitingSessionIdsRef.current = next;
+      return next;
+    });
+    selectedHermesSessionIdRef.current = toSessionId;
+    setSelectedHermesSessionId(toSessionId);
+  }
+
+  function removeOptimisticHermesSession(
+    optimisticSessionId: string,
+    realSessionId?: string,
+  ) {
+    const ids = new Set(
+      [optimisticSessionId, realSessionId].filter(
+        (sessionId): sessionId is string => Boolean(sessionId),
+      ),
+    );
+    setHermesSessionItems((current) =>
+      current.filter((session) => !ids.has(session.id)),
+    );
+    setHermesSessionMessages((current) => {
+      let next = current;
+      for (const id of ids) next = omitRecordKey(next, id);
+      return next;
+    });
+    setPendingHermesMessages((current) => {
+      let next = current;
+      for (const id of ids) next = omitRecordKey(next, id);
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    let nextLiveEvents = liveEventsRef.current;
+    for (const id of ids) nextLiveEvents = omitRecordKey(nextLiveEvents, id);
+    liveEventsRef.current = nextLiveEvents;
+    setLiveEvents(nextLiveEvents);
+    setWorkingSessionIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      workingSessionIdsRef.current = next;
+      return next;
+    });
+    setWaitingSessionIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      waitingSessionIdsRef.current = next;
+      return next;
+    });
+    const selectedSessionId = selectedHermesSessionIdRef.current;
+    if (selectedSessionId && ids.has(selectedSessionId)) {
+      selectedHermesSessionIdRef.current = undefined;
+      setSelectedHermesSessionId(undefined);
+      newSessionModeRef.current = true;
+      setNewSessionMode(true);
+    }
+  }
+
   async function submitHermesSession(
     content: string,
     explicitSession?: HermesSessionInfo,
@@ -3514,29 +3710,70 @@ export function AgentWorkspace({
       targetSessionId || options?.issueReport
         ? undefined
         : agentSessionTitleForPrompt(titleContent);
+    const fallbackSessionTitle = options?.issueReport
+      ? "Issue report"
+      : explicitSession?.title?.trim() ||
+        explicitSession?.preview?.trim() ||
+        titleFromPrompt(titleContent);
+    const optimisticSession = targetSessionId
+      ? undefined
+      : startOptimisticHermesSession({
+          displayContent,
+          title: fallbackSessionTitle,
+          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        });
+    let storedSessionIdForRollback: string | undefined;
+    const rollbackOptimisticBeforePrompt = (err: unknown): never => {
+      if (optimisticSession) {
+        removeOptimisticHermesSession(
+          optimisticSession.id,
+          storedSessionIdForRollback,
+        );
+      }
+      throw err;
+    };
     // The Unrestricted opt-in is made per session: a new session applies the
     // picker draft, and a follow-up routes to the runtime process matching
     // the mode its session was created with. Without this, one Unrestricted
     // session would leave the runtime unsandboxed under every other
     // session's follow-ups.
-    const gateway = await ensureHermesGateway(
-      targetSessionId
-        ? sessionUnrestricted(targetSessionId)
-        : fullModeDraftRef.current,
-    );
-    const sessionTitle = titlePromise ? await titlePromise : undefined;
-    const created = targetSessionId
-      ? undefined
-      : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
-          title: options?.issueReport
-            ? "Issue report"
-            : (sessionTitle ?? titleFromPrompt(titleContent)),
-          cols: 96,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-        });
-    const storedSessionId =
-      targetSessionId ?? created?.stored_session_id ?? created?.session_id;
-    if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    const { created, gateway, sessionTitle, storedSessionId } =
+      await (async () => {
+        const [nextGateway, nextSessionTitle] = await Promise.all([
+          ensureHermesGateway(
+            targetSessionId
+              ? sessionUnrestricted(targetSessionId)
+              : fullModeDraftRef.current,
+          ),
+          titlePromise ?? Promise.resolve(undefined),
+        ]);
+        const nextCreated = targetSessionId
+          ? undefined
+          : await nextGateway.request<HermesRuntimeSessionResponse>(
+              "session.create",
+              {
+                title: nextSessionTitle ?? fallbackSessionTitle,
+                cols: 96,
+                ...(targetSessionModelId
+                  ? { model: targetSessionModelId }
+                  : {}),
+              },
+            );
+        const nextStoredSessionId =
+          targetSessionId ??
+          nextCreated?.stored_session_id ??
+          nextCreated?.session_id;
+        if (!nextStoredSessionId) {
+          throw new Error("Hermes did not create a session.");
+        }
+        return {
+          created: nextCreated,
+          gateway: nextGateway,
+          sessionTitle: nextSessionTitle,
+          storedSessionId: nextStoredSessionId,
+        };
+      })().catch(rollbackOptimisticBeforePrompt);
+    storedSessionIdForRollback = storedSessionId;
     const queuedIssueReport = options?.issueReport;
     if (queuedIssueReport && targetSessionId) {
       queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
@@ -3556,12 +3793,17 @@ export function AgentWorkspace({
     if (!targetSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
-    const sessionDisplayTitle = options?.issueReport
-      ? "Issue report"
-      : explicitSession?.title?.trim() ||
-        explicitSession?.preview?.trim() ||
-        sessionTitle ||
-        titleFromPrompt(titleContent);
+    const sessionDisplayTitle = sessionTitle || fallbackSessionTitle;
+    if (optimisticSession) {
+      migrateOptimisticHermesSession({
+        createdAt: optimisticSession.createdAt,
+        displayContent,
+        fromSessionId: optimisticSession.id,
+        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        title: sessionDisplayTitle,
+        toSessionId: storedSessionId,
+      });
+    }
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -3597,11 +3839,19 @@ export function AgentWorkspace({
         ).session_id;
     } catch (err) {
       clearQueuedIssueReport();
+      if (optimisticSession) {
+        removeOptimisticHermesSession(
+          optimisticSession.id,
+          storedSessionIdForRollback,
+        );
+      }
       throw err;
     }
     if (!runtimeSessionId) {
       clearQueuedIssueReport();
-      throw new Error("Hermes did not resume the session.");
+      rollbackOptimisticBeforePrompt(
+        new Error("Hermes did not resume the session."),
+      );
     }
     // Feature 19: send any imported images to the session through the
     // structured image.attach flow before the prompt, so the model/tools see
@@ -3609,59 +3859,64 @@ export function AgentWorkspace({
     // image-edit prompt names a concrete source. A failed attach throws here,
     // which the submit() catch turns into a restored composer the user can
     // retry — the prompt is NOT sent with a silently-missing image.
-    await attachPendingImages(
-      gateway,
-      runtimeSessionId,
-      storedSessionId,
-      options?.attachments ?? [],
-    );
-    const createdAt = new Date().toISOString();
-    // A new session (no target id) means the hero is handing over to a fresh
-    // thread — arm the composer glide. Sending into an existing session leaves
-    // the flag alone so a later hero dismissal via the sidebar stays instant.
-    if (!targetSessionId) heroExitViaThreadRef.current = true;
-    newSessionModeRef.current = false;
-    setNewSessionMode(false);
+    try {
+      await attachPendingImages(
+        gateway,
+        runtimeSessionId,
+        storedSessionId,
+        options?.attachments ?? [],
+      );
+    } catch (err) {
+      clearQueuedIssueReport();
+      rollbackOptimisticBeforePrompt(err);
+    }
+    const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
     setRuntimeSessionIds((current) => ({
       ...current,
       [storedSessionId]: runtimeSessionId,
     }));
-    selectedHermesSessionIdRef.current = storedSessionId;
-    setSelectedHermesSessionId(storedSessionId);
-    setSelectedTaskId(undefined);
-    setHermesSessionItems((current) => {
-      if (current.some((session) => session.id === storedSessionId))
-        return current;
-      return [
-        {
-          id: storedSessionId,
-          title: sessionDisplayTitle,
-          preview: displayContent,
-          started_at: createdAt,
-          last_active: createdAt,
-          message_count: 1,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-        },
-        ...current,
-      ];
-    });
+    if (!optimisticSession) {
+      newSessionModeRef.current = false;
+      setNewSessionMode(false);
+      selectedHermesSessionIdRef.current = storedSessionId;
+      setSelectedHermesSessionId(storedSessionId);
+      setSelectedTaskId(undefined);
+      setHermesSessionItems((current) => {
+        if (current.some((session) => session.id === storedSessionId))
+          return current;
+        return [
+          {
+            id: storedSessionId,
+            title: sessionDisplayTitle,
+            preview: displayContent,
+            started_at: createdAt,
+            last_active: createdAt,
+            message_count: 1,
+            ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+          },
+          ...current,
+        ];
+      });
+    }
     const pendingUserMessage: HermesSessionMessage = {
-      id: `pending:user:${Date.now()}`,
+      id: optimisticSession?.userMessage.id ?? `pending:user:${Date.now()}`,
       role: "user",
       content: displayContent,
       timestamp: createdAt,
     };
-    setPendingHermesMessages((current) => {
-      const next = {
-        ...current,
-        [storedSessionId]: [
-          ...(current[storedSessionId] ?? []),
-          pendingUserMessage,
-        ],
-      };
-      pendingHermesMessagesRef.current = next;
-      return next;
-    });
+    if (!optimisticSession) {
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [storedSessionId]: [
+            ...(current[storedSessionId] ?? []),
+            pendingUserMessage,
+          ],
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+    }
     setSessionWorking(storedSessionId, true);
     setSessionWaiting(storedSessionId, false);
     dispatchAgentSessionStatus({
@@ -5437,6 +5692,7 @@ export function AgentWorkspace({
           ) : null}
         </AnimatePresence>
         {selectedHermesSessionId &&
+        !selectedHermesSessionIsProvisional &&
         workingSessionIds.has(selectedHermesSessionId) ? (
           // Feature 06: while June works, offer a compact steer input so the
           // user can redirect the running turn. Stop still owns the send slot
@@ -5584,6 +5840,7 @@ export function AgentWorkspace({
                 <IconMicrophone size={18} />
               </button>
               {selectedHermesSessionId &&
+              !selectedHermesSessionIsProvisional &&
               workingSessionIds.has(selectedHermesSessionId) ? (
                 // While June works, stop owns the send slot — sending would
                 // only bounce off the gateway's busy guard anyway.
@@ -6068,7 +6325,9 @@ export function AgentWorkspace({
           // runtime from another session is still up. The hero composer's
           // picker covers the new-session draft.
           fullMode={
-            !newSessionMode && sessionUnrestricted(selectedHermesSessionId)
+            !newSessionMode &&
+            !selectedHermesSessionIsProvisional &&
+            sessionUnrestricted(selectedHermesSessionId)
           }
           title={
             !newSessionMode && selectedHermesSessionId
@@ -6076,22 +6335,30 @@ export function AgentWorkspace({
               : undefined
           }
           onRename={
-            !newSessionMode && selectedHermesSessionId
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? (title) => renameHermesSession(selectedHermesSessionId, title)
               : undefined
           }
           onDelete={
-            !newSessionMode && selectedHermesSessionId
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
               : undefined
           }
           onShowUsage={
-            !newSessionMode && selectedHermesSessionId
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? () => setUsagePanelSessionId(selectedHermesSessionId)
               : undefined
           }
           onCompactContext={
-            !newSessionMode && selectedHermesSessionId
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? () => setCompactSessionId(selectedHermesSessionId)
               : undefined
           }
@@ -6101,7 +6368,8 @@ export function AgentWorkspace({
           onOpenTuiDebug={
             hermesTuiDebugAvailable() &&
             !newSessionMode &&
-            selectedHermesSessionId
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
               ? () => {
                   setError(null);
                   void openHermesTuiDebug({
@@ -11117,6 +11385,23 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
   if (!(key in record)) return record;
   const next = { ...record };
   delete next[key];
+  return next;
+}
+
+function moveRecordKey<T>(
+  record: Record<string, T[]>,
+  from: string,
+  to: string,
+) {
+  const moved = record[from] ?? [];
+  const existing = record[to] ?? [];
+  const next = { ...record };
+  delete next[from];
+  if (moved.length || existing.length) {
+    next[to] = [...existing, ...moved];
+  } else {
+    delete next[to];
+  }
   return next;
 }
 

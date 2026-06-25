@@ -5424,14 +5424,14 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("plays the hero teardown while a typed submit creates the session", async () => {
+  it("opens the conversation while a typed submit creates the session", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now() }),
     );
-    // Hold session.create open so the in-flight teardown is observable —
-    // without it the greeting and chips sat frozen through the create
-    // latency and vanished in a single frame at the handoff.
+    // Hold session.create open so the optimistic handoff is observable: the
+    // user should land in the conversation immediately instead of waiting for
+    // the runtime session to be created.
     let releaseCreate: (() => void) | undefined;
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -5454,21 +5454,27 @@ describe("AgentWorkspace", () => {
     await user.type(await screen.findByRole("textbox"), "first task");
     await user.click(screen.getByRole("button", { name: "Start session" }));
 
-    // Mid-flight: still the hero, but tearing down.
-    const hero = screen.getByRole("region", { name: "Agent task details" });
-    await waitFor(() =>
-      expect(hero).toHaveAttribute("data-hero-leaving", "true"),
-    );
-    expect(screen.getByText(HERO_GREETING)).toBeInTheDocument();
-
     await waitFor(() => expect(releaseCreate).toBeDefined());
-    act(() => releaseCreate?.());
-
-    // The handoff lands in the conversation with the pending message.
     await waitFor(() =>
       expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument(),
     );
-    expect(await screen.findByText("first task")).toBeInTheDocument();
+    expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^pending:new-session:/),
+    );
+
+    act(() => releaseCreate?.());
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({
+          session_id: "runtime-session-2",
+          text: "first task",
+        }),
+      ),
+    );
+    expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
   });
 
   it("prefills the composer from a prefill shortcut without submitting", async () => {
