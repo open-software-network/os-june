@@ -39,6 +39,9 @@ describe("issue report prompt display", () => {
     expect(bug).toContain("bug report");
     expect(feedback).toContain("sharing feedback");
     expect(feature).toContain("requesting a feature");
+    expect(bug).toContain("Issue 1: <short title>");
+    expect(feedback).toContain("Issue 1: <short title>");
+    expect(feature).toContain("Issue 1: <short title>");
 
     // All three wrap the user's words identically, so the transcript strips
     // them back to exactly what was typed.

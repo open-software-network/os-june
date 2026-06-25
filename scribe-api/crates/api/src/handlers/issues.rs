@@ -22,6 +22,7 @@ pub struct IssueReportResponse {
 /// every attached file, including ones whose bytes were not uploaded.
 #[derive(Default)]
 struct IssueReportFields {
+    category: Option<String>,
     description: String,
     agent_diagnosis: Option<String>,
     attachment_names: Vec<String>,
@@ -63,6 +64,9 @@ impl IssueReportFields {
                 "description" => {
                     fields.description = field.text().await.map_err(multipart_invalid)?;
                 }
+                "category" => {
+                    fields.category = Some(field.text().await.map_err(multipart_invalid)?);
+                }
                 "agentDiagnosis" => {
                     fields.agent_diagnosis = Some(field.text().await.map_err(multipart_invalid)?);
                 }
@@ -91,6 +95,11 @@ impl IssueReportFields {
             "description",
             &self.description,
             validation::MAX_ISSUE_DESCRIPTION_CHARS,
+        )?;
+        validation::validate_optional_text_len(
+            "category",
+            self.category.as_deref(),
+            validation::MAX_ID_CHARS,
         )?;
         validation::validate_optional_text_len(
             "agent_diagnosis",
@@ -143,6 +152,7 @@ pub(crate) async fn submit(
         .issue_reports()
         .deliver(IssueReport {
             user_id,
+            category: clean_optional_text(request.category),
             description: request.description,
             agent_diagnosis: request.agent_diagnosis,
             attachment_names: request.attachment_names,
@@ -159,4 +169,10 @@ pub(crate) async fn submit(
     Ok(Json(ApiResponse::ok(IssueReportResponse {
         received: true,
     })))
+}
+
+fn clean_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

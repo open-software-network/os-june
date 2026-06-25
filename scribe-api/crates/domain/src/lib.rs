@@ -203,11 +203,12 @@ pub struct ChargeRequest {
     pub idempotency_key: String,
 }
 
-/// A user-submitted bug report from the desktop app, paired with the agent's
+/// A user-submitted report from the desktop app, paired with the agent's
 /// own diagnostic assessment of the issue when one was produced.
 #[derive(Clone, Debug)]
 pub struct IssueReport {
     pub user_id: UserId,
+    pub category: Option<String>,
     pub description: String,
     pub agent_diagnosis: Option<String>,
     /// Names of everything the user attached, including files whose bytes
