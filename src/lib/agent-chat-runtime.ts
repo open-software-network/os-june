@@ -171,7 +171,7 @@ export function buildHermesSessionChatTurns(
         createAssistantTurn(turns, messageTimestamp(message));
       upsertToolPart(turn.parts, {
         id,
-        name: message.tool_name ?? "Tool",
+        name: toolActivityLabel(message.tool_name ?? undefined),
         text: textFromHermesContent(message.content) ?? "",
         status: "complete",
       });

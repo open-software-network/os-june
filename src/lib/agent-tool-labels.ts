@@ -38,6 +38,14 @@ export function toolActivityLabel(
   return humanizeToolName(rawName);
 }
 
+export function toolActivitySentence(
+  toolName: string | undefined,
+  payload?: unknown,
+) {
+  const label = toolActivityLabel(toolName, payload);
+  return label === "Tool" ? "Using a tool." : `${label}.`;
+}
+
 export function humanizeToolName(value: string) {
   const cleaned = value
     .replace(/^tools?[._-]/i, "")

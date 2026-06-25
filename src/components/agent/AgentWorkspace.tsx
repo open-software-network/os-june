@@ -275,7 +275,7 @@ import {
   type AgentChatTurn,
   type LiveHermesEvent,
 } from "../../lib/agent-chat-runtime";
-import { toolActivityLabel } from "../../lib/agent-tool-labels";
+import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
   buildAgentChatGallery,
   buildAgentErrorGallery,
@@ -10788,8 +10788,7 @@ function agentStatusSummaryFromHermesEvent(
       stringValue(payload?.name) ??
       stringValue(payload?.tool_name) ??
       stringValue(payload?.tool);
-    const label = toolActivityLabel(name, payload);
-    return label === "Tool" ? "Using a tool." : `Using ${label}.`;
+    return toolActivitySentence(name, payload);
   }
   if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
     return "Thinking.";
