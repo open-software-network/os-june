@@ -753,6 +753,71 @@ describe("AgentWorkspace", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   });
 
+  it("keeps chunk boundary spaces in issue report agent diagnosis", async () => {
+    const user = userEvent.setup();
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+    mocks.listHermesSessionMessages.mockResolvedValue([]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Attach files or tag this message",
+      }),
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Bug report" }),
+    );
+    await user.type(
+      await screen.findByRole("textbox"),
+      "Agent response text is losing spaces",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining("---USER REPORT---"),
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type: "turn.completed", session_id: "runtime-session-1" });
+      }
+    });
+
+    expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "assistant",
+        content: [
+          "Let me get the full",
+          " details: ",
+          { text: "read releases to get detailed" },
+          { text: " information" },
+          " more",
+          " efficiently.",
+        ],
+        timestamp: new Date(Date.now() + 1000).toISOString(),
+      },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "Agent response text is losing spaces",
+        agentDiagnosis:
+          "Let me get the full details: read releases to get detailed information more efficiently.",
+        attachmentNames: [],
+        attachmentPaths: [],
+        sessionId: "session-1",
+      }),
+    );
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  });
+
   it("allows second-precision diagnosis timestamps near the report boundary", async () => {
     const user = userEvent.setup();
     mocks.submitIssueReport.mockResolvedValue({ received: true });
@@ -2855,6 +2920,36 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("CLI Run Tracking")).toBeInTheDocument();
+  });
+
+  it("keeps chunk boundary spaces when suggesting session titles", async () => {
+    const rawTitle = "I want you to find the release details";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-raw",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: ["Find the full", " details", " more", " efficiently"],
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({
+      title: "Release Details",
+    });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Release Details")).toBeInTheDocument();
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledWith(
+      "Find the full details more efficiently",
+    );
   });
 
   it("renders June's CLI access request as a card and enables the setting", async () => {

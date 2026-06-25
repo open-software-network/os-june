@@ -1168,7 +1168,10 @@ function contextCompactionPreview(value: string) {
     : "Earlier turns were compacted into a reference summary.";
 }
 
-function textFromHermesContent(value: unknown, depth = 0): string | undefined {
+export function textFromHermesContent(
+  value: unknown,
+  depth = 0,
+): string | undefined {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
     if (!value.trim()) return undefined;

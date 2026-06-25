@@ -270,6 +270,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   repairContractionSpacing,
+  textFromHermesContent,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -10807,8 +10808,8 @@ function agentStatusSummaryFromHermesEvent(
 
 function visibleHermesMessageText(message: HermesSessionMessage) {
   const text =
-    textFromHermesValue(message.content) ??
-    textFromHermesValue(message.text) ??
+    textFromHermesContent(message.content) ??
+    textFromHermesContent(message.text) ??
     "";
   return displayedComposerUserMessageText(stripHermesVisibleContext(text));
 }
@@ -10870,25 +10871,6 @@ function displayedComposerUserMessageText(content: string): string {
     text = next;
   }
   return text;
-}
-
-function textFromHermesValue(value: unknown): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value === "string") return value.trim() ? value.trim() : undefined;
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
-  if (Array.isArray(value)) {
-    const text = value.map((item) => textFromHermesValue(item) ?? "").join("");
-    return text.trim() ? text.trim() : undefined;
-  }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of ["text", "content", "message", "output_text"]) {
-      const text = textFromHermesValue(record[key]);
-      if (text) return text;
-    }
-  }
-  return undefined;
 }
 
 function sameVisibleMessageText(left: string, right: string) {
