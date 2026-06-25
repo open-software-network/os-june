@@ -46,6 +46,11 @@ authorize_hold_ttl_dictate_transcribe_secs = 30
 authorize_hold_ttl_dictate_cleanup_secs = 30
 note_transcribe_preview_max_audio_secs = 30
 flat_estimate_credits = 250
+# Flat per-request credits for the Venice web tools. Venice bills ~$0.01
+# (about 10 credits) per /augment/search and /augment/scrape call.
+web_search_credits = 20
+web_fetch_credits = 20
+authorize_hold_ttl_web_secs = 30
 
 [upstreams.openai]
 base_url = "https://api.openai.com/v1"

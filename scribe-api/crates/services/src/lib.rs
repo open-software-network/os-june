@@ -9,6 +9,7 @@ mod note_transcribe;
 mod pricing;
 mod prompts;
 mod util;
+mod web_augment;
 
 pub use agent_chat::{AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps};
 pub use dictate::{
@@ -23,6 +24,10 @@ pub use note_transcribe::{
     NoteTranscribeOutput, NoteTranscribeParams, NoteTranscribeService, NoteTranscribeServiceDeps,
 };
 pub use pricing::{PricingError, PricingTable};
+pub use web_augment::{
+    WebAugmentService, WebAugmentServiceDeps, WebFetchOutput, WebFetchParams, WebSearchOutput,
+    WebSearchParams,
+};
 
 #[cfg(test)]
 mod tests {

@@ -32,6 +32,7 @@ pub use handlers::health::HealthDto;
 pub use handlers::issues::IssueReportResponse;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
+pub use handlers::web::{WebFetchRequest, WebSearchRequest};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
 pub fn router(state: ApiState) -> Router {
@@ -68,6 +69,14 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/dictate/cleanup",
             post(handlers::dictate::cleanup).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/web/search",
+            post(handlers::web::search).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            "/v1/web/fetch",
+            post(handlers::web::fetch).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
             "/v1/issue-reports",

@@ -216,6 +216,16 @@ pub struct OsAccountsConfig {
     /// max concurrency per user) for not needing to probe audio duration or
     /// pre-count tokens. Set via `SCRIBE__OS_ACCOUNTS__FLAT_ESTIMATE_CREDITS`.
     pub flat_estimate_credits: u64,
+    /// Flat credits charged per Venice web search (`/v1/web/search`). Venice
+    /// bills roughly $0.01 (about 10 credits) per request; the surplus covers
+    /// overhead. The authorize estimate and the settled charge are both this
+    /// amount, since the upstream call is flat priced.
+    pub web_search_credits: u64,
+    /// Flat credits charged per Venice web fetch (`/v1/web/fetch`). Same ~$0.01
+    /// upstream cost as search.
+    pub web_fetch_credits: u64,
+    /// Hold TTL for the metered web search and web fetch actions.
+    pub authorize_hold_ttl_web_secs: u64,
 }
 
 impl Debug for OsAccountsConfig {
@@ -252,6 +262,12 @@ impl Debug for OsAccountsConfig {
                 &self.note_transcribe_preview_max_audio_secs,
             )
             .field("flat_estimate_credits", &self.flat_estimate_credits)
+            .field("web_search_credits", &self.web_search_credits)
+            .field("web_fetch_credits", &self.web_fetch_credits)
+            .field(
+                "authorize_hold_ttl_web_secs",
+                &self.authorize_hold_ttl_web_secs,
+            )
             .finish()
     }
 }
@@ -517,6 +533,9 @@ impl Default for AppConfig {
                 authorize_hold_ttl_dictate_cleanup_secs: 30,
                 note_transcribe_preview_max_audio_secs: 30,
                 flat_estimate_credits: 250,
+                web_search_credits: 20,
+                web_fetch_credits: 20,
+                authorize_hold_ttl_web_secs: 30,
             },
             upstreams: UpstreamsConfig {
                 openai: UpstreamConfig {

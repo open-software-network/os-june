@@ -10,6 +10,7 @@ pub mod openai;
 pub mod os_accounts;
 pub mod routing;
 pub mod venice;
+pub mod venice_augment;
 pub mod wav_probe;
 
 mod retry;
@@ -27,4 +28,5 @@ pub use routing::RoutingTranscriber;
 pub use venice::{
     VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, VeniceTranscriber,
 };
+pub use venice_augment::VeniceAugment;
 pub use wav_probe::{ProbeError, WavDurationProbe};

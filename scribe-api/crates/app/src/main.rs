@@ -7,13 +7,13 @@ use scribe_config::{
 use scribe_providers::{
     JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
     MultiFormatDurationProbe, OsAccountsHttpClient, OsPlatformIssueReportSink, RoutingTranscriber,
-    VeniceAgentChat, VeniceCleaner, VeniceGenerator, VeniceModelCatalog, client_with_timeout,
-    default_client, jwks_client,
+    VeniceAgentChat, VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceModelCatalog,
+    client_with_timeout, default_client, jwks_client,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable,
+    PricingTable, WebAugmentService, WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -111,6 +111,12 @@ fn build_router(
     let agent_chat_completer: Arc<dyn scribe_domain::AgentChatCompleter> = Arc::new(
         VeniceAgentChat::from_config(upstream_http.clone(), &config.upstreams.venice),
     );
+    // One client backs both web traits (search + fetch) over the same Venice
+    // credential and base URL.
+    let web_augment = Arc::new(VeniceAugment::from_config(
+        upstream_http.clone(),
+        &config.upstreams.venice,
+    ));
     let duration_probe: Arc<dyn scribe_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
@@ -141,6 +147,14 @@ fn build_router(
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_note_generate_secs,
         flat_estimate_credits,
     }));
+    let web = Arc::new(WebAugmentService::new(WebAugmentServiceDeps {
+        os_accounts: os_accounts.clone(),
+        searcher: web_augment.clone() as Arc<dyn scribe_domain::WebSearcher>,
+        fetcher: web_augment as Arc<dyn scribe_domain::WebFetcher>,
+        search_credits: config.os_accounts.web_search_credits,
+        fetch_credits: config.os_accounts.web_fetch_credits,
+        hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_web_secs,
+    }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
         pricing: pricing.clone(),
         os_accounts,
@@ -161,6 +175,7 @@ fn build_router(
         note_generate,
         agent_chat,
         dictate,
+        web,
         issue_reports,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,

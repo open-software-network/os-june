@@ -11,12 +11,13 @@ use scribe_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
     Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
     GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportSink, OsAccountsClient,
-    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
+    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use scribe_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    PricingTable,
+    PricingTable, WebAugmentService, WebAugmentServiceDeps,
 };
 use std::{
     collections::BTreeMap,
@@ -259,6 +260,106 @@ async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), 
 }
 
 #[tokio::test]
+async fn integration_web_search_returns_enveloped_results() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/search",
+        &serde_json::json!({ "query": "rust async", "limit": 5 }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["provider"], "brave");
+    assert_eq!(body["data"]["results"][0]["title"], "Result one");
+    assert_eq!(body["data"]["results"][0]["url"], "https://example.com/one");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_search_requires_auth() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/search",
+        &serde_json::json!({ "query": "rust async" }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 3001);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_search_rejects_blank_query() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/search",
+        &serde_json::json!({ "query": "   " }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "query_required");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/fetch",
+        &serde_json::json!({ "url": "https://example.com/post" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["format"], "markdown");
+    assert_eq!(body["data"]["content"], "# Heading\n\nBody.");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_fetch_blocked_site_returns_bad_request() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/fetch",
+        &serde_json::json!({ "url": "https://x.com/some/post" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    // A site Venice refuses to scrape surfaces as a usable 400, not a 502.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "web_fetch_unsupported_url");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_web_fetch_rejects_non_http_url() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/web/fetch",
+        &serde_json::json!({ "url": "file:///etc/passwd" }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "url_must_be_http");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> {
     let response = send(get_request("/verify")?).await;
 
@@ -374,13 +475,21 @@ fn test_state_with_sinks(
         })),
         dictate: Arc::new(DictateService::new(DictateServiceDeps {
             pricing,
-            os_accounts,
+            os_accounts: os_accounts.clone(),
             transcriber,
             cleaner,
             duration_probe,
             transcribe_hold_ttl_seconds: 30,
             cleanup_hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
+        })),
+        web: Arc::new(WebAugmentService::new(WebAugmentServiceDeps {
+            os_accounts,
+            searcher: Arc::new(FakeWebSearcher),
+            fetcher: Arc::new(FakeWebFetcher),
+            search_credits: 20,
+            fetch_credits: 20,
+            hold_ttl_seconds: 30,
         })),
         issue_reports,
         limits: ApiLimits {
@@ -692,6 +801,44 @@ impl AgentChatCompleter for FakeChatCompleter {
                 prompt_tokens: 100,
                 completion_tokens: 100,
             },
+        })
+    }
+}
+
+struct FakeWebSearcher;
+
+#[async_trait]
+impl WebSearcher for FakeWebSearcher {
+    async fn search(&self, request: WebSearchRequest) -> Result<WebSearchResults, DomainError> {
+        Ok(WebSearchResults {
+            query: request.query,
+            provider: "brave".to_string(),
+            results: vec![WebSearchResult {
+                title: "Result one".to_string(),
+                url: "https://example.com/one".to_string(),
+                snippet: Some("A snippet.".to_string()),
+                published_at: Some("2026-01-01".to_string()),
+            }],
+        })
+    }
+}
+
+struct FakeWebFetcher;
+
+#[async_trait]
+impl WebFetcher for FakeWebFetcher {
+    async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResult, DomainError> {
+        // Mirror Venice rejecting bot-walled sites with a deterministic error.
+        if request.url.contains("x.com") {
+            return Err(DomainError::InvalidInput {
+                reason: "web_fetch_unsupported_url".to_string(),
+            });
+        }
+        Ok(WebFetchResult {
+            url: request.url,
+            content: "# Heading\n\nBody.".to_string(),
+            format: "markdown".to_string(),
+            provider: "venice".to_string(),
         })
     }
 }
