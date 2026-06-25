@@ -4932,6 +4932,29 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("imports typed file paths from the /file slash command", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox");
+    await user.type(composer, '/file "/Users/alex/Desktop/Q2 report.pdf"');
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
+        "/Users/alex/Desktop/Q2 report.pdf",
+      ),
+    );
+    expect(await screen.findByText("Q2 report.pdf")).toBeInTheDocument();
+    expect(composer.textContent).toBe("");
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method]) => method === "prompt.submit",
+      ),
+    ).toBe(false);
+  });
+
   it("attaches a dropped image to the session via image.attach and marks it attached", async () => {
     // Feature 19: on submit, an imported image is sent to the session through
     // the structured image.attach RPC, the chip flips to "Attached", and the
@@ -6152,6 +6175,46 @@ describe("AgentWorkspace", () => {
           command: "/model kimi-k2-6",
         }),
       );
+      expect(
+        await screen.findByText("Switched this session to Kimi K2.6."),
+      ).toBeInTheDocument();
+    });
+
+    it("dispatches /model from the composer slash command", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      const user = userEvent.setup();
+
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      const composer = await screen.findByRole("textbox", {
+        name: "Message June",
+      });
+      await user.type(composer, "/model kimi");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+          sessionId: "session-1",
+          model: "kimi-k2-6",
+        }),
+      );
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+          session_id: "session-1",
+          command: "/model kimi-k2-6",
+        }),
+      );
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method]) => method === "prompt.submit",
+        ),
+      ).toBe(false);
+      expect(composer.textContent).toBe("");
       expect(
         await screen.findByText("Switched this session to Kimi K2.6."),
       ).toBeInTheDocument();

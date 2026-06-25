@@ -36,6 +36,8 @@ describe("composer slash menu", () => {
     await waitFor(() =>
       expect(document.querySelector(".agent-category-menu-host")).toBeTruthy(),
     );
+    expect(screen.getByRole("option", { name: "Model" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "File" })).toBeInTheDocument();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }));
 

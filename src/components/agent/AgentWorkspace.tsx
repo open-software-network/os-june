@@ -241,6 +241,13 @@ import {
   skillSlashResolutionError,
 } from "../../lib/skill-slash-commands";
 import {
+  isBuiltinComposerSlashCommand,
+  parseBuiltinComposerSlashCommand,
+  parseSlashFileArguments,
+  resolveSlashModel,
+  slashModelResolutionError,
+} from "../../lib/agent-composer-slash-commands";
+import {
   ComposerEditor,
   type ComposerEditorHandle,
 } from "./composer/ComposerEditor";
@@ -1406,6 +1413,7 @@ export function AgentWorkspace({
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>(
     [],
   );
+  const generationModelsRef = useRef<VeniceModelDto[]>([]);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] =
     useState<ComposerModelFlyout>(null);
@@ -2380,14 +2388,18 @@ export function AgentWorkspace({
         modelsResponse.selectedModel;
       if (requestId === generationModelRequestSequence.current) {
         defaultGenerationModelIdRef.current = selectedModelId;
+        generationModelsRef.current = modelsResponse.models;
         setGenerationModels(modelsResponse.models);
         setDefaultGenerationModelId(selectedModelId);
       }
+      return { models: modelsResponse.models, selectedModelId };
     } catch {
       if (requestId === generationModelRequestSequence.current) {
         defaultGenerationModelIdRef.current = "";
+        generationModelsRef.current = [];
         setDefaultGenerationModelId("");
       }
+      return null;
     }
   }, []);
 
@@ -2448,14 +2460,16 @@ export function AgentWorkspace({
   // unsupported, so there is no confirming event to wait on.
   async function handleSelectGenerationModel(modelId: string) {
     setComposerModelOpen(false);
-    const chosen = generationModels.find((model) => model.id === modelId);
+    const chosen = generationModelsRef.current.find(
+      (model) => model.id === modelId,
+    );
     // Defense in depth: the picker already hides tool-less models, but the
     // agent bricks without function calling, so refuse one rather than switch.
     if (chosen && !modelSupportsTools(chosen)) {
       setError(
         `${chosen.name} can't run June's tools, so it can't be used for the agent.`,
       );
-      return;
+      return false;
     }
     const modelName = chosen?.name ?? modelId;
     const sessionId = newSessionModeRef.current
@@ -2472,7 +2486,7 @@ export function AgentWorkspace({
         setError(null);
       } catch (err) {
         setError(messageFromError(err));
-        return;
+        return false;
       }
       setModelSwitchNotice({
         message: resolveModelSwitchOutcome({
@@ -2482,7 +2496,7 @@ export function AgentWorkspace({
         }).notice,
         sessionId: null,
       });
-      return;
+      return true;
     }
 
     // Open chat: override the model for THIS chat only (never the global
@@ -2524,7 +2538,7 @@ export function AgentWorkspace({
         ),
       );
       setError(messageFromError(err));
-      return;
+      return false;
     }
     let dispatchSucceeded = false;
     try {
@@ -2549,6 +2563,7 @@ export function AgentWorkspace({
       }).notice,
       sessionId,
     });
+    return true;
   }
 
   useEffect(() => {
@@ -3004,11 +3019,94 @@ export function AgentWorkspace({
     };
   }
 
+  async function handleBuiltinComposerSlashCommand(commandText: string) {
+    if (categoryRef.current) return false;
+    const parsed = parseBuiltinComposerSlashCommand(commandText);
+    if (!parsed) return false;
+
+    if (parsed.name === "model") {
+      await runModelSlashCommand(parsed.argument, commandText);
+      return true;
+    }
+
+    await runFileSlashCommand(parsed.argument, commandText);
+    return true;
+  }
+
+  async function runModelSlashCommand(argument: string, commandText: string) {
+    const query = argument.trim();
+    if (!query) {
+      clearComposerCommandDraft(commandText);
+      openComposerModelPicker();
+      return;
+    }
+
+    const models = await generationModelsForSlashCommand();
+    if (!models.length) {
+      setError("Could not load models. Try again in a moment.");
+      return;
+    }
+
+    const resolution = resolveSlashModel(query, models);
+    if (resolution.status !== "resolved") {
+      setError(slashModelResolutionError(resolution));
+      return;
+    }
+
+    const selected = await handleSelectGenerationModel(resolution.model.id);
+    if (selected) clearComposerCommandDraft(commandText);
+  }
+
+  async function generationModelsForSlashCommand() {
+    if (generationModelsRef.current.length) return generationModelsRef.current;
+    const loaded = await loadGenerationModel();
+    return loaded?.models ?? generationModelsRef.current;
+  }
+
+  async function runFileSlashCommand(argument: string, commandText: string) {
+    if (!argument.trim()) {
+      clearComposerCommandDraft(commandText);
+      await pickAttachments();
+      return;
+    }
+
+    const parsed = parseSlashFileArguments(argument);
+    if (parsed.status === "error") {
+      setError(parsed.message);
+      return;
+    }
+    if (!parsed.paths.length) {
+      clearComposerCommandDraft(commandText);
+      await pickAttachments();
+      return;
+    }
+
+    const imported = await importDroppedFilePaths(parsed.paths);
+    if (imported) clearComposerCommandDraft(commandText);
+  }
+
+  function clearComposerCommandDraft(commandText: string) {
+    if (draftRef.current.trim() !== commandText.trim()) return;
+    if (categoryRef.current) return;
+    composerEditorRef.current?.clear();
+    draftRef.current = "";
+    categoryRef.current = null;
+    setDraft("");
+    setCategory(null);
+    rememberComposerDraft(
+      composerDraftKeyRef.current,
+      "",
+      null,
+      attachmentsRef.current,
+    );
+  }
+
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = draft.trim();
     if ((!message && !attachments.length) || submitting || importingFiles)
       return;
+    if (message && (await handleBuiltinComposerSlashCommand(message))) return;
     // The composer's category chip makes this a report: wrap the prompt to
     // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
@@ -3201,7 +3299,7 @@ export function AgentWorkspace({
     items: T[],
     importItem: (item: T) => Promise<ImportedHermesFile>,
   ) {
-    if (!items.length) return;
+    if (!items.length) return true;
     setImportingFiles(true);
     try {
       // One at a time on purpose: a dropped file's bytes can be 50 MB, so
@@ -3224,8 +3322,10 @@ export function AgentWorkspace({
       ]);
       setError(null);
       void loadFilesystemSnapshot();
+      return true;
     } catch (err) {
       setError(messageFromError(err));
+      return false;
     } finally {
       setImportingFiles(false);
     }
@@ -3236,7 +3336,7 @@ export function AgentWorkspace({
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
       .filter(Boolean)
       .slice(0, 8);
-    await importAttachments(uniquePaths, importHermesBridgeFile);
+    return importAttachments(uniquePaths, importHermesBridgeFile);
   }
 
   // DOM drops are how Finder files actually arrive: Tauri's drag-drop
@@ -3303,11 +3403,12 @@ export function AgentWorkspace({
         multiple: true,
         title: "Attach files",
       });
-      if (!selected) return;
+      if (!selected) return false;
       const paths = Array.isArray(selected) ? selected : [selected];
-      await importDroppedFilePaths(paths);
+      return await importDroppedFilePaths(paths);
     } catch (err) {
       setError(messageFromError(err));
+      return false;
     }
   }
 
@@ -5506,7 +5607,8 @@ export function AgentWorkspace({
               if (
                 !skills &&
                 !skillCommandLoading &&
-                text.trimStart().startsWith("/")
+                text.trimStart().startsWith("/") &&
+                !isBuiltinComposerSlashCommand(text)
               ) {
                 void loadSkillCommands({ silent: true });
               }
