@@ -7470,7 +7470,7 @@ function SkillEditorPanel({
             Read-only. This skill loads from ~/.agents/skills. Edit it on disk.
           </p>
         ) : null}
-        <button type="button" disabled={saving} onClick={onCancel}>
+        <button type="button" disabled={saving || loading} onClick={onCancel}>
           Cancel
         </button>
         {readOnly ? null : (

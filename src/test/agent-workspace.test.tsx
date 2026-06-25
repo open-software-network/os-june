@@ -366,6 +366,39 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps skill editor cancel disabled while the document loads", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SkillsToolsPanel
+        loading={false}
+        query=""
+        saving={null}
+        skills={[
+          {
+            name: "editing-skill",
+            description: "Drafts responses.",
+            category: "Writing",
+            enabled: true,
+          },
+        ]}
+        toolsets={[]}
+        onQueryChange={vi.fn()}
+        onRefresh={vi.fn()}
+        onToggleSkill={vi.fn()}
+        onToggleToolset={vi.fn()}
+        onOpenSkill={() => new Promise<never>(() => undefined)}
+        onSaveSkill={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /editing-skill/i }));
+
+    expect(
+      await screen.findByRole("button", { name: "Cancel" }),
+    ).toBeDisabled();
+  });
+
   it("confirms before canceling dirty skill edits", async () => {
     const user = userEvent.setup();
 
