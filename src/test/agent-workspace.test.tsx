@@ -2957,6 +2957,99 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("copies visible user and assistant messages", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "Draft the launch plan",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here is the launch plan.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const userTurn = (await screen.findByText("Draft the launch plan")).closest(
+      "article",
+    );
+    const assistantTurn = (
+      await screen.findByText("Here is the launch plan.")
+    ).closest("article");
+    expect(userTurn).not.toBeNull();
+    expect(assistantTurn).not.toBeNull();
+
+    await user.click(
+      within(assistantTurn as HTMLElement).getByRole("button", {
+        name: "Copy message",
+      }),
+    );
+    expect(writeText).toHaveBeenLastCalledWith("Here is the launch plan.");
+
+    await user.click(
+      within(userTurn as HTMLElement).getByRole("button", {
+        name: "Copy message",
+      }),
+    );
+    expect(writeText).toHaveBeenLastCalledWith("Draft the launch plan");
+  });
+
+  it("prefills a user prompt for editing and resubmits the revision", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "Draft the launch plan",
+        timestamp: "2026-06-12T10:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Here is the launch plan.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const userTurn = (await screen.findByText("Draft the launch plan")).closest(
+      "article",
+    );
+    expect(userTurn).not.toBeNull();
+    await user.click(
+      within(userTurn as HTMLElement).getByRole("button", {
+        name: "Edit message",
+      }),
+    );
+
+    const composer = screen.getByRole("textbox");
+    expect(composer).toHaveTextContent("Draft the launch plan");
+    await user.type(composer, " for sales");
+
+    const send = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(send).not.toBeDisabled());
+    await user.click(send);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Draft the launch plan for sales",
+      }),
+    );
+  });
+
   it("repairs gateway-glued contractions in assistant prose but not code or user text", async () => {
     mocks.listHermesSessionMessages.mockResolvedValue([
       {

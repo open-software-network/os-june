@@ -1658,6 +1658,7 @@ input:focus-visible,
 
 .agent-turn-actions {
   display: flex;
+  gap: var(--sp-1);
   width: 100%;
   margin-top: var(--sp-1);
   opacity: 0;
@@ -1693,6 +1694,10 @@ input:focus-visible,
 .agent-turn-action:hover:not(:disabled) {
   background: var(--accent);
   color: var(--accent-foreground);
+}
+
+.agent-turn-action[data-copied] {
+  color: var(--success);
 }
 
 .agent-turn-action:disabled {
