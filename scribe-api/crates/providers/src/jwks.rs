@@ -158,23 +158,30 @@ impl JwksTokenVerifier {
 
     async fn refresh_jwks(&self) -> Result<(), AuthError> {
         self.mark_attempt()?;
-        let jwks = self
-            .http
-            .get(&self.jwks_url)
-            .send()
-            .await
-            .map_err(|_| AuthError::InvalidToken)?
-            .error_for_status()
-            .map_err(|_| AuthError::InvalidToken)?
-            .json::<JwkSet>()
-            .await
-            .map_err(|_| AuthError::InvalidToken)?;
+        let jwks = self.fetch_jwks().await.map_err(|error| {
+            tracing::warn!(
+                %error,
+                jwks_url = %self.jwks_url,
+                "JWKS refresh failed"
+            );
+            AuthError::InvalidToken
+        })?;
         let mut cache = self.cache.lock().map_err(|_| AuthError::InvalidToken)?;
         cache.jwks = Some(CachedJwks {
             jwks,
             fetched_at: Instant::now(),
         });
         Ok(())
+    }
+
+    async fn fetch_jwks(&self) -> Result<JwkSet, reqwest::Error> {
+        self.http
+            .get(&self.jwks_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<JwkSet>()
+            .await
     }
 
     fn mark_attempt(&self) -> Result<(), AuthError> {
