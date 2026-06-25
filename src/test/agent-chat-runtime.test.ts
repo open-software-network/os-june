@@ -879,6 +879,49 @@ describe("Agent chat runtime", () => {
     });
   });
 
+  it("keeps inferred tool labels when progress frames omit the tool name", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "tool.start",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          payload: {
+            tool_id: "tool-1",
+            name: "terminal",
+            command: "curl https://example.com/docs",
+          },
+        },
+        {
+          type: "tool.progress",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          payload: {
+            tool_id: "tool-1",
+            output: "Fetched 42 lines",
+          },
+        },
+        {
+          type: "tool.complete",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+          payload: {
+            tool_id: "tool-1",
+            result: "Done",
+          },
+        },
+      ],
+    );
+
+    const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({
+      name: "Browsing",
+      status: "complete",
+    });
+    expect(tool?.type === "tool" ? tool.text : "").toContain(
+      "Fetched 42 lines",
+    );
+  });
+
   it("marks the in-flight turn errored even when the error has no text", () => {
     const turns = buildAgentChatTurns(
       [],

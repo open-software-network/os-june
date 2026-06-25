@@ -887,7 +887,8 @@ function upsertToolPart(
         (!next.id && part.name === next.name && part.status === "running")),
   );
   if (existing) {
-    existing.name = next.name || existing.name;
+    existing.name =
+      next.name && next.name !== "Tool" ? next.name : existing.name;
     existing.status = next.status;
     if (next.text && next.text !== existing.text) {
       existing.text = appendLogText(existing.text, next.text);
