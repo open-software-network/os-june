@@ -2959,11 +2959,9 @@ describe("AgentWorkspace", () => {
 
   it("copies visible user and assistant messages", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+    const writeText = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue(undefined);
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "u1",
@@ -2979,30 +2977,34 @@ describe("AgentWorkspace", () => {
       },
     ]);
 
-    render(<AgentWorkspace initialSession={existingSession} />);
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
 
-    const userTurn = (await screen.findByText("Draft the launch plan")).closest(
-      "article",
-    );
-    const assistantTurn = (
-      await screen.findByText("Here is the launch plan.")
-    ).closest("article");
-    expect(userTurn).not.toBeNull();
-    expect(assistantTurn).not.toBeNull();
+      const userTurn = (
+        await screen.findByText("Draft the launch plan")
+      ).closest("article");
+      const assistantTurn = (
+        await screen.findByText("Here is the launch plan.")
+      ).closest("article");
+      expect(userTurn).not.toBeNull();
+      expect(assistantTurn).not.toBeNull();
 
-    await user.click(
-      within(assistantTurn as HTMLElement).getByRole("button", {
-        name: "Copy message",
-      }),
-    );
-    expect(writeText).toHaveBeenLastCalledWith("Here is the launch plan.");
+      await user.click(
+        within(assistantTurn as HTMLElement).getByRole("button", {
+          name: "Copy message",
+        }),
+      );
+      expect(writeText).toHaveBeenLastCalledWith("Here is the launch plan.");
 
-    await user.click(
-      within(userTurn as HTMLElement).getByRole("button", {
-        name: "Copy message",
-      }),
-    );
-    expect(writeText).toHaveBeenLastCalledWith("Draft the launch plan");
+      await user.click(
+        within(userTurn as HTMLElement).getByRole("button", {
+          name: "Copy message",
+        }),
+      );
+      expect(writeText).toHaveBeenLastCalledWith("Draft the launch plan");
+    } finally {
+      writeText.mockRestore();
+    }
   });
 
   it("prefills a user prompt for editing and resubmits the revision", async () => {

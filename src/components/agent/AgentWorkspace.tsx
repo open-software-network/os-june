@@ -8283,8 +8283,7 @@ function AgentChatTurnRow({
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const copyText = copyableTextForTurn(turn);
-  const userPromptText =
-    turn.role === "user" ? userPromptTextForTurn(turn) : "";
+  const userPromptText = turn.role === "user" ? copyText : "";
 
   async function copyTurn() {
     if (!copyText) return;
