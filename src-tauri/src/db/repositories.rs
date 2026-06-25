@@ -314,6 +314,39 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn replace_agent_hermes_session_id(
+        &self,
+        old_session_id: &str,
+        new_session_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        query(
+            "INSERT OR IGNORE INTO session_folders (session_id, folder_id, assigned_at)
+             SELECT ?, folder_id, assigned_at FROM session_folders WHERE session_id = ?",
+        )
+        .bind(new_session_id)
+        .bind(old_session_id)
+        .execute(&mut *tx)
+        .await?;
+        query("DELETE FROM session_folders WHERE session_id = ?")
+            .bind(old_session_id)
+            .execute(&mut *tx)
+            .await?;
+        query(
+            "UPDATE agent_tasks
+             SET hermes_session_id = ?, updated_at = ?
+             WHERE hermes_session_id = ?",
+        )
+        .bind(new_session_id)
+        .bind(now)
+        .bind(old_session_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn list_dictionary_entries(
         &self,
     ) -> Result<Vec<DictionaryEntryDto>, sqlx::error::Error> {

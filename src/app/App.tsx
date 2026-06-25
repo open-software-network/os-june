@@ -91,6 +91,7 @@ import {
   removeSessionFromFolder,
   recoverRecording,
   renameFolder,
+  replaceAgentHermesSession,
   resumeRecording,
   retryProcessing,
   startRecording,
@@ -108,9 +109,11 @@ import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
+  AGENT_SESSION_ID_ROTATED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
+  type AgentSessionIdRotatedDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { notifyAgentSessionStatus } from "../lib/agent-notifications";
@@ -207,6 +210,62 @@ function sidebarMaxWidth() {
 }
 
 const TAB_ICON_SIZE = 14;
+
+function replaceSessionIdInSessions(
+  sessions: HermesSessionInfo[],
+  oldSessionId: string,
+  newSessionId: string,
+  replacement?: HermesSessionInfo,
+) {
+  let inserted = false;
+  const next = sessions.flatMap((session) => {
+    if (session.id === newSessionId && session.id !== oldSessionId) return [];
+    if (session.id !== oldSessionId) return [session];
+    inserted = true;
+    return [
+      {
+        ...session,
+        ...replacement,
+        id: newSessionId,
+      },
+    ];
+  });
+  if (!inserted && replacement) return [replacement, ...next];
+  return next;
+}
+
+function replaceSessionIdInSet<T extends ReadonlySet<string>>(
+  current: T,
+  oldSessionId: string,
+  newSessionId: string,
+) {
+  const next = new Set(current);
+  const hadOld = next.delete(oldSessionId);
+  if (hadOld) next.add(newSessionId);
+  return next;
+}
+
+function replaceSessionIdInFolderMap(
+  current: Record<string, string[]>,
+  oldSessionId: string,
+  newSessionId: string,
+) {
+  const existing = current[oldSessionId];
+  if (!existing) return current;
+  const next = { ...current };
+  delete next[oldSessionId];
+  next[newSessionId] = existing;
+  return next;
+}
+
+function replaceSessionIdInNav(
+  nav: TabNav,
+  oldSessionId: string,
+  newSessionId: string,
+): TabNav {
+  if (nav.view !== "agent" || nav.agentSessionId !== oldSessionId) return nav;
+  return { ...nav, agentSessionId: newSessionId };
+}
 
 type RecordingInactivityPrompt = {
   sessionId: string;
@@ -1122,6 +1181,79 @@ export function App() {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
     };
   }, []);
+
+  useEffect(() => {
+    const handleSessionIdRotated = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionIdRotatedDetail>).detail;
+      if (!detail || detail.oldSessionId === detail.newSessionId) return;
+      const { oldSessionId, newSessionId, session } = detail;
+      setAgentSessions((current) =>
+        replaceSessionIdInSessions(
+          current,
+          oldSessionId,
+          newSessionId,
+          session,
+        ),
+      );
+      agentMenuBarSessionsRef.current = replaceSessionIdInSessions(
+        agentMenuBarSessionsRef.current,
+        oldSessionId,
+        newSessionId,
+        session,
+      );
+      agentMenuBarWorkingSessionIdsRef.current = replaceSessionIdInSet(
+        agentMenuBarWorkingSessionIdsRef.current,
+        oldSessionId,
+        newSessionId,
+      );
+      agentMenuBarWaitingSessionIdsRef.current = replaceSessionIdInSet(
+        agentMenuBarWaitingSessionIdsRef.current,
+        oldSessionId,
+        newSessionId,
+      );
+      setAgentWorkingSessionIds((current) =>
+        replaceSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      setAgentWaitingSessionIds((current) =>
+        replaceSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      setSessionFolders((current) =>
+        replaceSessionIdInFolderMap(current, oldSessionId, newSessionId),
+      );
+      void replaceAgentHermesSession({ oldSessionId, newSessionId }).catch(
+        () => undefined,
+      );
+      setActiveAgentSession((current) => {
+        if (current?.id !== oldSessionId) return current;
+        return { ...current, ...session, id: newSessionId };
+      });
+      setTabs((current) =>
+        current.map((tab) => ({
+          ...tab,
+          nav: replaceSessionIdInNav(tab.nav, oldSessionId, newSessionId),
+        })),
+      );
+      if (restoreTargetRef.current) {
+        restoreTargetRef.current = replaceSessionIdInNav(
+          restoreTargetRef.current,
+          oldSessionId,
+          newSessionId,
+        );
+      }
+      publishAgentMenuBarState();
+    };
+
+    window.addEventListener(
+      AGENT_SESSION_ID_ROTATED_EVENT,
+      handleSessionIdRotated,
+    );
+    return () => {
+      window.removeEventListener(
+        AGENT_SESSION_ID_ROTATED_EVENT,
+        handleSessionIdRotated,
+      );
+    };
+  }, [publishAgentMenuBarState]);
 
   useEffect(() => {
     publishAgentMenuBarState();
@@ -2390,21 +2522,24 @@ export function App() {
     const tick = window.setInterval(() => {
       setRecordingInactivityNow(Date.now());
     }, 1000);
-    const timeout = window.setTimeout(() => {
-      const currentStatus = recordingStatusRef.current;
-      const sessionId = recordingInactivityPrompt.sessionId;
-      recordingInactivityTrackerRef.current = { sessionId };
-      setRecordingInactivityPrompt(null);
-      if (
-        currentStatus?.sessionId !== sessionId ||
-        currentStatus.state !== "recording"
-      ) {
-        return;
-      }
-      void handlePauseRecording(sessionId).then((paused) => {
-        if (paused) void notifyRecordingAutoPaused(sessionId);
-      });
-    }, Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()));
+    const timeout = window.setTimeout(
+      () => {
+        const currentStatus = recordingStatusRef.current;
+        const sessionId = recordingInactivityPrompt.sessionId;
+        recordingInactivityTrackerRef.current = { sessionId };
+        setRecordingInactivityPrompt(null);
+        if (
+          currentStatus?.sessionId !== sessionId ||
+          currentStatus.state !== "recording"
+        ) {
+          return;
+        }
+        void handlePauseRecording(sessionId).then((paused) => {
+          if (paused) void notifyRecordingAutoPaused(sessionId);
+        });
+      },
+      Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()),
+    );
 
     return () => {
       window.clearInterval(tick);

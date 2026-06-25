@@ -109,6 +109,7 @@ vi.mock("../lib/tauri", () => ({
   listSessionFolders: vi.fn(async () => []),
   assignSessionToFolder: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
+  replaceAgentHermesSession: vi.fn(async () => undefined),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
   getNote: mocks.getNote,
@@ -141,6 +142,8 @@ vi.mock("../lib/tauri", () => ({
     settings: { generationModel: "" },
   })),
   hermesAgentCliAccess: vi.fn(async () => ({ enabled: false })),
+  hermesContextCompression: vi.fn(async () => ({ enabled: true })),
+  setHermesContextCompression: vi.fn(async (enabled: boolean) => ({ enabled })),
   listVeniceModels: vi.fn(async () => ({
     mode: "generation",
     modelType: "text",

@@ -93,7 +93,9 @@ import {
   downloadHermesBridgeFile,
   osAccountsTopUp,
   providerModelSettings,
+  replaceAgentHermesSession,
   retryAgentTask,
+  saveAgentHermesSession,
   sendAgentMessage,
   setHermesAgentCliAccess,
   setVeniceModel,
@@ -132,6 +134,7 @@ import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
+  dispatchAgentSessionIdRotated,
   dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
@@ -219,6 +222,7 @@ import {
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
+import { isContextOverflowError } from "../../lib/hermes-context-overflow";
 
 const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "queued",
@@ -236,6 +240,11 @@ const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
 // action in the pill — the composer's send slot already shows stop while
 // June works.
 const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
+const CONTEXT_OVERFLOW_MESSAGE =
+  "This conversation is too large for the selected model.";
+const CONTEXT_OVERFLOW_FALLBACK_MESSAGE =
+  "June could not compress this conversation enough.";
+const CONTEXT_OVERFLOW_BUSY_MESSAGE = "Wait for June to stop, then compress.";
 
 // Connection-shaped failures get a "Try again" on the error banner — these are
 // all our own strings (hermes-gateway.ts client errors, ensureHermesGateway),
@@ -700,6 +709,26 @@ type PreparedComposerSubmission = {
   typedMessage: string;
 };
 
+type ContextOverflowRecoverySource = "submit_rejection" | "terminal_event";
+
+type ContextOverflowRetryPayload = {
+  content: string;
+  displayContent: string;
+  titleContent: string;
+  issueReport?: PendingIssueReport;
+};
+
+type ContextOverflowRecovery = {
+  source: ContextOverflowRecoverySource;
+  sessionId: string;
+  runtimeSessionId?: string;
+  draftText: string;
+  retryPayload?: ContextOverflowRetryPayload;
+  retryAttempted: boolean;
+  fallback: boolean;
+  busy: boolean;
+};
+
 type ComposerDraftSnapshot = {
   text: string;
   category: ReportCategory | null;
@@ -724,6 +753,27 @@ type FileBytesImportOptions = {
 type HermesRuntimeSessionResponse = {
   session_id?: string;
   stored_session_id?: string;
+};
+
+type HermesSessionCompressResponse = {
+  status?: string;
+  removed?: number;
+  before_messages?: number;
+  after_messages?: number;
+  session_id?: string;
+  stored_session_id?: string;
+  info?: {
+    id?: string;
+    session_id?: string;
+    stored_session_id?: string;
+    title?: string;
+    preview?: string;
+    started_at?: string;
+    last_active?: string;
+    message_count?: number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
 };
 
 /** Where the session was opened from — rendered as the leading crumbs in the
@@ -861,6 +911,8 @@ export function AgentWorkspace({
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(
     null,
   );
+  const [contextOverflowRecovery, setContextOverflowRecovery] =
+    useState<ContextOverflowRecovery | null>(null);
   // A rejected send into a still-running session, explained by the composer.
   // Separate from `errorState` because background session refreshes clear that
   // banner on success — this notice must survive until the turn finishes.
@@ -953,6 +1005,9 @@ export function AgentWorkspace({
   // latency, before the conversation view takes over.
   const [heroLeaving, setHeroLeaving] = useState(false);
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
+    Record<string, HermesSessionMessage[]>
+  >({});
+  const hermesSessionMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
   >({});
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
@@ -1124,9 +1179,11 @@ export function AgentWorkspace({
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
+    hermesSessionMessagesRef.current = hermesSessionMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
     hermesSessionItems,
+    hermesSessionMessages,
     pendingHermesMessages,
     selectedHermesSessionId,
     waitingSessionIds,
@@ -1295,6 +1352,11 @@ export function AgentWorkspace({
     errorState,
     selectedHermesSessionId,
   );
+  const visibleContextOverflowRecovery =
+    contextOverflowRecovery &&
+    contextOverflowRecovery.sessionId === selectedHermesSessionId
+      ? contextOverflowRecovery
+      : null;
   const visibleIssueReportNotice =
     issueReportNotice && issueReportNotice.sessionId === selectedHermesSessionId
       ? issueReportNotice.message
@@ -1989,6 +2051,16 @@ export function AgentWorkspace({
     setBusyNotice(null);
   }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
 
+  useEffect(() => {
+    if (!contextOverflowRecovery?.busy) return;
+    if (workingSessionIds.has(contextOverflowRecovery.sessionId)) return;
+    setContextOverflowRecovery((current) =>
+      current && current.sessionId === contextOverflowRecovery.sessionId
+        ? { ...current, busy: false }
+        : current,
+    );
+  }, [contextOverflowRecovery, workingSessionIds]);
+
   async function prepareComposerSubmission(
     message: string,
     messageAttachments: AgentAttachment[],
@@ -2155,7 +2227,12 @@ export function AgentWorkspace({
           current.length ? current : attachments,
         );
       }
-      if (isSessionBusyError(err)) {
+      const recovery = contextOverflowRecoveryFromError(err);
+      if (recovery) {
+        setError(null);
+        setBusyNotice(null);
+        setContextOverflowRecovery(recovery);
+      } else if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
         // connection banner along with showing the notice.
         setError(null);
@@ -2362,15 +2439,19 @@ export function AgentWorkspace({
       issueReport?: PendingIssueReport;
       displayContent?: string;
       titleContent?: string;
+      contextOverflowRetry?: boolean;
+      targetSessionIdOverride?: string;
     },
   ) {
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
-    const targetSessionId = explicitSession?.id
-      ? explicitSession.id
-      : newSessionModeRef.current
-        ? undefined
-        : selectedHermesSessionId;
+    const targetSessionId =
+      options?.targetSessionIdOverride ??
+      (explicitSession?.id
+        ? explicitSession.id
+        : newSessionModeRef.current
+          ? undefined
+          : selectedHermesSessionId);
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
     const titlePromise =
@@ -2533,6 +2614,13 @@ export function AgentWorkspace({
           ...activityCounts,
         });
       }
+      if (event.type === "error" && isContextOverflowError(event)) {
+        setContextOverflowRecoveryForTerminalEvent(
+          storedSessionId,
+          runtimeSessionId,
+          displayContent,
+        );
+      }
       if (isTerminalHermesEvent(event.type)) {
         unlisten();
         if (!activityCounts) {
@@ -2593,12 +2681,36 @@ export function AgentWorkspace({
       unlisten();
       setSessionWorking(storedSessionId, false);
       setSessionWaiting(storedSessionId, false);
+      const contextOverflow = isContextOverflowError(err);
       dispatchAgentSessionStatus({
         sessionId: storedSessionId,
         title: sessionDisplayTitle,
         status: "failed",
-        summary: messageFromError(err),
+        summary: contextOverflow
+          ? CONTEXT_OVERFLOW_MESSAGE
+          : messageFromError(err),
       });
+      if (contextOverflow) {
+        const overflowError = new Error(CONTEXT_OVERFLOW_MESSAGE) as Error & {
+          contextOverflowRecovery: ContextOverflowRecovery;
+        };
+        overflowError.contextOverflowRecovery = {
+          source: "submit_rejection",
+          sessionId: storedSessionId,
+          runtimeSessionId,
+          draftText: displayContent,
+          retryPayload: {
+            content,
+            displayContent,
+            titleContent,
+            issueReport: options?.issueReport,
+          },
+          retryAttempted: options?.contextOverflowRetry === true,
+          fallback: options?.contextOverflowRetry === true,
+          busy: false,
+        };
+        throw overflowError;
+      }
       throw err;
     }
   }
@@ -3096,6 +3208,370 @@ export function AgentWorkspace({
       );
       return next;
     });
+  }
+
+  function seedComposerText(
+    text: string,
+    key = composerDraftKeyRef.current,
+    options: { force?: boolean } = {},
+  ) {
+    if (!text.trim()) return;
+    if (!options.force && draftRef.current.trim()) return;
+    draftRef.current = text;
+    setDraft(text);
+    rememberComposerDraft(
+      key,
+      text,
+      categoryRef.current,
+      attachmentsRef.current,
+    );
+    composerEditorRef.current?.setContent(text, categoryRef.current, {
+      focus: false,
+    });
+  }
+
+  function lastAcceptedUserMessage(sessionId: string) {
+    const messages = [
+      ...(hermesSessionMessagesRef.current[sessionId] ?? []),
+      ...(pendingHermesMessagesRef.current[sessionId] ?? []),
+    ];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== "user") continue;
+      const text = visibleHermesMessageText(message).trim();
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function setContextOverflowRecoveryForTerminalEvent(
+    sessionId: string,
+    runtimeSessionId: string,
+    submittedDisplayText: string,
+  ) {
+    const draftText =
+      lastAcceptedUserMessage(sessionId) || submittedDisplayText.trim();
+    setError(null);
+    setBusyNotice(null);
+    setContextOverflowRecovery({
+      source: "terminal_event",
+      sessionId,
+      runtimeSessionId,
+      draftText,
+      retryAttempted: false,
+      fallback: false,
+      busy: false,
+    });
+    if (
+      selectedHermesSessionIdRef.current === sessionId &&
+      !draftRef.current.trim()
+    ) {
+      seedComposerText(draftText);
+    }
+  }
+
+  async function compressContextOverflowRecovery(
+    recovery: ContextOverflowRecovery,
+  ) {
+    if (workingSessionIdsRef.current.has(recovery.sessionId)) {
+      setContextOverflowRecovery((current) =>
+        current && current.sessionId === recovery.sessionId
+          ? { ...current, busy: true }
+          : current,
+      );
+      return;
+    }
+    if (
+      recovery.source === "submit_rejection" &&
+      recovery.retryAttempted &&
+      !recovery.fallback
+    ) {
+      setContextOverflowRecovery((current) =>
+        current && current.sessionId === recovery.sessionId
+          ? { ...current, fallback: true }
+          : current,
+      );
+      return;
+    }
+
+    setContextOverflowRecovery((current) =>
+      current && current.sessionId === recovery.sessionId
+        ? {
+            ...current,
+            retryAttempted:
+              recovery.source === "submit_rejection"
+                ? true
+                : current.retryAttempted,
+            busy: false,
+          }
+        : current,
+    );
+
+    try {
+      const fullMode = sessionUnrestricted(recovery.sessionId);
+      const gateway = await ensureHermesGateway(fullMode);
+      const runtimeSessionId =
+        recovery.runtimeSessionId ??
+        runtimeSessionIdsRef.current[recovery.sessionId] ??
+        (
+          await gateway.request<HermesRuntimeSessionResponse>(
+            "session.resume",
+            {
+              session_id: recovery.sessionId,
+              cols: 96,
+            },
+          )
+        ).session_id;
+      if (!runtimeSessionId) {
+        throw new Error("Hermes did not resume the session.");
+      }
+      const compressed = await gateway.request<HermesSessionCompressResponse>(
+        "session.compress",
+        { session_id: runtimeSessionId },
+        300000,
+      );
+      if (compressionWasNoOp(compressed)) {
+        setContextOverflowRecovery((current) =>
+          current && current.sessionId === recovery.sessionId
+            ? { ...current, fallback: true, busy: false }
+            : current,
+        );
+        return;
+      }
+      const nextSessionId = reconcileCompressedSession(
+        recovery.sessionId,
+        runtimeSessionId,
+        compressed,
+      );
+      await refreshHermesSession(nextSessionId);
+      await loadHermesSessions({
+        suppressStartupRequestError: !hermesSessionsHydratedRef.current,
+      });
+      if (recovery.source === "terminal_event") {
+        setContextOverflowRecovery(null);
+        return;
+      }
+      if (!recovery.retryPayload) {
+        setContextOverflowRecovery((current) =>
+          current && current.sessionId === recovery.sessionId
+            ? { ...current, fallback: true, busy: false }
+            : current,
+        );
+        return;
+      }
+      try {
+        await submitHermesSession(recovery.retryPayload.content, undefined, {
+          displayContent: recovery.retryPayload.displayContent,
+          titleContent: recovery.retryPayload.titleContent,
+          issueReport: recovery.retryPayload.issueReport,
+          contextOverflowRetry: true,
+          targetSessionIdOverride: nextSessionId,
+        });
+        setContextOverflowRecovery(null);
+      } catch (err) {
+        setContextOverflowRecovery((current) =>
+          current
+            ? {
+                ...current,
+                sessionId: nextSessionId,
+                fallback: isContextOverflowError(err) || current.fallback,
+                busy: isSessionBusyError(err),
+              }
+            : current,
+        );
+      }
+    } catch (err) {
+      if (isSessionBusyError(err)) {
+        setContextOverflowRecovery((current) =>
+          current && current.sessionId === recovery.sessionId
+            ? { ...current, busy: true }
+            : current,
+        );
+        return;
+      }
+      setContextOverflowRecovery((current) =>
+        current && current.sessionId === recovery.sessionId
+          ? { ...current, fallback: true, busy: false }
+          : current,
+      );
+    }
+  }
+
+  function startNewSessionFromRecovery(recovery: ContextOverflowRecovery) {
+    setContextOverflowRecovery(null);
+    clearPendingNewSessionRequest();
+    newSessionModeRef.current = true;
+    setNewSessionMode(true);
+    setActivePanel("chat");
+    setSelectedTaskId(undefined);
+    selectedHermesSessionIdRef.current = undefined;
+    setSelectedHermesSessionId(undefined);
+    composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
+    clearComposerDraft(NEW_SESSION_DRAFT_KEY);
+    seedComposerText(recovery.draftText, NEW_SESSION_DRAFT_KEY, {
+      force: true,
+    });
+  }
+
+  function switchModelFromRecovery(recovery: ContextOverflowRecovery) {
+    setContextOverflowRecovery(null);
+    seedComposerText(recovery.draftText, composerDraftKeyRef.current, {
+      force: true,
+    });
+    setComposerModelFlyout({ kind: "all" });
+    setComposerModelOpen(true);
+  }
+
+  function contextOverflowRecoveryActions(
+    recovery: ContextOverflowRecovery,
+    sessionWorking: boolean,
+  ): AgentErrorBannerAction[] {
+    const compressionAction = recovery.fallback
+      ? []
+      : [
+          {
+            label:
+              recovery.source === "submit_rejection"
+                ? "Compress and retry"
+                : "Compress",
+            onClick: () => void compressContextOverflowRecovery(recovery),
+            disabled: sessionWorking || recovery.busy,
+          },
+        ];
+    return [
+      ...compressionAction,
+      {
+        label: "New session",
+        onClick: () => startNewSessionFromRecovery(recovery),
+      },
+      {
+        label: "Switch model",
+        onClick: () => switchModelFromRecovery(recovery),
+      },
+    ];
+  }
+
+  function reconcileCompressedSession(
+    oldSessionId: string,
+    previousRuntimeSessionId: string,
+    compressed: HermesSessionCompressResponse,
+  ) {
+    const info = compressed.info;
+    const nextSessionId =
+      stringValue(info?.stored_session_id) ??
+      stringValue(info?.id) ??
+      stringValue(compressed.stored_session_id) ??
+      oldSessionId;
+    const nextRuntimeSessionId =
+      stringValue(info?.session_id) ??
+      stringValue(compressed.session_id) ??
+      previousRuntimeSessionId;
+    setRuntimeSessionIds((current) => {
+      const moved = moveRecordKey(current, oldSessionId, nextSessionId);
+      return { ...moved, [nextSessionId]: nextRuntimeSessionId };
+    });
+    setHermesSessionMessages((current) =>
+      moveRecordKey(current, oldSessionId, nextSessionId),
+    );
+    setPendingHermesMessages((current) => {
+      const next = moveRecordKey(current, oldSessionId, nextSessionId);
+      pendingHermesMessagesRef.current = next;
+      return next;
+    });
+    liveEventsRef.current = moveRecordKey(
+      liveEventsRef.current,
+      oldSessionId,
+      nextSessionId,
+    );
+    setLiveEvents(liveEventsRef.current);
+    sessionTitleOverridesRef.current = moveRecordKey(
+      sessionTitleOverridesRef.current,
+      oldSessionId,
+      nextSessionId,
+    );
+    setWorkingSessionIds((current) =>
+      replaceIdInSet(current, oldSessionId, nextSessionId),
+    );
+    setWaitingSessionIds((current) =>
+      replaceIdInSet(current, oldSessionId, nextSessionId),
+    );
+    setStoppingSessionIds((current) =>
+      replaceIdInSet(current, oldSessionId, nextSessionId),
+    );
+    const unlisten = sessionGatewayUnlistenRef.current.get(oldSessionId);
+    if (unlisten) {
+      sessionGatewayUnlistenRef.current.delete(oldSessionId);
+      sessionGatewayUnlistenRef.current.set(nextSessionId, unlisten);
+    }
+    const issueReport = pendingIssueReportsRef.current.get(oldSessionId);
+    if (issueReport) {
+      pendingIssueReportsRef.current.delete(oldSessionId);
+      pendingIssueReportsRef.current.set(nextSessionId, issueReport);
+    }
+    if (nextSessionId !== oldSessionId) {
+      rememberSessionMode(nextSessionId, sessionUnrestricted(oldSessionId));
+      forgetSessionMode(oldSessionId);
+      if (selectedHermesSessionIdRef.current === oldSessionId) {
+        selectedHermesSessionIdRef.current = nextSessionId;
+        setSelectedHermesSessionId(nextSessionId);
+      }
+      writeLastOpenSessionId(nextSessionId);
+    }
+    const replacementSession = sessionInfoFromCompression(
+      oldSessionId,
+      nextSessionId,
+      compressed,
+      hermesSessionItemsRef.current,
+    );
+    setHermesSessionItems((current) =>
+      replaceHermesSessionItem(
+        current,
+        oldSessionId,
+        nextSessionId,
+        replacementSession,
+      ),
+    );
+    setContextOverflowRecovery((current) =>
+      current && current.sessionId === oldSessionId
+        ? {
+            ...current,
+            sessionId: nextSessionId,
+            runtimeSessionId: nextRuntimeSessionId,
+          }
+        : current,
+    );
+    if (selectedTask?.hermesSessionId === oldSessionId) {
+      setTasks((current) =>
+        current.map((task) =>
+          task.id === selectedTask.id
+            ? { ...task, hermesSessionId: nextSessionId }
+            : task,
+        ),
+      );
+      void saveAgentHermesSession({
+        taskId: selectedTask.id,
+        hermesSessionId: nextSessionId,
+      }).catch(() => undefined);
+    }
+    if (nextSessionId !== oldSessionId) {
+      setTasks((current) =>
+        current.map((task) =>
+          task.hermesSessionId === oldSessionId
+            ? { ...task, hermesSessionId: nextSessionId }
+            : task,
+        ),
+      );
+      void replaceAgentHermesSession({
+        oldSessionId,
+        newSessionId: nextSessionId,
+      }).catch(() => undefined);
+      dispatchAgentSessionIdRotated({
+        oldSessionId,
+        newSessionId: nextSessionId,
+        session: replacementSession,
+      });
+    }
+    return nextSessionId;
   }
 
   /** Applies any pending seed category to the composer chip once the editor is
@@ -4315,7 +4791,22 @@ export function AgentWorkspace({
           data-hero="true"
           data-hero-leaving={heroLeaving ? "true" : undefined}
         >
-          {visibleError ? (
+          {visibleContextOverflowRecovery ? (
+            <AgentErrorBanner
+              message={
+                visibleContextOverflowRecovery.busy
+                  ? CONTEXT_OVERFLOW_BUSY_MESSAGE
+                  : visibleContextOverflowRecovery.fallback
+                    ? CONTEXT_OVERFLOW_FALLBACK_MESSAGE
+                    : CONTEXT_OVERFLOW_MESSAGE
+              }
+              actions={contextOverflowRecoveryActions(
+                visibleContextOverflowRecovery,
+                workingSessionIds.has(visibleContextOverflowRecovery.sessionId),
+              )}
+              onDismiss={() => setContextOverflowRecovery(null)}
+            />
+          ) : visibleError ? (
             <AgentErrorBanner
               message={visibleError}
               onRetry={
@@ -4379,6 +4870,23 @@ export function AgentWorkspace({
                   message="Could not connect to Hermes gateway."
                   onRetry={galleryNoop}
                   onDismiss={galleryNoop}
+                />
+              ) : visibleContextOverflowRecovery ? (
+                <AgentErrorBanner
+                  message={
+                    visibleContextOverflowRecovery.busy
+                      ? CONTEXT_OVERFLOW_BUSY_MESSAGE
+                      : visibleContextOverflowRecovery.fallback
+                        ? CONTEXT_OVERFLOW_FALLBACK_MESSAGE
+                        : CONTEXT_OVERFLOW_MESSAGE
+                  }
+                  actions={contextOverflowRecoveryActions(
+                    visibleContextOverflowRecovery,
+                    workingSessionIds.has(
+                      visibleContextOverflowRecovery.sessionId,
+                    ),
+                  )}
+                  onDismiss={() => setContextOverflowRecovery(null)}
                 />
               ) : visibleError ? (
                 <AgentErrorBanner
@@ -6478,12 +6986,20 @@ function ContextCompactionPart({
 
 // The shared .error-banner tint, with actions: dismiss always, and "Try again"
 // when the failure is connection-shaped and reconnecting can actually fix it.
+type AgentErrorBannerAction = {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+};
+
 function AgentErrorBanner({
   message,
+  actions,
   onDismiss,
   onRetry,
 }: {
   message: string;
+  actions?: AgentErrorBannerAction[];
   onDismiss: () => void;
   onRetry?: () => void;
 }) {
@@ -6491,6 +7007,16 @@ function AgentErrorBanner({
     <div className="error-banner agent-error-banner" role="alert">
       <p>{message}</p>
       <div className="agent-error-banner-actions">
+        {actions?.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            disabled={action.disabled}
+            onClick={action.onClick}
+          >
+            {action.label}
+          </button>
+        ))}
         {onRetry ? (
           <button type="button" onClick={onRetry}>
             Try again
@@ -8521,6 +9047,104 @@ function omitRecordKey<T>(record: Record<string, T>, key: string) {
   const next = { ...record };
   delete next[key];
   return next;
+}
+
+function moveRecordKey<T>(
+  record: Record<string, T>,
+  oldKey: string,
+  newKey: string,
+) {
+  if (oldKey === newKey || !(oldKey in record)) return record;
+  const next = { ...record, [newKey]: record[oldKey] };
+  delete next[oldKey];
+  return next;
+}
+
+function replaceIdInSet<T extends ReadonlySet<string>>(
+  current: T,
+  oldId: string,
+  newId: string,
+) {
+  if (oldId === newId) return current;
+  const next = new Set(current);
+  const hadOld = next.delete(oldId);
+  if (hadOld) next.add(newId);
+  return next;
+}
+
+function compressionWasNoOp(response: HermesSessionCompressResponse) {
+  const status = stringValue(response.status)?.toLowerCase();
+  if (status === "compressed") return false;
+  if (status) return true;
+  if (typeof response.removed === "number") return response.removed <= 0;
+  if (
+    typeof response.before_messages === "number" &&
+    typeof response.after_messages === "number"
+  ) {
+    return response.after_messages >= response.before_messages;
+  }
+  return true;
+}
+
+function sessionInfoFromCompression(
+  oldSessionId: string,
+  newSessionId: string,
+  response: HermesSessionCompressResponse,
+  current: HermesSessionInfo[],
+) {
+  const existing =
+    current.find((session) => session.id === oldSessionId) ??
+    current.find((session) => session.id === newSessionId);
+  const info = response.info;
+  const now = new Date().toISOString();
+  return {
+    id: newSessionId,
+    title:
+      stringValue(info?.title) ??
+      existing?.title ??
+      existing?.preview ??
+      "Untitled session",
+    preview: stringValue(info?.preview) ?? existing?.preview,
+    started_at: stringValue(info?.started_at) ?? existing?.started_at ?? now,
+    last_active: stringValue(info?.last_active) ?? existing?.last_active ?? now,
+    message_count:
+      typeof info?.message_count === "number"
+        ? info.message_count
+        : existing?.message_count,
+  };
+}
+
+function replaceHermesSessionItem(
+  sessions: HermesSessionInfo[],
+  oldSessionId: string,
+  newSessionId: string,
+  replacement: HermesSessionInfo,
+) {
+  let replaced = false;
+  const next = sessions.flatMap((session) => {
+    if (session.id === newSessionId && session.id !== oldSessionId) return [];
+    if (session.id !== oldSessionId) return [session];
+    replaced = true;
+    return [{ ...session, ...replacement, id: newSessionId }];
+  });
+  if (!replaced) return [replacement, ...next];
+  return next;
+}
+
+function contextOverflowRecoveryFromError(err: unknown) {
+  if (!err || typeof err !== "object") return null;
+  const recovery = (err as { contextOverflowRecovery?: unknown })
+    .contextOverflowRecovery;
+  if (!recovery || typeof recovery !== "object") return null;
+  const candidate = recovery as ContextOverflowRecovery;
+  if (
+    (candidate.source === "submit_rejection" ||
+      candidate.source === "terminal_event") &&
+    typeof candidate.sessionId === "string"
+  ) {
+    return candidate;
+  }
+  return null;
 }
 
 // Survives app restarts (localStorage, not sessionStorage): restoring an

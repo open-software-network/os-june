@@ -10,10 +10,12 @@ import {
   hermesBridgeMessagingPlatforms,
   hermesBridgeSkills,
   hermesBridgeToolsets,
+  hermesContextCompression,
   getHermesBridgeSkill,
   agentHudHide,
   agentHudShow,
   setHermesAgentCliAccess,
+  setHermesContextCompression,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeSkill,
@@ -63,12 +65,19 @@ export function AgentSettingsSection() {
     null,
   );
   const [cliAccessSaving, setCliAccessSaving] = useState(false);
+  const [contextCompressionEnabled, setContextCompressionEnabled] = useState<
+    boolean | null
+  >(null);
+  const [contextCompressionSaving, setContextCompressionSaving] =
+    useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    hermesAgentCliAccess()
-      .then((status) => {
-        if (!cancelled) setCliAccessEnabled(status.enabled);
+    Promise.all([hermesAgentCliAccess(), hermesContextCompression()])
+      .then(([cliAccessStatus, compressionStatus]) => {
+        if (cancelled) return;
+        setCliAccessEnabled(cliAccessStatus.enabled);
+        setContextCompressionEnabled(compressionStatus.enabled);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(messageFromError(err));
@@ -88,6 +97,19 @@ export function AgentSettingsSection() {
       setError(messageFromError(err));
     } finally {
       setCliAccessSaving(false);
+    }
+  }
+
+  async function handleContextCompressionChange(enabled: boolean) {
+    setContextCompressionSaving(true);
+    try {
+      const status = await setHermesContextCompression(enabled);
+      setContextCompressionEnabled(status.enabled);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setContextCompressionSaving(false);
     }
   }
 
@@ -344,6 +366,27 @@ export function AgentSettingsSection() {
                   void handleCliAccessChange(enabled)
                 }
                 aria-label="Allow agent CLI access"
+              />
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Context compression</h3>
+              <p className="settings-row-description">
+                Let June compact long agent conversations before they exceed the
+                selected model's context window. Applies after restarting June.
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={contextCompressionEnabled === true}
+                disabled={
+                  contextCompressionEnabled === null || contextCompressionSaving
+                }
+                onCheckedChange={(enabled) =>
+                  void handleContextCompressionChange(enabled)
+                }
+                aria-label="Enable context compression"
               />
             </div>
           </div>

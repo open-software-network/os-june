@@ -31,11 +31,12 @@ use crate::{
             NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
             RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
             RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
-            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            ReplaceAgentHermesSessionRequest, RetryProcessingRequest,
+            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
+            SendAgentMessageRequest, SessionFolderDto, SessionRequest, SourceReadinessDto,
+            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -51,7 +52,7 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
 #[tauri::command]
@@ -280,6 +281,28 @@ pub async fn remove_session_from_folder(
     Ok(repositories(&app)
         .await?
         .remove_session_from_folder(&request.session_id, &request.folder_id)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn replace_agent_hermes_session(
+    app: AppHandle,
+    request: ReplaceAgentHermesSessionRequest,
+) -> Result<(), AppError> {
+    let old_session_id = request.old_session_id.trim();
+    let new_session_id = request.new_session_id.trim();
+    if old_session_id.is_empty() || new_session_id.is_empty() {
+        return Err(AppError::new(
+            "agent_hermes_session_required",
+            "Hermes session id is required.",
+        ));
+    }
+    if old_session_id == new_session_id {
+        return Ok(());
+    }
+    Ok(repositories(&app)
+        .await?
+        .replace_agent_hermes_session_id(old_session_id, new_session_id)
         .await?)
 }
 

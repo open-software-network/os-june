@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsTopUp: vi.fn(),
   setVeniceModel: vi.fn(),
   providerModelSettings: vi.fn(),
+  replaceAgentHermesSession: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
   saveAgentHermesSession: vi.fn(),
@@ -109,6 +110,7 @@ vi.mock("../lib/tauri", () => ({
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
   osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
+  replaceAgentHermesSession: mocks.replaceAgentHermesSession,
   retryAgentTask: mocks.retryAgentTask,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
   setVeniceModel: mocks.setVeniceModel,
@@ -3746,6 +3748,133 @@ describe("AgentWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
+  });
+
+  it("compresses a terminal overflow event without resubmitting the accepted prompt", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.resolve({});
+      }
+      if (method === "session.compress") {
+        return Promise.resolve({
+          status: "compressed",
+          removed: 2,
+          before_messages: 4,
+          after_messages: 2,
+          info: {
+            stored_session_id: "session-1",
+            session_id: "runtime-session-1",
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByRole("textbox");
+    await user.type(composer, "summarize the whole thread");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "summarize the whole thread",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "error",
+          session_id: "runtime-session-1",
+          payload: {
+            error: {
+              error_code: 2001,
+              message: "maximum context length exceeded",
+            },
+          },
+        });
+      }
+    });
+
+    expect(
+      await screen.findByText(
+        "This conversation is too large for the selected model.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Compress" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Compress and retry" }),
+    ).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Compress" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.compress",
+        {
+          session_id: "runtime-session-1",
+        },
+        expect.any(Number),
+      ),
+    );
+    const submitCalls = mocks.gatewayRequest.mock.calls.filter(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(submitCalls).toHaveLength(1);
+    expect(composer).toHaveTextContent("summarize the whole thread");
+  });
+
+  it("keeps the overflow compress action available after a busy compression rejection", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.resolve({});
+      }
+      if (method === "session.compress") {
+        return Promise.reject(new HermesGatewayError("session busy", 4009));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByRole("textbox");
+    await user.type(composer, "summarize the whole thread");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "error",
+          session_id: "runtime-session-1",
+          payload: {
+            error: {
+              error_code: 2001,
+              message: "maximum context length exceeded",
+            },
+          },
+        });
+      }
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Compress" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Compress" })).toBeEnabled(),
+    );
+    expect(screen.getByRole("button", { name: "New session" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch model" })).toBeEnabled();
   });
 
   it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {

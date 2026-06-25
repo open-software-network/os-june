@@ -357,3 +357,48 @@ async fn detects_hermes_sessions_bound_to_other_tasks() {
         .await
         .expect("check should succeed"));
 }
+
+#[tokio::test]
+async fn replacing_agent_hermes_session_updates_all_bound_tasks() {
+    let repos = test_repositories().await;
+    let first = repos
+        .create_agent_task("First prompt", None, AgentSafetyProfile::default())
+        .await
+        .expect("task should be created");
+    let second = repos
+        .create_agent_task("Second prompt", None, AgentSafetyProfile::default())
+        .await
+        .expect("task should be created");
+    repos
+        .set_agent_task_hermes_session(&first.id, "old-session")
+        .await
+        .expect("first session should bind");
+    repos
+        .set_agent_task_hermes_session(&second.id, "old-session")
+        .await
+        .expect("second session should bind");
+
+    repos
+        .replace_agent_hermes_session_id("old-session", "new-session")
+        .await
+        .expect("session should replace");
+
+    assert_eq!(
+        repos
+            .get_agent_task(&first.id)
+            .await
+            .expect("first should load")
+            .hermes_session_id
+            .as_deref(),
+        Some("new-session"),
+    );
+    assert_eq!(
+        repos
+            .get_agent_task(&second.id)
+            .await
+            .expect("second should load")
+            .hermes_session_id
+            .as_deref(),
+        Some("new-session"),
+    );
+}

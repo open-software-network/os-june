@@ -714,6 +714,15 @@ export async function removeSessionFromFolder(
   });
 }
 
+export async function replaceAgentHermesSession(input: {
+  oldSessionId: string;
+  newSessionId: string;
+}) {
+  return invoke<void>("replace_agent_hermes_session", {
+    request: input,
+  });
+}
+
 export async function listDictionaryEntries() {
   return invoke<DictionaryEntryDto[]>("list_dictionary_entries");
 }
@@ -914,6 +923,10 @@ export type AgentCliAccessStatus = {
   enabled: boolean;
 };
 
+export type ContextCompressionStatus = {
+  enabled: boolean;
+};
+
 /** Whether sandboxed sessions may write the state folders of installed
  * agent CLIs (Claude Code, Codex, Gemini, opencode). */
 export async function hermesAgentCliAccess() {
@@ -924,6 +937,18 @@ export async function hermesAgentCliAccess() {
  * the next session spawns with matching sandbox grants. */
 export async function setHermesAgentCliAccess(enabled: boolean) {
   return invoke<AgentCliAccessStatus>("set_hermes_agent_cli_access", {
+    request: { enabled },
+  });
+}
+
+/** Whether June renders Hermes context compression as enabled at startup. */
+export async function hermesContextCompression() {
+  return invoke<ContextCompressionStatus>("hermes_context_compression");
+}
+
+/** Persists the context-compression preference for the next Hermes startup. */
+export async function setHermesContextCompression(enabled: boolean) {
+  return invoke<ContextCompressionStatus>("set_hermes_context_compression", {
     request: { enabled },
   });
 }

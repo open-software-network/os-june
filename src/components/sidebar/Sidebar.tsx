@@ -45,8 +45,10 @@ import type { ReportCategory } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSION_ID_ROTATED_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   emitAgentSessionsChanged,
+  type AgentSessionIdRotatedDetail,
 } from "../../lib/agent-events";
 import {
   deleteHermesSession,
@@ -131,6 +133,34 @@ type CommandPaletteGroup = {
   title: string;
   items: CommandPaletteItem[];
 };
+
+function replaceSidebarSessionIdInSet(
+  current: ReadonlySet<string>,
+  oldSessionId: string,
+  newSessionId: string,
+) {
+  const next = new Set(current);
+  const hadOld = next.delete(oldSessionId);
+  if (hadOld) next.add(newSessionId);
+  return next;
+}
+
+function replaceSidebarSessionIdInSessions(
+  sessions: HermesSessionInfo[],
+  oldSessionId: string,
+  newSessionId: string,
+  replacement?: HermesSessionInfo,
+) {
+  let replaced = false;
+  const next = sessions.flatMap((session) => {
+    if (session.id === newSessionId && session.id !== oldSessionId) return [];
+    if (session.id !== oldSessionId) return [session];
+    replaced = true;
+    return [{ ...session, ...replacement, id: newSessionId }];
+  });
+  if (!replaced && replacement) return [replacement, ...next];
+  return next;
+}
 
 const AGENT_SIDEBAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_SIDEBAR_SESSION_LIMIT = 12;
@@ -795,6 +825,69 @@ export function Sidebar({
       window.removeEventListener(
         AGENT_SESSIONS_CHANGED_EVENT,
         handleSessionsChanged,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleSessionIdRotated(event: Event) {
+      const detail = (event as CustomEvent<AgentSessionIdRotatedDetail>).detail;
+      if (!detail || detail.oldSessionId === detail.newSessionId) return;
+      const { oldSessionId, newSessionId, session } = detail;
+      setAgentSessions((current) =>
+        replaceSidebarSessionIdInSessions(
+          current,
+          oldSessionId,
+          newSessionId,
+          session,
+        ),
+      );
+      setSelectedAgentSessionId((current) =>
+        current === oldSessionId ? newSessionId : current,
+      );
+      setPinnedAgentSessionIds((current) =>
+        replaceSidebarSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      setDeletingAgentSessionIds((current) =>
+        replaceSidebarSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      setWorkingAgentSessionIds((current) =>
+        replaceSidebarSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      setWaitingAgentSessionIds((current) =>
+        replaceSidebarSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      setUnreadAgentSessionIds((current) =>
+        replaceSidebarSessionIdInSet(current, oldSessionId, newSessionId),
+      );
+      workingAgentSessionIdsRef.current = replaceSidebarSessionIdInSet(
+        workingAgentSessionIdsRef.current,
+        oldSessionId,
+        newSessionId,
+      );
+      if (openAgentSessionIdRef.current === oldSessionId) {
+        openAgentSessionIdRef.current = newSessionId;
+      }
+      setAgentSessionToDelete((current) =>
+        current?.id === oldSessionId
+          ? { ...current, ...session, id: newSessionId }
+          : current,
+      );
+      setMenu((current) =>
+        current?.kind === "agent-session" && current.sessionId === oldSessionId
+          ? { ...current, sessionId: newSessionId }
+          : current,
+      );
+    }
+
+    window.addEventListener(
+      AGENT_SESSION_ID_ROTATED_EVENT,
+      handleSessionIdRotated,
+    );
+    return () => {
+      window.removeEventListener(
+        AGENT_SESSION_ID_ROTATED_EVENT,
+        handleSessionIdRotated,
       );
     };
   }, []);
