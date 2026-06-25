@@ -762,7 +762,9 @@ type AgentSessionContinuity = {
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
+const AGENT_COMPOSER_DRAFT_MAX_ENTRIES = 50;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
+let lastActiveComposerDraftKey: string | null | undefined;
 
 function sessionComposerDraftKey(sessionId: string) {
   return `session:${sessionId}`;
@@ -779,15 +781,46 @@ function rememberComposerDraft(
     agentComposerDrafts.delete(key);
     return;
   }
+  agentComposerDrafts.delete(key);
   agentComposerDrafts.set(key, {
     text,
     category,
     attachments: [...attachments],
   });
+  pruneComposerDrafts();
 }
 
 function forgetComposerDraft(key: string | null) {
   if (key) agentComposerDrafts.delete(key);
+}
+
+function pruneComposerDrafts() {
+  while (agentComposerDrafts.size > AGENT_COMPOSER_DRAFT_MAX_ENTRIES) {
+    let oldestKey: string | undefined;
+    for (const key of agentComposerDrafts.keys()) {
+      if (key === NEW_SESSION_DRAFT_KEY) continue;
+      oldestKey = key;
+      break;
+    }
+    oldestKey ??= agentComposerDrafts.keys().next().value;
+    if (!oldestKey) return;
+    agentComposerDrafts.delete(oldestKey);
+  }
+}
+
+function hasSavedNewSessionDraft() {
+  const snapshot = agentComposerDrafts.get(NEW_SESSION_DRAFT_KEY);
+  return Boolean(
+    snapshot &&
+    (snapshot.text.trim() || snapshot.category || snapshot.attachments.length),
+  );
+}
+
+function shouldRestoreNewSessionDraft() {
+  return (
+    lastActiveComposerDraftKey === NEW_SESSION_DRAFT_KEY &&
+    hasSavedNewSessionDraft()
+  );
 }
 
 function captureSessionContinuity(state: {
@@ -830,6 +863,7 @@ function captureSessionContinuity(state: {
 export function resetAgentSessionContinuity() {
   sessionContinuity = null;
   agentComposerDrafts.clear();
+  lastActiveComposerDraftKey = undefined;
 }
 
 export function AgentWorkspace({
@@ -917,14 +951,18 @@ export function AgentWorkspace({
   >(
     () =>
       initialSessionId ??
-      (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+      (hasPendingNewSessionRequest() || shouldRestoreNewSessionDraft()
+        ? undefined
+        : readLastOpenSessionId()),
   );
   const selectedHermesSessionIdRef = useRef<string | undefined>(
     selectedHermesSessionId,
   );
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(
-    () => !initialSessionId && hasPendingNewSessionRequest(),
+    () =>
+      !initialSessionId &&
+      (hasPendingNewSessionRequest() || shouldRestoreNewSessionDraft()),
   );
   const setError = useCallback(
     (message: string | null, options: AgentWorkspaceErrorOptions = {}) => {
@@ -1242,6 +1280,11 @@ export function AgentWorkspace({
   const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
   composerDraftKeyRef.current = composerDraftKey;
   const restoredComposerDraftKeyRef = useRef<string | null>();
+
+  useEffect(() => {
+    lastActiveComposerDraftKey = composerDraftKey;
+  }, [composerDraftKey]);
+
   const chatArtifacts = useMemo(
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
     [filesystemSnapshot],
@@ -1945,6 +1988,7 @@ export function AgentWorkspace({
     })();
     return () => {
       cancelled = true;
+      lastActiveComposerDraftKey = composerDraftKeyRef.current;
       // Keep any mid-run session alive for the next mount before the
       // gateways (and with them the live event streams) go away.
       sessionContinuity = captureSessionContinuity({

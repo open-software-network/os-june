@@ -1575,6 +1575,99 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("restores an unsent new session draft after remounting", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "draft from a new session");
+    expect(screen.getByRole("textbox")).toHaveTextContent(
+      "draft from a new session",
+    );
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox")).toHaveTextContent(
+        "draft from a new session",
+      ),
+    );
+    expect(screen.queryByText("Existing session")).toBeNull();
+  });
+
+  it("restores the last open session after leaving a saved new session draft", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "new session idea");
+
+    first.rerender(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+  });
+
+  it("forgets the new session draft after submitting it", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "start from this draft");
+    expect(screen.getByRole("textbox")).toHaveTextContent(
+      "start from this draft",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "start from this draft",
+      }),
+    );
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox").textContent).toBe(""),
+    );
+  });
+
   it("restores a session draft after leaving and returning to agent chat", async () => {
     const user = userEvent.setup();
     const first = render(<AgentWorkspace initialSession={existingSession} />);
