@@ -2588,13 +2588,15 @@ export function AgentWorkspace({
     selectedHermesSessionIdRef.current = initialSessionId;
     setSelectedHermesSessionId(initialSessionId);
     setSelectedTaskId(undefined);
-    if (initialSession) {
-      setHermesSessionItems((current) =>
-        current.some((session) => session.id === initialSession.id)
-          ? current
-          : [initialSession, ...current],
-      );
-    }
+  }, [initialSessionId]);
+
+  useEffect(() => {
+    if (!initialSession || initialSession.id !== initialSessionId) return;
+    setHermesSessionItems((current) =>
+      current.some((session) => session.id === initialSession.id)
+        ? current
+        : [initialSession, ...current],
+    );
   }, [initialSession, initialSessionId]);
 
   // Remember the open conversation for the restore-on-mount above. Entering

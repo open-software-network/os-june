@@ -331,15 +331,6 @@ export function App() {
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
   const [activeAgentSessionSeed, setActiveAgentSessionSeed] =
     useState<HermesSessionInfo>();
-  const activeAgentSession = useMemo(
-    () =>
-      activeAgentSessionId
-        ? (agentSessions.find(
-            (session) => session.id === activeAgentSessionId,
-          ) ?? activeAgentSessionSeed)
-        : undefined,
-    [activeAgentSessionId, activeAgentSessionSeed, agentSessions],
-  );
   const setActiveAgentSession = useCallback(
     (session: HermesSessionInfo | undefined) => {
       setActiveAgentSessionId(session?.id);
@@ -1256,8 +1247,8 @@ export function App() {
         const selectedSessionId = detail.selectedSessionId;
         if (selectedSessionId) {
           setActiveAgentSessionId(selectedSessionId);
-          setActiveAgentSessionSeed(
-            detail.sessions.find((session) => session.id === selectedSessionId),
+          setActiveAgentSessionSeed((current) =>
+            current?.id === selectedSessionId ? current : undefined,
           );
         } else {
           setActiveAgentSession(undefined);
@@ -2867,7 +2858,7 @@ export function App() {
                 // The origin crumbs render inside the workspace's own sticky
                 // session bar, so they persist while the chat scrolls beneath.
                 <AgentWorkspace
-                  initialSession={activeAgentSession}
+                  initialSession={activeAgentSessionSeed}
                   initialSessionId={activeAgentSessionId}
                   origin={
                     agentOriginFolder
