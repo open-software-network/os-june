@@ -2664,7 +2664,9 @@ export function AgentWorkspace({
 
     const pending = pendingNewSessionRequest();
     if (pending) {
-      void windowEventHandlersRef.current.startNewTask(pending);
+      void windowEventHandlersRef.current.startNewTask(pending, {
+        deferCategorySeed: true,
+      });
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
@@ -4492,7 +4494,10 @@ export function AgentWorkspace({
     );
   }
 
-  async function startNewTask(request?: AgentNewSessionDetail) {
+  async function startNewTask(
+    request?: AgentNewSessionDetail,
+    options: { deferCategorySeed?: boolean } = {},
+  ) {
     clearPendingNewSessionRequest();
     const seedCategory = request?.category ?? null;
     // A seeded report never auto-submits: the category chip lands in the
@@ -4528,7 +4533,7 @@ export function AgentWorkspace({
     pendingSeedCategoryRef.current = seedCategory;
     if (seedCategory) {
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      seedComposerCategory();
+      seedComposerCategory({ defer: options.deferCategorySeed });
     } else if (initialPrompt) {
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, initialPrompt, null);
       composerEditorRef.current?.setContent(initialPrompt);
@@ -4612,18 +4617,29 @@ export function AgentWorkspace({
   /** Applies any pending seed category to the composer chip once the editor is
    * available. Called from startNewTask (best-effort, the editor may not be
    * mounted yet) and again from ComposerEditor's onReady. */
-  function seedComposerCategory() {
-    const seed = pendingSeedCategoryRef.current;
-    if (!seed) return;
+  function seedComposerCategory(options: { defer?: boolean } = {}) {
+    if (!pendingSeedCategoryRef.current) return;
     const editor = composerEditorRef.current;
     // Not mounted yet (cold open) — leave it pending for onReady to apply.
     if (!editor) return;
-    pendingSeedCategoryRef.current = null;
-    window.setTimeout(() => {
-      if (pendingSeedCategoryRef.current) return;
-      editor.setContent("", seed);
+    const applySeed = () => {
+      const seed = pendingSeedCategoryRef.current;
+      const currentEditor = composerEditorRef.current;
+      if (!seed || !currentEditor) return;
+      pendingSeedCategoryRef.current = null;
+      draftRef.current = "";
+      categoryRef.current = seed;
+      setDraft("");
+      setCategory(seed);
       rememberComposerDraft(NEW_SESSION_DRAFT_KEY, "", seed);
-    }, 0);
+      restoredComposerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
+      currentEditor.setContent("", seed);
+    };
+    if (options.defer) {
+      window.setTimeout(applySeed, 0);
+    } else {
+      applySeed();
+    }
   }
 
   // Run shortcuts fire the session directly — the prompt never touches the
@@ -5520,7 +5536,7 @@ export function AgentWorkspace({
             onSubmit={() => void submit()}
             onReady={() => {
               restoreComposerDraft(composerDraftKeyRef.current);
-              seedComposerCategory();
+              seedComposerCategory({ defer: true });
             }}
           />
           <div className="agent-composer-toolbar">

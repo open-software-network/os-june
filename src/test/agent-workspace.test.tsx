@@ -519,6 +519,31 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("seeds a report chip immediately when the composer is already open", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("textbox")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { category: "bug" },
+        }),
+      );
+    });
+
+    expect(screen.getByText("Bug report")).toBeInTheDocument();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "session.create",
+      expect.anything(),
+    );
+  });
+
   it("wraps a submitted issue report for June and waits for explicit send", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
