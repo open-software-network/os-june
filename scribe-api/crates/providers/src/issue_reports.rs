@@ -589,11 +589,14 @@ fn issue_create_entries(report: &IssueReport) -> Vec<IssueCreateEntry> {
                 })
                 .collect();
         }
-        // Single-issue diagnosis: reuse the model's `Issue 1:` heading as the
-        // title; fall back to the description when the heading is absent. A
-        // diagnosis that split into more sections than the cap files as one
-        // combined issue, so its first heading would undersell the rest —
-        // keep the description-derived title there.
+        // `split_agent_diagnosis` returns empty for fewer than two headings,
+        // so this branch covers both a single `Issue 1:` heading and a
+        // heading-less plain-prose diagnosis: lift the heading as the title
+        // when present, and `diagnosis_issue_title` returns None for plain
+        // prose so we fall back to the description. A diagnosis that split
+        // into more sections than the cap is non-empty and files as one
+        // combined issue, so it keeps the description-derived title rather
+        // than just naming its first of many headings.
         if split_issues.is_empty() {
             single_diagnosis_title = diagnosis_issue_title(diagnosis);
         }
@@ -1071,9 +1074,11 @@ mod issue_title_tests {
     }
 
     #[test]
-    fn diagnosis_issue_title_lifts_the_first_issue_heading() {
-        let diagnosis =
-            "**Issue 1 — Recorder freezes on pause:**\nThe audio capture thread stalls.";
+    fn diagnosis_issue_title_lifts_the_first_issue_heading_past_preamble() {
+        // The report prompt has the model describe the report (steps 1-2)
+        // before opening the `Issue 1:` section (step 3), so the heading is
+        // rarely the first line; `find_map` has to scan past the preamble.
+        let diagnosis = "Looking at the screenshot, the recorder UI is frozen.\n\n**Issue 1 — Recorder freezes on pause:**\nThe audio capture thread stalls.";
         assert_eq!(
             diagnosis_issue_title(diagnosis).as_deref(),
             Some("Recorder freezes on pause")
@@ -1088,7 +1093,7 @@ mod issue_title_tests {
             category: Some("feature".to_string()),
             description: "Can the report titles read better in the tracker?".to_string(),
             agent_diagnosis: Some(
-                "Issue 1: Model-written report titles\nReuse the diagnosis heading as the tracker title."
+                "Looking at the request, the tracker titles read awkwardly.\n\nIssue 1: Model-written report titles\nReuse the diagnosis heading as the tracker title."
                     .to_string(),
             ),
             attachment_names: vec![],
