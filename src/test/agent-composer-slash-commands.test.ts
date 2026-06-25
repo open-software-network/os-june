@@ -36,6 +36,15 @@ describe("agent composer built-in slash commands", () => {
     });
   });
 
+  it("preserves quoted Windows file paths", () => {
+    expect(
+      parseSlashFileArguments('"C:\\Users\\alex\\Desktop\\Q2 report.pdf"'),
+    ).toEqual({
+      status: "ok",
+      paths: ["C:\\Users\\alex\\Desktop\\Q2 report.pdf"],
+    });
+  });
+
   it("reports unmatched quotes without dropping the command", () => {
     expect(
       parseSlashFileArguments('"/Users/alex/Desktop/Q2 report.pdf'),

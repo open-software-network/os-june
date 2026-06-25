@@ -77,18 +77,18 @@ export function parseSlashFileArguments(
   const paths: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
-  let escaping = false;
   const text = argument.trim();
 
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
-    if (escaping) {
-      current += char;
-      escaping = false;
-      continue;
-    }
     if (char === "\\") {
-      escaping = true;
+      const next = text[index + 1];
+      if (next && shouldEscapeFileArgumentChar(next)) {
+        current += next;
+        index += 1;
+      } else {
+        current += char;
+      }
       continue;
     }
     if (quote) {
@@ -113,7 +113,6 @@ export function parseSlashFileArguments(
     current += char;
   }
 
-  if (escaping) current += "\\";
   if (quote) {
     return {
       status: "error",
@@ -175,6 +174,10 @@ function isBuiltinComposerSlashCommandName(
 
 function normalizeSlashCommandQuery(value: string) {
   return value.trim().toLowerCase();
+}
+
+function shouldEscapeFileArgumentChar(char: string) {
+  return char === "\\" || char === '"' || char === "'" || /\s/.test(char);
 }
 
 function normalizeModelQuery(value: string) {
