@@ -193,6 +193,8 @@ const AGENT_MENU_BAR_SESSION_LIMIT = 6;
 const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [
   250, 500, 1000, 2000, 4000, 8000,
 ];
+const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
+const ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -396,6 +398,8 @@ export function App() {
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [accessibilityRefreshRequest, setAccessibilityRefreshRequest] =
+    useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
     useState<UpdatePromptPayload<ScribeUpdate> | null>(null);
@@ -1637,6 +1641,37 @@ export function App() {
     return () => window.removeEventListener("focus", refresh);
   }, [appBlocked, state.recordingStatus?.state]);
 
+  // After the user asks to grant Accessibility, keep checking briefly while
+  // macOS System Settings is in front. This avoids relying on a single webview
+  // focus event, which can be missed after the native TCC prompt hands off to
+  // System Settings.
+  useEffect(() => {
+    if (
+      appBlocked ||
+      !accessibilityBlocked ||
+      accessibilityRefreshRequest === 0
+    ) {
+      return;
+    }
+    function poll() {
+      void dictationHelperCommand({ type: "get_permission_status" }).catch(
+        () => undefined,
+      );
+    }
+    poll();
+    const interval = window.setInterval(
+      poll,
+      ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
+    );
+    const timeout = window.setTimeout(() => {
+      window.clearInterval(interval);
+    }, ACCESSIBILITY_PERMISSION_REFRESH_TIMEOUT_MS);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [accessibilityBlocked, accessibilityRefreshRequest, appBlocked]);
+
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
   }
@@ -1654,13 +1689,10 @@ export function App() {
   }
 
   function handleEnableAccessibility() {
-    void dictationHelperCommand({ type: "request_accessibility_permission" })
-      .catch(() => undefined)
-      .finally(() => {
-        window.setTimeout(() => {
-          void openPrivacySettings("accessibility");
-        }, 200);
-      });
+    setAccessibilityRefreshRequest((request) => request + 1);
+    void dictationHelperCommand({
+      type: "request_accessibility_permission",
+    }).catch(() => undefined);
   }
 
   useEffect(() => {
@@ -2755,7 +2787,11 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {accessibilityBlocked ? <PermissionBanner /> : null}
+          {accessibilityBlocked ? (
+            <PermissionBanner
+              onEnableAccessibility={handleEnableAccessibility}
+            />
+          ) : null}
           <div
             ref={mainPanelBodyRef}
             className="main-panel-body"

@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
@@ -375,6 +381,46 @@ describe("App shortcuts", () => {
     expect(
       await screen.findByRole("heading", { name: "Appearance" }),
     ).toBeInTheDocument();
+  });
+
+  it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has("dictation-event")).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.dictationHelperCommand.mockClear();
+    mocks.openPrivacySettings.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    expect(
+      await screen.findByText(
+        "Dictation can't paste into other apps until you grant accessibility access.",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Grant access" }));
+
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "request_accessibility_permission",
+    });
+    await waitFor(() =>
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "get_permission_status",
+      }),
+    );
+    expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
   });
 
   it("starts a session with Ctrl-N and creates a note with Ctrl-Shift-N on Windows", async () => {
