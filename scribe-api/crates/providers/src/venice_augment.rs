@@ -12,6 +12,7 @@ use crate::{
     venice::PROVIDER_NAME,
 };
 use async_trait::async_trait;
+use reqwest::StatusCode;
 use scribe_config::UpstreamConfig;
 use scribe_domain::{
     DomainError, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchProvider, WebSearchRequest,
@@ -39,12 +40,13 @@ impl VeniceAugment {
 
     /// POSTs `body` to an augment endpoint and parses the response.
     ///
-    /// A deterministic 4xx is the upstream rejecting this specific input (a
-    /// query it won't run, or a site that blocks automated access); it is
-    /// surfaced as `InvalidInput` with `client_error_reason` so the caller can
-    /// answer the agent with a usable 400 instead of a generic upstream
-    /// failure. Transient failures (timeout, 429, 5xx) get one bounded retry,
-    /// matching the chat path.
+    /// A `400` is the upstream rejecting this specific input (a query it won't
+    /// run, or a site that blocks automated access); it is surfaced as
+    /// `InvalidInput` with `client_error_reason` so the caller can answer the
+    /// agent with a usable 400. Every other non-2xx (including auth/billing
+    /// 401/403/402) is our problem, not the user's, so it surfaces as a
+    /// provider failure; transient ones (timeout, 429, 5xx) get one bounded
+    /// retry, matching the chat path.
     async fn post_augment<B, T>(
         &self,
         path: &str,
@@ -104,7 +106,11 @@ impl VeniceAugment {
             let retryable = retry::is_retryable_status(status);
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, body_bytes = body_text.len(), retryable, "venice augment: non-success response");
-            if !retryable && status.is_client_error() {
+            // Only a 400 means the upstream rejected this specific input.
+            // Auth/billing/config failures (401, 403, 402, ...) are ours, not
+            // the user's, and must stay provider failures so they are not
+            // reported to the agent as a fixable bad request.
+            if status == StatusCode::BAD_REQUEST {
                 return Err(UpstreamAttemptError::fatal(DomainError::InvalidInput {
                     reason: client_error_reason.to_string(),
                 }));
@@ -396,6 +402,29 @@ mod tests {
                 reason: "web_fetch_unsupported_url".to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_auth_failure_maps_to_upstream_not_invalid_input() {
+        let server = MockServer::start().await;
+        // A bad or expired Venice credential (401/403) is our problem, not the
+        // user's input; it must not be reported to the agent as a fixable 400.
+        Mock::given(method("POST"))
+            .and(path("/augment/scrape"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": "Invalid API key"
+            })))
+            .mount(&server)
+            .await;
+
+        let error = augment(&server)
+            .fetch(WebFetchRequest {
+                url: "https://example.com/post".to_string(),
+            })
+            .await
+            .expect_err("auth failure should error");
+
+        assert_eq!(error, DomainError::UpstreamProvider);
     }
 
     #[tokio::test]
