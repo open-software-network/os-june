@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ SERVER_INFO = {"name": "june-context", "version": "0.1.0"}
 MAX_LIMIT = 20
 DEFAULT_LIMIT = 8
 SNIPPET_CHARS = 900
+# Keep this in sync with DICTATION_HISTORY_RETENTION_DAYS in db/repositories.rs.
+DICTATION_HISTORY_RETENTION_DAYS = 7
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -264,11 +267,15 @@ def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[s
             "message": "June notes database does not exist yet.",
         }
 
-    where = ""
-    params: list[Any] = []
+    # Honor the same 7-day retention window the app enforces when listing
+    # dictation history (db/repositories.rs:list_dictation_history), so stale
+    # rows that have not been pruned yet are never surfaced back to the agent.
+    clauses = ["created_at >= ?"]
+    params: list[Any] = [dictation_history_cutoff_timestamp()]
     if query:
-        where = "WHERE lower(coalesce(text, '')) LIKE ?"
+        clauses.append("lower(coalesce(text, '')) LIKE ?")
         params.append(f"%{query.lower()}%")
+    where = "WHERE " + " AND ".join(clauses)
 
     sql = f"""
         SELECT id, text, language, provider, created_at
@@ -293,6 +300,18 @@ def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[s
         for row in rows
     ]
     return {"query": query, "count": len(items), "items": items}
+
+
+def dictation_history_cutoff_timestamp() -> str:
+    """Return the retention cutoff as an RFC3339 string.
+
+    Mirrors ``dictation_history_cutoff_timestamp`` in db/repositories.rs:
+    UTC, millisecond precision, ``Z`` suffix. Stored ``created_at`` values use
+    the identical format, so a lexicographic ``created_at >= cutoff`` compare is
+    correct.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=DICTATION_HISTORY_RETENTION_DAYS)
+    return f"{cutoff.strftime('%Y-%m-%dT%H:%M:%S')}.{cutoff.microsecond // 1000:03d}Z"
 
 
 def connect_readonly(db_path: Path) -> sqlite3.Connection:
