@@ -2791,6 +2791,29 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Newer session")).toBeNull();
   });
 
+  it("honors an initial session id before session metadata is available", async () => {
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Newer session",
+        preview: "More recent work",
+        last_active: "2026-06-05T12:00:00Z",
+      },
+      existingSession,
+    ]);
+
+    render(<AgentWorkspace initialSessionId="session-1" />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"),
+    );
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+      "session-2",
+    );
+    expect(screen.queryByText("Newer session")).toBeNull();
+  });
+
   it("restores an in-flight new session across a remount (settings round trip)", async () => {
     // Start a brand-new session whose first turn is still running: Hermes has
     // persisted nothing yet (no messages, absent from the server session

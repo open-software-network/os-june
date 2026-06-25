@@ -1,9 +1,18 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
-import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
+import {
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+} from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
@@ -270,6 +279,86 @@ describe("App shortcuts", () => {
       expect(mocks.createNote).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+    }
+  });
+
+  it("keeps each agent tab tied to its selected session", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
+    const user = userEvent.setup();
+
+    try {
+      render(<App />);
+
+      expect(
+        await screen.findByRole("heading", { name: HERO_GREETING }),
+      ).toBeInTheDocument();
+
+      const firstSession = {
+        id: "session-1",
+        title: "First session",
+        preview: "First preview",
+        last_active: "2026-06-04T12:00:00Z",
+      };
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+            detail: {
+              sessions: [firstSession],
+              selectedSessionId: firstSession.id,
+              workingSessionIds: [],
+            },
+          }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "First session" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
+
+      await user.click(screen.getByRole("button", { name: "New tab" }));
+      expect(
+        await screen.findByRole("tab", { name: "New session" }),
+      ).toHaveAttribute("data-active", "true");
+
+      const secondSession = {
+        id: "session-2",
+        title: "Second session",
+        preview: "Second preview",
+        last_active: "2026-06-05T12:00:00Z",
+      };
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+            detail: {
+              sessions: [secondSession, firstSession],
+              selectedSessionId: secondSession.id,
+              workingSessionIds: [],
+            },
+          }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "Second session" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Show all 2 tabs" }));
+      await user.click(screen.getByRole("menuitem", { name: "First session" }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "First session" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
+    } finally {
+      restoreNavigator();
     }
   });
 

@@ -833,6 +833,7 @@ export type AgentWorkspaceOrigin = {
 
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
+  initialSessionId?: string;
   origin?: AgentWorkspaceOrigin;
 };
 
@@ -1205,9 +1206,10 @@ export function resetAgentSessionContinuity() {
 
 export function AgentWorkspace({
   initialSession,
+  initialSessionId: initialSessionIdProp,
   origin,
 }: AgentWorkspaceProps = {}) {
-  const initialSessionId = initialSession?.id;
+  const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
   // previous mount captured on unmount, if any session was still mid-run.
   const [continuity] = useState(() => sessionContinuity);

@@ -324,12 +324,29 @@ export function App() {
   // skips writes until live navigation settles onto the target (note loads are
   // async), so a half-applied snapshot never overwrites the tab it came from.
   const restoreTargetRef = useRef<TabNav | null>(null);
-  const [activeAgentSession, setActiveAgentSession] =
-    useState<HermesSessionInfo>();
   // Reactive copy of the known agent sessions for the "view all" list and
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
+  const [activeAgentSessionSeed, setActiveAgentSessionSeed] =
+    useState<HermesSessionInfo>();
+  const activeAgentSession = useMemo(
+    () =>
+      activeAgentSessionId
+        ? (agentSessions.find(
+            (session) => session.id === activeAgentSessionId,
+          ) ?? activeAgentSessionSeed)
+        : undefined,
+    [activeAgentSessionId, activeAgentSessionSeed, agentSessions],
+  );
+  const setActiveAgentSession = useCallback(
+    (session: HermesSessionInfo | undefined) => {
+      setActiveAgentSessionId(session?.id);
+      setActiveAgentSessionSeed(session);
+    },
+    [],
+  );
   const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -567,8 +584,7 @@ export function App() {
       originFolderId: activeView === "meetings" ? originFolderId : undefined,
       originAllNotes: activeView === "meetings" ? originAllNotes : undefined,
       folderId: activeView === "folders" ? state.selectedFolderId : undefined,
-      agentSessionId:
-        activeView === "agent" ? activeAgentSession?.id : undefined,
+      agentSessionId: activeView === "agent" ? activeAgentSessionId : undefined,
       agentOrigin: activeView === "agent" ? agentOrigin : undefined,
     }),
     [
@@ -577,7 +593,7 @@ export function App() {
       originFolderId,
       originAllNotes,
       state.selectedFolderId,
-      activeAgentSession?.id,
+      activeAgentSessionId,
       agentOrigin,
     ],
   );
@@ -648,7 +664,8 @@ export function App() {
         const session = nav.agentSessionId
           ? agentSessions.find((s) => s.id === nav.agentSessionId)
           : undefined;
-        setActiveAgentSession(session);
+        setActiveAgentSessionId(nav.agentSessionId);
+        setActiveAgentSessionSeed(session);
       } else {
         setActiveAgentSession(undefined);
       }
@@ -1235,6 +1252,17 @@ export function App() {
       if (!detail) return;
       agentMenuBarSessionsRef.current = detail.sessions;
       setAgentSessions(detail.sessions);
+      if (activeViewRef.current === "agent") {
+        const selectedSessionId = detail.selectedSessionId;
+        if (selectedSessionId) {
+          setActiveAgentSessionId(selectedSessionId);
+          setActiveAgentSessionSeed(
+            detail.sessions.find((session) => session.id === selectedSessionId),
+          );
+        } else {
+          setActiveAgentSession(undefined);
+        }
+      }
       // "New session" started from a project: file the first brand-new
       // session that gets selected; switching to a known session instead
       // abandons the intent.
@@ -1407,9 +1435,12 @@ export function App() {
       (sessionId) => {
         setAgentOrigin(undefined);
         if (!sessionId) {
+          setActiveAgentSession(undefined);
           setActiveView("agent");
           return;
         }
+        setActiveAgentSessionId(sessionId);
+        setActiveAgentSessionSeed(undefined);
         const cachedSession = agentMenuBarSessionsRef.current.find(
           (session) => session.id === sessionId,
         );
@@ -2437,21 +2468,24 @@ export function App() {
     const tick = window.setInterval(() => {
       setRecordingInactivityNow(Date.now());
     }, 1000);
-    const timeout = window.setTimeout(() => {
-      const currentStatus = recordingStatusRef.current;
-      const sessionId = recordingInactivityPrompt.sessionId;
-      recordingInactivityTrackerRef.current = { sessionId };
-      setRecordingInactivityPrompt(null);
-      if (
-        currentStatus?.sessionId !== sessionId ||
-        currentStatus.state !== "recording"
-      ) {
-        return;
-      }
-      void handlePauseRecording(sessionId).then((paused) => {
-        if (paused) void notifyRecordingAutoPaused(sessionId);
-      });
-    }, Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()));
+    const timeout = window.setTimeout(
+      () => {
+        const currentStatus = recordingStatusRef.current;
+        const sessionId = recordingInactivityPrompt.sessionId;
+        recordingInactivityTrackerRef.current = { sessionId };
+        setRecordingInactivityPrompt(null);
+        if (
+          currentStatus?.sessionId !== sessionId ||
+          currentStatus.state !== "recording"
+        ) {
+          return;
+        }
+        void handlePauseRecording(sessionId).then((paused) => {
+          if (paused) void notifyRecordingAutoPaused(sessionId);
+        });
+      },
+      Math.max(0, recordingInactivityPrompt.expiresAt - Date.now()),
+    );
 
     return () => {
       window.clearInterval(tick);
@@ -2834,6 +2868,7 @@ export function App() {
                 // session bar, so they persist while the chat scrolls beneath.
                 <AgentWorkspace
                   initialSession={activeAgentSession}
+                  initialSessionId={activeAgentSessionId}
                   origin={
                     agentOriginFolder
                       ? {
