@@ -49,6 +49,12 @@ const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
 const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
+const JUNE_WEB_MCP_SERVER_NAME: &str = "june_web";
+const JUNE_WEB_MCP_SCRIPT_NAME: &str = "june_web_mcp.py";
+const JUNE_WEB_MCP_SCRIPT: &str = include_str!("hermes/june_web_mcp.py");
+/// Environment variable the `june_web` MCP reads its loopback proxy token from.
+/// Kept out of argv so it does not appear in process listings.
+const JUNE_WEB_MCP_TOKEN_ENV: &str = "JUNE_WEB_PROXY_TOKEN";
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -72,6 +78,15 @@ You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertain
 /// prompt note teaches the model when to spend tool calls on that local data.
 const JUNE_SOUL_CONTEXT_MD: &str = r#"
 June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The `web_search` and `web_fetch`
+/// tools are discovered through the `june_web` MCP server configured below;
+/// this note teaches the model when to reach for them. Web access runs through
+/// the app's privacy-preserving proxy, so the model should treat it as a
+/// first-class capability.
+const JUNE_SOUL_WEB_MD: &str = r#"
+Web tools: you have a `june_web` MCP toolset with `web_search` and `web_fetch`. Use `web_search` for current information, recent events, or facts you are not sure of, then `web_fetch` to read a specific result or URL in full as markdown. Reach for these instead of guessing when an answer may have changed since your training, and base your reply only on what the results actually say. Some sites block automated fetching; if a fetch is refused, search for another source.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -604,11 +619,13 @@ async fn start_hermes_bridge_inner(
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(bridge).await?;
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
+    let june_web_mcp = sync_june_web_mcp(app, &command)?;
     sync_hermes_config(
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
         &june_context_mcp,
+        &june_web_mcp,
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -783,6 +800,12 @@ struct JuneContextMcpConfig {
     command: String,
     script_path: PathBuf,
     database_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneWebMcpConfig {
+    command: String,
+    script_path: PathBuf,
 }
 
 #[tauri::command]
@@ -3329,6 +3352,22 @@ fn sync_june_context_mcp(
     })
 }
 
+fn sync_june_web_mcp(app: &AppHandle, hermes_command: &str) -> Result<JuneWebMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_WEB_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_WEB_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
+
+    Ok(JuneWebMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+    })
+}
+
 fn hermes_python_command(hermes_command: &str) -> String {
     let command_path = Path::new(hermes_command);
     if let Some(parent) = command_path
@@ -3363,6 +3402,7 @@ fn sync_hermes_config(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     june_context_mcp: &JuneContextMcpConfig,
+    june_web_mcp: &JuneWebMcpConfig,
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
@@ -3373,6 +3413,7 @@ fn sync_hermes_config(
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs(),
         Some(june_context_mcp),
+        Some(june_web_mcp),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -3389,6 +3430,7 @@ fn render_hermes_config(
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
     june_context_mcp: Option<&JuneContextMcpConfig>,
+    june_web_mcp: Option<&JuneWebMcpConfig>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -3399,7 +3441,12 @@ fn render_hermes_config(
         }
         block
     };
-    let mcp_servers_block = render_june_context_mcp_config(june_context_mcp);
+    let mcp_servers_block = render_mcp_servers_config(
+        june_context_mcp,
+        june_web_mcp,
+        base_url,
+        provider_proxy_token,
+    );
     format!(
         r#"model:
   default: {model}
@@ -3421,13 +3468,31 @@ skills:
     )
 }
 
-fn render_june_context_mcp_config(config: Option<&JuneContextMcpConfig>) -> String {
-    let Some(config) = config else {
+/// Renders the `mcp_servers:` block listing every built-in MCP server June
+/// registers. Both entries live under one key so Hermes deep-merges a single
+/// map; an empty map is emitted when neither is configured.
+fn render_mcp_servers_config(
+    context: Option<&JuneContextMcpConfig>,
+    web: Option<&JuneWebMcpConfig>,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    let mut entries = String::new();
+    if let Some(config) = context {
+        entries.push_str(&render_context_mcp_entry(config));
+    }
+    if let Some(config) = web {
+        entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
+    }
+    if entries.is_empty() {
         return "mcp_servers: {}\n".to_string();
-    };
+    }
+    format!("mcp_servers:\n{entries}")
+}
+
+fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
     format!(
-        r#"mcp_servers:
-  {server_name}:
+        r#"  {server_name}:
     enabled: true
     command: {command}
     args:
@@ -3442,6 +3507,33 @@ fn render_june_context_mcp_config(config: Option<&JuneContextMcpConfig>) -> Stri
         command = yaml_string(&config.command),
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         database_path = yaml_string(&config.database_path.to_string_lossy()),
+    )
+}
+
+/// The web MCP gets the loopback proxy base URL as an argument and the proxy
+/// token via the environment (kept out of argv). The token is the same one the
+/// model block already carries as `api_key`, so it adds no new secret to the
+/// file.
+fn render_web_mcp_entry(config: &JuneWebMcpConfig, base_url: &str, proxy_token: &str) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_WEB_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_WEB_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
     )
 }
 
@@ -3481,9 +3573,11 @@ fn sync_june_soul(
         } else {
             JUNE_SOUL_CLI_BLOCKED_MD
         };
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
+        format!(
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+        )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_WEB_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -3767,6 +3861,12 @@ async fn handle_scribe_provider_connection(
                 }
             }
         }
+        ("POST", "/v1/web/search") => {
+            forward_web_tool(&mut stream, "/v1/web/search", &request.body).await?;
+        }
+        ("POST", "/v1/web/fetch") => {
+            forward_web_tool(&mut stream, "/v1/web/fetch", &request.body).await?;
+        }
         _ => {
             write_json_response(
                 &mut stream,
@@ -3945,6 +4045,42 @@ async fn write_json_response(
 ) -> io::Result<()> {
     let body = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     write_raw_response(stream, status, "application/json", &body).await
+}
+
+/// Forwards a web tool request to the Scribe API and relays its `ApiResponse`
+/// envelope back to the loopback caller (the `june_web` MCP) verbatim. The
+/// access token is added inside `scribe_api`, so it never reaches the MCP. A
+/// 4xx/5xx envelope (e.g. a blocked site, or an out-of-credits 402) is passed
+/// through unchanged so the agent gets the backend's own usable message.
+async fn forward_web_tool(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    request_body: &[u8],
+) -> io::Result<()> {
+    let body = serde_json::from_slice::<serde_json::Value>(request_body)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    match crate::scribe_api::forward_web_request(path, &body).await {
+        Ok(response) => {
+            write_raw_response(
+                stream,
+                response.status,
+                &response.content_type,
+                &response.body,
+            )
+            .await
+        }
+        Err(error) => {
+            write_json_response(
+                stream,
+                502,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Web request failed: {}", error.message),
+                }),
+            )
+            .await
+        }
+    }
 }
 
 async fn write_raw_response(
@@ -4230,6 +4366,7 @@ mod tests {
             "web, memory",
             &dirs,
             None,
+            None,
         );
 
         assert!(config.contains("model:\n  default: \"glm\""));
@@ -4241,29 +4378,67 @@ mod tests {
 
     #[test]
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
-        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[], None);
-
-        assert!(config.contains("skills:\n  external_dirs: []\n"));
-        assert!(!config.contains("    - "));
-    }
-
-    #[test]
-    fn render_hermes_config_registers_june_context_mcp_server() {
-        let mcp = test_june_context_mcp_config();
         let config = render_hermes_config(
             "glm",
             "http://127.0.0.1:9/v1",
             "tok",
             "web",
             &[],
-            Some(&mcp),
+            None,
+            None,
         );
 
+        assert!(config.contains("skills:\n  external_dirs: []\n"));
+        assert!(!config.contains("    - "));
+    }
+
+    fn test_june_web_mcp_config() -> JuneWebMcpConfig {
+        JuneWebMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/scribe/hermes-mcp/june_web_mcp.py"),
+        }
+    }
+
+    #[test]
+    fn render_hermes_config_registers_june_context_mcp_server() {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "proxy-tok",
+            "web",
+            &[],
+            Some(&context),
+            Some(&web),
+        );
+
+        // Both built-in servers live under one mcp_servers map.
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
-        assert!(config.contains("    enabled: true\n"));
+        assert!(config.contains("  june_web:\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/scribe/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/scribe/notes.sqlite3\"\n"));
+        // The web server gets the loopback proxy URL as an arg and the proxy
+        // token via env, never as a direct credential the MCP must hold.
+        assert!(config.contains("      - \"/tmp/scribe/hermes-mcp/june_web_mcp.py\"\n"));
+        assert!(config.contains("      - \"http://127.0.0.1:9/v1\"\n"));
+        assert!(config.contains("      JUNE_WEB_PROXY_TOKEN: \"proxy-tok\"\n"));
+    }
+
+    #[test]
+    fn render_hermes_config_emits_empty_mcp_servers_without_configs() {
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web",
+            &[],
+            None,
+            None,
+        );
+
+        assert!(config.contains("mcp_servers: {}\n"));
     }
 
     #[test]
@@ -4551,7 +4726,8 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
 
         let mcp = test_june_context_mcp_config();
-        sync_hermes_config(home.path(), 4242, "proxy-token", &mcp).expect("sync config");
+        let web = test_june_web_mcp_config();
+        sync_hermes_config(home.path(), 4242, "proxy-token", &mcp, &web).expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
         assert!(config.contains("platform_toolsets:"));
@@ -4623,6 +4799,18 @@ mod tests {
         assert!(soul.contains("meeting notes"));
         assert!(soul.contains("dictation history"));
         assert!(soul.contains("Query it on demand"));
+    }
+
+    #[test]
+    fn june_soul_describes_web_tools() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_web"));
+        assert!(soul.contains("web_search"));
+        assert!(soul.contains("web_fetch"));
     }
 
     #[test]
