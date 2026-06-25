@@ -45,6 +45,7 @@ const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+const CONTEXT_COMPRESSION_DISABLED_FLAG_FILE: &str = "context-compression-disabled";
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -568,7 +569,12 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(bridge).await?;
-    sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy.token)?;
+    sync_hermes_config(
+        &hermes_home,
+        provider_proxy.port,
+        &provider_proxy.token,
+        context_compression_enabled(app),
+    )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
@@ -1083,6 +1089,12 @@ pub struct AgentCliAccessStatus {
     pub enabled: bool,
 }
 
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextCompressionStatus {
+    pub enabled: bool,
+}
+
 #[tauri::command]
 pub fn hermes_agent_cli_access(app: AppHandle) -> AgentCliAccessStatus {
     AgentCliAccessStatus {
@@ -1090,9 +1102,22 @@ pub fn hermes_agent_cli_access(app: AppHandle) -> AgentCliAccessStatus {
     }
 }
 
+#[tauri::command]
+pub fn hermes_context_compression(app: AppHandle) -> ContextCompressionStatus {
+    ContextCompressionStatus {
+        enabled: context_compression_enabled(&app),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetAgentCliAccessRequest {
+    pub enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetContextCompressionRequest {
     pub enabled: bool,
 }
 
@@ -1126,6 +1151,41 @@ pub fn set_hermes_agent_cli_access(
     }
     stop_hermes_mode(&bridge, false)?;
     Ok(AgentCliAccessStatus {
+        enabled: request.enabled,
+    })
+}
+
+/// Records June's context-compression preference. Hermes reads config.yaml at
+/// process startup, so this intentionally does not retire live runtimes.
+#[tauri::command]
+pub fn set_hermes_context_compression(
+    app: AppHandle,
+    request: SetContextCompressionRequest,
+) -> Result<ContextCompressionStatus, AppError> {
+    let path = context_compression_disabled_flag_path(&app).ok_or_else(|| {
+        AppError::new(
+            "context_compression_unavailable",
+            "Could not resolve the app data directory.",
+        )
+    })?;
+    if request.enabled {
+        if let Err(error) = std::fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(AppError::new(
+                    "context_compression_failed",
+                    error.to_string(),
+                ));
+            }
+        }
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| AppError::new("context_compression_failed", error.to_string()))?;
+        }
+        std::fs::write(&path, b"1")
+            .map_err(|error| AppError::new("context_compression_failed", error.to_string()))?;
+    }
+    Ok(ContextCompressionStatus {
         enabled: request.enabled,
     })
 }
@@ -2714,6 +2774,18 @@ pub(crate) fn agent_cli_access_enabled(app: &AppHandle) -> bool {
     agent_cli_access_flag_path(app).is_some_and(|path| path.exists())
 }
 
+fn context_compression_disabled_flag_path(app: &AppHandle) -> Option<PathBuf> {
+    crate::app_paths::app_data_dir(app)
+        .ok()
+        .map(|dir| dir.join(CONTEXT_COMPRESSION_DISABLED_FLAG_FILE))
+}
+
+/// Whether June should render Hermes auto context compression as enabled.
+/// Absence of the app-data flag is the default-enabled state.
+pub(crate) fn context_compression_enabled(app: &AppHandle) -> bool {
+    !context_compression_disabled_flag_path(app).is_some_and(|path| path.exists())
+}
+
 /// Whether a *sandboxed* spawn on this machine would actually engage the
 /// jail. Used by unrestricted spawns to keep the shared SOUL.md's sandbox
 /// section accurate without touching the profile on disk.
@@ -2956,6 +3028,7 @@ fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    context_compression_enabled: bool,
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
@@ -2965,6 +3038,7 @@ fn sync_hermes_config(
         provider_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs(),
+        context_compression_enabled,
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -2980,15 +3054,21 @@ fn render_hermes_config(
     provider_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
+    context_compression_enabled: bool,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
-        "  external_dirs: []\n".to_string()
+        "  creation_nudge_interval: 0\n  external_dirs: []\n".to_string()
     } else {
-        let mut block = String::from("  external_dirs:\n");
+        let mut block = String::from("  creation_nudge_interval: 0\n  external_dirs:\n");
         for dir in external_skill_dirs {
             block.push_str(&format!("    - {}\n", yaml_string(&dir.to_string_lossy())));
         }
         block
+    };
+    let compression_enabled = if context_compression_enabled {
+        "true"
+    } else {
+        "false"
     };
     format!(
         r#"model:
@@ -3003,11 +3083,17 @@ display:
   skin: mono
 platform_toolsets:
   cron: [{cron_toolsets}]
+compression:
+  enabled: {compression_enabled}
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
 skills:
 {skills_block}"#,
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+        compression_enabled = compression_enabled,
     )
 }
 
@@ -3781,22 +3867,38 @@ mod tests {
             PathBuf::from("/Users/dev/.agents/skills"),
             PathBuf::from("/shared/team-skills"),
         ];
-        let config =
-            render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web, memory", &dirs);
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web, memory",
+            &dirs,
+            true,
+        );
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
         assert!(config.contains(
-            "skills:\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
+            "compression:\n  enabled: true\n  threshold: 0.50\n  target_ratio: 0.20\n  protect_last_n: 20\n"
+        ));
+        assert!(config.contains(
+            "skills:\n  creation_nudge_interval: 0\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
         ));
     }
 
     #[test]
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
-        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[]);
+        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[], true);
 
-        assert!(config.contains("skills:\n  external_dirs: []\n"));
+        assert!(config.contains("skills:\n  creation_nudge_interval: 0\n  external_dirs: []\n"));
         assert!(!config.contains("    - "));
+    }
+
+    #[test]
+    fn render_hermes_config_can_disable_context_compression() {
+        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[], false);
+
+        assert!(config.contains("compression:\n  enabled: false\n"));
     }
 
     #[test]
@@ -3937,11 +4039,13 @@ mod tests {
         // allowlist, never the full default toolset.
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_hermes_config(home.path(), 4242, "proxy-token").expect("sync config");
+        sync_hermes_config(home.path(), 4242, "proxy-token", true).expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
         assert!(config.contains("platform_toolsets:"));
         assert!(config.contains(&format!("cron: [{}]", CRON_SANDBOXED_TOOLSETS.join(", "))));
+        assert!(config.contains("compression:\n  enabled: true\n"));
+        assert!(config.contains("skills:\n  creation_nudge_interval: 0\n"));
         for toolset in [
             "terminal",
             "file",

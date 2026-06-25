@@ -146,6 +146,38 @@ async fn assigning_and_removing_session_folders_round_trips() {
 }
 
 #[tokio::test]
+async fn replacing_agent_hermes_session_moves_session_folder_assignments() {
+    let repos = repos().await;
+    let first = repos.create_folder("Launch", None).await.expect("folder");
+    let second = repos.create_folder("Research", None).await.expect("folder");
+    repos
+        .assign_session_to_folder("old-session", &first.id)
+        .await
+        .expect("assign first");
+    repos
+        .assign_session_to_folder("old-session", &second.id)
+        .await
+        .expect("assign second");
+
+    repos
+        .replace_agent_hermes_session_id("old-session", "new-session")
+        .await
+        .expect("replace session");
+
+    let assignments = repos.list_session_folders().await.expect("list");
+    assert_eq!(assignments.len(), 2);
+    assert!(assignments
+        .iter()
+        .all(|assignment| assignment.session_id == "new-session"));
+    let folder_ids = assignments
+        .iter()
+        .map(|assignment| assignment.folder_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(folder_ids.contains(&first.id.as_str()));
+    assert!(folder_ids.contains(&second.id.as_str()));
+}
+
+#[tokio::test]
 async fn deleting_folder_drops_its_session_assignments() {
     let repos = repos().await;
     let folder = repos.create_folder("Launch", None).await.expect("folder");

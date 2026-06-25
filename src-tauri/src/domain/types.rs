@@ -579,6 +579,13 @@ pub struct SaveAgentHermesSessionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReplaceAgentHermesSessionRequest {
+    pub old_session_id: String,
+    pub new_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SuggestAgentSessionTitleRequest {
     pub prompt: String,
 }

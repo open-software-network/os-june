@@ -3,6 +3,7 @@ import type { HermesSessionInfo } from "./tauri";
 export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
 export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
+export const AGENT_SESSION_ID_ROTATED_EVENT = "scribe:agent:session-id-rotated";
 export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
 export const AGENT_SESSION_STATUS_EVENT = "scribe:agent:session-status";
 export const AGENT_OPEN_EVENT = "scribe:agent:open";
@@ -38,6 +39,12 @@ export type AgentSessionsChangedDetail = {
   waitingSessionIds?: string[];
 };
 
+export type AgentSessionIdRotatedDetail = {
+  oldSessionId: string;
+  newSessionId: string;
+  session?: HermesSessionInfo;
+};
+
 export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
   window.dispatchEvent(
     new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
@@ -69,6 +76,24 @@ export function emitAgentSessionsChanged(detail: AgentSessionsChangedDetail) {
     .then((api) =>
       typeof api.emit === "function"
         ? api.emit(AGENT_SESSIONS_CHANGED_EVENT, detail)
+        : undefined,
+    )
+    .catch(() => {});
+}
+
+export function dispatchAgentSessionIdRotated(
+  detail: AgentSessionIdRotatedDetail,
+) {
+  window.dispatchEvent(
+    new CustomEvent<AgentSessionIdRotatedDetail>(
+      AGENT_SESSION_ID_ROTATED_EVENT,
+      { detail },
+    ),
+  );
+  void import("@tauri-apps/api/event")
+    .then((api) =>
+      typeof api.emit === "function"
+        ? api.emit(AGENT_SESSION_ID_ROTATED_EVENT, detail)
         : undefined,
     )
     .catch(() => {});

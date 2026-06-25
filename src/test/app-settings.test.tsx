@@ -42,6 +42,8 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
   setHermesAgentCliAccess: vi.fn(),
+  hermesContextCompression: vi.fn(),
+  setHermesContextCompression: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
@@ -79,6 +81,8 @@ vi.mock("../lib/tauri", () => ({
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
+  hermesContextCompression: mocks.hermesContextCompression,
+  setHermesContextCompression: mocks.setHermesContextCompression,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
@@ -329,6 +333,10 @@ describe("AppSettings", () => {
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.setHermesAgentCliAccess.mockImplementation(
+      async (enabled: boolean) => ({ enabled }),
+    );
+    mocks.hermesContextCompression.mockResolvedValue({ enabled: true });
+    mocks.setHermesContextCompression.mockImplementation(
       async (enabled: boolean) => ({ enabled }),
     );
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
