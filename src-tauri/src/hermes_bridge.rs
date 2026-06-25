@@ -45,6 +45,9 @@ const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
+const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
+const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
+const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
@@ -61,6 +64,13 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 - Open Software never trains on the user's data.
 
 You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The tools themselves are
+/// discovered through the `june_context` MCP server configured below; this
+/// prompt note teaches the model when to spend tool calls on that local data.
+const JUNE_SOUL_CONTEXT_MD: &str = r#"
+June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
 "#;
 
 /// Appended to `SOUL.md` only when the Seatbelt write-jail engages on this
@@ -592,7 +602,13 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(bridge).await?;
-    sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy.token)?;
+    let june_context_mcp = sync_june_context_mcp(app, &hermes_home, &command)?;
+    sync_hermes_config(
+        &hermes_home,
+        provider_proxy.port,
+        &provider_proxy.token,
+        &june_context_mcp,
+    )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
@@ -759,6 +775,13 @@ async fn ensure_provider_proxy(bridge: &HermesBridge) -> Result<SharedProviderPr
 struct SharedProviderProxyInfo {
     port: u16,
     token: String,
+}
+
+#[derive(Debug, Clone)]
+struct JuneContextMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    database_path: PathBuf,
 }
 
 #[tauri::command]
@@ -3252,10 +3275,64 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
     "context_engine",
 ];
 
+fn sync_june_context_mcp(
+    app: &AppHandle,
+    hermes_home: &Path,
+    hermes_command: &str,
+) -> Result<JuneContextMcpConfig, AppError> {
+    let mcp_dir = hermes_home.join("mcp");
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_CONTEXT_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_CONTEXT_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+    let paths = crate::app_paths::AppPaths::from_data_dir(data_dir)
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+
+    Ok(JuneContextMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        database_path: paths.database_path,
+    })
+}
+
+fn hermes_python_command(hermes_command: &str) -> String {
+    let command_path = Path::new(hermes_command);
+    if let Some(parent) = command_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        let candidates = if cfg!(target_os = "windows") {
+            ["python.exe", "python"]
+        } else {
+            ["python3", "python"]
+        };
+        for candidate in candidates {
+            let path = parent.join(candidate);
+            if path.exists() {
+                return path.to_string_lossy().into_owned();
+            }
+        }
+    }
+    default_python_command().to_string()
+}
+
+fn default_python_command() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "python"
+    } else {
+        "python3"
+    }
+}
+
 fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    june_context_mcp: &JuneContextMcpConfig,
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
@@ -3265,6 +3342,7 @@ fn sync_hermes_config(
         provider_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs(),
+        Some(june_context_mcp),
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
@@ -3280,6 +3358,7 @@ fn render_hermes_config(
     provider_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
+    june_context_mcp: Option<&JuneContextMcpConfig>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -3290,6 +3369,7 @@ fn render_hermes_config(
         }
         block
     };
+    let mcp_servers_block = render_june_context_mcp_config(june_context_mcp);
     format!(
         r#"model:
   default: {model}
@@ -3304,10 +3384,34 @@ display:
 platform_toolsets:
   cron: [{cron_toolsets}]
 skills:
-{skills_block}"#,
+{skills_block}{mcp_servers_block}"#,
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+    )
+}
+
+fn render_june_context_mcp_config(config: Option<&JuneContextMcpConfig>) -> String {
+    let Some(config) = config else {
+        return "mcp_servers: {}\n".to_string();
+    };
+    format!(
+        r#"mcp_servers:
+  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {database_path}
+    env:
+      PYTHONUNBUFFERED: "1"
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_CONTEXT_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        database_path = yaml_string(&config.database_path.to_string_lossy()),
     )
 }
 
@@ -3347,9 +3451,9 @@ fn sync_june_soul(
         } else {
             JUNE_SOUL_CLI_BLOCKED_MD
         };
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}")
     } else {
-        JUNE_SOUL_MD.to_string()
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -3940,6 +4044,14 @@ mod tests {
         }
     }
 
+    fn test_june_context_mcp_config() -> JuneContextMcpConfig {
+        JuneContextMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/hermes/mcp/june_context_mcp.py"),
+            database_path: PathBuf::from("/tmp/scribe/notes.sqlite3"),
+        }
+    }
+
     #[test]
     fn provider_proxy_requires_matching_bearer_token() {
         let request = request_with_authorization("Bearer proxy-secret");
@@ -4081,8 +4193,14 @@ mod tests {
             PathBuf::from("/Users/dev/.agents/skills"),
             PathBuf::from("/shared/team-skills"),
         ];
-        let config =
-            render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web, memory", &dirs);
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web, memory",
+            &dirs,
+            None,
+        );
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
@@ -4093,10 +4211,60 @@ mod tests {
 
     #[test]
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
-        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[]);
+        let config = render_hermes_config("glm", "http://127.0.0.1:9/v1", "tok", "web", &[], None);
 
         assert!(config.contains("skills:\n  external_dirs: []\n"));
         assert!(!config.contains("    - "));
+    }
+
+    #[test]
+    fn render_hermes_config_registers_june_context_mcp_server() {
+        let mcp = test_june_context_mcp_config();
+        let config = render_hermes_config(
+            "glm",
+            "http://127.0.0.1:9/v1",
+            "tok",
+            "web",
+            &[],
+            Some(&mcp),
+        );
+
+        assert!(config.contains("mcp_servers:\n  june_context:\n"));
+        assert!(config.contains("    enabled: true\n"));
+        assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
+        assert!(config.contains("      - \"/tmp/hermes/mcp/june_context_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/scribe/notes.sqlite3\"\n"));
+    }
+
+    #[test]
+    fn hermes_python_command_prefers_the_runtime_venv_python() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let bin = home
+            .path()
+            .join("venv")
+            .join(if cfg!(target_os = "windows") {
+                "Scripts"
+            } else {
+                "bin"
+            });
+        std::fs::create_dir_all(&bin).expect("bin");
+        let hermes = bin.join(if cfg!(target_os = "windows") {
+            "hermes.exe"
+        } else {
+            "hermes"
+        });
+        let python = bin.join(if cfg!(target_os = "windows") {
+            "python.exe"
+        } else {
+            "python"
+        });
+        std::fs::write(&hermes, "").expect("hermes");
+        std::fs::write(&python, "").expect("python");
+
+        assert_eq!(
+            hermes_python_command(&hermes.to_string_lossy()),
+            python.to_string_lossy()
+        );
     }
 
     #[test]
@@ -4352,7 +4520,8 @@ mod tests {
         // allowlist, never the full default toolset.
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_hermes_config(home.path(), 4242, "proxy-token").expect("sync config");
+        let mcp = test_june_context_mcp_config();
+        sync_hermes_config(home.path(), 4242, "proxy-token", &mcp).expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
         assert!(config.contains("platform_toolsets:"));
@@ -4411,6 +4580,19 @@ mod tests {
         // ...and warns not to confuse it with the CLI's own sandbox flag,
         // which is the wrong layer (what the screenshot agent got wrong).
         assert!(soul.contains("NOT the CLI's own sandbox"));
+    }
+
+    #[test]
+    fn june_soul_describes_local_context_tools() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_context"));
+        assert!(soul.contains("meeting notes"));
+        assert!(soul.contains("dictation history"));
+        assert!(soul.contains("Query it on demand"));
     }
 
     #[test]
