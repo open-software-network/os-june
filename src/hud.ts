@@ -1080,15 +1080,7 @@ function parseEvent(payload: unknown): DictationHudEvent | undefined {
   return undefined;
 }
 
-dragHandle?.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0) return;
-  event.preventDefault();
-  event.stopPropagation();
-  void appWindow?.startDragging().catch(() => {});
-});
-
-stopButton?.addEventListener("click", async (event) => {
-  event.preventDefault();
+async function stopAndPasteDictation() {
   setStopHover(false);
   if (hud?.dataset.state === "listening") {
     const transition = setHud("transcribing", "Transcribing");
@@ -1101,7 +1093,48 @@ stopButton?.addEventListener("click", async (event) => {
   } catch {
     void hideHud();
   }
+}
+
+async function cancelDictation() {
+  if (!hud?.isConnected || hud.dataset.state !== "listening") return;
+  setStopHover(false);
+  try {
+    await invoke("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+  } finally {
+    void hideHud();
+  }
+}
+
+dragHandle?.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void appWindow?.startDragging().catch(() => {});
 });
+
+stopButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  await stopAndPasteDictation();
+});
+
+window.addEventListener(
+  "keydown",
+  (event) => {
+    if (
+      event.key !== "Escape" ||
+      !hud?.isConnected ||
+      hud.dataset.state !== "listening"
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void cancelDictation();
+  },
+  { capture: true },
+);
 
 meetingStartButton?.addEventListener("click", async (event) => {
   event.preventDefault();

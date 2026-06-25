@@ -1863,6 +1863,10 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 
     handle_shortcut_key_event(app, event_type, event.as_ref());
 
+    if matches!(event_type, Some("recording_discarded")) {
+        reset_shortcut_activation(app);
+    }
+
     if matches!(event_type, Some("recording_ready")) {
         if let Some(event) = event.as_ref() {
             match recording_ready_info_from_event(event) {
@@ -2776,9 +2780,13 @@ fn dictation_event_visibility(event_type: Option<&str>) -> DictationEventVisibil
             | "final_transcript"
             | "paste_target",
         ) => DictationEventVisibility::Show,
-        Some("paste_completed" | "agent_session_prompt" | "error" | "shutdown_ack") => {
-            DictationEventVisibility::Hide
-        }
+        Some(
+            "paste_completed"
+            | "recording_discarded"
+            | "agent_session_prompt"
+            | "error"
+            | "shutdown_ack",
+        ) => DictationEventVisibility::Hide,
         _ => DictationEventVisibility::Ignore,
     }
 }
@@ -3585,6 +3593,29 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_reset_after_cancel_ignores_later_release() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down
+            ),
+            Some(DictationCommand::StartListening)
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
     fn toggle_mode_toggles_on_down_and_ignores_up() {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
@@ -3898,6 +3929,14 @@ mod tests {
     fn agent_session_prompt_hides_dictation_hud() {
         assert!(matches!(
             dictation_event_visibility(Some("agent_session_prompt")),
+            DictationEventVisibility::Hide
+        ));
+    }
+
+    #[test]
+    fn recording_discarded_hides_dictation_hud() {
+        assert!(matches!(
+            dictation_event_visibility(Some("recording_discarded")),
             DictationEventVisibility::Hide
         ));
     }

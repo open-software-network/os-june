@@ -523,6 +523,54 @@ describe("meeting detection HUD", () => {
     expect(hudShowCalls()).toBe(0);
   });
 
+  it("surfaces Escape as the listening cancel affordance", async () => {
+    await loadHud();
+
+    await emit("dictation-event", { type: "listening_started" });
+
+    expect(document.querySelector("#hud-cancel-key")).toHaveTextContent("Esc");
+    expect(document.querySelector("#hud-cancel-key")).toHaveAttribute(
+      "aria-label",
+      "Press Escape to cancel dictation",
+    );
+  });
+
+  it("cancels active dictation when Escape reaches the HUD", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+  });
+
+  it("ignores Escape outside the listening state", async () => {
+    await loadHud();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+  });
+
   it("falls back to the error toast for already_listening outside the listening state", async () => {
     await loadHud();
 
@@ -738,6 +786,7 @@ function hudMarkup() {
       <span class="hud-error-layer" aria-hidden="true">
         <span id="hud-error-text" class="hud-error-message"></span>
       </span>
+      <span id="hud-cancel-key" class="hud-cancel-key" aria-label="Press Escape to cancel dictation">Esc</span>
       <span class="hud-meeting-body">
         <span class="hud-meeting-mark" aria-hidden="true"></span>
         <span class="hud-meeting-text">
