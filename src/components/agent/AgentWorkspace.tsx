@@ -1352,6 +1352,9 @@ export function AgentWorkspace({
   const [hermesSessionMessages, setHermesSessionMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >({});
+  const hermesSessionMessagesRef = useRef<
+    Record<string, HermesSessionMessage[]>
+  >({});
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
     Record<string, HermesSessionMessage[]>
   >(() => continuity?.pendingMessages ?? {});
@@ -1718,12 +1721,14 @@ export function AgentWorkspace({
   }, [runtimeSessionIds]);
 
   useEffect(() => {
+    hermesSessionMessagesRef.current = hermesSessionMessages;
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
+    hermesSessionMessages,
     hermesSessionItems,
     pendingHermesMessages,
     selectedHermesSessionId,
@@ -1786,7 +1791,11 @@ export function AgentWorkspace({
   // neither leaves a phantom "working" session with a leaked listener behind.
   const scrubHermesSessionState = useCallback(
     (sessionId: string) => {
-      setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
+      setHermesSessionMessages((current) => {
+        const next = omitRecordKey(current, sessionId);
+        hermesSessionMessagesRef.current = next;
+        return next;
+      });
       setPendingHermesMessages((current) => {
         const next = omitRecordKey(current, sessionId);
         pendingHermesMessagesRef.current = next;
@@ -1834,10 +1843,10 @@ export function AgentWorkspace({
     : undefined;
   const selectedHermesMessages = useMemo(() => {
     if (!selectedHermesSessionId) return [];
-    return [
-      ...(hermesSessionMessages[selectedHermesSessionId] ?? []),
-      ...(pendingHermesMessages[selectedHermesSessionId] ?? []),
-    ];
+    return mergeHermesMessagesForDisplay(
+      hermesSessionMessages[selectedHermesSessionId] ?? [],
+      pendingHermesMessages[selectedHermesSessionId] ?? [],
+    );
   }, [hermesSessionMessages, pendingHermesMessages, selectedHermesSessionId]);
   const composerDraftKey = selectedHermesSessionId
     ? sessionComposerDraftKey(selectedHermesSessionId)
@@ -2688,10 +2697,14 @@ export function AgentWorkspace({
           pendingHermesMessagesRef.current[selectedHermesSessionId] ?? [],
           messages,
         );
-        setHermesSessionMessages((current) => ({
-          ...current,
-          [selectedHermesSessionId]: messages,
-        }));
+        setHermesSessionMessages((current) => {
+          const next = {
+            ...current,
+            [selectedHermesSessionId]: messages,
+          };
+          hermesSessionMessagesRef.current = next;
+          return next;
+        });
         setPendingHermesMessages((current) => {
           const next = {
             ...current,
@@ -2701,7 +2714,10 @@ export function AgentWorkspace({
           return next;
         });
         void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
-        const combined = [...messages, ...retainedPending];
+        const combined = mergeHermesMessagesForDisplay(
+          messages,
+          retainedPending,
+        );
         if (
           shouldResumeSessionActivity(combined) &&
           !waitingSessionIdsRef.current.has(selectedHermesSessionId)
@@ -3645,11 +3661,22 @@ export function AgentWorkspace({
         ...current,
       ];
     });
+    const knownSessionMessages =
+      hermesSessionMessagesRef.current[storedSessionId];
+    const insertAfterMessageId =
+      knownSessionMessages !== undefined
+        ? (knownSessionMessages.at(-1)?.id ?? null)
+        : targetSessionId
+          ? undefined
+          : null;
     const pendingUserMessage: HermesSessionMessage = {
       id: `pending:user:${Date.now()}`,
       role: "user",
       content: displayContent,
       timestamp: createdAt,
+      ...(insertAfterMessageId !== undefined
+        ? { client_insert_after_message_id: insertAfterMessageId }
+        : {}),
     };
     setPendingHermesMessages((current) => {
       const next = {
@@ -4139,10 +4166,14 @@ export function AgentWorkspace({
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
       );
-      setHermesSessionMessages((current) => ({
-        ...current,
-        [sessionId]: messages,
-      }));
+      setHermesSessionMessages((current) => {
+        const next = {
+          ...current,
+          [sessionId]: messages,
+        };
+        hermesSessionMessagesRef.current = next;
+        return next;
+      });
       setPendingHermesMessages((current) => {
         const next = {
           ...current,
@@ -4153,7 +4184,9 @@ export function AgentWorkspace({
       });
       void suggestTitleForUntitledSession(sessionId, messages);
       if (
-        sessionHasAssistantAfterLatestUser([...messages, ...retainedPending])
+        sessionHasAssistantAfterLatestUser(
+          mergeHermesMessagesForDisplay(messages, retainedPending),
+        )
       ) {
         promotePendingIssueReportToReview(sessionId, {
           queueDiagnosisRefresh: false,
@@ -10679,6 +10712,59 @@ function retainUnpersistedPendingMessages(
       );
     });
   });
+}
+
+function mergeHermesMessagesForDisplay(
+  persisted: HermesSessionMessage[],
+  pending: HermesSessionMessage[],
+) {
+  if (!pending.length) return persisted;
+  const merged = [...persisted];
+  for (const pendingMessage of pending) {
+    const insertAt = pendingHermesMessageInsertIndex(merged, pendingMessage);
+    merged.splice(insertAt, 0, pendingMessage);
+  }
+  return merged;
+}
+
+function pendingHermesMessageInsertIndex(
+  messages: HermesSessionMessage[],
+  pendingMessage: HermesSessionMessage,
+) {
+  if (
+    Object.prototype.hasOwnProperty.call(
+      pendingMessage,
+      "client_insert_after_message_id",
+    )
+  ) {
+    const anchorId = pendingMessage.client_insert_after_message_id;
+    if (!anchorId) return advancePastLocalPendingMessages(messages, 0);
+    const anchorIndex = messages.findIndex((message) => message.id === anchorId);
+    if (anchorIndex >= 0) {
+      return advancePastLocalPendingMessages(messages, anchorIndex + 1);
+    }
+  }
+
+  const pendingAt = hermesMessageTimestampMs(pendingMessage);
+  if (pendingAt === undefined) return messages.length;
+  const matchingIndex = messages.findIndex((message) => {
+    const messageAt = hermesMessageTimestampMs(message);
+    if (messageAt === undefined) return false;
+    if (pendingMessage.role === "user" && message.role === "assistant") {
+      return messageAt >= pendingAt - PENDING_MATCH_SKEW_MS;
+    }
+    return messageAt > pendingAt;
+  });
+  return matchingIndex >= 0 ? matchingIndex : messages.length;
+}
+
+function advancePastLocalPendingMessages(
+  messages: HermesSessionMessage[],
+  startIndex: number,
+) {
+  let index = startIndex;
+  while (messages[index]?.id.startsWith("pending:")) index += 1;
+  return index;
 }
 
 function hermesMessageTimestampMs(message: HermesSessionMessage) {

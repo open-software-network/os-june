@@ -122,6 +122,51 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("orders same-timestamp Hermes user turns before assistant turns", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "2",
+        role: "assistant",
+        content: "Fast answer",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+      {
+        id: "1",
+        role: "user",
+        content: "Fast question",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Fast question", status: "complete" },
+    ]);
+  });
+
+  it("keeps an anchored pending user turn before a coarse assistant timestamp", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "pending:user:1781179200900",
+        role: "user",
+        content: "Follow up",
+        timestamp: "2026-06-11T12:00:00.900Z",
+        client_insert_after_message_id: "previous",
+      },
+      {
+        id: "3",
+        role: "assistant",
+        content: "Fast follow-up answer",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Follow up", status: "complete" },
+    ]);
+  });
+
   it("strips explicit skill context from persisted Hermes user messages", () => {
     const turns = buildHermesSessionChatTurns([
       {

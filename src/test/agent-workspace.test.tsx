@@ -2029,8 +2029,14 @@ describe("AgentWorkspace", () => {
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({ createdAt: Date.now(), category: "bug" }),
     );
+    let rejectFirstReport: ((error: Error) => void) | undefined;
     mocks.submitIssueReport
-      .mockRejectedValueOnce(new Error("upstream_provider_failed"))
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirstReport = reject;
+          }),
+      )
       .mockResolvedValue({ received: true });
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
@@ -2065,6 +2071,10 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Report ready/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
     expect(await screen.findByText("Sending")).toBeInTheDocument();
+    await act(async () => {
+      rejectFirstReport?.(new Error("upstream_provider_failed"));
+      await Promise.resolve();
+    });
     expect(
       await screen.findByText(/The issue report could not be sent/),
     ).toBeInTheDocument();
@@ -4000,6 +4010,86 @@ describe("AgentWorkspace", () => {
       expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
         sessionListCallsAfterSubmit + 1,
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a pending follow-up above a fetched assistant reply that arrives first", async () => {
+    const user = userEvent.setup();
+    const oldHistory = [
+      {
+        id: "m1",
+        role: "user",
+        content: "previous request",
+        timestamp: "2026-06-04T12:00:00.000Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "previous answer",
+        timestamp: "2026-06-04T12:00:01.000Z",
+      },
+    ];
+    let submitted = false;
+    mocks.listHermesSessionMessages.mockImplementation(async () =>
+      submitted
+        ? [
+            ...oldHistory,
+            {
+              id: "m3",
+              role: "assistant",
+              content: "new ordering answer",
+              timestamp: "2026-06-25T15:00:00.000Z",
+            },
+          ]
+        : oldHistory,
+    );
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        submitted = true;
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("previous answer")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "follow up ordering");
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T15:00:00.900Z"));
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "follow up ordering",
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      const rows = Array.from(
+        document.querySelectorAll(".agent-user-turn, .agent-assistant-turn"),
+      ).map((element) => element.textContent ?? "");
+      const userIndex = rows.findIndex((text) =>
+        text.includes("follow up ordering"),
+      );
+      const assistantIndex = rows.findIndex((text) =>
+        text.includes("new ordering answer"),
+      );
+      expect(userIndex).toBeGreaterThan(-1);
+      expect(assistantIndex).toBeGreaterThan(-1);
+      expect(userIndex).toBeLessThan(assistantIndex);
     } finally {
       vi.useRealTimers();
     }
