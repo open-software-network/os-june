@@ -140,17 +140,22 @@ export type AgentChatTurn = {
   isScheduledRun?: boolean;
 };
 
-const TURN_ROLE_ORDER: Record<AgentChatTurn["role"], number> = {
-  system: 0,
-  user: 1,
-  assistant: 2,
-};
-
 function compareAgentChatTurns(a: AgentChatTurn, b: AgentChatTurn) {
+  const timestampOrder = a.createdAt.localeCompare(b.createdAt);
+  if (timestampOrder !== 0) return timestampOrder;
+  const userAssistantOrder = compareUserAssistantTurns(a, b);
+  if (userAssistantOrder !== 0) return userAssistantOrder;
+  if (a.role !== b.role) return 0;
+  return a.id.localeCompare(b.id, undefined, { numeric: true });
+}
+
+function compareUserAssistantTurns(a: AgentChatTurn, b: AgentChatTurn) {
+  // Only force the tie that breaks the gap-vs-per-turn Thinking invariant.
+  // Other cross-role ties preserve stream insertion order, especially steering
+  // system turns inserted during an assistant response.
   return (
-    a.createdAt.localeCompare(b.createdAt) ||
-    TURN_ROLE_ORDER[a.role] - TURN_ROLE_ORDER[b.role] ||
-    a.id.localeCompare(b.id, undefined, { numeric: true })
+    (a.role === "user" && b.role === "assistant" ? -1 : 0) ||
+    (a.role === "assistant" && b.role === "user" ? 1 : 0)
   );
 }
 
