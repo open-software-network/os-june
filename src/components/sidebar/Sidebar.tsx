@@ -30,6 +30,7 @@ import { IconToolbox } from "central-icons/IconToolbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
+import { IconGauge } from "central-icons/IconGauge";
 import { IconServer1 } from "central-icons/IconServer1";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStore1 } from "central-icons/IconStore1";
@@ -229,6 +230,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
   {
     title: "AI",
     items: [
+      {
+        id: "integrations-health",
+        label: "Integrations health",
+        icon: <IconGauge size={16} />,
+      },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
       {
