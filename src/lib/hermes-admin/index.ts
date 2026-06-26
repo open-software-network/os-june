@@ -66,6 +66,8 @@ export * from "./mcp-oauth-view";
 export * from "./use-mcp-oauth";
 export * from "./mcp-diagnostics-view";
 export * from "./use-mcp-diagnostics";
+export * from "./mcp-filtering-view";
+export * from "./use-mcp-filtering";
 export * from "./mcp-security-view";
 export * from "./use-mcp-security";
 export * from "./mcp-catalog-view";

@@ -6,6 +6,7 @@ import { IconCloud } from "central-icons/IconCloud";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
+import { IconFilter2 } from "central-icons/IconFilter2";
 import { IconKey1 } from "central-icons/IconKey1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
@@ -31,21 +32,24 @@ import {
   serverArgs,
   statusMeta,
   transportMeta,
+  useMcpFilteringController,
   useMcpOauthController,
-  useMcpServersController,
   useMcpServersEngine,
   usesOauth,
   validateDraft,
   type HermesAdminMode,
   type HermesMcpServerInfo,
+  type McpFilteringState,
   type McpOauthLoginState,
   type McpOauthState,
   type McpServerDraft,
   type McpServersState,
   type McpTestState,
+  type ToolPolicyDraft,
 } from "../../lib/hermes-admin";
 import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
+import { McpToolsDialog } from "./McpToolsDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { Switch } from "../ui/Switch";
@@ -94,10 +98,10 @@ export function McpServersSection({
   }, []);
 
   const engine = useMcpServersEngine(bridge, mode);
-  const serversState = useMcpServersController(engine);
+  const serversState = useMcpFilteringController(engine);
   const oauthState = useMcpOauthController(engine);
 
-  const state: McpServersState =
+  const state: McpFilteringState =
     engine === null && bridgeError
       ? {
           ...serversState,
@@ -120,7 +124,13 @@ export function McpServersView({
   oauth,
   mode = "sandboxed",
 }: {
-  state: McpServersState;
+  /** The servers state, optionally with the spec-16 tool-filtering slice. The
+   * filtering fields are optional so a component test can drive the list with a
+   * bare {@link McpServersState}; the Tools panel save no-ops without them. */
+  state: McpServersState &
+    Partial<
+      Pick<McpFilteringState, "savingServer" | "saveError" | "saveToolPolicy">
+    >;
   /** The OAuth sign-in slice. Optional so a component test can drive the list
    * without it; the empty controller state is used when absent. */
   oauth?: McpOauthState;
@@ -133,6 +143,8 @@ export function McpServersView({
   // server awaiting a confirmed enable; a disable or a low-risk enable applies
   // straight away.
   const [toEnable, setToEnable] = useState<HermesMcpServerInfo | undefined>();
+  // The server whose tool-filtering panel is open, or undefined.
+  const [toolsFor, setToolsFor] = useState<HermesMcpServerInfo | undefined>();
 
   const visible = useMemo(
     () => filterServers(state.servers, query),
@@ -263,6 +275,7 @@ export function McpServersView({
                   onSignIn={oauth ? () => oauth.signIn(server.name) : undefined}
                   onToggle={(enabled) => handleToggle(server, enabled)}
                   onTest={() => void state.test(server.name)}
+                  onTools={() => setToolsFor(server)}
                   onDelete={() => setToDelete(server)}
                 />
               ))}
@@ -296,6 +309,20 @@ export function McpServersView({
         onClose={() => setToEnable(undefined)}
         onConfirm={() => {
           if (toEnable) state.setEnabled(toEnable.name, true);
+        }}
+      />
+
+      <McpToolsDialog
+        server={toolsFor}
+        testResult={
+          toolsFor ? state.tests.get(toolsFor.name)?.result : undefined
+        }
+        saving={Boolean(toolsFor) && state.savingServer === toolsFor?.name}
+        saveError={state.saveError}
+        onClose={() => setToolsFor(undefined)}
+        onSave={async (draft: ToolPolicyDraft) => {
+          if (!toolsFor || !state.saveToolPolicy) return false;
+          return state.saveToolPolicy(toolsFor.name, draft);
         }}
       />
     </section>
@@ -358,6 +385,7 @@ function ServerRow({
   onSignIn,
   onToggle,
   onTest,
+  onTools,
   onDelete,
 }: {
   server: HermesMcpServerInfo;
@@ -367,6 +395,7 @@ function ServerRow({
   onSignIn?: () => void;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
+  onTools: () => void;
   onDelete: () => void;
 }) {
   const transport = transportMeta(server.transport);
@@ -470,6 +499,16 @@ function ServerRow({
           onClick={onTest}
         >
           {test?.pending ? "Testing" : "Test"}
+        </button>
+        <button
+          type="button"
+          className="mcp-server-tools"
+          aria-label={`Configure tools for ${server.name}`}
+          title="Configure tools"
+          onClick={onTools}
+        >
+          <IconFilter2 size={14} ariaHidden />
+          Tools
         </button>
         <button
           type="button"

@@ -71,6 +71,9 @@ const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
     "mcp.add": ["mcpServers", "toolsets"],
     "mcp.remove": ["mcpServers", "toolsets"],
     "mcp.setEnabled": ["mcpServers", "toolsets"],
+    // A tool-filter write changes config.yaml; the server list reflects the new
+    // include/exclude policy and the toolset inventory it feeds, so both refresh.
+    "mcp.setTools": ["mcpServers", "toolsets", "configTree"],
     "mcp.test": ["mcpServers", "toolsets"],
     "mcp.oauthLogin": ["mcpServers", "toolsets"],
     "mcp.installCatalog": ["mcpServers", "mcpCatalog", "toolsets"],

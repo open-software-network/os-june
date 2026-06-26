@@ -36,6 +36,7 @@ export type AdminMutation =
   | "mcp.add"
   | "mcp.remove"
   | "mcp.setEnabled"
+  | "mcp.setTools"
   | "mcp.test"
   | "mcp.oauthLogin"
   | "mcp.installCatalog"
@@ -78,6 +79,11 @@ const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> =
     "mcp.add": "gateway-restart",
     "mcp.remove": "gateway-restart",
     "mcp.setEnabled": "gateway-restart",
+    // A tool include/exclude/utility-toggle change is written to config.yaml
+    // under `mcp_servers.<name>.tools`, but Hermes builds the registered tool
+    // inventory at gateway start, so the filter only takes effect after a
+    // gateway restart (not at next session, unlike skill config).
+    "mcp.setTools": "gateway-restart",
     "mcp.test": "immediate",
     // An OAuth sign-in writes a cached token Hermes reads when it next connects
     // the server. The token is stored now, but the tools it unlocks only load
@@ -150,6 +156,8 @@ export function mutationNotification(
       return `Removed ${subject}. Restart Hermes gateway to drop its tools.`;
     case "mcp.setEnabled":
       return `Updated ${subject}. Restart Hermes gateway to apply it.`;
+    case "mcp.setTools":
+      return `Tool filter saved. Restart Hermes gateway to refresh registered tools.`;
     case "mcp.test":
       return `Tested ${subject}.`;
     case "mcp.oauthLogin":

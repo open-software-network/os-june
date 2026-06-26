@@ -13063,6 +13063,279 @@ input:focus-visible,
   border-color: var(--border);
 }
 
+/* MCP tool selection + filtering (spec 16). The per-server "Tools" panel: the
+ * compare counts, the mode selector, the discovered-tool list, the utility
+ * toggles, and the saved/restart notice. */
+.mcp-server-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-server-tools:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.mcp-tools-form {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.mcp-tools-legend {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.mcp-tools-compare {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+  margin: 0;
+}
+
+.mcp-tools-compare-item {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.mcp-tools-compare-item dt {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-compare-item dd {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.mcp-tools-compare-item[data-tone="ok"] dd {
+  color: var(--success);
+}
+
+.mcp-tools-compare-item[data-tone="attention"] dd {
+  color: var(--destructive);
+}
+
+.mcp-tools-discovery-note,
+.mcp-tools-precedence,
+.mcp-tools-allowlist-rec,
+.mcp-tools-inert-note,
+.mcp-tools-saved,
+.mcp-tools-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-precedence {
+  color: var(--foreground);
+}
+
+.mcp-tools-allowlist-rec,
+.mcp-tools-error {
+  color: var(--destructive);
+}
+
+.mcp-tools-saved {
+  color: var(--success);
+}
+
+.mcp-tools-mode,
+.mcp-tools-utilities,
+.mcp-tools-advanced,
+.mcp-tools-namelist {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.mcp-tools-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-2);
+}
+
+.mcp-tools-mode-option {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-tools-mode-option[data-active="true"] {
+  border-color: var(--foreground);
+}
+
+.mcp-tools-mode-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--foreground);
+}
+
+.mcp-tools-mode-hint {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.mcp-tools-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--card);
+}
+
+.mcp-tools-row[data-allowed="false"] {
+  opacity: 0.7;
+}
+
+.mcp-tools-row[data-destructive="true"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+}
+
+.mcp-tools-row-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  background: none;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcp-tools-row-state {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-row[data-allowed="true"] .mcp-tools-row-state {
+  color: var(--success);
+}
+
+.mcp-tools-row-name {
+  flex: 1;
+}
+
+.mcp-tools-row-destructive {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+  color: var(--destructive);
+}
+
+.mcp-tools-row-desc {
+  margin: 0;
+  padding: 0 var(--sp-3) var(--sp-2) calc(var(--sp-3) + var(--sp-4));
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-namelist[data-inert="true"] {
+  opacity: 0.6;
+}
+
+.mcp-tools-textarea,
+.mcp-tools-select,
+.mcp-tools-number {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2);
+}
+
+.mcp-tools-utility-row,
+.mcp-tools-seconds-row {
+  display: grid;
+  gap: 3px;
+}
+
+.mcp-tools-utility-head,
+.mcp-tools-seconds-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.mcp-tools-utility-label {
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.mcp-tools-utility-hint {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+.mcp-tools-preview {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.mcp-tools-preview-path {
+  margin: var(--sp-2) 0 4px;
+  font-family: var(--font-mono, monospace);
+  color: var(--foreground);
+}
+
+.mcp-tools-preview-block {
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  overflow-x: auto;
+  font-size: var(--fs-xs);
+}
+
 /* MCP catalog — reuses the MCP servers + skills-hub structure, with a few
  * catalog-specific bits: a clickable entry name, the install-status pill, the
  * Nous-approved trust line, and the install requirement / default-tool lists. */
