@@ -1354,7 +1354,8 @@ pub async fn ensure_hermes_bridge_session(
 
     // Hermes dashboard v0.17 no longer creates sessions over REST. The live
     // session is created through the gateway; REST is only a best-effort title
-    // update for the sidebar/session browser.
+    // update for the sidebar/session browser. Model-only switches stay in the
+    // frontend session override and live gateway dispatch path.
     let Some(title) = title else {
         return Ok(unchanged());
     };
