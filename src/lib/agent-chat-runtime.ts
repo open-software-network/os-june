@@ -140,6 +140,20 @@ export type AgentChatTurn = {
   isScheduledRun?: boolean;
 };
 
+const TURN_ROLE_ORDER: Record<AgentChatTurn["role"], number> = {
+  system: 0,
+  user: 1,
+  assistant: 2,
+};
+
+function compareAgentChatTurns(a: AgentChatTurn, b: AgentChatTurn) {
+  return (
+    a.createdAt.localeCompare(b.createdAt) ||
+    TURN_ROLE_ORDER[a.role] - TURN_ROLE_ORDER[b.role] ||
+    a.id.localeCompare(b.id)
+  );
+}
+
 export function buildAgentChatTurns(
   messages: AgentMessageDto[],
   toolEvents: AgentToolEventDto[],
@@ -152,7 +166,7 @@ export function buildAgentChatTurns(
     .filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
     )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort(compareAgentChatTurns);
 }
 
 export function buildHermesSessionChatTurns(
@@ -251,7 +265,7 @@ export function buildHermesSessionChatTurns(
     .filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
     )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort(compareAgentChatTurns);
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk
