@@ -10,6 +10,7 @@ const NORMALIZE_MAX_GAIN: f32 = 32.0;
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPTION_CHANNELS: u16 = 1;
 const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 8 * 60 * 1000;
+const TURN_PRE_ROLL_MS: i64 = 150;
 /// Loudest-window RMS below which a track carries no transcribable speech.
 /// Deliberately conservative (≈ -38 dBFS) and matches the microphone lane's
 /// activity `min_rms`, so we only ever skip clearly-silent audio.
@@ -35,6 +36,7 @@ pub struct AudioTurn {
 #[derive(Debug, Clone, Copy)]
 struct SourceDetectionConfig {
     start_active_ms: i64,
+    pre_roll_ms: i64,
     end_silence_ms: i64,
     min_turn_ms: i64,
     merge_gap_ms: i64,
@@ -419,12 +421,13 @@ fn push_turn_if_long_enough(
     if end_ms - start_ms < config.min_turn_ms {
         return;
     }
+    let output_start_ms = start_ms.saturating_sub(config.pre_roll_ms).max(0);
     turns.push(AudioTurn {
         artifact_id: source.artifact_id.clone(),
         source: source.source.clone(),
         source_path: source.path.clone(),
-        start_ms: start_ms.max(0),
-        end_ms: end_ms.max(start_ms),
+        start_ms: output_start_ms,
+        end_ms: end_ms.max(output_start_ms),
         turn_index: 0,
     });
 }
@@ -451,6 +454,7 @@ fn config_for_source(source: &str) -> SourceDetectionConfig {
     if source == "system" {
         SourceDetectionConfig {
             start_active_ms: 180,
+            pre_roll_ms: TURN_PRE_ROLL_MS,
             end_silence_ms: 2_000,
             min_turn_ms: 600,
             merge_gap_ms: 1_200,
@@ -460,6 +464,7 @@ fn config_for_source(source: &str) -> SourceDetectionConfig {
     } else {
         SourceDetectionConfig {
             start_active_ms: 300,
+            pre_roll_ms: TURN_PRE_ROLL_MS,
             end_silence_ms: 1_800,
             min_turn_ms: 700,
             merge_gap_ms: 900,
