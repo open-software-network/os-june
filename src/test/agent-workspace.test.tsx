@@ -4135,6 +4135,86 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("reconciles restored tool state when queueing after remount", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-2",
+              session_key: "session-2",
+              status: "working",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the project checks",
+      }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "run the project checks",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
+
+    const first = render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the project checks",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: { tool_id: "tool-1", tool_name: "shell" },
+        });
+      }
+    });
+
+    first.unmount();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace />);
+
+    await user.type(
+      await screen.findByRole("textbox", { name: "Add instruction" }),
+      "focus on the failing test",
+    );
+    await user.click(screen.getByRole("button", { name: "Queue instruction" }));
+
+    await waitFor(
+      () =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+          session_id: "session-2",
+          text: "focus on the failing test",
+        }),
+      { timeout: 2500 },
+    );
+  });
+
   it("backs off restored queued-steer probes while the restored tool is still busy", async () => {
     const user = userEvent.setup();
     let steerAttempts = 0;

@@ -5224,6 +5224,9 @@ export function AgentWorkspace({
     const instruction = normalizeSteerText(text);
     if (!instruction) return;
     const shouldRetryAfterQueue = !toolCallSessionIdsRef.current.has(sessionId);
+    const shouldReconcileRestoredTool =
+      !shouldRetryAfterQueue &&
+      restoredToolCallSessionIdsRef.current.has(sessionId);
     cancelQueuedSteerRetry(sessionId);
     setQueuedSteerBySessionId((current) => {
       const next = {
@@ -5238,6 +5241,8 @@ export function AgentWorkspace({
     });
     if (shouldRetryAfterQueue) {
       scheduleQueuedSteerRetry(sessionId);
+    } else if (shouldReconcileRestoredTool) {
+      scheduleRestoredQueuedSteerReconcile(sessionId);
     }
   }
 
