@@ -140,6 +140,16 @@ export type AgentChatTurn = {
   isScheduledRun?: boolean;
 };
 
+function sortAgentChatTurns(turns: AgentChatTurn[]) {
+  return turns
+    .map((turn, index) => ({ turn, index }))
+    .sort(
+      (a, b) =>
+        a.turn.createdAt.localeCompare(b.turn.createdAt) || a.index - b.index,
+    )
+    .map(({ turn }) => turn);
+}
+
 export function buildAgentChatTurns(
   messages: AgentMessageDto[],
   toolEvents: AgentToolEventDto[],
@@ -148,11 +158,11 @@ export function buildAgentChatTurns(
   const turns = messages.map(messageToTurn);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
+  return sortAgentChatTurns(
+    turns.filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    ),
+  );
 }
 
 export function buildHermesSessionChatTurns(
@@ -247,11 +257,11 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
+  return sortAgentChatTurns(
+    turns.filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    ),
+  );
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk

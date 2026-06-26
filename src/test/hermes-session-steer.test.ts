@@ -123,4 +123,28 @@ describe("steering transcript item via buildHermesSessionChatTurns", () => {
     const order = turns.map((turn) => turn.parts[0]?.type);
     expect(order.at(-1)).toBe("steering");
   });
+
+  it("keeps same-millisecond steering after the assistant work it interrupts", () => {
+    const receivedAt = "2026-06-24T10:05:00.000Z";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        {
+          type: "message.delta",
+          receivedAt,
+          payload: { text: "Working on the current plan." },
+        },
+        steeringLiveEvent({
+          sessionId: "sess-1",
+          text: "switch gears",
+          receivedAt,
+        }),
+      ],
+    );
+
+    expect(turns.map((turn) => turn.parts[0]?.type)).toEqual([
+      "text",
+      "steering",
+    ]);
+  });
 });
