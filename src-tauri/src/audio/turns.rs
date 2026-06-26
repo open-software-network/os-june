@@ -361,7 +361,8 @@ fn detect_source_turns(
             config,
         );
     }
-    Ok(merge_close_turns(turns, config.merge_gap_ms))
+    let turns = merge_close_turns(turns, config.merge_gap_ms);
+    Ok(apply_pre_roll(turns, config.pre_roll_ms))
 }
 
 fn read_rms_windows(path: &Path) -> Result<Vec<f32>, AppError> {
@@ -421,13 +422,12 @@ fn push_turn_if_long_enough(
     if end_ms - start_ms < config.min_turn_ms {
         return;
     }
-    let output_start_ms = start_ms.saturating_sub(config.pre_roll_ms).max(0);
     turns.push(AudioTurn {
         artifact_id: source.artifact_id.clone(),
         source: source.source.clone(),
         source_path: source.path.clone(),
-        start_ms: output_start_ms,
-        end_ms: end_ms.max(output_start_ms),
+        start_ms: start_ms.max(0),
+        end_ms: end_ms.max(start_ms),
         turn_index: 0,
     });
 }
@@ -444,6 +444,14 @@ fn merge_close_turns(turns: Vec<AudioTurn>, merge_gap_ms: i64) -> Vec<AudioTurn>
         merged.push(turn);
     }
     merged
+}
+
+fn apply_pre_roll(mut turns: Vec<AudioTurn>, pre_roll_ms: i64) -> Vec<AudioTurn> {
+    for turn in &mut turns {
+        turn.start_ms = turn.start_ms.saturating_sub(pre_roll_ms).max(0);
+        turn.end_ms = turn.end_ms.max(turn.start_ms);
+    }
+    turns
 }
 
 fn windows_for_ms(duration_ms: i64) -> i64 {
@@ -587,6 +595,35 @@ mod tests {
         assert!(!source_is_effectively_silent(&audible));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pre_roll_does_not_change_merge_gap_decisions() {
+        let source_path = PathBuf::from("source.wav");
+        let turns = vec![
+            AudioTurn {
+                artifact_id: "artifact".to_string(),
+                source: "microphone".to_string(),
+                source_path: source_path.clone(),
+                start_ms: 0,
+                end_ms: 1_000,
+                turn_index: 0,
+            },
+            AudioTurn {
+                artifact_id: "artifact".to_string(),
+                source: "microphone".to_string(),
+                source_path,
+                start_ms: 1_950,
+                end_ms: 3_000,
+                turn_index: 0,
+            },
+        ];
+
+        let merged = merge_close_turns(turns, 900);
+        let pre_rolled = apply_pre_roll(merged, TURN_PRE_ROLL_MS);
+
+        assert_eq!(pre_rolled.len(), 2);
+        assert_eq!(pre_rolled[1].start_ms, 1_800);
     }
 
     fn write_samples(path: &Path, samples: &[i16]) {
