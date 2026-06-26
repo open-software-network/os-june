@@ -2695,13 +2695,9 @@ export function AgentWorkspace({
     }
 
     // Open chat: override the model for THIS chat only (never the global
-    // default), persist it on the bridge, and ALSO dispatch /model to the live
-    // session so the running turn switches immediately. The per-chat override
-    // is the source of truth for the next session; the dispatch is best-effort.
-    const previousModel = hermesSessionItemsRef.current.find(
-      (session) => session.id === sessionId,
-    )?.model;
-    const previousOverride = sessionModelOverridesRef.current[sessionId];
+    // default), then dispatch /model to the live session so the running turn
+    // switches immediately. Hermes session metadata updates are title-only, so
+    // the local per-chat override is the source of truth for this row.
     sessionModelOverridesRef.current = {
       ...sessionModelOverridesRef.current,
       [sessionId]: modelId,
@@ -2711,30 +2707,6 @@ export function AgentWorkspace({
         session.id === sessionId ? { ...session, model: modelId } : session,
       ),
     );
-    try {
-      await ensureHermesBridgeSession({ sessionId, model: modelId });
-    } catch (err) {
-      // Roll back the optimistic override + session model, then surface it.
-      if (previousOverride) {
-        sessionModelOverridesRef.current = {
-          ...sessionModelOverridesRef.current,
-          [sessionId]: previousOverride,
-        };
-      } else {
-        const { [sessionId]: _removed, ...remainingOverrides } =
-          sessionModelOverridesRef.current;
-        sessionModelOverridesRef.current = remainingOverrides;
-      }
-      setHermesSessionItems((current) =>
-        current.map((session) =>
-          session.id === sessionId && session.model === modelId
-            ? { ...session, model: previousModel }
-            : session,
-        ),
-      );
-      setError(messageFromError(err));
-      return false;
-    }
     let dispatchSucceeded = false;
     try {
       const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));

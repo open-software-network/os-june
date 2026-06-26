@@ -90,13 +90,14 @@ def main() -> None:
 
 
 def read_message() -> dict[str, Any] | None:
-    first = sys.stdin.buffer.readline()
-    if first == b"":
-        return None
+    while True:
+        first = sys.stdin.buffer.readline()
+        if first == b"":
+            return None
+        if first.strip():
+            break
     if not first.lower().startswith(b"content-length:"):
         stripped = first.strip()
-        if not stripped:
-            return None
         return json.loads(stripped.decode("utf-8"))
 
     headers: dict[str, str] = {}
