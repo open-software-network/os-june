@@ -238,7 +238,7 @@ pub fn run() {
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
-            os_accounts::os_accounts_top_up,
+            os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
         ])

@@ -30,10 +30,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // Scopes Scribe needs. profile:read for /me, billing:read for /billing/balance,
-// and credits:spend so Scribe API can authorize-and-charge against the user's
-// credits for transcription / generation / dictation work. Billing writes stay
-// in the accounts portal instead of the desktop login grant.
-const OAUTH_SCOPES: &str = "profile:read billing:read credits:spend";
+// billing:write for subscription checkout, and credits:spend so Scribe API can
+// authorize-and-charge against the user's credits for transcription /
+// generation / dictation work.
+const OAUTH_SCOPES: &str = "profile:read billing:read billing:write credits:spend";
 // Scribe's OS Accounts token store. Keep this app-scoped so Scribe does not
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.scribe.accounts";
@@ -65,6 +65,7 @@ struct Envelope<T> {
     data: Option<T>,
     success: bool,
     error_code: Option<i64>,
+    message: Option<String>,
 }
 
 /// Token pair. Stored in the OS keychain by default, **never** handed to the webview.
@@ -88,6 +89,11 @@ struct MeWire {
 struct BalanceWire {
     credits: i64,
     usd_millis: i64,
+}
+
+#[derive(Deserialize)]
+struct CheckoutSessionWire {
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -523,13 +529,27 @@ pub async fn os_accounts_logout() -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub fn os_accounts_top_up() -> Result<(), AppError> {
+pub async fn os_accounts_upgrade() -> Result<(), AppError> {
     if local_dev_enabled() {
         return Ok(());
     }
     let cfg = Config::load();
-    let url = credits_url(&cfg)?;
-    open_in_browser(&url)
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    let session: CheckoutSessionWire =
+        authed_post(&cfg, "/billing/subscription", serde_json::json!({})).await?;
+    let url = session.url.trim();
+    if url.is_empty() {
+        return Err(AppError::new(
+            "empty_response",
+            "OS Accounts returned no checkout URL.",
+        ));
+    }
+    open_in_browser(url)
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
@@ -1030,10 +1050,59 @@ async fn authed_get<T: for<'de> Deserialize<'de>>(cfg: &Config, path: &str) -> R
         }
         return Err(AppError::new(
             "request_failed",
-            "OS Accounts request failed.",
+            accounts_request_failed_message(resp.message),
         ));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+async fn authed_post<T: for<'de> Deserialize<'de>>(
+    cfg: &Config,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<T, AppError> {
+    let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), path);
+    let mut access = access_token().await?;
+    for attempt in 0..2 {
+        let response = http_client()
+            .post(&url)
+            .bearer_auth(&access)
+            .json(&body)
+            .send()
+            .await
+            .map_err(net_error)?;
+        let status = response.status();
+        let body = response.text().await.map_err(net_error)?;
+        if body.trim().is_empty() {
+            return Err(empty_accounts_response(path, status));
+        }
+        let resp: Envelope<T> = serde_json::from_str(&body)
+            .map_err(|error| decode_accounts_response_error(path, error))?;
+        if resp.success {
+            return resp
+                .data
+                .ok_or_else(|| AppError::new("empty_response", "OS Accounts returned no data."));
+        }
+        if resp.error_code == Some(ERR_TOKEN_EXPIRED) && attempt == 0 {
+            access = refresh_locked(cfg).await?;
+            continue;
+        }
+        return Err(AppError::new(
+            "request_failed",
+            accounts_request_failed_message(resp.message),
+        ));
+    }
+    Err(AppError::new("unauthorized", "Not signed in."))
+}
+
+fn accounts_request_failed_message(message: Option<String>) -> String {
+    match message.as_deref() {
+        Some("access token is missing required scope") => {
+            "Sign in again to refresh your billing permissions.".to_string()
+        }
+        Some(message) => message.to_string(),
+        None => "OS Accounts request failed.".to_string(),
+    }
 }
 
 fn empty_accounts_response(path: &str, status: reqwest::StatusCode) -> AppError {
@@ -1085,17 +1154,6 @@ async fn fetch_snapshot(
 fn portal_url(cfg: &Config) -> Option<String> {
     let url = cfg.accounts_url.trim_end_matches('/');
     (!url.is_empty()).then(|| url.to_string())
-}
-
-fn credits_url(cfg: &Config) -> Result<String, AppError> {
-    let url = cfg.accounts_url.trim().trim_end_matches('/');
-    if url.is_empty() {
-        return Err(AppError::new(
-            "os_accounts_unconfigured",
-            "OS Accounts is not configured for this build.",
-        ));
-    }
-    Ok(format!("{url}/billing/credits"))
 }
 
 fn net_error(e: reqwest::Error) -> AppError {
@@ -1407,30 +1465,8 @@ mod tests {
     }
 
     #[test]
-    fn credits_url_targets_billing_credits_page() {
-        let cfg = Config {
-            accounts_url: "https://accounts.example/".to_string(),
-            api_url: String::new(),
-            client_id: String::new(),
-            loopback_port: DEFAULT_LOOPBACK_PORT,
-        };
-
-        assert_eq!(
-            credits_url(&cfg).expect("credits url"),
-            "https://accounts.example/billing/credits"
-        );
-    }
-
-    #[test]
-    fn credits_url_rejects_missing_accounts_url() {
-        let cfg = Config {
-            accounts_url: "   ".to_string(),
-            api_url: String::new(),
-            client_id: String::new(),
-            loopback_port: DEFAULT_LOOPBACK_PORT,
-        };
-
-        let error = credits_url(&cfg).expect_err("missing accounts url");
-        assert_eq!(error.code, "os_accounts_unconfigured");
+    fn oauth_scope_allows_checkout_and_credit_spend() {
+        assert!(OAUTH_SCOPES.contains("billing:write"));
+        assert!(OAUTH_SCOPES.contains("credits:spend"));
     }
 }

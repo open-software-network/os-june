@@ -6,7 +6,7 @@ import {
   osAccountsLogin,
   osAccountsLogout,
   osAccountsOpenPortal,
-  osAccountsTopUp,
+  osAccountsUpgrade,
 } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 
@@ -170,12 +170,10 @@ export function BillingSettingsSection({
   const [billingStatus, setBillingStatus] = useState<string>();
   const [spins, setSpins] = useState(0);
 
-  async function handleTopUp() {
+  async function handleUpgrade() {
     try {
-      await osAccountsTopUp();
-      setBillingStatus(
-        "Opened OS Accounts. Check again here after adding credits.",
-      );
+      await osAccountsUpgrade();
+      setBillingStatus("Opened checkout in your browser.");
     } catch (error) {
       setBillingStatus(messageFromError(error));
     }
@@ -191,32 +189,30 @@ export function BillingSettingsSection({
   }
 
   const subscription = account.subscription;
+  const liveSubscription = hasLiveSubscription(account);
   const billingRecovery =
     subscription?.subscribed === true &&
     typeof subscription.status === "string" &&
     subscription.status.length > 0 &&
-    !hasLiveSubscription(account);
-  const subscriptionRow =
-    subscription?.status === "trialing"
+    !liveSubscription;
+  const subscriptionRow = liveSubscription
+    ? {
+        title: "Subscription",
+        detail:
+          subscription?.status === "trialing"
+            ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Active")
+            : (describeEnd("Renews", subscription?.currentPeriodEnd) ??
+              "Active"),
+        cta: "Manage billing",
+      }
+    : billingRecovery
       ? {
-          title: "Free trial",
-          detail: describeEnd("Ends", subscription.trialEnd) ?? "Active now",
-          cta: "Manage subscription",
+          title: "Billing needs attention",
+          detail: "Open your account portal to update billing.",
+          cta: "Manage billing",
         }
-      : subscription?.status === "active"
-        ? {
-            title: "Subscription",
-            detail:
-              describeEnd("Renews", subscription.currentPeriodEnd) ?? "Active",
-            cta: "Manage subscription",
-          }
-        : billingRecovery
-          ? {
-              title: "Billing needs attention",
-              detail: "Open your account portal to update billing.",
-              cta: "Manage billing",
-            }
-          : undefined;
+      : undefined;
+  const canUpgrade = account.signedIn && !liveSubscription && !billingRecovery;
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -285,14 +281,15 @@ export function BillingSettingsSection({
                   style={{ transform: `rotate(${spins * 360}deg)` }}
                 />
               </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={!account.signedIn}
-                onClick={() => void handleTopUp()}
-              >
-                Add funds
-              </button>
+              {canUpgrade ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleUpgrade()}
+                >
+                  Upgrade
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

@@ -99,7 +99,7 @@ import {
   listAgentTasks,
   downloadHermesBridgeFile,
   openHermesTuiDebug,
-  osAccountsTopUp,
+  osAccountsUpgrade,
   providerModelSettings,
   retryAgentTask,
   sendAgentMessage,
@@ -6500,7 +6500,7 @@ export function AgentWorkspace({
             )
           }
           onTopUp={() =>
-            void osAccountsTopUp().catch((err: unknown) =>
+            void osAccountsUpgrade().catch((err: unknown) =>
               setError(messageFromError(err)),
             )
           }
@@ -6606,7 +6606,7 @@ export function AgentWorkspace({
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
             onTopUp={() =>
-              void osAccountsTopUp().catch((err: unknown) =>
+              void osAccountsUpgrade().catch((err: unknown) =>
                 setError(messageFromError(err)),
               )
             }
@@ -9466,7 +9466,7 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
       actions={
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
-            Add funds
+            Upgrade
           </button>
         ) : undefined
       }
@@ -9514,10 +9514,7 @@ function ClarifyPart({
   const disabled = part.status !== "pending" || submitting !== undefined;
 
   return (
-    <article
-      className="agent-clarify-card"
-      data-status={part.status}
-    >
+    <article className="agent-clarify-card" data-status={part.status}>
       <span className="agent-tool-icon">
         <IconBubbleWide size={14} />
       </span>
@@ -9749,10 +9746,7 @@ function ApprovalPart({
   }
 
   return (
-    <article
-      className="agent-approval-card"
-      data-status={part.status}
-    >
+    <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
         <IconShieldCheck size={14} />
       </span>
@@ -9960,10 +9954,7 @@ export function SudoPart({
     part.approved ?? (submitting ? submitting === "approve" : undefined);
 
   return (
-    <article
-      className="agent-approval-card"
-      data-status={part.status}
-    >
+    <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
         {unrestricted ? (
           <IconShieldCrossed size={14} />
@@ -10093,10 +10084,7 @@ export function SecretPart({
   }
 
   return (
-    <article
-      className="agent-approval-card"
-      data-status={part.status}
-    >
+    <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
         <IconLock size={14} />
       </span>

@@ -1279,8 +1279,8 @@ export async function osAccountsLogout() {
   return invoke<void>("os_accounts_logout");
 }
 
-export async function osAccountsTopUp() {
-  return invoke<void>("os_accounts_top_up");
+export async function osAccountsUpgrade() {
+  return invoke<void>("os_accounts_upgrade");
 }
 
 /** Opens the accounts portal in the default browser — the webview swallows

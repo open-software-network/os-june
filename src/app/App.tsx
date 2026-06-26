@@ -85,7 +85,7 @@ import {
   listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
-  osAccountsTopUp,
+  osAccountsUpgrade,
   pauseRecording,
   removeNoteFromFolder,
   removeSessionFromFolder,
@@ -3215,7 +3215,7 @@ export function App() {
                         }
                       }}
                       onTopUp={() =>
-                        void osAccountsTopUp().catch((err: unknown) =>
+                        void osAccountsUpgrade().catch((err: unknown) =>
                           setError(messageFromError(err)),
                         )
                       }
