@@ -1,5 +1,6 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
+import { hasLiveSubscription } from "../../lib/account-gate";
 import {
   osAccountsCancelLogin,
   osAccountsLogin,
@@ -189,23 +190,33 @@ export function BillingSettingsSection({
     }
   }
 
-  // Render status rows only for live subscriptions. Past-due users with
-  // remaining credits can still reach settings, but zero-credit billing
-  // recovery is owned by the funding gate.
   const subscription = account.subscription;
+  const billingRecovery =
+    subscription?.subscribed === true &&
+    typeof subscription.status === "string" &&
+    subscription.status.length > 0 &&
+    !hasLiveSubscription(account);
   const subscriptionRow =
     subscription?.status === "trialing"
       ? {
           title: "Free trial",
           detail: describeEnd("Ends", subscription.trialEnd) ?? "Active now",
+          cta: "Manage subscription",
         }
       : subscription?.status === "active"
         ? {
             title: "Subscription",
             detail:
               describeEnd("Renews", subscription.currentPeriodEnd) ?? "Active",
+            cta: "Manage subscription",
           }
-        : undefined;
+        : billingRecovery
+          ? {
+              title: "Billing needs attention",
+              detail: "Open your account portal to update billing.",
+              cta: "Manage billing",
+            }
+          : undefined;
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -247,7 +258,7 @@ export function BillingSettingsSection({
                   className="btn btn-secondary"
                   onClick={() => void handleManageSubscription()}
                 >
-                  Manage subscription
+                  {subscriptionRow.cta}
                 </button>
               </div>
             </div>
