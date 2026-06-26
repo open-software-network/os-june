@@ -185,6 +185,7 @@ import {
 } from "../../lib/hermes-session-steer";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
+import { useSkillReview } from "../../lib/hermes-admin";
 import { hermesActivityStore } from "../../lib/hermes-activity-store";
 import {
   hermesArtifactStore,
@@ -858,6 +859,10 @@ type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
   initialSessionId?: string;
   origin?: AgentWorkspaceOrigin;
+  /** Opens the agent-managed skill write review queue (Settings → Pending skill
+   * changes). Wired by the host so the global "Needs you" tray can route a
+   * staged skill write to its review surface. Omitted → no skill-review row. */
+  onReviewSkillChanges?: () => void;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -1231,6 +1236,7 @@ export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
   origin,
+  onReviewSkillChanges,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -1985,6 +1991,21 @@ export function AgentWorkspace({
     (sessionId: string) =>
       hermesSessionItems.find((session) => session.id === sessionId)?.title,
     [hermesSessionItems],
+  );
+  // Admin surfaces spec 12: agent-managed skill writes awaiting review. A staged
+  // write is a durable pending action, so it shares the global "Needs you" tray
+  // as a distinct row that routes to the review queue. Only wired when the host
+  // can open that surface (`onReviewSkillChanges`).
+  const skillReviewState = useSkillReview();
+  const skillReviewSummary = useMemo(
+    () =>
+      onReviewSkillChanges && skillReviewState.writes.length > 0
+        ? {
+            count: skillReviewState.writes.length,
+            onReview: onReviewSkillChanges,
+          }
+        : undefined,
+    [onReviewSkillChanges, skillReviewState.writes.length],
   );
   // Clicking a tray row opens the owning session and best-effort focuses the
   // inline card for that request. Selecting the session reuses the same recipe
@@ -6428,6 +6449,7 @@ export function AgentWorkspace({
         titleForSession={titleForPendingSession}
         onOpenAction={handleOpenPendingAction}
         now={Date.now()}
+        skillReview={skillReviewSummary}
       />
       {/* Feature 11: the Agent activity drawer and its toggle. One top-level
           surface (like the tray) so it shows every session's live activity, not

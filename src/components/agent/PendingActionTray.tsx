@@ -1,4 +1,5 @@
 import { IconBell } from "central-icons/IconBell";
+import { IconBrain2 } from "central-icons/IconBrain2";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconConsole } from "central-icons/IconConsole";
 import { IconKey1 } from "central-icons/IconKey1";
@@ -28,11 +29,26 @@ import type { PendingActionRecord } from "../../lib/hermes-pending-actions";
  * value — the record's action is `redacted: true` by construction; this
  * component additionally never reads or renders any value field.
  */
+/**
+ * The agent-managed skill writes awaiting review (admin surfaces spec 12). A
+ * staged skill write is a durable pending action, not a live gateway event, so
+ * it does not flow through the session-keyed {@link PendingActionRecord} store;
+ * it is surfaced here as a distinct row so it shares the one global "Needs you"
+ * surface. `onReview` opens the review queue (Settings → Pending skill changes).
+ */
+export type SkillReviewSummary = {
+  /** How many skill changes are waiting for the user. */
+  count: number;
+  /** Open the review queue. */
+  onReview: () => void;
+};
+
 export function PendingActionTray({
   records,
   titleForSession,
   onOpenAction,
   now,
+  skillReview,
 }: {
   /** Open/stale actions to show, newest-first (already filtered by the store). */
   records: PendingActionRecord[];
@@ -42,13 +58,19 @@ export function PendingActionTray({
   onOpenAction: (target: { sessionId: string; requestId: string }) => void;
   /** Current epoch ms, for age display. */
   now: number;
+  /** Pending agent-authored skill writes, surfaced as a distinct row. Omitted or
+   * zero-count → no skill-review row. */
+  skillReview?: SkillReviewSummary;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
-  // Nothing pending → render nothing (no empty chrome competing for attention).
-  if (records.length === 0) return null;
+  const skillCount = skillReview?.count ?? 0;
+  const hasSkillReview = skillCount > 0;
 
-  const count = records.length;
+  // Nothing pending → render nothing (no empty chrome competing for attention).
+  if (records.length === 0 && !hasSkillReview) return null;
+
+  const count = records.length + skillCount;
 
   return (
     <section
@@ -76,6 +98,12 @@ export function PendingActionTray({
 
       {collapsed ? null : (
         <ul className="agent-pending-tray-list">
+          {hasSkillReview ? (
+            <SkillReviewRow
+              count={skillCount}
+              onReview={skillReview!.onReview}
+            />
+          ) : null}
           {records.map((record) => (
             <PendingActionRow
               key={record.key}
@@ -150,6 +178,50 @@ function PendingActionRow({
         aria-label={`Respond in ${sessionLabel}`}
       >
         Respond
+      </button>
+    </li>
+  );
+}
+
+/** The distinct tray row for agent-managed skill writes awaiting review. Routes
+ * to the review queue rather than a session, since a staged write is not tied to
+ * one live conversation. */
+function SkillReviewRow({
+  count,
+  onReview,
+}: {
+  count: number;
+  onReview: () => void;
+}) {
+  return (
+    <li className="agent-pending-row" data-kind="skill-review">
+      <span className="agent-pending-row-icon" aria-hidden>
+        <IconBrain2 size={16} ariaHidden />
+      </span>
+      <div className="agent-pending-row-body">
+        <div className="agent-pending-row-line">
+          <span className="agent-pending-row-type">
+            Skill changes to review
+          </span>
+        </div>
+        <div className="agent-pending-row-session">
+          <span className="agent-pending-row-title">
+            {count === 1
+              ? "The agent proposed 1 skill change"
+              : `The agent proposed ${count} skill changes`}
+          </span>
+        </div>
+        <p className="agent-pending-row-desc">
+          Approve or reject before it lands in procedural memory.
+        </p>
+      </div>
+      <button
+        type="button"
+        className="agent-pending-row-action"
+        onClick={onReview}
+        aria-label="Review pending skill changes"
+      >
+        Review
       </button>
     </li>
   );
