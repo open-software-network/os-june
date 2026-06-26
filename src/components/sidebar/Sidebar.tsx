@@ -33,6 +33,7 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconGauge } from "central-icons/IconGauge";
 import { IconServer1 } from "central-icons/IconServer1";
+import { IconShield } from "central-icons/IconShield";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStore1 } from "central-icons/IconStore1";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
@@ -267,6 +268,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "mcp-diagnostics",
         label: "MCP diagnostics",
         icon: <IconHeartBeat size={16} />,
+      },
+      {
+        id: "mcp-security",
+        label: "MCP security",
+        icon: <IconShield size={16} />,
       },
       {
         id: "skills-hub",

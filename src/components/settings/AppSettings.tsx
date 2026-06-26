@@ -78,6 +78,7 @@ import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { SkillReviewSection } from "./SkillReviewSection";
 import { McpCatalogSection } from "./McpCatalogSection";
 import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
+import { McpSecuritySection } from "./McpSecuritySection";
 import { McpServersSection } from "./McpServersSection";
 import {
   IntegrationsHealthSection,
@@ -198,6 +199,7 @@ export type SettingsTab =
   | "mcp"
   | "mcp-catalog"
   | "mcp-diagnostics"
+  | "mcp-security"
   | "skills-hub"
   | "taps"
   | "toolsets"
@@ -221,6 +223,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "mcp", label: "MCP servers" },
   { id: "mcp-catalog", label: "MCP catalog" },
   { id: "mcp-diagnostics", label: "MCP diagnostics" },
+  { id: "mcp-security", label: "MCP security" },
   { id: "skills-hub", label: "Skills hub" },
   { id: "taps", label: "Team skill taps" },
   { id: "toolsets", label: "Toolsets" },
@@ -1248,6 +1251,7 @@ export function AppSettings({
         {activeTab === "mcp" ? <McpServersSection /> : null}
         {activeTab === "mcp-catalog" ? <McpCatalogSection /> : null}
         {activeTab === "mcp-diagnostics" ? <McpDiagnosticsSection /> : null}
+        {activeTab === "mcp-security" ? <McpSecuritySection /> : null}
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
         {activeTab === "taps" ? (
           <TeamTapsSection
