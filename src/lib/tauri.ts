@@ -1110,6 +1110,42 @@ export async function stopHermesBridge() {
   return invoke<HermesBridgeStatus>("stop_hermes_bridge");
 }
 
+/** The redacted result of an MCP OAuth login attempt. The Rust bridge runs
+ * `hermes mcp login <server>`, opens the authorization URL in the OS browser,
+ * and waits for the CLI to finish. It NEVER returns a token: only whether the
+ * login succeeded, an already-redacted status message, and the (token-free)
+ * authorization URL so June can offer a manual "open in browser" fallback.
+ * `timedOut` is true when the wait elapsed before the CLI completed (the browser
+ * sign-in is still the user's to finish; June never blocks on it). */
+export type HermesMcpOauthLoginResult = {
+  ok: boolean;
+  /** A safe, already-redacted status message, or null when the CLI said nothing
+   * quotable. Never carries a token, bearer value, or auth code. */
+  message: string | null;
+  /** The authorization URL the CLI emitted (token-free), or null. */
+  authUrl: string | null;
+  /** True when the wait elapsed before the CLI reported a terminal state. */
+  timedOut: boolean;
+};
+
+/**
+ * Runs the MCP OAuth sign-in for one server through the Rust bridge:
+ * `hermes mcp login <server>` against the chosen runtime's profile, opening the
+ * authorization URL in the OS browser. `mode` selects the runtime explicitly
+ * (sandboxed vs unrestricted) — Rust never falls back to the first connection.
+ * The result is redacted in Rust and re-checked in the view layer; no token is
+ * ever returned to the webview.
+ */
+export async function hermesMcpOauthLogin(input: {
+  mode: "sandboxed" | "unrestricted";
+  server: string;
+  profile?: string;
+}) {
+  return invoke<HermesMcpOauthLoginResult>("hermes_mcp_oauth_login", {
+    request: input,
+  });
+}
+
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */

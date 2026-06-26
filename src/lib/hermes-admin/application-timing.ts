@@ -34,6 +34,7 @@ export type AdminMutation =
   | "mcp.remove"
   | "mcp.setEnabled"
   | "mcp.test"
+  | "mcp.oauthLogin"
   | "mcp.installCatalog"
   | "env.set"
   | "env.delete"
@@ -66,6 +67,11 @@ const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> =
     "mcp.remove": "gateway-restart",
     "mcp.setEnabled": "gateway-restart",
     "mcp.test": "immediate",
+    // An OAuth sign-in writes a cached token Hermes reads when it next connects
+    // the server. The token is stored now, but the tools it unlocks only load
+    // after the gateway restarts (the inventory is built at gateway start), so
+    // the honest timing is gateway-restart, matching add/enable.
+    "mcp.oauthLogin": "gateway-restart",
     "mcp.installCatalog": "gateway-restart",
     "env.set": "gateway-restart",
     "env.delete": "gateway-restart",
@@ -124,6 +130,8 @@ export function mutationNotification(
       return `Updated ${subject}. Restart Hermes gateway to apply it.`;
     case "mcp.test":
       return `Tested ${subject}.`;
+    case "mcp.oauthLogin":
+      return `Signed in to ${subject}. Restart Hermes gateway to expose its tools.`;
     case "env.set":
       return `Saved ${subject}. Restart Hermes gateway to apply it.`;
     case "env.delete":
