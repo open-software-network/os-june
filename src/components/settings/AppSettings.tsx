@@ -76,6 +76,7 @@ import { AgentSettingsSection } from "./AgentSettingsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { McpServersSection } from "./McpServersSection";
 import { SkillsHubSection } from "./SkillsHubSection";
+import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
@@ -182,6 +183,7 @@ export type SettingsTab =
   | "skills"
   | "mcp"
   | "skills-hub"
+  | "toolsets"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -195,6 +197,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "skills", label: "Installed skills" },
   { id: "mcp", label: "MCP servers" },
   { id: "skills-hub", label: "Skills hub" },
+  { id: "toolsets", label: "Toolsets" },
   { id: "about", label: "About" },
 ];
 
@@ -1209,6 +1212,7 @@ export function AppSettings({
 
         {activeTab === "mcp" ? <McpServersSection /> : null}
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
+        {activeTab === "toolsets" ? <ToolsetsSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">

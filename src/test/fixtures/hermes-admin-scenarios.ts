@@ -442,3 +442,87 @@ export function profileIsolationScenarios(): {
     },
   };
 }
+
+/** Toolsets inventory matrix (spec 04): an active toolset with met requirements,
+ * an inactive one (off but otherwise fine), an MCP-backed toolset that is
+ * missing setup (an unmet env var), a Full-mode-only toolset, and a toolset with
+ * no reported mode allowance (so the page marks it unknown). Skills declare
+ * requires/fallback metadata so the activation explanations can be exercised:
+ * `research` requires the available `web` toolset (visible); `legacy-search`
+ * falls back for `web` (hidden, since web is available); `deploy` requires the
+ * unavailable `github` toolset (missing setup); `notes` declares nothing
+ * (unknown, dropped from the explanations). */
+export function toolsetsInventoryScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-toolsets",
+    toolsets: [
+      {
+        name: "web",
+        description: "Web search and fetch",
+        enabled: true,
+        tools: ["web_search", "web_fetch"],
+        modes: { sandboxed: true, unrestricted: true },
+      },
+      {
+        name: "calendar",
+        description: "Calendar read and write",
+        enabled: false,
+        tools: ["calendar_list", "calendar_create"],
+        modes: { sandboxed: true, unrestricted: true },
+      },
+      {
+        name: "github",
+        description: "GitHub operations (MCP-backed)",
+        enabled: false,
+        tools: ["gh_issue", "gh_pr"],
+        requirements: [{ label: "GITHUB_TOKEN", satisfied: false }],
+        modes: { sandboxed: false, unrestricted: true },
+      },
+      {
+        name: "terminal",
+        description: "Run shell commands",
+        enabled: true,
+        tools: ["bash"],
+        // Full mode only — the sandboxed runtime blocks subprocesses.
+        modes: { sandboxed: false, unrestricted: true },
+      },
+      {
+        name: "memory",
+        description: "Long-term memory store",
+        enabled: true,
+        tools: ["memory_read", "memory_write"],
+        // No `modes` reported — the page must mark this unknown, not guess.
+      },
+    ],
+    skills: [
+      {
+        name: "research",
+        description: "Multi-source research",
+        enabled: true,
+        source: "hub",
+        requires_toolsets: ["web"],
+      },
+      {
+        name: "legacy-search",
+        description: "Fallback search when web is unavailable",
+        enabled: false,
+        source: "bundled",
+        fallback_for_toolsets: ["web"],
+      },
+      {
+        name: "deploy",
+        description: "Deploy helpers",
+        enabled: false,
+        source: "hub",
+        requires_toolsets: ["github"],
+      },
+      {
+        name: "notes",
+        description: "Take notes (no declared requirements)",
+        enabled: true,
+        source: "bundled",
+      },
+    ],
+    gateway: { gateway_running: true },
+  };
+}

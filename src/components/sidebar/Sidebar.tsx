@@ -22,6 +22,7 @@ import { IconPeople } from "central-icons/IconPeople";
 import { IconPin } from "central-icons/IconPin";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
+import { IconToolbox } from "central-icons/IconToolbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconServer1 } from "central-icons/IconServer1";
@@ -237,6 +238,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "skills-hub",
         label: "Skills hub",
         icon: <IconArrowInbox size={16} />,
+      },
+      {
+        id: "toolsets",
+        label: "Toolsets",
+        icon: <IconToolbox size={16} />,
       },
     ],
   },

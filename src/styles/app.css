@@ -10250,6 +10250,11 @@ input:focus-visible,
  * cards with source + trust badges, an install action with live progress, and a
  * detail drawer. Tokens only; sentence case; matches the Installed Skills page. */
 .skills-hub-card {
+/* Toolsets inventory (Hermes admin surface, spec 04). A read-only settings
+ * section: reuses the settings-group / settings-card chrome, with a search
+ * toolbar, a last-refreshed line, toolset rows (status / mode / tools /
+ * requirements), and a companion skill-availability card. Tokens only. */
+.toolsets-card {
   padding: 0;
   overflow: hidden;
 }
@@ -10266,6 +10271,11 @@ input:focus-visible,
 }
 
 .skills-hub-toolbar {
+.toolsets-mode-note {
+  color: var(--muted-foreground);
+}
+
+.toolsets-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-3);
@@ -10275,6 +10285,7 @@ input:focus-visible,
 
 .mcp-servers-search {
 .skills-hub-search {
+.toolsets-search {
   position: relative;
   display: flex;
   align-items: center;
@@ -10286,6 +10297,7 @@ input:focus-visible,
 }
 
 .skills-hub-search-icon {
+.toolsets-search-icon {
   position: absolute;
   left: var(--sp-3);
   color: var(--muted-foreground);
@@ -10294,6 +10306,7 @@ input:focus-visible,
 
 .mcp-servers-search input {
 .skills-hub-search input {
+.toolsets-search input {
   width: 100%;
   min-height: var(--control-md);
   padding: 0 var(--sp-3) 0 calc(var(--sp-3) * 2 + 15px);
@@ -10315,6 +10328,11 @@ input:focus-visible,
 }
 
 .skills-hub-refresh {
+.toolsets-search input:focus {
+  border-color: var(--ring-focus);
+}
+
+.toolsets-refresh {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -10330,6 +10348,7 @@ input:focus-visible,
 
 .mcp-servers-refresh:disabled {
 .skills-hub-refresh:disabled {
+.toolsets-refresh:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -10342,6 +10361,14 @@ input:focus-visible,
 }
 
 .mcp-servers-inline-error {
+.toolsets-refreshed {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-5);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.toolsets-inline-error {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -10397,6 +10424,11 @@ input:focus-visible,
 }
 
 .skills-hub-list {
+.toolsets-body {
+  padding: 0 var(--sp-5);
+}
+
+.toolsets-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -10408,6 +10440,7 @@ input:focus-visible,
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
   align-items: start;
+.toolset-row {
   padding: var(--sp-4) 0;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -10422,6 +10455,11 @@ input:focus-visible,
 }
 
 .skills-hub-main {
+.toolset-row:last-child {
+  border-bottom: 0;
+}
+
+.toolset-main {
   min-width: 0;
   display: grid;
   gap: var(--sp-2);
@@ -10429,6 +10467,7 @@ input:focus-visible,
 
 .mcp-server-headline {
 .skills-hub-headline {
+.toolset-headline {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -10437,6 +10476,7 @@ input:focus-visible,
 }
 
 .mcp-server-name {
+.toolset-name {
   color: var(--foreground);
   font-weight: 600;
   font-size: var(--fs-md);
@@ -10460,6 +10500,7 @@ input:focus-visible,
 }
 
 .skills-hub-source {
+.toolset-status {
   display: inline-flex;
   align-items: center;
   padding: 1px var(--sp-2);
@@ -10471,6 +10512,12 @@ input:focus-visible,
 }
 
 .mcp-server-transport[data-risk="local-subprocess"] {
+.toolset-status[data-tone="positive"] {
+  background: color-mix(in oklch, var(--ring-focus) 20%, transparent);
+  color: var(--foreground);
+}
+
+.toolset-status[data-tone="attention"] {
   background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
   color: var(--warm-strong);
 }
@@ -10489,6 +10536,7 @@ input:focus-visible,
 }
 
 .mcp-server-risk {
+.toolset-mode {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -10629,6 +10677,63 @@ input:focus-visible,
 }
 
 .mcp-server-test-tools {
+}
+
+.toolset-mode[data-unknown="true"] {
+  font-style: italic;
+}
+
+.toolset-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.toolset-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.toolset-tool {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+.toolset-tools-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+
+.toolset-requirements {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.toolset-requirements-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.toolset-requirements-list {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
@@ -10843,6 +10948,19 @@ input:focus-visible,
 .mcp-servers-lifecycle {
 /* Lifecycle banner + notifications — same tones as the Installed Skills page. */
 .skills-hub-lifecycle {
+.toolset-requirement {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+/* Toolsets lifecycle banner + notifications (same tones as installed skills). */
+.toolsets-lifecycle {
   display: grid;
   gap: var(--sp-px);
   padding: var(--sp-3) var(--sp-4);
@@ -10854,18 +10972,21 @@ input:focus-visible,
 
 .mcp-servers-lifecycle[data-tone="warning"] {
 .skills-hub-lifecycle[data-tone="warning"] {
+.toolsets-lifecycle[data-tone="warning"] {
   border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
   background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
 }
 
 .mcp-servers-lifecycle[data-tone="destructive"] {
 .skills-hub-lifecycle[data-tone="destructive"] {
+.toolsets-lifecycle[data-tone="destructive"] {
   border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
   background: var(--destructive-soft);
 }
 
 .mcp-servers-lifecycle-eyebrow {
 .skills-hub-lifecycle-eyebrow {
+.toolsets-lifecycle-eyebrow {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -10880,6 +11001,11 @@ input:focus-visible,
 
 .mcp-servers-lifecycle-body {
 .skills-hub-lifecycle-body {
+.toolsets-lifecycle[data-tone="warning"] .toolsets-lifecycle-eyebrow {
+  color: var(--warm-strong);
+}
+
+.toolsets-lifecycle-body {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
@@ -10887,6 +11013,7 @@ input:focus-visible,
 
 .mcp-servers-notifications {
 .skills-hub-notifications {
+.toolsets-notifications {
   list-style: none;
   display: grid;
   gap: var(--sp-2);
@@ -10896,6 +11023,7 @@ input:focus-visible,
 
 .mcp-servers-notification {
 .skills-hub-notification {
+.toolsets-notification {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10908,18 +11036,21 @@ input:focus-visible,
 
 .mcp-servers-notification[data-tone="destructive"] {
 .skills-hub-notification[data-tone="destructive"] {
+.toolsets-notification[data-tone="destructive"] {
   border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
   background: var(--destructive-soft);
 }
 
 .mcp-servers-notification-text {
 .skills-hub-notification-text {
+.toolsets-notification-text {
   color: var(--foreground);
   font-size: var(--fs-sm);
 }
 
 .mcp-servers-notification-dismiss {
 .skills-hub-notification-dismiss {
+.toolsets-notification-dismiss {
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -10933,6 +11064,7 @@ input:focus-visible,
 
 .mcp-servers-notification-dismiss:hover {
 .skills-hub-notification-dismiss:hover {
+.toolsets-notification-dismiss:hover {
   color: var(--foreground);
   background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
@@ -10942,6 +11074,77 @@ input:focus-visible,
 .mcp-servers-error {
 .skills-hub-empty,
 .skills-hub-error {
+/* Skill availability card — explains why skills are visible / hidden / waiting
+ * on setup against the toolset inventory. */
+.toolsets-skills-card {
+  margin-top: var(--sp-4);
+}
+
+.toolsets-skills-header {
+  display: grid;
+  gap: var(--sp-px);
+  margin-bottom: var(--sp-3);
+}
+
+.toolsets-skills-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.toolsets-skills-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.toolsets-skills-list {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.toolsets-skill-row {
+  display: grid;
+  gap: 3px;
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.toolsets-skill-row:last-child {
+  border-bottom: 0;
+}
+
+.toolsets-skill-name {
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.toolsets-skill-row[data-status="hidden"] .toolsets-skill-name,
+.toolsets-skill-row[data-status="missing-setup"] .toolsets-skill-name {
+  color: var(--muted-foreground);
+}
+
+.toolsets-skill-explanation {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.toolsets-skill-row[data-status="missing-setup"] .toolsets-skill-explanation {
+  color: var(--warm-strong);
+}
+
+/* Empty / error / loading states. */
+.toolsets-empty,
+.toolsets-error {
   display: grid;
   justify-items: center;
   gap: var(--sp-2);
@@ -10951,6 +11154,7 @@ input:focus-visible,
 
 .mcp-servers-empty-icon {
 .skills-hub-empty-icon {
+.toolsets-empty-icon {
   display: inline-grid;
   place-items: center;
   color: var(--muted-foreground);
@@ -10958,6 +11162,7 @@ input:focus-visible,
 
 .mcp-servers-empty-title {
 .skills-hub-empty-title {
+.toolsets-empty-title {
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-md);
@@ -10968,6 +11173,7 @@ input:focus-visible,
   margin: 0;
   max-width: 380px;
 .skills-hub-empty-description {
+.toolsets-empty-description {
   margin: 0;
   max-width: 360px;
   color: var(--muted-foreground);
@@ -10977,6 +11183,7 @@ input:focus-visible,
 
 .mcp-servers-retry {
 .skills-hub-retry {
+.toolsets-retry {
   margin-top: var(--sp-2);
   min-height: var(--control-sm);
   padding: 0 var(--sp-4);
@@ -10998,6 +11205,7 @@ input:focus-visible,
 }
 
 .skills-hub-skeleton-line {
+.toolset-skeleton-line {
   display: block;
   height: 12px;
   border-radius: var(--r-sm);
@@ -11006,6 +11214,7 @@ input:focus-visible,
 
 .mcp-server-skeleton-title {
 .skills-hub-skeleton-title {
+.toolset-skeleton-title {
   width: 40%;
   height: 14px;
 }
@@ -11332,6 +11541,10 @@ input:focus-visible,
   justify-content: flex-end;
   padding: var(--sp-4) var(--sp-5);
   border-top: 1px solid var(--border-subtle);
+}
+
+.toolset-skeleton-line + .toolset-skeleton-line {
+  width: 70%;
 }
 
 /* Dictionary toolbar — small search left (reuses .folders-search), primary

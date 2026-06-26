@@ -52,6 +52,12 @@ export type FakeSkill = {
   source?: "bundled" | "hub" | "external";
   read_only?: boolean;
   version?: string;
+  /** Conditional-activation metadata Hermes may attach. Carried through the
+   * GET verbatim so the toolsets page can explain skill availability. */
+  requires_toolsets?: string[];
+  fallback_for_toolsets?: string[];
+  requires_tools?: string[];
+  fallback_for_tools?: string[];
 };
 
 export type FakeToolset = {
@@ -60,6 +66,10 @@ export type FakeToolset = {
   enabled: boolean;
   tools?: string[];
   requirements?: Array<{ label: string; satisfied?: boolean }>;
+  /** Per-mode allowance Hermes may report (sandboxed / unrestricted). */
+  modes?: { sandboxed?: boolean; unrestricted?: boolean };
+  /** Whether prerequisites are configured, independent of `enabled`. */
+  configured?: boolean;
 };
 
 export type FakeMcpServer = {

@@ -121,14 +121,35 @@ export type HermesToolsetRequirement = {
   satisfied?: boolean;
 };
 
+/** Which June runtime mode a toolset is permitted in, as reported by Hermes.
+ * June runs a sandboxed and an unrestricted (Full mode) runtime; a toolset that
+ * shells out or touches the filesystem may be allowed in only one. `unknown` is
+ * used when upstream says nothing — June never invents an allowance. */
+export type HermesToolsetModeAllowance = {
+  /** Allowed in the sandboxed runtime, or undefined when not reported. */
+  sandboxed?: boolean;
+  /** Allowed in the unrestricted (Full mode) runtime, or undefined. */
+  unrestricted?: boolean;
+};
+
 export type HermesToolsetInfo = {
   name: string;
+  /** A human label when the wire carries one separate from the id. */
+  label?: string;
   description?: string;
   enabled: boolean;
+  /** Whether the toolset's prerequisites are configured/satisfied, when the wire
+   * reports it independently of `enabled`. Lets the UI tell "off" from "missing
+   * setup". `undefined` when upstream does not say. */
+  configured?: boolean;
   /** Tool names this toolset exposes, when listed. */
   tools?: string[];
   /** Unmet/met prerequisites (env vars, binaries) when reported. */
   requirements?: HermesToolsetRequirement[];
+  /** Per-mode allowance (sandboxed / unrestricted), when reported. Each flag is
+   * left undefined when upstream is silent, so the UI can mark it unknown rather
+   * than guess. */
+  modes?: HermesToolsetModeAllowance;
   raw: unknown;
 };
 
@@ -157,6 +178,40 @@ function parseRequirements(
   return out.length > 0 ? out : undefined;
 }
 
+/** Reads the per-mode allowance from a toolset payload. Tolerates a nested
+ * `modes`/`allowed_modes` object, an array of mode names, or top-level flags.
+ * Each flag stays undefined unless upstream is explicit, so an absent allowance
+ * reads as unknown rather than a guessed default. */
+function parseModeAllowance(
+  record: Record<string, unknown>,
+): HermesToolsetModeAllowance | undefined {
+  const nested = asRecord(record.modes ?? record.allowed_modes ?? record.allow);
+  // Array form: ["sandboxed", "unrestricted"] / ["full"].
+  const list = pickStringArray(
+    record.modes ?? record.allowed_modes ?? record.sandbox_modes,
+  );
+  let sandboxed = pickBool(
+    [nested, record],
+    ["sandboxed", "sandbox", "allow_sandboxed", "sandbox_allowed"],
+  );
+  let unrestricted = pickBool(
+    [nested, record],
+    ["unrestricted", "full", "allow_unrestricted", "full_mode", "fullMode"],
+  );
+  if (list) {
+    const lowered = list.map((mode) => mode.toLowerCase());
+    if (sandboxed === undefined) {
+      sandboxed = lowered.includes("sandboxed") || lowered.includes("sandbox");
+    }
+    if (unrestricted === undefined) {
+      unrestricted =
+        lowered.includes("unrestricted") || lowered.includes("full");
+    }
+  }
+  if (sandboxed === undefined && unrestricted === undefined) return undefined;
+  return { sandboxed, unrestricted };
+}
+
 export function parseToolset(raw: unknown): HermesToolsetInfo | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
@@ -164,12 +219,18 @@ export function parseToolset(raw: unknown): HermesToolsetInfo | undefined {
   if (!name) return undefined;
   return {
     name,
+    label: pickString([record], ["label", "title", "display_name"]),
     description: pickString([record], ["description", "summary", "desc"]),
     enabled: pickBool([record], ["enabled", "active", "is_enabled"]) ?? false,
+    configured: pickBool(
+      [record],
+      ["configured", "is_configured", "ready", "available", "satisfied"],
+    ),
     tools: pickStringArray(record.tools ?? record.tool_names),
     requirements: parseRequirements(
       record.requirements ?? record.requires ?? record.prerequisites,
     ),
+    modes: parseModeAllowance(record),
     raw,
   };
 }
