@@ -1558,6 +1558,36 @@ export function readConfigPath(
   return stringifyDefault(cursor);
 }
 
+/** The dotted config path the external skill directories list lives at in a
+ * profile's `config.yaml` (`skills.external_dirs`). The one source of truth for
+ * the read and the write, so a typo can't read one key and write another. */
+export const EXTERNAL_DIRS_CONFIG_PATH = ["skills", "external_dirs"] as const;
+
+/** Reads the configured external skill directories out of a parsed config tree.
+ * `skills.external_dirs` is a list of raw path strings (which may contain `~`
+ * and `${VAR}`). Tolerates the key being absent, a bare string (single dir), or
+ * a list; non-string entries are dropped. Returns the raw configured strings in
+ * declared order — resolution/expansion happens June-side, never here. */
+export function readExternalDirs(config: Record<string, unknown>): string[] {
+  let cursor: unknown = config;
+  for (const segment of EXTERNAL_DIRS_CONFIG_PATH) {
+    const record = asRecord(cursor);
+    if (!record) return [];
+    cursor = record[segment];
+  }
+  if (typeof cursor === "string") {
+    const single = cursor.trim();
+    return single.length > 0 ? [single] : [];
+  }
+  if (!Array.isArray(cursor)) return [];
+  const out: string[] = [];
+  for (const entry of cursor) {
+    const str = nonEmptyString(entry);
+    if (str) out.push(str);
+  }
+  return out;
+}
+
 // ----------------------------------------------------------------------------
 // Profiles (`GET /api/profiles`, `POST /api/profiles`, `GET /api/profiles/sessions`)
 // ----------------------------------------------------------------------------

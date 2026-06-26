@@ -10412,6 +10412,334 @@ input:focus-visible,
   width: 70%;
 }
 
+/* External skill directories manager (Hermes admin surface, spec 10). Lists the
+ * configured skills.external_dirs with filesystem status, shadowing, and the
+ * shared-directory warning. Reuses the installed-skills chrome vocabulary;
+ * tokens only. */
+.external-dirs-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.external-dirs-mode-note {
+  color: var(--muted-foreground);
+}
+
+.external-dirs-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.external-dirs-warning > :first-child {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warm-strong);
+}
+
+.external-dirs-lifecycle {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.external-dirs-lifecycle[data-tone="warning"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+}
+
+.external-dirs-lifecycle[data-tone="destructive"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.external-dirs-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+.external-dirs-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.external-dirs-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.external-dirs-add {
+  display: flex;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.external-dirs-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.external-dirs-add input:focus {
+  border-color: var(--ring-focus);
+}
+
+.external-dirs-add-button,
+.external-dirs-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.external-dirs-add-button:disabled,
+.external-dirs-refresh:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.external-dirs-hint {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5) 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.external-dirs-inline-error {
+  padding: var(--sp-2) var(--sp-5) 0;
+}
+
+.external-dirs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.external-dir-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.external-dir-main {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.external-dir-headline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.external-dir-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.external-dir-path {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-dir-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.external-dir-status[data-tone="ok"] {
+  background: color-mix(
+    in oklch,
+    var(--success, var(--primary)) 14%,
+    var(--card)
+  );
+  color: var(--success, var(--primary));
+}
+
+.external-dir-status[data-tone="info"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.external-dir-status[data-tone="warning"] {
+  background: color-mix(in oklch, var(--warm-strong) 14%, var(--card));
+  color: var(--warm-strong);
+}
+
+.external-dir-status[data-tone="muted"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.external-dir-resolved {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-dir-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.external-dir-meta-item {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.external-dir-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.external-dir-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.external-dir-note-warning {
+  color: var(--warm-strong);
+}
+
+.external-dir-actions {
+  flex: none;
+}
+
+.external-dir-remove {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+.external-dir-remove:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.external-dirs-empty,
+.external-dirs-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-7) var(--sp-5);
+  text-align: center;
+}
+
+.external-dirs-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.external-dirs-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: var(--fs-md);
+}
+
+.external-dirs-empty-description {
+  margin: 0;
+  max-width: 42ch;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.external-dirs-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.external-dir-skeleton {
+  display: block;
+}
+
+.external-dir-skeleton-line {
+  display: block;
+  height: 12px;
+  margin-bottom: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.external-dir-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
 /* Agent-managed skill write review queue (Hermes admin surface, spec 12). The
  * human-in-the-loop gate: a write-approval toggle card, the lifecycle banner,
  * and a list of pending writes with expandable diffs and approve/reject. Reuses

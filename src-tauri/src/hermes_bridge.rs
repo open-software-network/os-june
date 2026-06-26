@@ -2931,6 +2931,282 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<BoundedOutpu
     })
 }
 
+// ----------------------------------------------------------------------------
+// External skill directories (read-only filesystem status).
+//
+// `skills.external_dirs` lists shared skill folders Hermes scans alongside the
+// per-profile `~/.hermes/skills/` root. June writes that list through the
+// dashboard's `PUT /api/config` (the jailed dashboard owns the config.yaml
+// write). But the dashboard reports nothing about whether each directory exists
+// or is writable, and June's profile/sandbox UX needs that to warn about shared
+// writable dirs. So June's OWN process — which is NOT under the Hermes Seatbelt
+// jail — inspects them read-only here: expand `~`/`${VAR}`, stat the path, probe
+// readability/writability, and count discovered skills. Nothing is mutated, no
+// path content is read, and no env values are returned to the webview.
+// ----------------------------------------------------------------------------
+
+/// Request for `hermes_inspect_external_dirs`: the raw configured paths (as
+/// written in `skills.external_dirs`, possibly containing `~`/`${VAR}`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectExternalDirsRequest {
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+/// The read-only status of one external skill directory. Carries BOTH the raw
+/// configured path and the resolved path so the UI can show what was typed and
+/// what it expanded to. `missing` is non-fatal. Skill names are returned so the
+/// UI can explain shadowing against local skills.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalDirStatus {
+    /// The path exactly as configured (with `~`/`${VAR}` unexpanded).
+    pub raw_path: String,
+    /// The expanded, absolute path, or null when expansion could not resolve a
+    /// variable (the variable is reported in `unresolved_var` instead).
+    pub resolved_path: Option<String>,
+    /// The name of an environment variable referenced in the path that could
+    /// not be resolved, when expansion failed. Never the variable's VALUE.
+    pub unresolved_var: Option<String>,
+    /// True when the resolved path exists on disk.
+    pub exists: bool,
+    /// True when the resolved path exists and is a directory.
+    pub is_dir: bool,
+    /// True when June could list the directory's entries.
+    pub readable: bool,
+    /// True when the Hermes process could write into the directory (probed by a
+    /// temporary file create+remove). None when not safely detectable.
+    pub writable: Option<bool>,
+    /// Count of discovered skills (immediate sub-directories holding a
+    /// `SKILL.md`). None when the directory is missing/unreadable.
+    pub skill_count: Option<u32>,
+    /// The discovered skill names, so the UI can explain shadowing by local
+    /// skills of the same name. Empty when none/unreadable.
+    pub skill_names: Vec<String>,
+}
+
+/// Inspects the configured external skill directories read-only. Pure
+/// filesystem status: no mutation, no file-content reads, no secrets. Runs in
+/// June's own (non-jailed) process so it can honestly report writability the
+/// jailed dashboard can't.
+#[tauri::command]
+pub async fn hermes_inspect_external_dirs(
+    request: InspectExternalDirsRequest,
+) -> Result<Vec<ExternalDirStatus>, AppError> {
+    let dirs = request.dirs.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        dirs.iter()
+            .map(|raw| inspect_external_dir(raw))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_external_dirs_failed",
+            format!("Could not inspect external directories. {error}"),
+        )
+    })
+}
+
+/// Inspects one configured external skill directory. Never throws: any failure
+/// degrades to a "missing/unreadable" status so one bad entry can't blank the
+/// whole list.
+fn inspect_external_dir(raw: &str) -> ExternalDirStatus {
+    let raw_path = raw.trim().to_string();
+    let expansion = expand_external_dir_path(&raw_path);
+    let resolved = match &expansion {
+        ExpandedPath::Resolved(path) => path.clone(),
+        ExpandedPath::UnresolvedVar(name) => {
+            return ExternalDirStatus {
+                raw_path,
+                resolved_path: None,
+                unresolved_var: Some(name.clone()),
+                exists: false,
+                is_dir: false,
+                readable: false,
+                writable: None,
+                skill_count: None,
+                skill_names: Vec::new(),
+            };
+        }
+    };
+
+    let resolved_display = resolved.to_string_lossy().into_owned();
+    let metadata = fs::metadata(&resolved).ok();
+    let exists = metadata.is_some();
+    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+
+    if !is_dir {
+        return ExternalDirStatus {
+            raw_path,
+            resolved_path: Some(resolved_display),
+            unresolved_var: None,
+            exists,
+            is_dir,
+            readable: false,
+            writable: None,
+            skill_count: None,
+            skill_names: Vec::new(),
+        };
+    }
+
+    let readable = fs::read_dir(&resolved).is_ok();
+    let mut skill_names = discover_external_skill_names(&resolved);
+    skill_names.sort();
+    skill_names.dedup();
+
+    ExternalDirStatus {
+        raw_path,
+        resolved_path: Some(resolved_display),
+        unresolved_var: None,
+        exists,
+        is_dir,
+        readable,
+        writable: probe_external_dir_writable(&resolved),
+        skill_count: if readable {
+            Some(skill_names.len() as u32)
+        } else {
+            None
+        },
+        skill_names,
+    }
+}
+
+/// The outcome of expanding `~`/`${VAR}`/`$VAR` in a configured path.
+enum ExpandedPath {
+    Resolved(PathBuf),
+    /// A `${VAR}`/`$VAR` reference had no value in the environment. The name is
+    /// reported so the UI can say which variable to set — never its value.
+    UnresolvedVar(String),
+}
+
+/// Expands a leading `~` (home), `~/...`, and `${VAR}`/`$VAR` references using
+/// the current environment, mirroring how Hermes resolves external dir paths.
+/// A reference with no value is surfaced as `ExpandedPath::UnresolvedVar`
+/// rather than silently dropped, so the UI can explain the missing variable.
+fn expand_external_dir_path(raw: &str) -> ExpandedPath {
+    let mut working = raw.to_string();
+
+    // `~` / `~/...` → home directory (only when home is known).
+    if working == "~" || working.starts_with("~/") {
+        if let Some(home) = home_dir_candidates().into_iter().next() {
+            let rest = working.strip_prefix('~').unwrap_or("");
+            let rest = rest.strip_prefix('/').unwrap_or(rest);
+            working = if rest.is_empty() {
+                home.to_string_lossy().into_owned()
+            } else {
+                home.join(rest).to_string_lossy().into_owned()
+            };
+        }
+    }
+
+    match expand_env_vars(&working) {
+        Ok(expanded) => ExpandedPath::Resolved(PathBuf::from(expanded)),
+        Err(missing) => ExpandedPath::UnresolvedVar(missing),
+    }
+}
+
+/// Replaces `${VAR}` and `$VAR` tokens with their environment values. Returns
+/// `Err(name)` for the first reference with no value. A literal `$` not followed
+/// by a name passes through unchanged.
+fn expand_env_vars(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        // `${VAR}` form.
+        if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            if let Some(end) = input[i + 2..].find('}') {
+                let name = &input[i + 2..i + 2 + end];
+                let value = std::env::var(name).map_err(|_| name.to_string())?;
+                out.push_str(&value);
+                i = i + 2 + end + 1;
+                continue;
+            }
+            // Unterminated `${` — pass the literal through.
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        // `$VAR` form: a run of [A-Za-z0-9_].
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        if end > start {
+            let name = &input[start..end];
+            let value = std::env::var(name).map_err(|_| name.to_string())?;
+            out.push_str(&value);
+            i = end;
+        } else {
+            out.push('$');
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Lists the discovered skill names in an external dir: immediate sub-directories
+/// that contain a `SKILL.md`. Mirrors Hermes' "a skill is a folder with a
+/// SKILL.md" convention. Read-only; never recurses deep (external dirs are flat
+/// skill collections) and never reads file contents.
+fn discover_external_skill_names(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.join("SKILL.md").is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    names
+}
+
+/// Probes whether the Hermes process can write into a directory by creating and
+/// immediately removing a uniquely-named temp file. Returns `Some(true)` on a
+/// successful create, `Some(false)` on a permission error, and `None` when the
+/// outcome is ambiguous. The probe file is `.june-write-probe-<rand>` and is
+/// always cleaned up.
+fn probe_external_dir_writable(dir: &Path) -> Option<bool> {
+    let suffix: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(12)
+        .map(char::from)
+        .collect();
+    let probe = dir.join(format!(".june-write-probe-{suffix}"));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            Some(true)
+        }
+        Err(error) => match error.kind() {
+            io::ErrorKind::PermissionDenied => Some(false),
+            // An already-exists collision (astronomically unlikely) or any other
+            // ambiguous error: do not claim a definite writability either way.
+            _ => None,
+        },
+    }
+}
+
 /// Opens a URL in the OS browser. macOS uses `/usr/bin/open`; other platforms
 /// are a no-op (June still surfaces the URL for a manual open). Best-effort: a
 /// failure to launch is non-fatal — the manual fallback covers it.
@@ -6514,5 +6790,92 @@ mod tests {
         assert!(!is_safe_pending_id(".."));
         assert!(!is_safe_pending_id("a/b"));
         assert!(!is_safe_pending_id("a\\b"));
+    }
+
+    #[test]
+    fn external_dir_inspect_reports_skills_and_writable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Two skills (folders with SKILL.md) plus a non-skill folder and a file.
+        for name in ["caveman", "research"] {
+            let skill = dir.path().join(name);
+            std::fs::create_dir_all(&skill).expect("skill dir");
+            std::fs::write(skill.join("SKILL.md"), "# Skill\n").expect("skill md");
+        }
+        std::fs::create_dir_all(dir.path().join("not-a-skill")).expect("plain dir");
+        std::fs::write(dir.path().join("loose.txt"), "x").expect("loose file");
+
+        let status = inspect_external_dir(&dir.path().to_string_lossy());
+        assert!(status.exists);
+        assert!(status.is_dir);
+        assert!(status.readable);
+        assert_eq!(status.skill_count, Some(2));
+        assert_eq!(status.skill_names, vec!["caveman", "research"]);
+        // A fresh tempdir is writable by the running process.
+        assert_eq!(status.writable, Some(true));
+        // The probe file is always cleaned up.
+        let leftover = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".june-write-probe-")
+            });
+        assert!(!leftover, "write probe file should be removed");
+    }
+
+    #[test]
+    fn external_dir_inspect_missing_is_non_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        let status = inspect_external_dir(&missing.to_string_lossy());
+        assert!(!status.exists);
+        assert!(!status.is_dir);
+        assert!(!status.readable);
+        assert_eq!(status.writable, None);
+        assert_eq!(status.skill_count, None);
+        assert!(status.skill_names.is_empty());
+        assert!(status.unresolved_var.is_none());
+    }
+
+    #[test]
+    fn external_dir_expands_home_and_env_vars() {
+        // `~` expands to the home directory.
+        match expand_external_dir_path("~/skills") {
+            ExpandedPath::Resolved(path) => {
+                let home = home_dir_candidates().into_iter().next().expect("home");
+                assert_eq!(path, home.join("skills"));
+            }
+            ExpandedPath::UnresolvedVar(_) => panic!("~ should resolve when HOME is set"),
+        }
+
+        // `${VAR}` and `$VAR` expand from the environment.
+        std::env::set_var("JUNE_TEST_EXT_DIR", "/tmp/june-ext");
+        match expand_external_dir_path("${JUNE_TEST_EXT_DIR}/skills") {
+            ExpandedPath::Resolved(path) => {
+                assert_eq!(path, PathBuf::from("/tmp/june-ext/skills"));
+            }
+            ExpandedPath::UnresolvedVar(_) => panic!("set var should resolve"),
+        }
+        match expand_external_dir_path("$JUNE_TEST_EXT_DIR") {
+            ExpandedPath::Resolved(path) => {
+                assert_eq!(path, PathBuf::from("/tmp/june-ext"));
+            }
+            ExpandedPath::UnresolvedVar(_) => panic!("set var should resolve"),
+        }
+        std::env::remove_var("JUNE_TEST_EXT_DIR");
+    }
+
+    #[test]
+    fn external_dir_reports_unresolved_var() {
+        std::env::remove_var("JUNE_DEFINITELY_UNSET_VAR_XYZ");
+        let status = inspect_external_dir("${JUNE_DEFINITELY_UNSET_VAR_XYZ}/skills");
+        assert_eq!(
+            status.unresolved_var.as_deref(),
+            Some("JUNE_DEFINITELY_UNSET_VAR_XYZ")
+        );
+        assert!(status.resolved_path.is_none());
+        assert!(!status.exists);
     }
 }

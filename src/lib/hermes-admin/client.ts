@@ -312,6 +312,16 @@ export type HermesAdminClient = {
       path: string,
       value: string,
     ): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Writes a non-scalar config value (an array or object) at a dotted path.
+     * `PUT /api/config` with `{ path, value, profile? }`, where `value` is the
+     * whole structure (e.g. the full `skills.external_dirs` list). The external
+     * skill directories manager uses this to write the list it has already
+     * read-merged client-side. Routes the write through Hermes' REST surface so
+     * the jailed dashboard owns the `config.yaml` write (no June-side EPERM). */
+    setValue(
+      path: string,
+      value: unknown,
+    ): Promise<MutationOutcome<HermesConfigWriteResult>>;
     /** Clears a single dotted config path back to its default. `DELETE
      * /api/config` with `{ path, profile? }` (the path is in the BODY). */
     delete(path: string): Promise<MutationOutcome<HermesConfigWriteResult>>;
@@ -736,6 +746,18 @@ function makeConfig(send: AdminTransport): HermesAdminClient["config"] {
       // PUT /api/config with ConfigUpdate { path, value }; profile via query.
       // Skill config is non-secret, but the value is still not logged — the
       // structural sanitizer masks any credential-shaped value defensively.
+      const result = await send(
+        { method: "PUT", path: "/api/config", body: { path, value } },
+        (raw) => parseConfigWriteResult(path, raw),
+      );
+      return outcome("config.set", result);
+    },
+    async setValue(path, value) {
+      // Same PUT /api/config as `set`, but `value` is an arbitrary structure
+      // (array/object) rather than a string. Used by the external directories
+      // manager to write the whole `skills.external_dirs` list. The structural
+      // sanitizer still masks any credential-shaped leaf defensively, though an
+      // external-dir list carries paths, not secrets.
       const result = await send(
         { method: "PUT", path: "/api/config", body: { path, value } },
         (raw) => parseConfigWriteResult(path, raw),

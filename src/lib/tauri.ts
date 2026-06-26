@@ -1178,6 +1178,46 @@ export async function hermesResetBundledSkill(input: {
   });
 }
 
+/** The read-only filesystem status of one configured external skill directory,
+ * as reported by the June-side `hermes_inspect_external_dirs` command. Carries
+ * both the raw configured path and the resolved one. Mirrors the Rust
+ * `ExternalDirStatus` (camelCase). */
+export type ExternalDirStatus = {
+  /** The path exactly as configured (with `~`/`${VAR}` unexpanded). */
+  rawPath: string;
+  /** The expanded absolute path, or null when a variable could not be resolved. */
+  resolvedPath: string | null;
+  /** The name of an unresolved environment variable referenced in the path, or
+   * null. Never the variable's value. */
+  unresolvedVar: string | null;
+  /** True when the resolved path exists. */
+  exists: boolean;
+  /** True when the resolved path exists and is a directory. */
+  isDir: boolean;
+  /** True when June could list the directory. */
+  readable: boolean;
+  /** True/false when writability was safely detected, null when ambiguous. */
+  writable: boolean | null;
+  /** Count of discovered skills, or null when missing/unreadable. */
+  skillCount: number | null;
+  /** Discovered skill names (for shadowing explanation). */
+  skillNames: string[];
+};
+
+/**
+ * Inspects the configured external skill directories read-only through June's
+ * own (non-jailed) Rust process: expands `~`/`${VAR}`, stats each path, probes
+ * readability/writability, and counts discovered skills. No mutation, no
+ * file-content reads, no secrets returned. The CONFIG itself is written through
+ * Hermes' `PUT /api/config` (so the jailed dashboard owns the config.yaml
+ * write); this command only reports filesystem status the dashboard can't.
+ */
+export async function hermesInspectExternalDirs(dirs: string[]) {
+  return invoke<ExternalDirStatus[]>("hermes_inspect_external_dirs", {
+    request: { dirs },
+  });
+}
+
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */

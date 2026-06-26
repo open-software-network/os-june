@@ -80,3 +80,5 @@ export * from "./use-profile-builder";
 export * from "./setup-snapshot";
 export * from "./setup-import";
 export * from "./use-setup-snapshot";
+export * from "./external-dirs-view";
+export * from "./use-external-dirs";
