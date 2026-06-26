@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isSensitiveKey, sanitizePayload } from "../lib/hermes-control-plane";
+import {
+  isSensitiveKey,
+  sanitizePayload,
+  sanitizeText,
+} from "../lib/hermes-control-plane";
 
 describe("sanitizePayload — key-based redaction", () => {
   it("redacts a SHORT value under `value` (the literal key secret/sudo responses use)", () => {
@@ -53,6 +57,26 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
     expect(out.url).toBe(url);
   });
 
+  it("redacts sensitive query params in a URL under a benign key", () => {
+    const out = sanitizePayload({
+      url: "https://example.com/callback?token=secret-token-123&view=1",
+    }) as Record<string, unknown>;
+
+    expect(out.url).toContain("view=1");
+    expect(out.url).toContain("token=");
+    expect(out.url).not.toContain("secret-token-123");
+  });
+
+  it("redacts URL credentials under a benign key", () => {
+    const out = sanitizePayload({
+      url: "https://user:supersecret@example.com/private",
+    }) as Record<string, unknown>;
+
+    expect(out.url).toContain("example.com/private");
+    expect(out.url).not.toContain("user");
+    expect(out.url).not.toContain("supersecret");
+  });
+
   it("preserves a ~/ home path and a Windows drive path", () => {
     const out = sanitizePayload({
       home: "~/code/project/src/components/AgentWorkspace.tsx",
@@ -85,6 +109,29 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
       token: "/Users/x/code/secret/with/slashes/and/a/long/path.txt",
     }) as Record<string, unknown>;
     expect(out.token).toBe("[redacted]");
+  });
+});
+
+describe("sanitizeText", () => {
+  it("redacts embedded bearer tokens and secret-looking values", () => {
+    const text =
+      "Request failed with Bearer abcdef0123456789abcdef0123456789 and sk-abcdefghijklmnopqrstuvwxyz123456";
+
+    const out = sanitizeText(text);
+
+    expect(out).toContain("Request failed");
+    expect(out).toContain("Bearer [redacted]");
+    expect(out).not.toContain("abcdef0123456789abcdef0123456789");
+    expect(out).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
+
+  it("redacts sensitive URL params inside longer text", () => {
+    const out = sanitizeText(
+      "Fetch failed for https://example.com/callback?token=secret-token-123&view=1.",
+    );
+
+    expect(out).toContain("view=1");
+    expect(out).not.toContain("secret-token-123");
   });
 });
 

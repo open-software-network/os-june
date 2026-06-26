@@ -7,7 +7,7 @@ import type {
 } from "./events";
 import { parseHermesMode } from "./events";
 import type { RawHermesPayload } from "./raw-types";
-import { sanitizePayload } from "./sanitize";
+import { sanitizePayload, sanitizeText } from "./sanitize";
 
 /**
  * Turns one raw Hermes gateway frame into exactly one typed
@@ -238,12 +238,11 @@ function classifyError(
   return {
     kind: "error",
     sessionId,
-    // The human-readable message is safe to surface; everything else stays out
-    // unless explicitly modeled, so a secret in some other field can't leak.
-    message:
+    message: sanitizeText(
       stringValue(payload?.message, true) ??
-      stringValue(payload?.text, true) ??
-      "The agent reported an error.",
+        stringValue(payload?.text, true) ??
+        "The agent reported an error.",
+    ),
     code: numberValue(payload?.code),
     recoverable:
       typeof payload?.recoverable === "boolean"

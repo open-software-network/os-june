@@ -78,6 +78,22 @@ describe("createHermesTraceBuffer", () => {
     expect(entries[0].message).toBe("Hermes request timed out: session.steer");
   });
 
+  it("redacts secret fragments in error/rejection messages", () => {
+    const buffer = createHermesTraceBuffer();
+    buffer.recordError({
+      sessionId: "s1",
+      method: "session.steer",
+      message:
+        "Hermes request failed with Bearer abcdef0123456789abcdef0123456789",
+    });
+
+    const entry = buffer.entriesFor("s1")[0];
+    expect(entry.message).toContain("Bearer [redacted]");
+    expect(JSON.stringify(entry)).not.toContain(
+      "abcdef0123456789abcdef0123456789",
+    );
+  });
+
   it("drops the oldest entry once the per-session cap is exceeded", () => {
     const buffer = createHermesTraceBuffer();
     for (let i = 0; i < TRACE_ENTRIES_PER_SESSION_CAP + 5; i += 1) {
