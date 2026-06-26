@@ -11,7 +11,7 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
 use uuid::Uuid;
 
-const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
+pub const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
 
 #[derive(Clone)]
 pub struct Repositories {

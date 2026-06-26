@@ -199,6 +199,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         icon: <IconCreditCard1 size={16} />,
       },
       {
+        id: "data",
+        label: "Data",
+        icon: <IconClipboard size={16} />,
+      },
+      {
         id: "shortcuts",
         label: "Shortcuts",
         icon: <IconShortcut size={16} />,

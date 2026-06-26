@@ -138,6 +138,7 @@ pub fn run() {
             commands::update_note,
             commands::delete_note,
             commands::delete_notes,
+            commands::local_data_retention_policies,
             commands::create_folder,
             commands::list_folders,
             commands::delete_folder,

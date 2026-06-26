@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => ({
   recoverRecording: vi.fn(),
   dictationHelperCommand: vi.fn(),
   listDictationHistory: vi.fn(),
+  localDataRetentionPolicies: vi.fn(),
   osAccountsStatus: vi.fn(),
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
@@ -91,6 +92,7 @@ vi.mock("../lib/tauri", () => ({
   recoverRecording: mocks.recoverRecording,
   dictationHelperCommand: mocks.dictationHelperCommand,
   listDictationHistory: mocks.listDictationHistory,
+  localDataRetentionPolicies: mocks.localDataRetentionPolicies,
   osAccountsStatus: mocks.osAccountsStatus,
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
@@ -200,6 +202,7 @@ describe("meeting start transcription event", () => {
       items: [],
       retentionDays: 7,
     });
+    mocks.localDataRetentionPolicies.mockResolvedValue({ policies: [] });
     mocks.osAccountsStatus.mockResolvedValue(account);
     mocks.osAccountsLogin.mockResolvedValue(account);
     mocks.osAccountsLogout.mockResolvedValue(undefined);

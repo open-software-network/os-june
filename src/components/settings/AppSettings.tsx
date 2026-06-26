@@ -77,6 +77,7 @@ import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
+import { LocalDataSettingsSection } from "./LocalDataSettingsSection";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
@@ -172,6 +173,7 @@ const MIC_TEST_DURATION_SECONDS = 5;
 export type SettingsTab =
   | "general"
   | "billing"
+  | "data"
   | "shortcuts"
   | "dictation"
   | "audio"
@@ -183,6 +185,7 @@ export type SettingsTab =
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "billing", label: "Billing" },
+  { id: "data", label: "Data" },
   { id: "shortcuts", label: "Shortcuts" },
   { id: "dictation", label: "Dictation" },
   { id: "audio", label: "Audio" },
@@ -872,6 +875,8 @@ export function AppSettings({
             onRefresh={onAccountRefresh}
           />
         ) : null}
+
+        {activeTab === "data" ? <LocalDataSettingsSection /> : null}
 
         {activeTab === "shortcuts" ? (
           <section

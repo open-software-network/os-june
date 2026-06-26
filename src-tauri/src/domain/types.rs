@@ -225,6 +225,21 @@ pub struct ListDictationHistoryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalDataRetentionPolicyDto {
+    pub id: String,
+    pub label: String,
+    pub retention: String,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataRetentionPoliciesResponse {
+    pub policies: Vec<LocalDataRetentionPolicyDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateDictionaryEntryRequest {
     pub phrase: String,
 }
