@@ -79,6 +79,10 @@ import { SkillReviewSection } from "./SkillReviewSection";
 import { McpCatalogSection } from "./McpCatalogSection";
 import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
 import { McpServersSection } from "./McpServersSection";
+import {
+  IntegrationsHealthSection,
+  type IntegrationsHealthTarget,
+} from "./IntegrationsHealthSection";
 import { ProfileBuilderSection } from "./ProfileBuilderSection";
 import { SetupSnapshotSection } from "./SetupSnapshotSection";
 import { SkillBundlesSection } from "./SkillBundlesSection";
@@ -197,6 +201,7 @@ export type SettingsTab =
   | "toolsets"
   | "bundles"
   | "profile-builder"
+  | "integrations-health"
   | "import-export"
   | "about";
 
@@ -218,6 +223,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "toolsets", label: "Toolsets" },
   { id: "bundles", label: "Bundles" },
   { id: "profile-builder", label: "Profile builder" },
+  { id: "integrations-health", label: "Integrations health" },
   { id: "import-export", label: "Import / export" },
   { id: "about", label: "About" },
 ];
@@ -1245,6 +1251,13 @@ export function AppSettings({
           <SkillBundlesSection onStartChat={onStartBundleChat} />
         ) : null}
         {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
+        {activeTab === "integrations-health" ? (
+          <IntegrationsHealthSection
+            onNavigate={(target: IntegrationsHealthTarget) =>
+              setActiveTab(target)
+            }
+          />
+        ) : null}
         {activeTab === "import-export" ? <SetupSnapshotSection /> : null}
 
         {activeTab === "about" ? (

@@ -20421,3 +20421,220 @@ input:focus-visible,
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
+
+/* ---------------------------------------------------------------------------
+ * Integrations health dashboard (admin surfaces spec 22). A read-only overview
+ * that aggregates readiness across the model, gateway, skills, toolsets, MCP,
+ * and external directories. Tone-aware via [data-tone]. Tokens only.
+ * ------------------------------------------------------------------------- */
+
+.integrations-health-card {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.integrations-health-overview {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.integrations-health-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  align-self: start;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.integrations-health-status[data-tone="ready"] {
+  background: color-mix(
+    in oklch,
+    var(--success, var(--primary)) 14%,
+    var(--card)
+  );
+  color: var(--success, var(--primary));
+}
+
+.integrations-health-status[data-tone="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 14%, var(--card));
+  color: var(--warm-strong);
+}
+
+.integrations-health-status[data-tone="error"] {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
+.integrations-health-status[data-tone="neutral"] {
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.integrations-health-count {
+  display: grid;
+  gap: 2px;
+  min-width: 6rem;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.integrations-health-count-value {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.integrations-health-count-label {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-count[data-tone="attention"]
+  .integrations-health-count-value {
+  color: var(--warm-strong);
+}
+
+.integrations-health-count[data-tone="error"] .integrations-health-count-value {
+  color: var(--destructive);
+}
+
+.integrations-health-count[data-tone="ok"] .integrations-health-count-value {
+  color: var(--success, var(--primary));
+}
+
+.integrations-health-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.integrations-health-export {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.integrations-health-export:hover {
+  background: var(--surface-subtle);
+}
+
+.integrations-health-issues {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.integrations-health-issue {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.integrations-health-issue[data-tone="error"] {
+  border-color: color-mix(
+    in oklch,
+    var(--destructive) 35%,
+    var(--border-subtle)
+  );
+}
+
+.integrations-health-issue[data-tone="attention"] {
+  border-color: color-mix(
+    in oklch,
+    var(--warm-strong) 35%,
+    var(--border-subtle)
+  );
+}
+
+.integrations-health-issue-body {
+  display: grid;
+  gap: 2px;
+}
+
+.integrations-health-issue-message {
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+}
+
+.integrations-health-issue-action {
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-issue-link {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.integrations-health-issue-link:hover {
+  background: var(--surface-subtle);
+}
+
+.integrations-health-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--success, var(--primary));
+  font-size: var(--fs-sm);
+}
+
+.integrations-health-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  text-align: center;
+}
+
+.integrations-health-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.integrations-health-empty-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.integrations-health-empty-description {
+  margin: 0;
+  max-width: 42ch;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.integrations-health-mode-note {
+  color: var(--muted-foreground);
+}
