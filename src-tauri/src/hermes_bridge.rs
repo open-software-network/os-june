@@ -929,6 +929,494 @@ pub fn update_hermes_bridge_skill(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Agent-managed skill write review queue (admin surfaces spec 12).
+//
+// With `skills.write_approval: true`, Hermes stages agent-authored skill writes
+// (create / edit / delete) under `<hermes_home>/pending/skills/` instead of
+// applying them, and waits for a human to approve or reject the diff. The
+// dashboard REST surface (v2026.6.19) exposes NO endpoint for this queue, so
+// June reads the staged manifests directly. This is the documented file-parsing
+// FALLBACK the spec sanctions; it is version-gated below by requiring a
+// recognized manifest `version`/shape and only ever touching the managed skills
+// root, so an unexpected on-disk layout fails closed rather than mutating
+// procedural memory blindly.
+// ---------------------------------------------------------------------------
+
+/// Manifest schema versions June knows how to read. A staged manifest carrying
+/// an unrecognized version is surfaced as a parse problem, NOT applied, so a
+/// future Hermes format cannot be approved through a stale reader.
+const PENDING_SKILL_WRITE_SUPPORTED_VERSIONS: &[u32] = &[1];
+
+/// Cap on a single staged write's content so a runaway manifest cannot exhaust
+/// memory; matches the skill-edit ceiling.
+const PENDING_SKILL_WRITE_MAX_BYTES: usize = HERMES_SKILL_MAX_BYTES;
+
+/// What a staged write does to the target file.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PendingSkillWriteOp {
+    Create,
+    Edit,
+    Delete,
+    /// The manifest did not name a recognizable op; June shows it but refuses to
+    /// apply it (approve fails closed).
+    Unknown,
+}
+
+/// Where the agent proposed this write came from, for provenance framing.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PendingSkillWriteSource {
+    /// A foreground task the user was actively driving.
+    Foreground,
+    /// Hermes's background self-improvement review.
+    Background,
+    /// Source not reported by the manifest.
+    Unknown,
+}
+
+/// One affected file inside a staged write, with the proposed unified diff.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSkillWriteFile {
+    /// Path relative to the managed skills root, for display.
+    pub relative_path: String,
+    /// Unified diff of the proposed change, when the manifest supplies one.
+    pub diff: Option<String>,
+    /// The proposed full content (create/edit), redacted of secret-shaped lines
+    /// before it leaves Rust. Absent for deletes.
+    pub content: Option<String>,
+    /// True when `content` was redacted because it contained secret-shaped text.
+    #[serde(default)]
+    pub redacted: bool,
+}
+
+/// One staged, agent-authored skill write awaiting review.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSkillWrite {
+    /// Stable id: the manifest's file stem. Arg-safe (single path segment, no
+    /// separators) so it round-trips into approve/reject without traversal.
+    pub id: String,
+    /// The skill the write targets.
+    pub skill: String,
+    pub op: PendingSkillWriteOp,
+    pub source: PendingSkillWriteSource,
+    /// One-line human gist of what the change does, when the manifest supplies
+    /// one.
+    pub gist: Option<String>,
+    /// Epoch ms the write was staged, when the manifest supplies one.
+    pub staged_at: Option<i64>,
+    pub files: Vec<PendingSkillWriteFile>,
+    /// True when the manifest version/shape was recognized. A false here means
+    /// June can display the row but `approve` will refuse it.
+    pub readable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePendingSkillWriteRequest {
+    /// The {@link PendingSkillWrite.id} to act on.
+    pub id: String,
+    /// True to apply the staged write; false to discard it.
+    pub approve: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvePendingSkillWriteResult {
+    pub id: String,
+    pub approved: bool,
+    pub ok: bool,
+}
+
+/// `<hermes_home>/pending/skills` — the staged-write directory. Not created
+/// here: its absence simply means "no pending writes".
+fn pending_skill_writes_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(resolve_scribe_hermes_home(app)?
+        .join("pending")
+        .join("skills"))
+}
+
+/// Lists the agent-managed skill writes staged for review. Returns an empty list
+/// when the queue directory does not exist. Each manifest is parsed defensively;
+/// an unreadable or unrecognized manifest still yields a row (so a stuck write is
+/// visible) but is flagged `readable: false` so the UI can warn and approve
+/// refuses it.
+#[tauri::command]
+pub fn hermes_pending_skill_writes(app: AppHandle) -> Result<Vec<PendingSkillWrite>, AppError> {
+    let dir = pending_skill_writes_dir(&app)?;
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    let read_dir = fs::read_dir(&dir)
+        .map_err(|error| AppError::new("hermes_pending_skill_read_failed", error.to_string()))?;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        // The stem is the id and must round-trip into approve/reject as a single
+        // safe segment; skip anything that could escape the queue dir.
+        if !is_safe_pending_id(stem) {
+            continue;
+        }
+        entries.push((stem.to_string(), path));
+    }
+    // Stable order: oldest manifest first (by id), so the list does not reshuffle
+    // between polls.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    Ok(entries
+        .into_iter()
+        .map(|(id, path)| parse_pending_skill_write(&id, &path))
+        .collect())
+}
+
+/// Approves (applies) or rejects (discards) one staged skill write.
+///
+/// Approve applies the manifest's op against the managed skills root ONLY:
+/// create/edit write the staged content through the same guarded writer the
+/// skill editor uses; delete removes the resolved skill file. Reject simply
+/// discards the manifest. Either way the manifest is removed so the queue drains.
+/// An unreadable/unrecognized manifest can only be rejected — approve fails
+/// closed so June never applies a write it could not fully parse.
+#[tauri::command]
+pub fn hermes_resolve_pending_skill_write(
+    app: AppHandle,
+    request: ResolvePendingSkillWriteRequest,
+) -> Result<ResolvePendingSkillWriteResult, AppError> {
+    if !is_safe_pending_id(&request.id) {
+        return Err(AppError::new(
+            "hermes_pending_skill_id_invalid",
+            "Pending change id must be a single safe identifier.",
+        ));
+    }
+    let dir = pending_skill_writes_dir(&app)?;
+    let manifest_path = dir.join(format!("{}.json", request.id));
+    // Confine to the queue dir: the joined path's parent must be the queue dir.
+    if manifest_path.parent() != Some(dir.as_path()) {
+        return Err(AppError::new(
+            "hermes_pending_skill_id_invalid",
+            "Pending change id must be a single safe identifier.",
+        ));
+    }
+    if !manifest_path.is_file() {
+        return Err(AppError::new(
+            "hermes_pending_skill_not_found",
+            "That pending change is no longer staged.",
+        ));
+    }
+
+    if request.approve {
+        let parsed = parse_pending_skill_write(&request.id, &manifest_path);
+        if !parsed.readable {
+            return Err(AppError::new(
+                "hermes_pending_skill_unreadable",
+                "June could not fully read this change, so it cannot be approved. Reject it and review it in Hermes.",
+            ));
+        }
+        let skills_root = resolve_scribe_hermes_home(&app)?.join("skills");
+        apply_pending_skill_write(&skills_root, &parsed)?;
+    }
+
+    // Drain the manifest whether approved or rejected.
+    fs::remove_file(&manifest_path)
+        .map_err(|error| AppError::new("hermes_pending_skill_remove_failed", error.to_string()))?;
+
+    Ok(ResolvePendingSkillWriteResult {
+        id: request.id,
+        approved: request.approve,
+        ok: true,
+    })
+}
+
+/// A pending-write id is the manifest file stem; it must be a single safe path
+/// segment so it can never traverse out of the queue dir.
+fn is_safe_pending_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains(std::path::is_separator as fn(char) -> bool)
+}
+
+/// Parses one staged manifest into a {@link PendingSkillWrite}. Never throws: an
+/// unreadable file or unrecognized shape yields a `readable: false` row carrying
+/// only the id, so a stuck write stays visible and approve can refuse it.
+fn parse_pending_skill_write(id: &str, path: &Path) -> PendingSkillWrite {
+    let fallback = |skill: String| PendingSkillWrite {
+        id: id.to_string(),
+        skill,
+        op: PendingSkillWriteOp::Unknown,
+        source: PendingSkillWriteSource::Unknown,
+        gist: None,
+        staged_at: None,
+        files: Vec::new(),
+        readable: false,
+    };
+
+    let Ok(text) = fs::read_to_string(path) else {
+        return fallback(id.to_string());
+    };
+    if text.len() > PENDING_SKILL_WRITE_MAX_BYTES * 4 {
+        return fallback(id.to_string());
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return fallback(id.to_string());
+    };
+
+    let skill = json_str(&value, &["skill", "skillName", "name"]).unwrap_or_else(|| id.to_string());
+
+    // Version gate: a manifest must declare a version we support, OR carry the
+    // recognized field shape (skill + op + files), to be treated as readable.
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as u32);
+    let version_ok = match version {
+        Some(v) => PENDING_SKILL_WRITE_SUPPORTED_VERSIONS.contains(&v),
+        // No explicit version: accept only if the shape is unambiguous.
+        None => value.get("op").is_some() || value.get("operation").is_some(),
+    };
+
+    let op = match json_str(&value, &["op", "operation", "action", "kind"])
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("create" | "add" | "new") => PendingSkillWriteOp::Create,
+        Some("edit" | "update" | "modify") => PendingSkillWriteOp::Edit,
+        Some("delete" | "remove" | "rm") => PendingSkillWriteOp::Delete,
+        _ => PendingSkillWriteOp::Unknown,
+    };
+
+    let source = match json_str(&value, &["source", "origin", "reviewSource"])
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("foreground" | "task" | "session") => PendingSkillWriteSource::Foreground,
+        Some("background" | "self-improvement" | "self_improvement" | "review") => {
+            PendingSkillWriteSource::Background
+        }
+        _ => PendingSkillWriteSource::Unknown,
+    };
+
+    let gist = json_str(&value, &["gist", "summary", "title", "description", "message"]);
+    let staged_at = value
+        .get("stagedAt")
+        .or_else(|| value.get("staged_at"))
+        .or_else(|| value.get("createdAt"))
+        .or_else(|| value.get("created_at"))
+        .and_then(serde_json::Value::as_i64);
+
+    let files = parse_pending_files(&value);
+    // A readable write needs a recognized version/shape, a known op, and at least
+    // one file (or a delete, which may legitimately carry no content).
+    let readable = version_ok && op != PendingSkillWriteOp::Unknown && !files.is_empty();
+
+    PendingSkillWrite {
+        id: id.to_string(),
+        skill,
+        op,
+        source,
+        gist,
+        staged_at,
+        files,
+        readable,
+    }
+}
+
+/// Extracts the affected files from a manifest, tolerating either a top-level
+/// `files` array or a single inline `path`/`content`/`diff`.
+fn parse_pending_files(value: &serde_json::Value) -> Vec<PendingSkillWriteFile> {
+    let mut out = Vec::new();
+    if let Some(array) = value.get("files").and_then(serde_json::Value::as_array) {
+        for entry in array {
+            if let Some(file) = parse_pending_file(entry) {
+                out.push(file);
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(file) = parse_pending_file(value) {
+            out.push(file);
+        }
+    }
+    out
+}
+
+fn parse_pending_file(value: &serde_json::Value) -> Option<PendingSkillWriteFile> {
+    let relative_path = json_str(
+        value,
+        &["relativePath", "relative_path", "path", "file", "target"],
+    )?;
+    let diff = json_str(value, &["diff", "patch", "unifiedDiff", "unified_diff"]);
+    let raw_content = json_str(value, &["content", "newContent", "new_content", "body"]);
+    let (content, redacted) = match raw_content {
+        Some(text) => {
+            let safe = redact_pending_content(&text);
+            let redacted = safe != text;
+            (Some(safe), redacted)
+        }
+        None => (None, false),
+    };
+    Some(PendingSkillWriteFile {
+        relative_path,
+        diff: diff.map(|d| redact_pending_content(&d)),
+        content,
+        redacted,
+    })
+}
+
+/// Masks secret-shaped lines in staged content/diffs before they leave Rust, so
+/// a proposed skill that embeds an API key never surfaces (or is logged) in
+/// June. Conservative: it only masks the VALUE portion of `key: value` /
+/// `KEY=value` lines whose key looks sensitive, or a standalone long
+/// credential-shaped token, leaving prose and code structure intact for review.
+fn redact_pending_content(text: &str) -> String {
+    text.lines()
+        .map(redact_pending_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_pending_line(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    let sensitive = [
+        "api_key", "apikey", "secret", "password", "passphrase", "token",
+        "private_key", "credential", "authorization", "bearer",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !sensitive {
+        return line.to_string();
+    }
+    // Mask after the first `:` or `=` (keep diff markers / indentation / key).
+    if let Some(idx) = line.find([':', '=']) {
+        let (head, tail) = line.split_at(idx + 1);
+        if tail.trim().is_empty() {
+            return line.to_string();
+        }
+        return format!("{head} [redacted]");
+    }
+    line.to_string()
+}
+
+/// Applies a readable staged write against the managed skills root only.
+fn apply_pending_skill_write(
+    skills_root: &Path,
+    write: &PendingSkillWrite,
+) -> Result<(), AppError> {
+    fs::create_dir_all(skills_root)
+        .map_err(|error| AppError::new("hermes_pending_skill_apply_failed", error.to_string()))?;
+    let root = skills_root
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_pending_skill_apply_failed", error.to_string()))?;
+
+    for file in &write.files {
+        let target = resolve_pending_target(&root, &file.relative_path)?;
+        match write.op {
+            PendingSkillWriteOp::Create | PendingSkillWriteOp::Edit => {
+                let content = file.content.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "hermes_pending_skill_apply_failed",
+                        "This change has no content to apply.",
+                    )
+                })?;
+                if content.len() > PENDING_SKILL_WRITE_MAX_BYTES {
+                    return Err(AppError::new(
+                        "hermes_pending_skill_too_large",
+                        "This change is too large to apply from June.",
+                    ));
+                }
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        AppError::new("hermes_pending_skill_apply_failed", error.to_string())
+                    })?;
+                }
+                write_managed_skill_file(&root, &target, content)?;
+            }
+            PendingSkillWriteOp::Delete => {
+                if target.exists() {
+                    fs::remove_file(&target).map_err(|error| {
+                        AppError::new("hermes_pending_skill_apply_failed", error.to_string())
+                    })?;
+                }
+            }
+            PendingSkillWriteOp::Unknown => {
+                return Err(AppError::new(
+                    "hermes_pending_skill_unreadable",
+                    "This change has no recognized operation and cannot be applied.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolves a manifest's relative target path against the managed skills root,
+/// rejecting any path that escapes it (absolute, `..`, or symlink-style escape).
+/// The parent need not exist yet (a create); confinement is checked on the
+/// normalized join.
+fn resolve_pending_target(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
+    let rel = Path::new(relative);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_)))
+    {
+        return Err(AppError::new(
+            "hermes_pending_skill_path_invalid",
+            "This change targets a file outside the managed skills directory.",
+        ));
+    }
+    let joined = root.join(rel);
+    // Normalize without requiring existence, then re-check the prefix.
+    let mut normalized = root.to_path_buf();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(AppError::new(
+                    "hermes_pending_skill_path_invalid",
+                    "This change targets a file outside the managed skills directory.",
+                ));
+            }
+        }
+    }
+    if !normalized.starts_with(root) {
+        return Err(AppError::new(
+            "hermes_pending_skill_path_invalid",
+            "This change targets a file outside the managed skills directory.",
+        ));
+    }
+    let _ = joined;
+    Ok(normalized)
+}
+
+/// Reads the first present string field (trimmed, non-empty) out of a JSON
+/// object, trying the given keys in order.
+fn json_str(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(found) = value.get(key).and_then(serde_json::Value::as_str) {
+            let trimmed = found.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Ordered skill roots June searches when opening a skill: the managed
 /// `$HERMES_HOME/skills` first (editable), then any `external_skill_dirs()`
 /// (read-only). The bool is the read-only flag for skills found under that
@@ -5362,5 +5850,81 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn sbpl_shell_quote(path: &Path) -> String {
         format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    }
+
+    #[test]
+    fn pending_skill_write_parses_a_recognized_edit_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("change-1.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "skill": "research",
+                "op": "edit",
+                "source": "background",
+                "gist": "Tighten the research checklist",
+                "stagedAt": 1_700_000_000_000_i64,
+                "files": [
+                    { "path": "research/SKILL.md", "diff": "@@\n-old\n+new\n", "content": "new body" }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let parsed = parse_pending_skill_write("change-1", &path);
+        assert!(parsed.readable);
+        assert_eq!(parsed.skill, "research");
+        assert_eq!(parsed.op, PendingSkillWriteOp::Edit);
+        assert_eq!(parsed.source, PendingSkillWriteSource::Background);
+        assert_eq!(parsed.gist.as_deref(), Some("Tighten the research checklist"));
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].relative_path, "research/SKILL.md");
+        assert_eq!(parsed.files[0].content.as_deref(), Some("new body"));
+    }
+
+    #[test]
+    fn pending_skill_write_flags_unrecognized_version_as_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("future.json");
+        fs::write(
+            &path,
+            serde_json::json!({ "version": 999, "skill": "x", "op": "edit",
+                "files": [{ "path": "x/SKILL.md", "content": "c" }] })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let parsed = parse_pending_skill_write("future", &path);
+        assert!(!parsed.readable, "an unknown version must not be approvable");
+    }
+
+    #[test]
+    fn pending_skill_write_redacts_secret_shaped_content() {
+        let masked = redact_pending_content("intro line\napi_key: sk-supersecretvalue\nbody");
+        assert!(masked.contains("intro line"));
+        assert!(masked.contains("body"));
+        assert!(!masked.contains("sk-supersecretvalue"));
+        assert!(masked.contains("[redacted]"));
+    }
+
+    #[test]
+    fn pending_target_rejects_traversal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        assert!(resolve_pending_target(root, "../escape.md").is_err());
+        assert!(resolve_pending_target(root, "/etc/passwd").is_err());
+        let ok = resolve_pending_target(root, "research/SKILL.md").expect("safe path");
+        assert!(ok.starts_with(root));
+    }
+
+    #[test]
+    fn safe_pending_id_rejects_separators_and_dots() {
+        assert!(is_safe_pending_id("change-1"));
+        assert!(!is_safe_pending_id(""));
+        assert!(!is_safe_pending_id(".."));
+        assert!(!is_safe_pending_id("a/b"));
+        assert!(!is_safe_pending_id("a\\b"));
     }
 }
