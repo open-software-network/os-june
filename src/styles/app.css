@@ -1667,15 +1667,28 @@ input:focus-visible,
 }
 
 .agent-turn-actions {
-  display: flex;
-  gap: var(--sp-1);
+  display: grid;
+  grid-template-rows: 0fr;
   width: 100%;
-  margin-top: var(--sp-px);
   opacity: 0;
-  transition: opacity 0.12s ease-out;
+  /* Collapse the action row to zero height when not hovered so non-hovered
+   * messages sit tight. opacity alone (the JUN-114 bug) left the row in flow,
+   * reserving its full height under every message; the grid-rows 0fr->1fr trick
+   * animates it open on hover without reserving the space when hidden. */
+  transition:
+    grid-template-rows 0.14s ease-out,
+    opacity 0.12s ease-out;
 }
 
-.agent-user-turn .agent-turn-actions {
+.agent-turn-actions-inner {
+  display: flex;
+  gap: var(--sp-1);
+  min-height: 0;
+  overflow: hidden;
+  padding-top: var(--sp-px);
+}
+
+.agent-user-turn .agent-turn-actions-inner {
   justify-content: flex-end;
 }
 
@@ -1683,6 +1696,7 @@ input:focus-visible,
 .agent-user-turn:focus-within .agent-turn-actions,
 .agent-assistant-turn:hover .agent-turn-actions,
 .agent-assistant-turn:focus-within .agent-turn-actions {
+  grid-template-rows: 1fr;
   opacity: 1;
 }
 

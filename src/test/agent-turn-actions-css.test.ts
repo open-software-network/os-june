@@ -18,12 +18,18 @@ function cssRuleFor(selector: string) {
 }
 
 describe("agent turn action styles", () => {
-  it("keeps hidden per-message controls compact in flow", () => {
+  it("collapses hidden per-message controls to zero height so non-hovered rows stay tight", () => {
+    // opacity alone (the JUN-114 regression) left the row in flow and reserved
+    // its full height under every message. Collapse it to a 0fr grid row when
+    // hidden so non-hovered messages sit tight; hover opens it to 1fr.
     expect(cssRuleFor(".agent-turn-actions")).toContain(
-      "margin-top: var(--sp-px);",
+      "grid-template-rows: 0fr;",
     );
-    expect(cssRuleFor(".agent-turn-action")).toContain(
-      "padding: var(--sp-px) var(--sp-1);",
-    );
+    // The inner row is clipped so the collapse actually hides the buttons.
+    const inner = cssRuleFor(".agent-turn-actions-inner");
+    expect(inner).toContain("min-height: 0;");
+    expect(inner).toContain("overflow: hidden;");
+    // Hover reveals it without reserving space when hidden.
+    expect(appCss).toContain("grid-template-rows: 1fr;");
   });
 });
