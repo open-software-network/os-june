@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   dictationHelperCommand: vi.fn(),
   localAudioFileSrc: vi.fn(),
   providerModelSettings: vi.fn(),
+  localDataRetentionPolicies: vi.fn(),
   listVeniceModels: vi.fn(),
   setVeniceModel: vi.fn(),
   openPrivacySettings: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock("../lib/tauri", () => ({
   dictationHelperCommand: mocks.dictationHelperCommand,
   localAudioFileSrc: mocks.localAudioFileSrc,
   providerModelSettings: mocks.providerModelSettings,
+  localDataRetentionPolicies: mocks.localDataRetentionPolicies,
   listVeniceModels: mocks.listVeniceModels,
   setVeniceModel: mocks.setVeniceModel,
   openPrivacySettings: mocks.openPrivacySettings,
@@ -178,6 +180,24 @@ describe("AppSettings", () => {
         transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5-2",
       },
+    });
+    mocks.localDataRetentionPolicies.mockResolvedValue({
+      policies: [
+        {
+          id: "meeting_notes",
+          label: "Meeting notes and recordings",
+          retention: "Kept until deleted",
+          details:
+            "Meeting notes, transcripts, generated text, and saved recording files stay on this Mac until you delete the meeting note or delete a project with its notes.",
+        },
+        {
+          id: "dictation_history",
+          label: "Dictation history",
+          retention: "Kept for 7 days",
+          details:
+            "Hands-free dictation transcripts are pruned automatically after 7 days. Delete individual dictations from the Dictation view.",
+        },
+      ],
     });
     mocks.listVeniceModels.mockImplementation(async (mode) => ({
       mode,
@@ -409,6 +429,32 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Billing" }));
     await user.click(screen.getByRole("button", { name: "Upgrade" }));
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows local data retention policies in settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Data" }));
+
+    expect(
+      await screen.findByText("Meeting notes and recordings"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Kept until deleted")).toBeInTheDocument();
+    expect(screen.getByText("Dictation history")).toBeInTheDocument();
+    expect(screen.getByText("Kept for 7 days")).toBeInTheDocument();
+    expect(mocks.localDataRetentionPolicies).toHaveBeenCalledOnce();
   });
 
   it("runs sign-in, cancel, and sign-out actions from account settings", async () => {

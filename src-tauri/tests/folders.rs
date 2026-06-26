@@ -1,4 +1,7 @@
-use os_scribe_lib::db::{migrations::run_migrations, repositories::Repositories};
+use os_scribe_lib::{
+    db::{migrations::run_migrations, repositories::Repositories},
+    domain::types::RecordingSourceMode,
+};
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -97,6 +100,40 @@ async fn deleting_folder_with_notes_removes_associated_notes() {
 
     let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
     assert!(all_notes.items.is_empty());
+}
+
+#[tokio::test]
+async fn audio_artifact_paths_for_folder_lists_associated_note_recordings() {
+    let repos = repos().await;
+    let folder = repos.create_folder("Work", None).await.expect("folder");
+    let note = repos
+        .create_note(Some(folder.id.clone()))
+        .await
+        .expect("note");
+    let audio_path = "/tmp/folder-note.wav";
+
+    repos
+        .create_recording_session(
+            &note.id,
+            "session-1",
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/folder-note.partial.wav",
+            audio_path,
+            None,
+        )
+        .await
+        .expect("session");
+    repos
+        .create_audio_artifact(&note.id, "session-1", audio_path, 1200, 2048, "abc")
+        .await
+        .expect("artifact");
+
+    let paths = repos
+        .audio_artifact_paths_for_folder(&folder.id)
+        .await
+        .expect("paths");
+
+    assert_eq!(paths, vec![audio_path.to_string()]);
 }
 
 #[tokio::test]

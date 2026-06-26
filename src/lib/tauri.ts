@@ -144,6 +144,17 @@ export type ListDictationHistoryResponse = {
   retentionDays: number;
 };
 
+export type LocalDataRetentionPolicyDto = {
+  id: string;
+  label: string;
+  retention: string;
+  details: string;
+};
+
+export type LocalDataRetentionPoliciesResponse = {
+  policies: LocalDataRetentionPolicyDto[];
+};
+
 export type DictationMicrophoneDeviceDto = {
   id: string;
   name: string;
@@ -1129,6 +1140,12 @@ export async function deleteNote(noteId: string) {
 
 export async function deleteNotes(noteIds: string[]) {
   return invoke<void>("delete_notes", { request: { noteIds } });
+}
+
+export async function localDataRetentionPolicies() {
+  return invoke<LocalDataRetentionPoliciesResponse>(
+    "local_data_retention_policies",
+  );
 }
 
 export async function updateNote(input: {

@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   dictationHelperCommand: vi.fn(),
   dictationSettings: vi.fn(),
   listDictationHistory: vi.fn(),
+  localDataRetentionPolicies: vi.fn(),
   listDictionaryEntries: vi.fn(),
   deleteDictationHistoryItem: vi.fn(),
   osAccountsStatus: vi.fn(),
@@ -100,6 +101,7 @@ vi.mock("../lib/tauri", () => ({
   dictationHelperCommand: mocks.dictationHelperCommand,
   dictationSettings: mocks.dictationSettings,
   listDictationHistory: mocks.listDictationHistory,
+  localDataRetentionPolicies: mocks.localDataRetentionPolicies,
   listDictionaryEntries: mocks.listDictionaryEntries,
   deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   osAccountsStatus: mocks.osAccountsStatus,
@@ -274,6 +276,7 @@ describe("notes recording reliability", () => {
       items: [],
       retentionDays: 7,
     });
+    mocks.localDataRetentionPolicies.mockResolvedValue({ policies: [] });
     mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.deleteDictationHistoryItem.mockResolvedValue(undefined);
     mocks.osAccountsStatus.mockResolvedValue(account);

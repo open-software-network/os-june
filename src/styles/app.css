@@ -9553,6 +9553,12 @@ input:focus-visible,
   font-family: var(--font-mono);
 }
 
+.settings-retention-value {
+  max-width: 220px;
+  text-align: right;
+  white-space: normal;
+}
+
 .balance-amount {
   margin: 0;
   color: var(--foreground);

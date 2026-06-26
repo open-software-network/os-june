@@ -12,7 +12,10 @@ use crate::{
             validation_config_for_source, AudioValidationConfig,
         },
     },
-    db::{migrations::run_migrations, repositories::Repositories},
+    db::{
+        migrations::run_migrations,
+        repositories::{Repositories, DICTATION_HISTORY_RETENTION_DAYS},
+    },
     domain::{
         processing::{
             manual_notes_for_generation, process_saved_audio, process_saved_source_audio,
@@ -27,11 +30,12 @@ use crate::{
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
             DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
-            RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            GetNoteRequest, ListNotesRequest, ListNotesResponse,
+            LocalDataRetentionPoliciesResponse, LocalDataRetentionPolicyDto,
+            MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest, ProcessingStatus,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
             SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
             SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
@@ -51,7 +55,7 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
 #[tauri::command]
@@ -138,16 +142,7 @@ pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(
         .audio_artifact_paths_for_note(&request.note_id)
         .await?;
     repos.delete_note(&request.note_id).await?;
-    for path in audio_paths {
-        if path.trim().is_empty() {
-            continue;
-        }
-        if let Err(error) = paths.remove_recording_file(&path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("failed to remove deleted note audio {path}: {error}");
-            }
-        }
-    }
+    remove_deleted_audio_files(&paths, audio_paths);
     Ok(())
 }
 
@@ -169,6 +164,11 @@ pub async fn delete_notes(app: AppHandle, request: DeleteNotesRequest) -> Result
     let repos = repositories(&app).await?;
     let audio_paths = repos.audio_artifact_paths_for_notes(&note_ids).await?;
     repos.delete_notes(&note_ids).await?;
+    remove_deleted_audio_files(&paths, audio_paths);
+    Ok(())
+}
+
+fn remove_deleted_audio_files(paths: &AppPaths, audio_paths: Vec<String>) {
     for path in audio_paths {
         if path.trim().is_empty() {
             continue;
@@ -179,7 +179,45 @@ pub async fn delete_notes(app: AppHandle, request: DeleteNotesRequest) -> Result
             }
         }
     }
-    Ok(())
+}
+
+#[tauri::command]
+pub fn local_data_retention_policies() -> Result<LocalDataRetentionPoliciesResponse, AppError> {
+    let dictation_days = DICTATION_HISTORY_RETENTION_DAYS;
+
+    Ok(LocalDataRetentionPoliciesResponse {
+        policies: vec![
+            LocalDataRetentionPolicyDto {
+                id: "meeting_notes".to_string(),
+                label: "Meeting notes and recordings".to_string(),
+                retention: "Kept until deleted".to_string(),
+                details: "Meeting notes, transcripts, generated text, and saved recording files stay on this Mac until you delete the meeting note or delete a project with its notes."
+                    .to_string(),
+            },
+            LocalDataRetentionPolicyDto {
+                id: "dictation_history".to_string(),
+                label: "Dictation history".to_string(),
+                retention: format!("Kept for {dictation_days} days"),
+                details: format!(
+                    "Hands-free dictation transcripts are pruned automatically after {dictation_days} days. Delete individual dictations from the Dictation view."
+                ),
+            },
+            LocalDataRetentionPolicyDto {
+                id: "agent_sessions".to_string(),
+                label: "Agent sessions".to_string(),
+                retention: "Kept until deleted".to_string(),
+                details: "Agent sessions and their local artifacts stay in June until you delete the session. Project assignments are removed when a project is deleted."
+                    .to_string(),
+            },
+            LocalDataRetentionPolicyDto {
+                id: "agent_memory".to_string(),
+                label: "Agent memory and workspace".to_string(),
+                retention: "Kept until cleared".to_string(),
+                details: "Local memory and workspace files stay in the app support folder until you or the agent remove them. Review those files in Agent settings."
+                    .to_string(),
+            },
+        ],
+    })
 }
 
 #[tauri::command]
@@ -209,10 +247,23 @@ pub async fn list_folders(
 
 #[tauri::command]
 pub async fn delete_folder(app: AppHandle, request: DeleteFolderRequest) -> Result<(), AppError> {
-    repositories(&app)
-        .await?
+    let repos = repositories(&app).await?;
+    let audio_cleanup = if request.delete_notes {
+        Some((
+            app_paths(&app)?,
+            repos
+                .audio_artifact_paths_for_folder(&request.folder_id)
+                .await?,
+        ))
+    } else {
+        None
+    };
+    repos
         .delete_folder(&request.folder_id, request.delete_notes)
         .await?;
+    if let Some((paths, audio_paths)) = audio_cleanup {
+        remove_deleted_audio_files(&paths, audio_paths);
+    }
     Ok(())
 }
 
@@ -1733,7 +1784,30 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{recovery_validation_expected_duration_ms, should_probe_system_audio_permission};
+    use super::{
+        local_data_retention_policies, recovery_validation_expected_duration_ms,
+        should_probe_system_audio_permission,
+    };
+    use crate::db::repositories::DICTATION_HISTORY_RETENTION_DAYS;
+
+    #[test]
+    fn local_data_retention_policies_include_current_dictation_window() {
+        let response = local_data_retention_policies().expect("retention policies");
+        let dictation = response
+            .policies
+            .iter()
+            .find(|policy| policy.id == "dictation_history")
+            .expect("dictation policy");
+
+        assert_eq!(
+            dictation.retention,
+            format!("Kept for {DICTATION_HISTORY_RETENTION_DAYS} days")
+        );
+        assert!(response
+            .policies
+            .iter()
+            .any(|policy| policy.id == "meeting_notes"));
+    }
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {

@@ -11,7 +11,7 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
 use uuid::Uuid;
 
-const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
+pub const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
 
 #[derive(Clone)]
 pub struct Repositories {
@@ -918,6 +918,22 @@ impl Repositories {
             paths.extend(self.audio_artifact_paths_for_note(note_id).await?);
         }
         Ok(paths)
+    }
+
+    pub async fn audio_artifact_paths_for_folder(
+        &self,
+        folder_id: &str,
+    ) -> Result<Vec<String>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT aa.path
+             FROM audio_artifacts aa
+             INNER JOIN note_folders nf ON nf.note_id = aa.note_id
+             WHERE nf.folder_id = ?",
+        )
+        .bind(folder_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|row| row.get("path")).collect())
     }
 
     pub async fn delete_note(&self, note_id: &str) -> Result<(), sqlx::error::Error> {
