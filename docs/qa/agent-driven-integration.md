@@ -86,3 +86,13 @@ flows, but it should not replace Computer Use for visual or OS-level proof.
 The project skill lives at `.agents/skills/agent-e2e-qa/SKILL.md`. It defines
 the decision tree, tool routing, walkthrough loop, and evidence format for live
 integration QA.
+
+## Example run
+
+A first real run is checked in at
+`docs/qa/agent-e2e-qa-runs/2026-06-26-onboarding-preview.md`. It used the new
+skill contract to start a PR-branch web preview, drive the onboarding
+permissions and trial flow with Chrome plus Computer Use, and record pass/fail
+evidence plus gaps. The run intentionally stayed in local stubbed data mode:
+no live account, checkout, native app, audio hardware, or macOS permission
+prompt was exercised.
