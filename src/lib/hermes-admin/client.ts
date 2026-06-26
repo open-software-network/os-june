@@ -38,6 +38,7 @@ import {
   parseMcpTestResult,
   parseSkillContent,
   parseSkillList,
+  parseSkillScan,
   parseToggleResult,
   parseToolsetList,
   type HermesActionState,
@@ -54,6 +55,7 @@ import {
   type HermesMcpTestResult,
   type HermesSkillContent,
   type HermesSkillInfo,
+  type HermesSkillScan,
   type HermesToggleResult,
   type HermesToolsetInfo,
 } from "./schemas";
@@ -155,6 +157,11 @@ export type HermesAdminClient = {
       content: string,
     ): Promise<MutationOutcome<HermesSkillContent>>;
     hubSearch(query: string, source?: string): Promise<HermesHubSkillResult[]>;
+    /** Audits / re-scans an installed hub skill by identifier.
+     * `GET /api/skills/hub/scan?identifier=`. Returns the scan verdict +
+     * findings so June can surface "what running this skill entails" without
+     * mutating anything. Read-only: applies immediately. */
+    hubScan(identifier: string): Promise<HermesSkillScan>;
     /** Installs a skill by identifier. `force` is sent ONLY when explicitly
      * true (the user completed the security review); it is omitted otherwise so
      * a `force: true` can never leak in by default. */
@@ -365,6 +372,24 @@ function makeSkills(send: AdminTransport): HermesAdminClient["skills"] {
           query: { q: query, source },
         },
         parseHubSearch,
+      );
+    },
+    hubScan(identifier) {
+      // GET /api/skills/hub/scan?identifier=<id>. The dashboard contract types
+      // the body loosely (`{}`); parse it through the same defensive scan parser
+      // the install review uses, defaulting to an `unknown` verdict when the
+      // wire carries nothing scan-shaped rather than asserting "safe".
+      return send(
+        {
+          method: "GET",
+          path: "/api/skills/hub/scan",
+          query: { identifier },
+        },
+        (raw) =>
+          parseSkillScan(raw) ?? {
+            verdict: "unknown",
+            raw,
+          },
       );
     },
     async hubInstall(identifier, options) {
