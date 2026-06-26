@@ -2077,6 +2077,13 @@ input:focus-visible,
 /* Collapsed-by-default tool row: a single quiet line (icon · name · status),
  * with the raw output tucked behind a disclosure so it never floods the
  * conversation. */
+.agent-tool-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
 .agent-tool-disclosure {
   width: min(760px, 100%);
   color: var(--muted-foreground);
@@ -3633,8 +3640,8 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
-/* Direct-child selectors only — tool rows nest their own <summary> inside the
- * reasoning body, and a descendant selector here would shrink-wrap them. */
+/* Direct-child selectors only. The Thought body has its own reveal affordance,
+ * so descendant summaries should keep their own layout if new ones are added. */
 .agent-reasoning > summary {
   display: inline-flex;
   align-items: center;

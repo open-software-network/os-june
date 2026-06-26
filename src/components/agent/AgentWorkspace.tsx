@@ -9101,11 +9101,11 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "tool" }> =>
       part.type === "tool",
   );
-  // Reasoning + the tool/terminal calls it made fold into one "Thinking" /
-  // "Thought" disclosure so the conversation isn't littered with terminal rows.
-  const thinkingRunning =
-    reasoningParts.some((part) => part.status === "running") ||
-    toolParts.some((part) => part.status === "running");
+  // The disclosure owns internal reasoning only. Tool/action rows stay visible
+  // outside it so users can see what June is doing without expanding Thought.
+  const thinkingRunning = reasoningParts.some(
+    (part) => part.status === "running",
+  );
   const completedThinkingKey = `turn:${turn.id}:thinking`;
   const thinkingKey =
     thinkingRunning && activeThinkingKey
@@ -9128,7 +9128,7 @@ function AgentChatTurnRow({
       !wasRunning ||
       thinkingRunning ||
       activeThinkingKey === undefined ||
-      reasoningParts.length + toolParts.length === 0 ||
+      reasoningParts.length === 0 ||
       !thinkingOpen(activeThinkingKey)
     ) {
       return;
@@ -9281,14 +9281,20 @@ function AgentChatTurnRow({
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
       <div className="agent-assistant-turn-body">
-        {reasoningParts.length > 0 || toolParts.length > 0 ? (
+        {reasoningParts.length > 0 ? (
           <AgentThinkingGroup
             reasoning={reasoningParts}
-            tools={toolParts}
             running={thinkingRunning}
             open={thinkingIsOpen}
             onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
+        ) : null}
+        {toolParts.length > 0 ? (
+          <div className="agent-tool-stack">
+            {toolParts.map((tool) => (
+              <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+            ))}
+          </div>
         ) : null}
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
@@ -10539,18 +10545,16 @@ function AgentThinkingGroup({
   open,
   onOpenChange,
   reasoning,
-  tools,
   running,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
-  tools: Extract<AgentChatPart, { type: "tool" }>[];
   running: boolean;
 }) {
   // Collapsed by default to a short label — "Thinking" while it works, "Thought"
-  // once done (terracotta while live). Expanding reveals the reasoning prose and
-  // any terminal calls it ran, nested together.
+  // once done (terracotta while live). Expanding reveals only the reasoning
+  // prose; tool/action rows render outside this disclosure.
   const reasoningText = reasoning
     .map((part) => part.text)
     .join("\n\n")
@@ -10572,9 +10576,6 @@ function AgentThinkingGroup({
         {reasoningText ? (
           <div className="agent-reasoning-text">{reasoningText}</div>
         ) : null}
-        {tools.map((tool) => (
-          <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-        ))}
       </div>
     </details>
   );

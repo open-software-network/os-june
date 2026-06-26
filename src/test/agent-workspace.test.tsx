@@ -4822,6 +4822,75 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("keeps tool rows visible outside the thinking disclosure", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "inspect the project",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect the project",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Checking the project state." },
+        });
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_id: "tool-1",
+            tool_name: "read_file",
+            path: "src/components/agent/AgentWorkspace.tsx",
+          },
+        });
+      }
+    });
+
+    const thinkingDetails = (await screen.findByText("Thinking")).closest(
+      "details",
+    );
+    expect(thinkingDetails).toHaveClass("agent-reasoning");
+    expect(
+      within(thinkingDetails as HTMLElement).getByText(
+        "Checking the project state.",
+      ),
+    ).toBeInTheDocument();
+
+    const toolLabel = await screen.findByText("Reading files");
+    expect(thinkingDetails).not.toContainElement(toolLabel);
+    expect(toolLabel.closest(".agent-tool-stack")).toBeTruthy();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    const thoughtDetails = (await screen.findByText("Thought")).closest(
+      "details",
+    );
+    expect(thoughtDetails).toHaveClass("agent-reasoning");
+    expect(thoughtDetails).not.toContainElement(toolLabel);
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+  });
+
   it("explains a pending approval before the user chooses", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
