@@ -57,6 +57,7 @@ export * from "./use-installed-skills";
 export * from "./mcp-servers-view";
 export * from "./use-mcp-servers";
 export * from "./hub-search-view";
+export * from "./skill-install-review";
 export * from "./use-skills-hub";
 export * from "./toolsets-view";
 export * from "./use-toolsets";

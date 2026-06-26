@@ -10,10 +10,12 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconWarningSign } from "central-icons/IconWarningSign";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  buildSkillInstallReview,
   filterHubResults,
   isDirectUrlInstall,
+  requiresInstallReview,
   sourceKindFor,
   sourceKindMeta,
   sourceKindsOf,
@@ -21,10 +23,15 @@ import {
   useSkillsHub,
   type HermesAdminMode,
   type HermesHubSkillResult,
+  type HubInstallDecision,
   type HubInstallState,
   type HubSourceKind,
   type SkillsHubState,
 } from "../../lib/hermes-admin";
+import {
+  SkillInstallReviewDialog,
+  type SkillInstallReviewDecision,
+} from "./SkillInstallReviewDialog";
 
 /** Sentinel for the "all sources" filter chip. */
 const ALL_SOURCES = "__all__";
@@ -68,6 +75,13 @@ export function SkillsHubView({
   const [query, setQuery] = useState("");
   const [sourceKind, setSourceKind] = useState<string>(ALL_SOURCES);
   const [inspecting, setInspecting] = useState<string>();
+  // The skill currently being reviewed before install, plus the resolver the
+  // install's `confirm` hook is awaiting. The dialog resolves the promise.
+  const [pendingReview, setPendingReview] = useState<{
+    result: HermesHubSkillResult;
+    resolve: (decision: HubInstallDecision) => void;
+  }>();
+  const reviewMode = state.mode ?? mode;
 
   // Reflect the controller's echoed query into the input once results land, so
   // the box never drifts from what was searched.
@@ -111,22 +125,33 @@ export function SkillsHubView({
     state.search(query);
   }
 
-  function installResult(result: HermesHubSkillResult) {
-    // Direct-URL single-file installs are the lowest-trust path: require an
-    // explicit confirmation before installing. The spec-07 security review
-    // slots into this same `confirm` hook later.
-    if (isDirectUrlInstall(result)) {
+  const installResult = useCallback(
+    (result: HermesHubSkillResult) => {
+      // Trusted installs (official/verified, no scan concern) go straight
+      // through. Everything else routes through the spec-07 security review,
+      // wired into the controller's `confirm` hook: the dialog resolves the
+      // decision, and `force` is sent only when the user confirms an override.
+      if (!requiresInstallReview(result)) {
+        state.install(result);
+        return;
+      }
       state.install(result, {
         confirm: (target) =>
-          window.confirm(
-            `Install ${target.name || target.identifier} straight from a URL? ` +
-              "It has not been reviewed. Only continue if you trust the source.",
-          ),
+          new Promise<HubInstallDecision>((resolve) => {
+            setPendingReview({ result: target, resolve });
+          }),
       });
-      return;
-    }
-    state.install(result);
-  }
+    },
+    [state],
+  );
+
+  // Resolve the pending review with the dialog's decision and close it.
+  const resolveReview = useCallback((decision: SkillInstallReviewDecision) => {
+    setPendingReview((current) => {
+      current?.resolve(decision);
+      return undefined;
+    });
+  }, []);
 
   return (
     <section
@@ -261,6 +286,14 @@ export function SkillsHubView({
           onClose={() => setInspecting(undefined)}
           onInstall={() => installResult(inspected)}
           onClearInstall={() => state.clearInstall(inspected.identifier)}
+        />
+      ) : null}
+
+      {pendingReview ? (
+        <SkillInstallReviewDialog
+          review={buildSkillInstallReview(pendingReview.result)}
+          mode={reviewMode}
+          onDecide={resolveReview}
         />
       ) : null}
     </section>

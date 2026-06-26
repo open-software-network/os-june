@@ -123,6 +123,27 @@ export type FakeHubResult = {
   urls?: string[];
   author?: string;
   update_available?: boolean;
+  /** The install-time security scan the hub attaches to a result (spec 07).
+   * Passed through verbatim so the scan parser + review view are exercised. */
+  scan?: {
+    verdict?: "trusted" | "caution" | "dangerous" | "unknown" | string;
+    overridable?: boolean;
+    summary?: string;
+    findings?: Array<{
+      category?: string;
+      severity?: "info" | "warn" | "danger" | string;
+      detail: string;
+    }>;
+    affected_files?: string[];
+    capabilities?: string[];
+    bundle?: {
+      has_scripts?: boolean;
+      scripts?: number;
+      templates?: number;
+      references?: number;
+      assets?: number;
+    };
+  };
 };
 
 /** A backgrounded action's scripted progression: one status per poll, the last

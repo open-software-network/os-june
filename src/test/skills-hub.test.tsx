@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   SkillsHubController,
@@ -389,21 +389,42 @@ describe("skills hub — view", () => {
     expect(install.mock.calls[0][1]).toBeUndefined();
   });
 
-  it("guards a direct-URL install behind window.confirm", () => {
+  it("routes a non-trusted install through the security review", () => {
     const install = vi.fn();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<SkillsHubView state={baseState({ install })} />);
     const urlCard = screen
       .getByRole("button", { name: "URL skill" })
       .closest("li") as HTMLElement;
     fireEvent.click(within(urlCard).getByRole("button", { name: "Install" }));
-    // Install was invoked with a confirm hook (the security-review slot).
+    // Install was invoked with a confirm hook (the security-review slot). The
+    // hook opens the review dialog rather than a window.confirm.
     expect(install).toHaveBeenCalledTimes(1);
     expect(typeof install.mock.calls[0][1].confirm).toBe("function");
-    // Exercising that hook calls window.confirm.
-    install.mock.calls[0][1].confirm({ identifier: "x", name: "x" });
-    expect(confirmSpy).toHaveBeenCalled();
-    confirmSpy.mockRestore();
+    // Exercising the hook (as the controller would) opens the native review
+    // dialog, not a window.confirm.
+    act(() => {
+      void install.mock.calls[0][1].confirm({
+        identifier: "https://example.test/raw/SKILL.md",
+        name: "URL skill",
+        trust: "unknown",
+      });
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(
+      screen.getByText(/skills are instructions and helper files/i),
+    ).toBeInTheDocument();
+  });
+
+  it("installs a trusted skill without opening the review", () => {
+    const install = vi.fn();
+    render(<SkillsHubView state={baseState({ install })} />);
+    const pdfCard = screen
+      .getByRole("button", { name: "PDF" })
+      .closest("li") as HTMLElement;
+    fireEvent.click(within(pdfCard).getByRole("button", { name: "Install" }));
+    // Trusted (official) install: no confirm hook, no dialog.
+    expect(install.mock.calls[0][1]).toBeUndefined();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("opens the inspect drawer with the install identifier in advanced", () => {

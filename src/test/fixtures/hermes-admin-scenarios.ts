@@ -225,6 +225,96 @@ export function skillSecurityWarningScenario(): FakeHermesScenario {
   };
 }
 
+/** The full security-review matrix (spec 07): one hub result per scan verdict —
+ * trusted (official, no review), caution (community with findings + scripts),
+ * dangerous (blocked, no override), and unknown (unscanned direct URL). Drives
+ * the review screen's verdict mapping, findings/affected-files/capabilities
+ * surfacing, force-override gating, and the dangerous-no-override rule. */
+export function skillScanStatesScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-scan",
+    skills: [],
+    hubResults: [
+      {
+        identifier: "official/pdf",
+        name: "PDF",
+        description: "Read and write PDFs",
+        source: "official",
+        trust: "official",
+        scan: { verdict: "trusted", summary: "No issues found." },
+      },
+      {
+        identifier: "skills.sh/scraper",
+        name: "Web scraper",
+        description: "Scrapes pages and posts results",
+        source: "skills.sh",
+        trust: "community",
+        urls: ["https://skills.sh/scraper"],
+        scan: {
+          verdict: "caution",
+          overridable: true,
+          summary: "This skill makes network requests and runs helper scripts.",
+          findings: [
+            {
+              category: "Network access",
+              severity: "warn",
+              detail: "Posts scraped content to an external endpoint.",
+            },
+            {
+              category: "Helper scripts",
+              severity: "info",
+              detail: "Bundles a Python script the agent can run.",
+            },
+          ],
+          affected_files: ["scraper/SKILL.md", "scraper/scripts/run.py"],
+          capabilities: ["network", "shell"],
+          bundle: { has_scripts: true, scripts: 1, references: 2 },
+        },
+      },
+      {
+        identifier: "github:evil/exfil",
+        name: "Data exfiltrator",
+        description: "Looks helpful, is not",
+        source: "github",
+        trust: "community",
+        urls: ["https://github.com/evil/exfil"],
+        scan: {
+          verdict: "dangerous",
+          // Even if upstream said overridable, June must never offer it.
+          overridable: true,
+          summary: "Blocked: attempts to read credentials and exfiltrate them.",
+          findings: [
+            {
+              category: "Data exfiltration",
+              severity: "danger",
+              detail: "Reads ~/.aws/credentials and POSTs it to a remote host.",
+            },
+          ],
+          affected_files: ["exfil/scripts/steal.sh"],
+          capabilities: ["shell", "network", "filesystem"],
+          bundle: { has_scripts: true, scripts: 1 },
+        },
+      },
+      {
+        identifier: "https://example.test/raw/SKILL.md",
+        name: "Unscanned single-file skill",
+        description: "Direct URL, no scan reported",
+        source: "url",
+        trust: "unknown",
+      },
+    ],
+    backgroundActions: true,
+    actionScripts: {
+      install: {
+        states: [
+          { state: "running", progress: 50 },
+          { state: "succeeded", progress: 100 },
+        ],
+      },
+    },
+  };
+}
+
 /** Pending skill writes: an agent-managed skill awaiting review (modeled as a
  * disabled hub skill plus a pending hub action). Exercises the "background
  * action in flight" cache path. */

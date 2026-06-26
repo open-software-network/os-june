@@ -17322,6 +17322,275 @@ input:focus-visible,
   border-top: 1px solid var(--border-subtle);
 }
 
+/* Skill install security review (Hermes admin surface, spec 07). A native
+ * dialog (the shared .dialog-card) shown before a non-trusted Skills Hub
+ * install: it surfaces source/trust, the scan's findings + affected files, what
+ * the skill bundles, the capabilities it may use, and the sandbox/full-mode
+ * implications, then requires an explicit confirmation (or a force-override
+ * acknowledgement). A dangerous verdict offers no install path. Tokens only. */
+.skill-review-dialog .dialog-leading {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.skill-review-body {
+  display: grid;
+  gap: var(--sp-4);
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+}
+
+.skill-review-model {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skill-review-facts {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.skill-review-fact {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+}
+
+.skill-review-fact dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-fact dd {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-review-verdict-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-px) var(--sp-2);
+  border-radius: var(--r-pill, 999px);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-verdict-pill[data-tone="trusted"] {
+  border-color: color-mix(
+    in oklch,
+    var(--success, var(--ring-focus)) 40%,
+    var(--border)
+  );
+  color: var(--success, var(--ring-focus));
+}
+
+.skill-review-verdict-pill[data-tone="caution"],
+.skill-review-verdict-pill[data-tone="neutral"] {
+  border-color: color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  color: var(--warm-strong);
+}
+
+.skill-review-verdict-pill[data-tone="danger"] {
+  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
+  color: var(--destructive);
+}
+
+.skill-review-summary {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-section {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-review-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.skill-review-findings,
+.skill-review-bundle,
+.skill-review-files,
+.skill-review-links {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-review-finding {
+  display: grid;
+  gap: var(--sp-px);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-radius: var(--r-sm);
+  background: var(--card);
+}
+
+.skill-review-finding[data-tone="caution"] {
+  border-left-color: var(--warm-strong);
+}
+
+.skill-review-finding[data-tone="danger"] {
+  border-left-color: var(--destructive);
+}
+
+.skill-review-finding-category {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-finding-detail {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skill-review-bundle li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.skill-review-bundle-label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-review-bundle-detail {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-review-chips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-review-chip {
+  padding: var(--sp-px) var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-file {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.skill-review-links a {
+  color: var(--ring-focus);
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+
+.skill-review-runtime {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 8%, var(--card));
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.skill-review-advanced summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-advanced-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  margin: var(--sp-3) 0 0;
+}
+
+.skill-review-advanced-list dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-advanced-list dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.skill-review-mono {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.skill-review-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--warm-strong) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-strong) 6%, var(--card));
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.skill-review-ack input {
+  margin-top: 0.15em;
+}
+
+.skill-review-blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklch, var(--destructive) 45%, var(--border));
+  border-radius: var(--r-md);
+  background: var(--destructive-soft);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
 /* Toolsets inventory (Hermes admin surface, spec 04). A read-only settings
  * section: reuses the settings-group / settings-card chrome, with a search
  * toolbar, a last-refreshed line, toolset rows (status / mode / tools /

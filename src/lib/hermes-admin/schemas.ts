@@ -496,6 +496,66 @@ export type HermesHubTrustLevel =
   | "community"
   | "unknown";
 
+/** The verdict Hermes' install-time scan returns for a skill. Higher risk is
+ * later in the list. `trusted` needs no review; `caution` may install only after
+ * explicit review; `dangerous` is blocked and June never overrides it; `unknown`
+ * is an unscanned/unverifiable skill that needs an explicit advanced opt-in. */
+export type HermesSkillScanVerdict =
+  | "trusted"
+  | "caution"
+  | "dangerous"
+  | "unknown";
+
+/** One scan finding: a category, a severity, and a human-readable detail. The
+ * detail is treated as untrusted text (rendered, never executed) and is run
+ * through redaction before it reaches any log. */
+export type HermesSkillScanFinding = {
+  /** Short category label, e.g. "Data exfiltration", "Prompt injection". */
+  category?: string;
+  /** Severity tone the UI styles the finding with. */
+  severity: "info" | "warn" | "danger";
+  /** Human-readable explanation of the finding. */
+  detail: string;
+};
+
+/** What a skill bundles, surfaced so the user can see what running it entails:
+ * helper scripts (executed in June's sandbox/full-mode runtime), templates,
+ * references, and other assets. Counts are optional; an absent count is unknown,
+ * not zero. */
+export type HermesSkillBundle = {
+  /** True when the skill ships helper scripts (the highest-risk asset). */
+  hasScripts?: boolean;
+  /** Number of helper scripts, when reported. */
+  scriptCount?: number;
+  /** Number of template files, when reported. */
+  templateCount?: number;
+  /** Number of reference files, when reported. */
+  referenceCount?: number;
+  /** Number of other bundled assets, when reported. */
+  assetCount?: number;
+};
+
+/** The install-time security scan Hermes attaches to a hub result (and/or its
+ * install response). June surfaces this in a review screen before installing.
+ * Every field is optional and degrades to "unknown" rather than guessing safe. */
+export type HermesSkillScan = {
+  verdict: HermesSkillScanVerdict;
+  /** Whether Hermes permits a `force` override for this verdict. A `dangerous`
+   * verdict is NEVER overridable; June ignores a `true` here for `dangerous`. */
+  overridable?: boolean;
+  /** A one-line summary of the scan outcome, when reported. */
+  summary?: string;
+  /** Individual findings (exfiltration, injection, destructive commands, ...). */
+  findings?: HermesSkillScanFinding[];
+  /** Exact files the scan flagged, when reported. */
+  affectedFiles?: string[];
+  /** Agent capabilities the skill may invoke (e.g. shell, network, filesystem). */
+  capabilities?: string[];
+  /** What the skill bundles (scripts/templates/references/assets). */
+  bundle?: HermesSkillBundle;
+  raw: unknown;
+};
+
 export type HermesHubSkillResult = {
   /** Stable install identifier (the value to pass to hubInstall). */
   identifier: string;
@@ -521,8 +581,171 @@ export type HermesHubSkillResult = {
   upstreamUrls?: string[];
   /** Author/publisher, when reported. */
   author?: string;
+  /** The install-time security scan, when the hub result carries one. The
+   * install response may carry a richer/updated scan; the review merges both. */
+  scan?: HermesSkillScan;
   raw: unknown;
 };
+
+/** Normalizes a scan verdict string from a few shapes. `blocked`/`danger`/
+ * `dangerous` collapse to `dangerous`; `warn`/`warning`/`caution` to `caution`;
+ * `ok`/`safe`/`trusted`/`pass` to `trusted`; anything else to `unknown`. */
+function parseScanVerdict(value: unknown): HermesSkillScanVerdict {
+  const str = nonEmptyString(value)?.toLowerCase();
+  if (
+    str === "dangerous" ||
+    str === "danger" ||
+    str === "blocked" ||
+    str === "block" ||
+    str === "critical"
+  ) {
+    return "dangerous";
+  }
+  if (str === "caution" || str === "warn" || str === "warning") {
+    return "caution";
+  }
+  if (
+    str === "trusted" ||
+    str === "trust" ||
+    str === "ok" ||
+    str === "safe" ||
+    str === "pass" ||
+    str === "clean"
+  ) {
+    return "trusted";
+  }
+  return "unknown";
+}
+
+/** Normalizes a finding severity. `danger`/`critical`/`high` -> `danger`;
+ * `warn`/`warning`/`medium` -> `warn`; everything else -> `info`. */
+function parseFindingSeverity(
+  value: unknown,
+): HermesSkillScanFinding["severity"] {
+  const str = nonEmptyString(value)?.toLowerCase();
+  if (
+    str === "danger" ||
+    str === "critical" ||
+    str === "high" ||
+    str === "severe"
+  ) {
+    return "danger";
+  }
+  if (str === "warn" || str === "warning" || str === "medium") return "warn";
+  return "info";
+}
+
+function parseScanFinding(raw: unknown): HermesSkillScanFinding | undefined {
+  const str = nonEmptyString(raw);
+  if (str) return { severity: "warn", detail: str };
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const detail = pickString(
+    [record],
+    ["detail", "message", "description", "text", "title"],
+  );
+  if (!detail) return undefined;
+  return {
+    category: pickString([record], ["category", "kind", "type", "rule"]),
+    severity: parseFindingSeverity(
+      record.severity ?? record.level ?? record.tone,
+    ),
+    detail,
+  };
+}
+
+function parseScanFindings(
+  value: unknown,
+): HermesSkillScanFinding[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: HermesSkillScanFinding[] = [];
+  for (const entry of value) {
+    const finding = parseScanFinding(entry);
+    if (finding) out.push(finding);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function parseScanBundle(value: unknown): HermesSkillBundle | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const scriptCount = finiteNumber(
+    record.scripts ?? record.script_count ?? record.scriptCount,
+  );
+  const templateCount = finiteNumber(
+    record.templates ?? record.template_count ?? record.templateCount,
+  );
+  const referenceCount = finiteNumber(
+    record.references ?? record.reference_count ?? record.referenceCount,
+  );
+  const assetCount = finiteNumber(
+    record.assets ?? record.asset_count ?? record.assetCount,
+  );
+  const hasScripts =
+    pickBool([record], ["has_scripts", "hasScripts", "scripts"]) ??
+    (scriptCount !== undefined ? scriptCount > 0 : undefined);
+  if (
+    hasScripts === undefined &&
+    scriptCount === undefined &&
+    templateCount === undefined &&
+    referenceCount === undefined &&
+    assetCount === undefined
+  ) {
+    return undefined;
+  }
+  return { hasScripts, scriptCount, templateCount, referenceCount, assetCount };
+}
+
+/** Parses the install-time security scan from whatever shape Hermes attaches it
+ * under (`scan`, `security`, `review`, `audit`). Returns undefined only when no
+ * scan-shaped object is present at all; a present-but-empty scan still parses to
+ * a verdict (`unknown`) so the review can surface "not scanned". */
+export function parseSkillScan(raw: unknown): HermesSkillScan | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const scan = asRecord(
+    record.scan ?? record.security ?? record.review ?? record.audit,
+  );
+  // Some payloads put the verdict/findings at the top level of the install
+  // response rather than under a `scan` key; tolerate both.
+  const source = scan ?? record;
+  const verdictValue =
+    source.verdict ?? source.result ?? source.status ?? source.outcome;
+  const findings = parseScanFindings(
+    source.findings ?? source.issues ?? source.warnings,
+  );
+  const affectedFiles = pickStringArray(
+    source.affected_files ?? source.affectedFiles ?? source.files,
+  );
+  const capabilities = pickStringArray(
+    source.capabilities ?? source.permissions ?? source.requested_capabilities,
+  );
+  const bundle = parseScanBundle(source.bundle ?? source.contents ?? source);
+  // Nothing scan-shaped at all: do not invent a scan.
+  if (
+    verdictValue === undefined &&
+    !findings &&
+    !affectedFiles &&
+    !capabilities &&
+    !bundle &&
+    !scan
+  ) {
+    return undefined;
+  }
+  return {
+    verdict: parseScanVerdict(verdictValue),
+    overridable: pickBool(
+      [source],
+      ["overridable", "can_force", "canForce", "forceable", "allow_force"],
+    ),
+    summary: pickString([source], ["summary", "message", "detail", "reason"]),
+    findings,
+    affectedFiles,
+    capabilities,
+    bundle,
+    raw,
+  };
+}
 
 /** Normalizes a trust string from a few shapes. `trusted`/`verified`/`tap`
  * collapse to `verified`; `official`/`builtin`/`bundled` to `official`;
@@ -581,6 +804,7 @@ export function parseHubSkillResult(
       [record],
       ["author", "publisher", "owner", "maintainer"],
     ),
+    scan: parseSkillScan(record),
     raw,
   };
 }
@@ -630,6 +854,10 @@ export type HermesActionStatus = {
   message?: string;
   /** Safe error message when `state === "failed"`. */
   error?: string;
+  /** A security scan the install response carried, when present. A blocked
+   * install returns its verdict + findings here so the review can surface them
+   * rather than hiding a dangerous verdict behind a generic error. */
+  scan?: HermesSkillScan;
   raw: unknown;
 };
 
@@ -695,6 +923,7 @@ export function parseActionStatus(
       state === "failed"
         ? pickString([record], ["error", "error_message", "message", "detail"])
         : pickString([record], ["error", "error_message"]),
+    scan: parseSkillScan(record),
     raw,
   };
 }

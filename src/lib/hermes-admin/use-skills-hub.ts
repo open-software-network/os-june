@@ -83,14 +83,36 @@ export type HubInstallState = {
   error?: string;
 };
 
-/** Options for an install request. The `confirm` hook is where the direct-URL
- * confirmation (and, later, the spec-07 security review) plugs in: install is
- * declined if it resolves false. */
+/** The outcome a {@link HubInstallRequest.confirm} hook resolves to. A bare
+ * boolean is still accepted (true proceeds, false declines); a richer object
+ * lets the spec-07 security review say "proceed, and send force" after the user
+ * confirmed an override. `force` is NEVER assumed: it is sent only when the
+ * decision explicitly sets it true. */
+export type HubInstallDecision =
+  | boolean
+  | { proceed: boolean; force?: boolean };
+
+/** Options for an install request. The `confirm` hook is where the spec-07
+ * security review plugs in: install is declined if it resolves to a falsy
+ * decision, and `force` is sent only when the decision explicitly asks for it. */
 export type HubInstallRequest = {
-  /** Asked before installing; return true to proceed. Used for the direct-URL
-   * confirmation today; the security review flow slots in here. */
-  confirm?: (result: HermesHubSkillResult) => boolean | Promise<boolean>;
+  /** Asked before installing; resolve a {@link HubInstallDecision}. The security
+   * review flow returns `{ proceed, force }`; a simple confirmation can return a
+   * bare boolean. */
+  confirm?: (
+    result: HermesHubSkillResult,
+  ) => HubInstallDecision | Promise<HubInstallDecision>;
 };
+
+/** Normalizes a {@link HubInstallDecision} to `{ proceed, force }`. A bare
+ * boolean never forces. */
+function normalizeDecision(decision: HubInstallDecision): {
+  proceed: boolean;
+  force: boolean;
+} {
+  if (typeof decision === "boolean") return { proceed: decision, force: false };
+  return { proceed: decision.proceed, force: decision.force === true };
+}
 
 /** Everything the Skills Hub component renders, plus the actions it invokes. A
  * pure projection of the controller's internal state. */
@@ -277,20 +299,27 @@ export class SkillsHubController {
     // Never re-enter an install that is already running for this identifier.
     if (this.installs.get(identifier)?.phase === "installing") return;
 
+    // `force` is false unless the confirmation explicitly returns it (the
+    // security review's override path). It can never default to true.
+    let force = false;
     if (request.confirm) {
-      const proceed = await request.confirm(result);
+      const decision = normalizeDecision(await request.confirm(result));
       if (this.disposed) return;
-      if (!proceed) {
+      if (!decision.proceed) {
         // A declined confirmation is a no-op: leave the row idle, no error.
         this.setInstall(identifier, { phase: "idle" });
         return;
       }
+      force = decision.force;
     }
 
     this.setInstall(identifier, { phase: "installing", progress: undefined });
 
     try {
-      const outcome = await this.engine.client.skills.hubInstall(identifier);
+      const outcome = await this.engine.client.skills.hubInstall(
+        identifier,
+        force ? { force: true } : undefined,
+      );
       if (this.disposed) return;
       const action = outcome.action;
 

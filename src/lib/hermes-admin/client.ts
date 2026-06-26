@@ -137,8 +137,12 @@ export type HermesAdminClient = {
       enabled: boolean,
     ): Promise<MutationOutcome<HermesToggleResult>>;
     hubSearch(query: string, source?: string): Promise<HermesHubSkillResult[]>;
+    /** Installs a skill by identifier. `force` is sent ONLY when explicitly
+     * true (the user completed the security review); it is omitted otherwise so
+     * a `force: true` can never leak in by default. */
     hubInstall(
       identifier: string,
+      options?: { force?: boolean },
     ): Promise<MutationOutcome<HermesActionStatus | undefined>>;
     hubUninstall(
       name: string,
@@ -300,14 +304,16 @@ function makeSkills(send: AdminTransport): HermesAdminClient["skills"] {
         parseHubSearch,
       );
     },
-    async hubInstall(identifier) {
-      // SkillInstallRequest is `{ identifier, profile? }` — no source/force
-      // field exists in this contract, so the body is just the identifier.
+    async hubInstall(identifier, options) {
+      // SkillInstallRequest is `{ identifier, profile?, force? }`. `force` rides
+      // the body ONLY when the caller explicitly opts in (after the security
+      // review); it is omitted entirely otherwise so a default install can never
+      // carry `force: true`.
       const action = await send(
         {
           method: "POST",
           path: "/api/skills/hub/install",
-          body: { identifier },
+          body: options?.force ? { identifier, force: true } : { identifier },
         },
         actionFromMutationResponse,
       );
