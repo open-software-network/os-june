@@ -5895,6 +5895,75 @@ describe("AgentWorkspace", () => {
     expect(screen.getAllByText("first task").length).toBeGreaterThan(0);
   });
 
+  it("waits for the bridge session before selecting a new persisted Hermes session", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    let bridgeSessionPersisted = false;
+    let releaseEnsure: (() => void) | undefined;
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseEnsure = () => {
+            bridgeSessionPersisted = true;
+            resolve({});
+          };
+        }),
+    );
+    mocks.listHermesSessionMessages.mockImplementation(
+      async (sessionId: string) => {
+        if (sessionId === "session-2" && !bridgeSessionPersisted) {
+          throw new Error(
+            'Hermes API returned 404 Not Found: {"detail":"Session not found"}',
+          );
+        }
+        return [];
+      },
+    );
+
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    await user.type(await screen.findByRole("textbox"), "first task");
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "session-2" }),
+      ),
+    );
+    expect(releaseEnsure).toBeDefined();
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+        await Promise.resolve();
+      });
+
+      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(
+        "session-2",
+      );
+      expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
+
+      act(() => releaseEnsure?.());
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "first task",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-2"),
+    );
+    expect(screen.queryByText(/Hermes API returned 404/)).toBeNull();
+  });
+
   it("restores the hero when optimistic session creation fails", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
