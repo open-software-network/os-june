@@ -76,6 +76,7 @@ import { AgentSettingsSection } from "./AgentSettingsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { SkillReviewSection } from "./SkillReviewSection";
 import { McpCatalogSection } from "./McpCatalogSection";
+import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
 import { McpServersSection } from "./McpServersSection";
 import { SkillsHubSection } from "./SkillsHubSection";
 import { ToolsetsSection } from "./ToolsetsSection";
@@ -186,6 +187,7 @@ export type SettingsTab =
   | "skill-review"
   | "mcp"
   | "mcp-catalog"
+  | "mcp-diagnostics"
   | "skills-hub"
   | "toolsets"
   | "about";
@@ -202,6 +204,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "skill-review", label: "Pending skill changes" },
   { id: "mcp", label: "MCP servers" },
   { id: "mcp-catalog", label: "MCP catalog" },
+  { id: "mcp-diagnostics", label: "MCP diagnostics" },
   { id: "skills-hub", label: "Skills hub" },
   { id: "toolsets", label: "Toolsets" },
   { id: "about", label: "About" },
@@ -1219,6 +1222,7 @@ export function AppSettings({
 
         {activeTab === "mcp" ? <McpServersSection /> : null}
         {activeTab === "mcp-catalog" ? <McpCatalogSection /> : null}
+        {activeTab === "mcp-diagnostics" ? <McpDiagnosticsSection /> : null}
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
         {activeTab === "toolsets" ? <ToolsetsSection /> : null}
 

@@ -25,6 +25,7 @@ import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
+import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconServer1 } from "central-icons/IconServer1";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStore1 } from "central-icons/IconStore1";
@@ -245,6 +246,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "mcp-catalog",
         label: "MCP catalog",
         icon: <IconStore1 size={16} />,
+      },
+      {
+        id: "mcp-diagnostics",
+        label: "MCP diagnostics",
+        icon: <IconHeartBeat size={16} />,
       },
       {
         id: "skills-hub",

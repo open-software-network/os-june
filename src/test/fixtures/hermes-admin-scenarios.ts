@@ -522,6 +522,77 @@ export function mcpToolFilteringScenario(): FakeHermesScenario {
   };
 }
 
+/** A mixed MCP install for the diagnostics surface (spec 18): a healthy stdio
+ * server, a disabled server, an OAuth server that is not signed in, a stdio
+ * server whose test fails (bad command), and a server whose include/exclude
+ * filters hide every tool. Drives the global summary counts and the per-server
+ * reason chains. */
+export function mcpDiagnosticsScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-mcp-diagnostics",
+    mcpServers: [
+      {
+        name: "sqlite",
+        enabled: true,
+        transport: "stdio",
+        command: "mcp-server-sqlite",
+        status: "connected",
+        auth_status: "not-required",
+        tools: [
+          { name: "query", enabled: true },
+          { name: "execute", enabled: true },
+        ],
+      },
+      {
+        name: "github",
+        enabled: false,
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp",
+        status: "connected",
+        auth_status: "authenticated",
+        tools: [{ name: "list_issues", enabled: true }],
+      },
+      {
+        name: "linear",
+        enabled: true,
+        transport: "http-oauth",
+        url: "https://mcp.linear.app/sse",
+        auth_status: "unauthenticated",
+        status: "error",
+        status_message: "Not authenticated. Sign in to expose tools.",
+        headers: { Authorization: FAKE_BEARER },
+      },
+      {
+        name: "broken",
+        enabled: true,
+        transport: "stdio",
+        command: "this-binary-does-not-exist",
+        status: "error",
+        auth_status: "not-required",
+        status_message: "Could not start the server (command not found).",
+        testOutcome: {
+          ok: false,
+          message: "Could not start the server (command not found).",
+        },
+      },
+      {
+        name: "filtered",
+        enabled: true,
+        transport: "http",
+        url: "https://api.example.com/mcp",
+        status: "connected",
+        auth_status: "authenticated",
+        tools: [
+          { name: "read", enabled: true },
+          { name: "write", enabled: true },
+        ],
+        exclude_tools: ["read", "write"],
+      },
+    ],
+    mcpCatalog: [],
+  };
+}
+
 /** A rich MCP catalog (spec 15): a Nous-approved catalog covering the four auth
  * shapes the install prompt must handle — no auth, API key (required env), OAuth,
  * and third-party auth — plus one already-installed-but-disabled entry. Catalog
