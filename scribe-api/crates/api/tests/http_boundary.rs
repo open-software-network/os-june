@@ -329,7 +329,7 @@ async fn integration_web_search_requires_request_id() -> Result<(), Box<dyn Erro
 async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "https://example.com/post", "requestId": "req-1" }),
+        &serde_json::json!({ "url": "https://93.184.216.34/post", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
@@ -346,7 +346,7 @@ async fn integration_web_fetch_returns_markdown() -> Result<(), Box<dyn Error>> 
 async fn integration_web_fetch_blocked_site_returns_bad_request() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/web/fetch",
-        &serde_json::json!({ "url": "https://x.com/some/post", "requestId": "req-1" }),
+        &serde_json::json!({ "url": "https://93.184.216.34/x.com/some/post", "requestId": "req-1" }),
         Some(AUTHORIZATION),
     )?)
     .await;
