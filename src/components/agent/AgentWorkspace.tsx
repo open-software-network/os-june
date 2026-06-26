@@ -772,6 +772,8 @@ type QueuedSteerInstruction = {
   error?: string;
 };
 
+type HermesToolEventPhase = "start" | "progress" | "complete";
+
 type AgentWorkspaceError = {
   message: string;
   /** Null means the error belongs to the no-session workspace surface. */
@@ -1420,6 +1422,9 @@ export function AgentWorkspace({
   const queuedSteerRetryTimersRef = useRef<
     Map<string, ReturnType<typeof window.setTimeout>>
   >(new Map());
+  const activeToolCallsBySessionRef = useRef<Map<string, Map<string, number>>>(
+    new Map(),
+  );
   const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
     () => new Set(continuity?.waitingSessionIds),
   );
@@ -1805,6 +1810,45 @@ export function AgentWorkspace({
     [],
   );
 
+  function clearSessionToolCalls(sessionId: string) {
+    activeToolCallsBySessionRef.current.delete(sessionId);
+    setSessionToolCallActive(sessionId, false);
+  }
+
+  function updateSessionToolCallActivity(
+    sessionId: string,
+    event: HermesGatewayEvent,
+    phase: HermesToolEventPhase,
+  ) {
+    const key = toolEventActivityKey(event);
+    const current = new Map(
+      activeToolCallsBySessionRef.current.get(sessionId) ?? [],
+    );
+
+    if (phase === "start") {
+      current.set(key, (current.get(key) ?? 0) + 1);
+    } else if (phase === "progress") {
+      if (!current.has(key)) current.set(key, 1);
+    } else {
+      const count = current.get(key) ?? 0;
+      if (count > 1) {
+        current.set(key, count - 1);
+      } else {
+        current.delete(key);
+      }
+    }
+
+    if (current.size > 0) {
+      activeToolCallsBySessionRef.current.set(sessionId, current);
+      setSessionToolCallActive(sessionId, true);
+      return true;
+    }
+
+    activeToolCallsBySessionRef.current.delete(sessionId);
+    setSessionToolCallActive(sessionId, false);
+    return false;
+  }
+
   const setSessionWorking = useCallback(
     (sessionId: string, working: boolean) => {
       setWorkingSessionIds((current) => {
@@ -1839,7 +1883,7 @@ export function AgentWorkspace({
 
   const clearSessionActivity = useCallback(
     (sessionId: string) => {
-      setSessionToolCallActive(sessionId, false);
+      clearSessionToolCalls(sessionId);
       clearQueuedSteerInstruction(sessionId);
 
       const nextWorking = new Set(workingSessionIdsRef.current);
@@ -4162,10 +4206,15 @@ export function AgentWorkspace({
       };
       setLiveEvents(liveEventsRef.current);
       const toolEventPhase = hermesToolEventPhase(event.type);
-      if (toolEventPhase === "active") {
-        setSessionToolCallActive(storedSessionId, true);
-      } else if (toolEventPhase === "complete") {
-        setSessionToolCallActive(storedSessionId, false);
+      const hasActiveToolCalls =
+        toolEventPhase !== undefined
+          ? updateSessionToolCallActivity(
+              storedSessionId,
+              event,
+              toolEventPhase,
+            )
+          : toolCallSessionIdsRef.current.has(storedSessionId);
+      if (toolEventPhase === "complete" && !hasActiveToolCalls) {
         window.setTimeout(() => {
           void flushQueuedSteerInstruction(storedSessionId);
         }, 0);
@@ -11450,13 +11499,24 @@ function isTerminalHermesEvent(type: string) {
   );
 }
 
-function hermesToolEventPhase(type: string): "active" | "complete" | undefined {
+function hermesToolEventPhase(type: string): HermesToolEventPhase | undefined {
   const normalized = type.toLowerCase();
   if (normalized === "tool.complete") return "complete";
-  if (normalized === "tool.start" || normalized === "tool.progress") {
-    return "active";
-  }
+  if (normalized === "tool.start") return "start";
+  if (normalized === "tool.progress") return "progress";
   return undefined;
+}
+
+function toolEventActivityKey(event: HermesGatewayEvent) {
+  const payload = event.payload as Record<string, unknown> | undefined;
+  return (
+    stringValue(payload?.tool_id) ??
+    stringValue(payload?.tool_call_id) ??
+    stringValue(payload?.call_id) ??
+    stringValue(payload?.id) ??
+    stringValue(payload?.request_id) ??
+    "__anonymous_tool__"
+  );
 }
 
 function agentStatusFromHermesEvent(
