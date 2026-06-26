@@ -756,13 +756,29 @@ function appendLiveHermesEvents(
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
+  // A live assistant turn's `createdAt` is the client's event receive time,
+  // while the user/persisted turns it follows carry server timestamps. Those
+  // clocks differ, so a raw sort by `createdAt` can float the assistant above
+  // the user turn that triggered it — surfacing as a duplicated, misplaced
+  // "Thinking…" (the mis-sorted turn shows its own indicator while the gap
+  // indicator also fires because the user turn is now last). Clamp to the
+  // latest existing turn so an appended turn never sorts before the turns it
+  // causally follows; the sort's index tiebreak then keeps a same-timestamp
+  // user turn first.
+  const latestExisting = turns.reduce(
+    (latest, existing) =>
+      existing.createdAt > latest ? existing.createdAt : latest,
+    "",
+  );
+  const orderedCreatedAt =
+    latestExisting > createdAt ? latestExisting : createdAt;
   // The `turns.length` suffix keeps ids unique when several turns are created
   // within the same millisecond, while staying deterministic across rebuilds
   // of the same event list (these ids are used as React keys).
   const turn: AgentChatTurn = {
-    id: `assistant:${createdAt}:${turns.length}`,
+    id: `assistant:${orderedCreatedAt}:${turns.length}`,
     role: "assistant",
-    createdAt,
+    createdAt: orderedCreatedAt,
     status: "running",
     parts: [],
   };
