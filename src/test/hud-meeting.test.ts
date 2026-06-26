@@ -535,7 +535,18 @@ describe("meeting detection HUD", () => {
     );
   });
 
+  it("surfaces the listening discard button", async () => {
+    await loadHud();
+
+    await emit("dictation-event", { type: "listening_started" });
+
+    const cancel = document.querySelector<HTMLButtonElement>("#hud-cancel");
+    expect(cancel).toHaveAttribute("aria-label", "Discard dictation");
+    expect(cancel?.querySelector("svg")).toBeTruthy();
+  });
+
   it("cancels active dictation when Escape reaches the HUD", async () => {
+    vi.useFakeTimers();
     await loadHud();
     await emit("dictation-event", { type: "listening_started" });
     mocks.invoke.mockClear();
@@ -552,6 +563,41 @@ describe("meeting detection HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
       command: { type: "discard_recording" },
     });
+    await vi.advanceTimersByTimeAsync(320);
+  });
+
+  it("cancels active dictation when the discard button is clicked", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    document.querySelector<HTMLButtonElement>("#hud-cancel")?.click();
+    await Promise.resolve();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+    await vi.advanceTimersByTimeAsync(320);
+  });
+
+  it("ignores discard button clicks outside the listening state", async () => {
+    await loadHud();
+
+    document.querySelector<HTMLButtonElement>("#hud-cancel")?.click();
+    await Promise.resolve();
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+  });
+
+  it("paints the native hover state on the discard button", async () => {
+    await loadHud();
+
+    await emit("hud-cancel-hover", true);
+
+    expect(document.querySelector("#hud-cancel")).toHaveClass("is-hovered");
   });
 
   it("ignores Escape outside the listening state", async () => {
@@ -787,6 +833,7 @@ function hudMarkup() {
         <span id="hud-error-text" class="hud-error-message"></span>
       </span>
       <span id="hud-cancel-key" class="hud-cancel-key" aria-label="Press Escape to cancel dictation">Esc</span>
+      <button id="hud-cancel" class="hud-cancel" type="button" aria-label="Discard dictation"></button>
       <span class="hud-meeting-body">
         <span class="hud-meeting-mark" aria-hidden="true"></span>
         <span class="hud-meeting-text">

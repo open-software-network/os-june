@@ -214,6 +214,7 @@ pub fn run() {
             dictation::set_dictation_language,
             dictation::dictation_helper_command,
             dictation::dictation_hud_set_stop_bounds,
+            dictation::dictation_hud_set_cancel_bounds,
             dictation::dictation_hud_set_dismiss_bounds,
             dictation::dictation_hud_set_record_bounds,
             dictation::dictation_hud_preferred_error_placement,

@@ -74,12 +74,14 @@ pub struct HudClientRect {
 /// Hover state for HUD controls. Polled by [`spawn_hud_hover_thread`]; we
 /// don't poll from JS because WebKit throttles timers on the non-key HUD
 /// panel (and CSS :hover is unreliable there for the same reason). The
-/// stop button and the meeting prompt's corner dismiss each get a rect.
+/// stop button, cancel button, and the meeting prompt controls each get a rect.
 /// (The window is sized exactly to the pill, so there's no click
 /// pass-through to manage — the whole window is interactive.)
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
+    cancel_bounds: Mutex<Option<HudClientRect>>,
+    last_cancel_hover: std::sync::atomic::AtomicBool,
     dismiss_bounds: Mutex<Option<HudClientRect>>,
     last_dismiss_hover: std::sync::atomic::AtomicBool,
     record_bounds: Mutex<Option<HudClientRect>>,
@@ -586,6 +588,8 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(HudHoverState {
         stop_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
+        cancel_bounds: Mutex::new(None),
+        last_cancel_hover: std::sync::atomic::AtomicBool::new(false),
         dismiss_bounds: Mutex::new(None),
         last_dismiss_hover: std::sync::atomic::AtomicBool::new(false),
         record_bounds: Mutex::new(None),
@@ -841,6 +845,16 @@ fn cursor_position_via_cg() -> Option<(f64, f64)> {
 #[tauri::command]
 pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Option<HudClientRect>) {
     if let Ok(mut guard) = state.stop_bounds.lock() {
+        *guard = rect;
+    }
+}
+
+#[tauri::command]
+pub fn dictation_hud_set_cancel_bounds(
+    state: State<'_, HudHoverState>,
+    rect: Option<HudClientRect>,
+) {
+    if let Ok(mut guard) = state.cancel_bounds.lock() {
         *guard = rect;
     }
 }
@@ -1227,8 +1241,8 @@ fn rect_contains(
     cx >= left && cx <= right && cy >= top && cy <= bottom
 }
 
-/// Polls the cursor against the cached control bounds (stop button, meeting
-/// dismiss) and emits hover state changes. Short-circuits when no bounds
+/// Polls the cursor against the cached control bounds (stop button, cancel
+/// button, meeting dismiss) and emits hover state changes. Short-circuits when no bounds
 /// are registered.
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
@@ -1248,6 +1262,11 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let visible = hud.is_visible().unwrap_or(false);
 
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
+            let cancel_rect = hover_state
+                .cancel_bounds
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
             let dismiss_rect = hover_state
                 .dismiss_bounds
                 .lock()
@@ -1260,10 +1279,17 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                 .and_then(|g| g.clone());
 
             // Hidden or no hoverable controls on screen: drop stale hover.
-            if !visible || (stop_rect.is_none() && dismiss_rect.is_none() && record_rect.is_none())
+            if !visible
+                || (stop_rect.is_none()
+                    && cancel_rect.is_none()
+                    && dismiss_rect.is_none()
+                    && record_rect.is_none())
             {
                 if hover_state.last_hover.swap(false, Ordering::Relaxed) {
                     let _ = app.emit("hud-stop-hover", false);
+                }
+                if hover_state.last_cancel_hover.swap(false, Ordering::Relaxed) {
+                    let _ = app.emit("hud-cancel-hover", false);
                 }
                 if hover_state
                     .last_dismiss_hover
@@ -1299,6 +1325,17 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                     .last_hover
                     .store(stop_hovered, Ordering::Relaxed);
                 let _ = app.emit("hud-stop-hover", stop_hovered);
+            }
+
+            let cancel_hovered = match cancel_rect.as_ref() {
+                Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
+                None => false,
+            };
+            if cancel_hovered != hover_state.last_cancel_hover.load(Ordering::Relaxed) {
+                hover_state
+                    .last_cancel_hover
+                    .store(cancel_hovered, Ordering::Relaxed);
+                let _ = app.emit("hud-cancel-hover", cancel_hovered);
             }
 
             let dismiss_hovered = match dismiss_rect.as_ref() {

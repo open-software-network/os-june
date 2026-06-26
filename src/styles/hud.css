@@ -470,8 +470,9 @@ body {
   transform: translateY(0.5px);
 }
 
-/* Stop button ---------------------------------------------------------- */
-.hud-stop {
+/* Listening action buttons -------------------------------------------- */
+.hud-stop,
+.hud-cancel {
   position: relative;
   display: grid;
   place-items: center;
@@ -487,7 +488,12 @@ body {
   contain: paint;
 }
 
-.hud-stop::before {
+.hud-cancel {
+  display: none;
+}
+
+.hud-stop::before,
+.hud-cancel::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -500,11 +506,13 @@ body {
 /* Hover is driven by the native polling thread via the `.is-hovered` class.
  * No `:hover` selector — WebKit can latch :hover state when the panel is
  * briefly key and not release it, which manifests as auto-highlighting. */
-.hud-stop.is-hovered::before {
+.hud-stop.is-hovered::before,
+.hud-cancel.is-hovered::before {
   opacity: 1;
 }
 
-.hud-stop:focus-visible {
+.hud-stop:focus-visible,
+.hud-cancel:focus-visible {
   outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
   outline-offset: 1px;
 }
@@ -516,6 +524,12 @@ body {
   height: 8px;
   border-radius: 2px;
   background: var(--foreground);
+}
+
+.hud-cancel svg {
+  position: relative;
+  z-index: 1;
+  display: block;
 }
 
 .hud-cancel-key {
@@ -538,6 +552,7 @@ body {
 }
 
 .hud-stop,
+.hud-cancel,
 .hud-handle {
   -webkit-user-select: none;
   user-select: none;
@@ -545,6 +560,7 @@ body {
 }
 
 .hud-stop *,
+.hud-cancel *,
 .hud-handle *,
 .hud-cancel-key {
   -webkit-user-drag: none;
@@ -631,6 +647,11 @@ body {
 .hud[data-state="listening"] .hud-cancel-key,
 .hud[data-state="exiting"][data-exit-state="listening"] .hud-cancel-key {
   display: inline-flex;
+}
+
+.hud[data-state="listening"] .hud-cancel,
+.hud[data-state="exiting"][data-exit-state="listening"] .hud-cancel {
+  display: grid;
 }
 
 /* Error pill (the fixed anchor): the compact handle + error-icon pill that
@@ -743,6 +764,8 @@ body {
   .hud > *,
   .hud-stop,
   .hud-stop::before,
+  .hud-cancel,
+  .hud-cancel::before,
   .hud-bar::before {
     transition: none;
   }

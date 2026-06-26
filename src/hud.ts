@@ -60,6 +60,7 @@ const errorText = document.querySelector<HTMLElement>("#hud-error-text");
 const errorIcon = document.querySelector<HTMLElement>(".hud-error-icon");
 const errorLayer = document.querySelector<HTMLElement>(".hud-error-layer");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
+const cancelButton = document.querySelector<HTMLButtonElement>("#hud-cancel");
 const meetingStartButton =
   document.querySelector<HTMLButtonElement>("#hud-meeting-start");
 const meetingAppLabel = document.querySelector<HTMLElement>("#hud-meeting-app");
@@ -71,6 +72,15 @@ const statusText = document.querySelector<HTMLElement>("#hud-status");
 // House iconography (central-icons), injected like the agent HUD does.
 if (meetingDismissButton) {
   meetingDismissButton.innerHTML = renderToStaticMarkup(
+    createElement(IconCrossSmall, {
+      size: 12,
+      ariaHidden: true,
+      focusable: false,
+    }),
+  );
+}
+if (cancelButton) {
+  cancelButton.innerHTML = renderToStaticMarkup(
     createElement(IconCrossSmall, {
       size: 12,
       ariaHidden: true,
@@ -244,6 +254,7 @@ function setHud(state: string, status: string): HudTransition {
     startBarLoop();
     if (previous !== "listening") {
       pushStopBoundsToNative();
+      pushCancelBoundsToNative();
     }
   } else if (previous === "listening") {
     clearStopHover();
@@ -410,6 +421,10 @@ function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
 }
 
+function setCancelHover(isHovered: boolean) {
+  cancelButton?.classList.toggle("is-hovered", isHovered);
+}
+
 function setDismissHover(isHovered: boolean) {
   meetingDismissButton?.classList.toggle("is-hovered", isHovered);
 }
@@ -468,6 +483,17 @@ function pushStopBoundsToNative() {
   }
   const { left, right, top, bottom } = stopButton.getBoundingClientRect();
   invokeBestEffort("dictation_hud_set_stop_bounds", {
+    rect: { left, right, top, bottom },
+  });
+}
+
+function pushCancelBoundsToNative() {
+  if (!cancelButton || hud?.dataset.state !== "listening") {
+    invokeBestEffort("dictation_hud_set_cancel_bounds", { rect: null });
+    return;
+  }
+  const { left, right, top, bottom } = cancelButton.getBoundingClientRect();
+  invokeBestEffort("dictation_hud_set_cancel_bounds", {
     rect: { left, right, top, bottom },
   });
 }
@@ -552,6 +578,7 @@ async function syncWindowToPill(options?: {
     window.requestAnimationFrame(() => {
       hud?.classList.remove("is-morphing");
       pushStopBoundsToNative();
+      pushCancelBoundsToNative();
       pushDismissBoundsToNative();
     });
   });
@@ -610,7 +637,9 @@ function triggerShake() {
 
 function clearStopHover() {
   setStopHover(false);
+  setCancelHover(false);
   invokeBestEffort("dictation_hud_set_stop_bounds", { rect: null });
+  invokeBestEffort("dictation_hud_set_cancel_bounds", { rect: null });
 }
 
 function clearHideTimer() {
@@ -774,6 +803,7 @@ async function showHudNow(
     pushDismissBoundsToNative();
   } else {
     pushStopBoundsToNative();
+    pushCancelBoundsToNative();
     pushDismissBoundsToNative();
   }
   assertWindowMatchesPill();
@@ -1098,6 +1128,7 @@ async function stopAndPasteDictation() {
 async function cancelDictation() {
   if (!hud?.isConnected || hud.dataset.state !== "listening") return;
   setStopHover(false);
+  setCancelHover(false);
   try {
     await invoke("dictation_helper_command", {
       command: { type: "discard_recording" },
@@ -1117,6 +1148,12 @@ dragHandle?.addEventListener("pointerdown", (event) => {
 stopButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   await stopAndPasteDictation();
+});
+
+cancelButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await cancelDictation();
 });
 
 window.addEventListener(
@@ -1181,6 +1218,10 @@ void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
 
 void listen<boolean>("hud-stop-hover", (event) => {
   setStopHover(Boolean(event.payload));
+}).catch(() => {});
+
+void listen<boolean>("hud-cancel-hover", (event) => {
+  setCancelHover(Boolean(event.payload));
 }).catch(() => {});
 
 void listen<boolean>("hud-dismiss-hover", (event) => {
