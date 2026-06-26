@@ -10243,6 +10243,428 @@ input:focus-visible,
   width: 70%;
 }
 
+/* Agent-managed skill write review queue (Hermes admin surface, spec 12). The
+ * human-in-the-loop gate: a write-approval toggle card, the lifecycle banner,
+ * and a list of pending writes with expandable diffs and approve/reject. Reuses
+ * the settings chrome; tokens only. */
+.skill-review-gate {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  margin-bottom: var(--sp-4);
+}
+
+.skill-review-gate-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.skill-review-gate-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+  margin-top: 1px;
+}
+
+.skill-review-gate-title {
+  margin: 0 0 var(--sp-1);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skill-review-gate-copy {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-gate-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
+.skill-review-gate-timing {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-mode-note {
+  color: var(--muted-foreground);
+}
+
+.skill-review-lifecycle {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-4);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 8%, transparent);
+}
+
+.skill-review-lifecycle[data-tone="warning"] {
+  background: color-mix(in oklch, var(--warm-strong) 12%, transparent);
+}
+
+.skill-review-lifecycle[data-tone="destructive"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+}
+
+.skill-review-lifecycle-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-review-lifecycle-body {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.skill-review-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-review-toolbar-label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.skill-review-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-review-bulk,
+.skill-review-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-bulk-approve {
+  border-color: color-mix(in oklch, var(--success) 40%, var(--border-subtle));
+  color: var(--success);
+}
+
+.skill-review-bulk:disabled,
+.skill-review-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skill-review-inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+}
+
+.skill-review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.skill-review-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-review-row:last-child {
+  border-bottom: none;
+}
+
+.skill-review-row-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-review-row-headline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-review-row-gist {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skill-review-op {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-op[data-op="create"] {
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.skill-review-op[data-op="delete"] {
+  background: color-mix(in oklch, var(--destructive) 16%, transparent);
+  color: var(--destructive);
+}
+
+.skill-review-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-review-source[data-source="background"] {
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+}
+
+.skill-review-row-effect {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-skill-name {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.skill-review-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-review-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+.skill-review-unreadable,
+.skill-review-redacted {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--warm-strong);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.skill-review-diff-toggle {
+  justify-self: start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-diff {
+  display: grid;
+  gap: var(--sp-3);
+  margin-top: var(--sp-1);
+}
+
+.skill-review-file-diff-path {
+  margin-bottom: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+}
+
+.skill-review-diff-pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, monospace);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.skill-review-diff-line[data-line="add"] {
+  display: block;
+  background: color-mix(in oklch, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.skill-review-diff-line[data-line="remove"] {
+  display: block;
+  background: color-mix(in oklch, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+
+.skill-review-diff-line[data-line="meta"] {
+  display: block;
+  color: var(--muted-foreground);
+}
+
+.skill-review-diff-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-review-row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.skill-review-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-approve {
+  border-color: color-mix(in oklch, var(--success) 40%, var(--border-subtle));
+  color: var(--success);
+}
+
+.skill-review-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.skill-review-action-timing {
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-review-empty,
+.skill-review-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+}
+
+.skill-review-empty-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+
+.skill-review-empty-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.skill-review-empty-description {
+  margin: 0;
+  max-width: 360px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.skill-review-retry {
+  margin-top: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-review-skeleton {
+  grid-template-columns: 1fr;
+}
+
+.skill-review-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.skill-review-skeleton-title {
+  width: 40%;
+  height: 14px;
+}
+
 /* Skill config + required-secret setup (Hermes admin surface, spec 09). The
  * setup status badge sits inline in a skill row; the per-skill setup panel
  * expands inline below the row and spans both grid columns. Tokens only. */

@@ -193,4 +193,59 @@ describe("PendingActionTray", () => {
     );
     expect(screen.getByText(/ago/)).toBeInTheDocument();
   });
+
+  // Admin surfaces spec 12: agent-managed skill writes share the tray as a
+  // distinct row routing to the review queue.
+  it("surfaces pending skill changes as a distinct row that routes to review", async () => {
+    const user = userEvent.setup();
+    const onReview = vi.fn();
+    render(
+      <PendingActionTray
+        records={[]}
+        titleForSession={() => undefined}
+        onOpenAction={vi.fn()}
+        now={Date.UTC(2026, 5, 24, 12, 0, 0)}
+        skillReview={{ count: 2, onReview }}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Needs you" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Skill changes to review")).toBeInTheDocument();
+    expect(screen.getByText(/proposed 2 skill changes/i)).toBeInTheDocument();
+    // The skill-review row counts toward the badge alongside session actions.
+    expect(screen.getByText("2")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /review pending skill changes/i }),
+    );
+    expect(onReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts skill changes alongside session actions in the badge", () => {
+    render(
+      <PendingActionTray
+        records={[clarify]}
+        titleForSession={() => "Refactor auth"}
+        onOpenAction={vi.fn()}
+        now={Date.UTC(2026, 5, 24, 12, 0, 0)}
+        skillReview={{ count: 1, onReview: vi.fn() }}
+      />,
+    );
+    // 1 session action + 1 skill change = badge 2.
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("does not render a skill-review row when the count is zero", () => {
+    const { container } = render(
+      <PendingActionTray
+        records={[]}
+        titleForSession={() => undefined}
+        onOpenAction={vi.fn()}
+        now={Date.UTC(2026, 5, 24, 12, 0, 0)}
+        skillReview={{ count: 0, onReview: vi.fn() }}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
 });

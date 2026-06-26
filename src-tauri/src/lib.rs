@@ -168,6 +168,8 @@ pub fn run() {
             hermes_bridge::hermes_admin_request,
             hermes_bridge::hermes_mcp_oauth_login,
             hermes_bridge::hermes_bridge_skills,
+            hermes_bridge::hermes_pending_skill_writes,
+            hermes_bridge::hermes_resolve_pending_skill_write,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
             hermes_bridge::hermes_bridge_filesystem_snapshot,
