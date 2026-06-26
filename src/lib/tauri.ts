@@ -1146,6 +1146,38 @@ export async function hermesMcpOauthLogin(input: {
   });
 }
 
+/** The redacted result of a bundled-skill reset. Carries no skill content and no
+ * secret-shaped CLI output: only whether the CLI reported success, an already
+ * redacted status message, and whether the bounded wait elapsed. */
+export type HermesResetSkillResult = {
+  ok: boolean;
+  /** A safe, already-redacted status message, or null when the CLI said nothing
+   * quotable. */
+  message: string | null;
+  /** True when the wait elapsed before the CLI reported a terminal state. */
+  timedOut: boolean;
+};
+
+/**
+ * Resets (or restores) a bundled skill to its shipped baseline through the Rust
+ * bridge: `hermes skills reset <name> [--restore]` against the chosen runtime's
+ * profile. The dashboard exposes no reset endpoint, so this is the narrow CLI
+ * fallback. `mode` selects the runtime explicitly (sandboxed vs unrestricted) —
+ * Rust never falls back to the first connection. The skill name is validated
+ * argument-safe on both sides and passed as a discrete CLI argument (no shell).
+ * The result is redacted in Rust; no skill content is returned to the webview.
+ */
+export async function hermesResetBundledSkill(input: {
+  mode: "sandboxed" | "unrestricted";
+  name: string;
+  profile?: string;
+  restore?: boolean;
+}) {
+  return invoke<HermesResetSkillResult>("hermes_reset_bundled_skill", {
+    request: input,
+  });
+}
+
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */

@@ -383,6 +383,36 @@ pub struct UpdateHermesSkillRequest {
     pub content: String,
 }
 
+/// Request to reset (or restore) a bundled skill to its shipped baseline. The
+/// dashboard REST surface (v2026.6.19) exposes no endpoint for this, so June
+/// runs the pinned Hermes CLI with a SAFE argument array — the skill name is
+/// validated argument-safe on both sides and passed as a discrete CLI argument,
+/// never shell-interpolated. `mode` names the runtime explicitly (`sandboxed` /
+/// `unrestricted`), like `hermes_admin_request`; `profile` targets a profile.
+/// `restore` selects `--restore` (pull the shipped version from upstream) over a
+/// plain on-disk reset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetHermesSkillRequest {
+    pub mode: String,
+    pub name: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub restore: bool,
+}
+
+/// The redacted result of a bundled-skill reset. It never carries skill content
+/// or any secret-shaped CLI output: only whether the CLI reported success and an
+/// already-redacted status message.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetHermesSkillResult {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub timed_out: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HermesSkillDocument {
@@ -2715,6 +2745,131 @@ pub async fn hermes_mcp_oauth_login(
         ok: mcp_login_succeeded(join.exit_success, &combined),
         message: redact_cli_message(&combined),
         auth_url,
+        timed_out: join.timed_out,
+    })
+}
+
+/// How long June waits for `hermes skills reset` to finish. A reset rewrites a
+/// manifest on disk (fast); `--restore` may fetch from upstream, so the window
+/// is generous but still bounded so June never blocks indefinitely.
+const SKILL_RESET_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A skill name a CLI argument is allowed to be. Same slug rule the MCP server
+/// validator enforces (and the TS `isSafeSkillName` mirror): a leading
+/// alphanumeric then `[A-Za-z0-9._-]`, max 64. Defense in depth — the value is
+/// already a discrete `Command` argument (no shell), but rejecting anything
+/// outside the slug stops a malformed name from ever reaching the CLI as a stray
+/// `--flag` or a traversal.
+fn is_safe_skill_name(name: &str) -> bool {
+    is_safe_mcp_server_name(name)
+}
+
+/// Builds `hermes skills reset <name> [--restore] [--profile <p>]`, isolated to
+/// the connection's home/token, non-interactive, in the connection's mode. Pure
+/// (no spawn) so a test can assert the exact argument vector and that the skill
+/// name is a discrete argument rather than shell-interpolated.
+fn build_hermes_skill_reset_command(
+    connection: &HermesBridgeConnection,
+    name: &str,
+    restore: bool,
+    profile: Option<&str>,
+) -> Command {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["skills", "reset", name]);
+    if restore {
+        cmd.arg("--restore");
+    }
+    if let Some(profile) = profile {
+        cmd.args(["--profile", profile]);
+    }
+    apply_isolated_hermes_env(&mut cmd, &hermes_home, &connection.token, None);
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(&hermes_home);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd
+}
+
+/// Resets (or restores) a bundled skill to its shipped baseline through the
+/// pinned Hermes CLI, in the explicitly-named runtime/profile. The dashboard
+/// REST surface exposes no reset endpoint, so this is the narrowest sanctioned
+/// CLI fallback: the skill name is validated argument-safe and passed as a
+/// discrete argument (no shell), and the runtime is selected by `mode` with no
+/// first-connection fallback. The result is REDACTED here — it carries no skill
+/// content and no secret-shaped CLI output, only success and a safe message.
+#[tauri::command]
+pub async fn hermes_reset_bundled_skill(
+    bridge: State<'_, HermesBridge>,
+    request: ResetHermesSkillRequest,
+) -> Result<ResetHermesSkillResult, AppError> {
+    let full_mode = match request.mode.as_str() {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    if !is_safe_skill_name(&request.name) {
+        return Err(AppError::new(
+            "hermes_skill_reset_invalid_name",
+            "Invalid skill name.",
+        ));
+    }
+    if let Some(profile) = request.profile.as_deref() {
+        // A profile id rides the CLI too; hold it to the same slug so it can
+        // never arrive as a stray flag.
+        if !is_safe_skill_name(profile) {
+            return Err(AppError::new(
+                "hermes_skill_reset_invalid_profile",
+                "Invalid Hermes profile.",
+            ));
+        }
+    }
+
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+    else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running in the requested mode.",
+        ));
+    };
+
+    let name = request.name.clone();
+    let profile = request.profile.clone();
+    let restore = request.restore;
+    let mut cmd =
+        build_hermes_skill_reset_command(&connection, &name, restore, profile.as_deref());
+
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_skill_reset_failed",
+                format!("Could not run `hermes skills reset`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, SKILL_RESET_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_skill_reset_failed",
+            format!("Could not run the reset. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    Ok(ResetHermesSkillResult {
+        ok: join.exit_success,
+        message: redact_cli_message(&combined),
         timed_out: join.timed_out,
     })
 }
@@ -5137,6 +5292,42 @@ mod tests {
         assert!(!is_safe_mcp_server_name("a b"));
         assert!(!is_safe_mcp_server_name("rm -rf / ; curl evil"));
         assert!(!is_safe_mcp_server_name("server;name"));
+    }
+
+    #[test]
+    fn skill_reset_command_passes_name_as_discrete_argument() {
+        let connection = oauth_test_connection();
+        let cmd =
+            build_hermes_skill_reset_command(&connection, "pdf", false, Some("work"));
+        let program = cmd.get_program().to_string_lossy().to_string();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(program, "/usr/local/bin/hermes");
+        assert_eq!(args, vec!["skills", "reset", "pdf", "--profile", "work"]);
+    }
+
+    #[test]
+    fn skill_reset_command_adds_restore_flag_and_omits_profile() {
+        let connection = oauth_test_connection();
+        let cmd = build_hermes_skill_reset_command(&connection, "pdf", true, None);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["skills", "reset", "pdf", "--restore"]);
+    }
+
+    #[test]
+    fn rejects_unsafe_skill_names() {
+        assert!(is_safe_skill_name("pdf"));
+        assert!(is_safe_skill_name("my-skill_1.2"));
+        assert!(!is_safe_skill_name(""));
+        assert!(!is_safe_skill_name("--force"));
+        assert!(!is_safe_skill_name("../etc/passwd"));
+        assert!(!is_safe_skill_name("rm -rf / ; curl evil"));
+        assert!(!is_safe_skill_name("skill;name"));
     }
 
     #[test]

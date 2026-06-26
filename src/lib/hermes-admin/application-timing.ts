@@ -30,6 +30,8 @@ export type AdminMutation =
   | "skill.hubInstall"
   | "skill.hubUpdate"
   | "skill.hubUninstall"
+  | "skill.audit"
+  | "skill.reset"
   | "toolset.toggle"
   | "mcp.add"
   | "mcp.remove"
@@ -66,6 +68,12 @@ const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> =
     "skill.hubInstall": "next-session",
     "skill.hubUpdate": "next-session",
     "skill.hubUninstall": "next-session",
+    // An audit re-scans an installed skill's contents; it changes nothing
+    // durable, so the result is visible immediately (like an MCP test probe).
+    "skill.audit": "immediate",
+    // Resetting a bundled skill rewrites its manifest on disk; the runtime reads
+    // the skill index at session start, so the reset applies next session.
+    "skill.reset": "next-session",
     "toolset.toggle": "next-session",
     "mcp.add": "gateway-restart",
     "mcp.remove": "gateway-restart",
@@ -129,6 +137,10 @@ export function mutationNotification(
       return `Updated ${subject}. New sessions use the new version.`;
     case "skill.hubUninstall":
       return `Removed ${subject}. New sessions will not load it.`;
+    case "skill.audit":
+      return `Audited ${subject}.`;
+    case "skill.reset":
+      return `Reset ${subject} to its shipped version. New sessions use it.`;
     case "toolset.toggle":
       return `Toolset updated. New sessions can use it.`;
     case "mcp.add":

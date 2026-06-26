@@ -9882,6 +9882,175 @@ input:focus-visible,
   cursor: default;
 }
 
+.installed-skills-check,
+.installed-skills-update-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.installed-skills-update-all {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.installed-skills-check:disabled,
+.installed-skills-update-all:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Skill lifecycle actions (spec 08): update / audit / uninstall / reset. */
+.skill-lifecycle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.skill-lifecycle-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-lifecycle-action {
+  position: relative;
+  display: inline-flex;
+}
+
+.skill-lifecycle-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm, var(--control-md));
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-lifecycle-action-button[data-destructive="true"] {
+  border-color: var(--destructive, var(--border-subtle));
+  color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-lifecycle-action-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.skill-lifecycle-action-done,
+.skill-lifecycle-action-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.skill-lifecycle-action-failed {
+  color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-lifecycle-retry,
+.skill-lifecycle-clear {
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.skill-lifecycle-unavailable {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.skill-lifecycle-unavailable-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs, var(--fs-sm));
+  color: var(--muted-foreground, var(--secondary-foreground));
+}
+
+.skill-lifecycle-confirm {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + var(--sp-1));
+  left: 0;
+  min-width: 16rem;
+  max-width: 24rem;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--popover, var(--background));
+  box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.18));
+}
+
+.skill-lifecycle-confirm-message {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.skill-lifecycle-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.skill-lifecycle-confirm-cancel,
+.skill-lifecycle-confirm-go {
+  min-height: var(--control-sm, var(--control-md));
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-lifecycle-confirm-go[data-destructive="true"] {
+  border-color: var(--destructive, var(--border-subtle));
+  background: var(--destructive, var(--secondary));
+  color: var(--destructive-foreground, var(--secondary-foreground));
+}
+
+.skill-detail-lifecycle-card .skill-detail-lifecycle-blurb {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground, var(--secondary-foreground));
+}
+
+.skill-detail-lifecycle-modified {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
 .installed-skills-filters {
   display: flex;
   flex-wrap: wrap;

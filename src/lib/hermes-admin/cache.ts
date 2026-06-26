@@ -61,6 +61,12 @@ const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
     "skill.hubInstall": ["skills", "hubSearch", "toolsets"],
     "skill.hubUpdate": ["skills", "hubSearch", "toolsets"],
     "skill.hubUninstall": ["skills", "hubSearch", "toolsets"],
+    // An audit changes nothing durable, so it invalidates only the hub search
+    // (whose scan/verdict the row may reflect), not the installed inventory.
+    "skill.audit": ["hubSearch"],
+    // Resetting a bundled skill rewrites its manifest, so the inventory (and any
+    // tools it registers) must refresh, exactly like a hub update.
+    "skill.reset": ["skills", "toolsets"],
     "toolset.toggle": ["toolsets"],
     "mcp.add": ["mcpServers", "toolsets"],
     "mcp.remove": ["mcpServers", "toolsets"],

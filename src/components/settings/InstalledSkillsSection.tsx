@@ -1,3 +1,4 @@
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
@@ -16,16 +17,19 @@ import {
   skillPath,
   sourceMeta,
   useInstalledSkills,
+  useSkillLifecycle,
   useSkillsSetupOverview,
   type HermesAdminMode,
   type HermesSkillInfo,
   type InstalledSkillsState,
+  type SkillLifecycleState,
   type SkillSetupBadge as SkillSetupBadgeModel,
   type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
 import { Switch } from "../ui/Switch";
 import { AdminNotifications } from "./AdminNotifications";
 import { SkillDetailSection } from "./SkillDetailSection";
+import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
 
 /** Sentinel for the "all categories" filter chip. */
@@ -61,6 +65,10 @@ export function InstalledSkillsSection({
 }: InstalledSkillsSectionProps) {
   const state = useInstalledSkills(mode);
   const setup = useSkillsSetupOverview(mode);
+  // Lifecycle actions (update / audit / uninstall / reset) run on their own
+  // engine; on a successful mutation they refresh the inventory through this
+  // callback so the list + toolsets reflect the change.
+  const lifecycle = useSkillLifecycle(mode, undefined, state.refresh);
   // The detail surface is a sub-view OFF this section (matching how the setup
   // panel and hub drawer are surfaced), not a top-level tab. When the host
   // supplies its own `onOpenSkill`, we defer to it; otherwise we open the
@@ -86,6 +94,7 @@ export function InstalledSkillsSection({
       mode={mode}
       onOpenSkill={handleOpen}
       setup={setup}
+      lifecycle={lifecycle}
     />
   );
 }
@@ -100,6 +109,7 @@ export function InstalledSkillsView({
   mode = "sandboxed",
   onOpenSkill,
   setup,
+  lifecycle,
 }: {
   state: InstalledSkillsState;
   mode?: HermesAdminMode;
@@ -108,6 +118,9 @@ export function InstalledSkillsView({
    * open an inline setup panel. Optional so the view still renders in a test
    * that does not care about setup. */
   setup?: SkillsSetupOverview;
+  /** The lifecycle action state (update / audit / uninstall / reset). Optional so
+   * the view still renders in a test that only cares about the inventory. */
+  lifecycle?: SkillLifecycleState;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
@@ -123,6 +136,21 @@ export function InstalledSkillsView({
       }),
     [state.skills, query, category],
   );
+
+  // The count of skills with an available update that can be bulk-updated (hub /
+  // official, update available, and not locally modified — we never overwrite
+  // local edits in a bulk sweep).
+  const updatableCount = useMemo(() => {
+    if (!lifecycle) return 0;
+    return state.skills.filter((skill) => {
+      const policy = lifecycle.policyFor(skill);
+      return (
+        policy.actions.update.available &&
+        policy.updateAvailable &&
+        !policy.locallyModified
+      );
+    }).length;
+  }, [lifecycle, state.skills]);
 
   // A category that vanished after a refresh should not strand the filter.
   const activeCategory =
@@ -176,6 +204,28 @@ export function InstalledSkillsView({
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
+          {lifecycle ? (
+            <button
+              type="button"
+              className="installed-skills-check"
+              disabled={isUnavailable || isLoadingFirst || lifecycle.sweeping}
+              onClick={lifecycle.checkForUpdates}
+            >
+              <IconArrowRotateClockwise size={14} ariaHidden />
+              {lifecycle.sweeping ? "Checking..." : "Check for updates"}
+            </button>
+          ) : null}
+          {lifecycle && updatableCount > 0 ? (
+            <button
+              type="button"
+              className="installed-skills-update-all"
+              disabled={lifecycle.sweeping}
+              onClick={() => lifecycle.updateAll(state.skills)}
+            >
+              <IconArrowInbox size={14} ariaHidden />
+              Update all ({updatableCount})
+            </button>
+          ) : null}
           <button
             type="button"
             className="installed-skills-refresh"
@@ -186,6 +236,12 @@ export function InstalledSkillsView({
             Refresh
           </button>
         </div>
+        {lifecycle?.sweepError ? (
+          <p className="settings-row-error installed-skills-inline-error">
+            <IconExclamationCircle size={14} ariaHidden />
+            {lifecycle.sweepError}
+          </p>
+        ) : null}
 
         {categories.length > 1 && !isUnavailable ? (
           <div
@@ -256,6 +312,7 @@ export function InstalledSkillsView({
                   onOpen={
                     onOpenSkill ? () => onOpenSkill(skill.name) : undefined
                   }
+                  lifecycle={lifecycle}
                   setupBadge={setup?.badgeFor(skill)}
                   setupOpen={openSetup === skill.name}
                   onToggleSetup={
@@ -364,6 +421,7 @@ function SkillRow({
   pending,
   onToggle,
   onOpen,
+  lifecycle,
   setupBadge,
   setupOpen,
   onToggleSetup,
@@ -373,6 +431,9 @@ function SkillRow({
   pending: boolean;
   onToggle: (enabled: boolean) => void;
   onOpen?: () => void;
+  /** The lifecycle action state, when available, so the row can offer the valid
+   * update / audit / uninstall / reset actions for this skill's source. */
+  lifecycle?: SkillLifecycleState;
   /** The skill's setup status badge, or undefined when it declares no setup. */
   setupBadge?: SkillSetupBadgeModel;
   /** Whether this row's inline setup panel is open. */
@@ -448,6 +509,15 @@ function SkillRow({
             Loaded from an external directory. It may be shared with other tools
             and cannot be changed from June.
           </p>
+        ) : null}
+
+        {lifecycle ? (
+          <SkillLifecycleActions
+            skill={skill}
+            policy={lifecycle.policyFor(skill)}
+            state={lifecycle}
+            variant="row"
+          />
         ) : null}
       </div>
 

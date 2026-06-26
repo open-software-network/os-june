@@ -227,6 +227,9 @@ export type FakeHermesScenario = {
   mcpServers?: FakeMcpServer[];
   mcpCatalog?: FakeCatalogEntry[];
   hubResults?: FakeHubResult[];
+  /** Scan results keyed by hub identifier, served by GET /api/skills/hub/scan.
+   * An identifier with no entry returns an empty (`unknown`-verdict) body. */
+  hubScans?: Record<string, unknown>;
   gateway?: { gateway_running?: boolean; version?: string };
   /** Existing profiles, served by GET /api/profiles and grown by POST. */
   profiles?: FakeProfile[];
@@ -282,6 +285,7 @@ export class FakeHermesServer {
   private mcpServers: FakeMcpServer[];
   private mcpCatalog: FakeCatalogEntry[];
   private hubResults: FakeHubResult[];
+  private hubScans: Record<string, unknown>;
   private gateway: { gateway_running: boolean; version: string };
   private profiles: FakeProfile[];
   private activeProfile: string;
@@ -320,6 +324,7 @@ export class FakeHermesServer {
     this.mcpServers = clone(scenario.mcpServers ?? []);
     this.mcpCatalog = clone(scenario.mcpCatalog ?? []);
     this.hubResults = clone(scenario.hubResults ?? []);
+    this.hubScans = clone(scenario.hubScans ?? {});
     this.gateway = {
       gateway_running: scenario.gateway?.gateway_running ?? false,
       version: scenario.gateway?.version ?? PINNED_HERMES_VERSION,
@@ -432,6 +437,10 @@ export class FakeHermesServer {
           )
         : this.hubResults;
       return json(200, { results });
+    }
+    if (method === "GET" && path === "/api/skills/hub/scan") {
+      const identifier = query.identifier ?? "";
+      return json(200, this.hubScans[identifier] ?? {});
     }
     if (method === "POST" && path === "/api/skills/hub/install") {
       return this.startOrComplete("install");

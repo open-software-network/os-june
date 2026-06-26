@@ -12,21 +12,26 @@ import { IconWarningSign } from "central-icons/IconWarningSign";
 import { useMemo, useState } from "react";
 import {
   hasSupportingFiles,
+  lifecycleClassMeta,
   platformRestrictions,
   skillActivation,
+  skillLifecyclePolicy,
   skillPath,
   skillTags,
   sourceMeta,
   timingLabel,
   useSkillDetail,
+  useSkillLifecycle,
   type HermesAdminMode,
   type HermesSkillInfo,
   type SkillContentIssue,
   type SkillDetailState,
   type SkillDiff,
+  type SkillLifecycleState,
   type SkillSupportingFiles,
 } from "../../lib/hermes-admin";
 import { AdminNotifications } from "./AdminNotifications";
+import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SkillSetupSection } from "./SkillSetupSection";
 
 /**
@@ -62,16 +67,25 @@ export function SkillDetailSection({
   onBack?: () => void;
 }) {
   const state = useSkillDetail(skill, info, mode);
-  return <SkillDetailView state={state} onBack={onBack} />;
+  // Lifecycle actions refresh the skill's content on a successful mutation so the
+  // detail view reflects a reset / update.
+  const lifecycle = useSkillLifecycle(mode, undefined, state.refresh);
+  return (
+    <SkillDetailView state={state} lifecycle={lifecycle} onBack={onBack} />
+  );
 }
 
 /** The render-only view, split out so component tests drive it with a stubbed
  * {@link SkillDetailState} (no Tauri, no network). */
 export function SkillDetailView({
   state,
+  lifecycle,
   onBack,
 }: {
   state: SkillDetailState;
+  /** The lifecycle action state, when available, so the detail surface can offer
+   * update / audit / uninstall / reset and explain the disabled ones. */
+  lifecycle?: SkillLifecycleState;
   onBack?: () => void;
 }) {
   const { info, policy } = state;
@@ -155,6 +169,11 @@ export function SkillDetailView({
       ) : isError ? null : (
         <>
           <MetadataCard info={info} />
+
+          {info && lifecycle ? (
+            <LifecycleCard info={info} lifecycle={lifecycle} />
+          ) : null}
+
           <SupportingFilesCard files={state.supportingFiles} />
 
           {info ? (
@@ -222,6 +241,37 @@ function MetadataCard({ info }: { info?: HermesSkillInfo }) {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** The lifecycle card: the skill's provenance class, then the valid lifecycle
+ * actions plus the invalid ones with their honest reasons. */
+function LifecycleCard({
+  info,
+  lifecycle,
+}: {
+  info: HermesSkillInfo;
+  lifecycle: SkillLifecycleState;
+}) {
+  const policy = skillLifecyclePolicy(info);
+  const meta = lifecycleClassMeta(policy.lifecycleClass);
+  return (
+    <div className="settings-card skill-detail-lifecycle-card">
+      <h3 className="skill-detail-card-heading">Manage</h3>
+      <p className="skill-detail-lifecycle-blurb">{meta.blurb}</p>
+      {policy.locallyModified ? (
+        <p className="skill-detail-lifecycle-modified" role="note">
+          <IconWarningSign size={13} ariaHidden />
+          This skill has local edits. Updating or resetting it replaces them.
+        </p>
+      ) : null}
+      <SkillLifecycleActions
+        skill={info}
+        policy={policy}
+        state={lifecycle}
+        variant="detail"
+      />
     </div>
   );
 }

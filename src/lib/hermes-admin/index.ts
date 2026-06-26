@@ -58,6 +58,8 @@ export * from "./skill-setup-view";
 export * from "./use-skill-setup";
 export * from "./skill-detail-view";
 export * from "./use-skill-detail";
+export * from "./skill-lifecycle-view";
+export * from "./use-skill-lifecycle";
 export * from "./mcp-servers-view";
 export * from "./use-mcp-servers";
 export * from "./mcp-oauth-view";
