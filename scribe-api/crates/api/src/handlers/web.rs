@@ -135,11 +135,10 @@ fn validate_public_http_url(url: &str) -> Result<(), FetchUrlValidationError> {
 fn is_public_domain(domain: &str) -> bool {
     let domain = domain.trim_end_matches('.').to_ascii_lowercase();
     if domain.is_empty()
-        || domain == "localhost"
-        || domain.ends_with(".localhost")
-        || domain.ends_with(".local")
-        || domain.ends_with(".localdomain")
-        || domain.ends_with(".internal")
+        || has_terminal_label(&domain, "localhost")
+        || has_terminal_label(&domain, "local")
+        || has_terminal_label(&domain, "localdomain")
+        || has_terminal_label(&domain, "internal")
     {
         return false;
     }
@@ -151,23 +150,26 @@ fn is_public_domain(domain: &str) -> bool {
         .all(|label| label.chars().all(|ch| ch.is_ascii_digit()))
 }
 
+fn has_terminal_label(domain: &str, label: &str) -> bool {
+    domain == label
+        || domain
+            .strip_suffix(label)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 fn is_public_ipv4(addr: Ipv4Addr) -> bool {
-    match addr.octets() {
-        [0, _, _, _]
-        | [10, _, _, _]
-        | [127, _, _, _]
-        | [169, 254, _, _]
-        | [172, 16..=31, _, _]
-        | [192, 0, 0, _]
-        | [192, 0, 2, _]
-        | [192, 168, _, _]
-        | [198, 18..=19, _, _]
-        | [198, 51, 100, _]
-        | [203, 0, 113, _]
-        | [224..=255, _, _, _] => false,
-        [100, 64..=127, _, _] => false,
-        _ => true,
-    }
+    !matches!(
+        addr.octets(),
+        [0 | 10 | 127 | 224..=255, _, _, _]
+            | [169, 254, _, _]
+            | [172, 16..=31, _, _]
+            | [192, 0, 0 | 2, _]
+            | [192, 168, _, _]
+            | [198, 18..=19, _, _]
+            | [198, 51, 100, _]
+            | [203, 0, 113, _]
+            | [100, 64..=127, _, _]
+    )
 }
 
 fn is_public_ipv6(addr: Ipv6Addr) -> bool {
