@@ -51,8 +51,11 @@ export function isSensitiveKey(key: string): boolean {
  * messages, where structural key-based redaction cannot help.
  */
 export function sanitizeText(value: string): string {
+  return redactTokenFragments(value.replace(URL_PATTERN, sanitizeUrlMatch));
+}
+
+function redactTokenFragments(value: string): string {
   return value
-    .replace(URL_PATTERN, sanitizeUrlMatch)
     .replace(BEARER_PATTERN, (match) =>
       match.replace(/\s+\S+$/u, " [redacted]"),
     )
@@ -172,7 +175,7 @@ function sanitizeUrl(value: string): string | undefined {
       }
     }
 
-    return changed ? url.toString() : value;
+    return redactTokenFragments(changed ? url.toString() : value);
   } catch {
     return undefined;
   }

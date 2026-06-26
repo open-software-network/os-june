@@ -77,6 +77,18 @@ describe("sanitizePayload — value-shape backstop exempts paths/urls", () => {
     expect(out.url).not.toContain("supersecret");
   });
 
+  it("redacts token substrings inside a standalone URL", () => {
+    const jwt = "eyJaaaaaaaaaa.bbbbbbbbbbbb.cccccccccccc";
+    const out = sanitizePayload({
+      pathUrl: "https://api.example.com/sk-abcdefghijklmnopqrstuvwxyz123456",
+      callbackUrl: `https://host.example/callback?code=${jwt}&view=1`,
+    }) as Record<string, unknown>;
+
+    expect(out.pathUrl).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+    expect(out.callbackUrl).toContain("view=1");
+    expect(out.callbackUrl).not.toContain(jwt);
+  });
+
   it("preserves a ~/ home path and a Windows drive path", () => {
     const out = sanitizePayload({
       home: "~/code/project/src/components/AgentWorkspace.tsx",
