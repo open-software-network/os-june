@@ -274,13 +274,14 @@ function ModeNote({
   );
 }
 
-/** The shared gateway-lifecycle banner. Only shown when there is something to
- * say (a pending next-session change or a restart state) so a clean page is not
- * cluttered. Skill toggles are next-session, so this stays informational. */
+/** The shared gateway-lifecycle banner. Always shown (every skill change applies
+ * to new sessions, so the page states that standing, not only after a change).
+ * When the lifecycle is clean it carries the standing next-session message; a
+ * non-clean state (a pending restart) overrides it with its own copy + tone. */
 function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
-  const snapshot = state.lifecycle;
   if (state.status === "unavailable") return null;
-  if (snapshot.state === "clean") return null;
+  const snapshot = state.lifecycle;
+  const clean = snapshot.state === "clean";
   const tone =
     snapshot.state === "restart-failed"
       ? "destructive"
@@ -288,13 +289,19 @@ function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
           snapshot.state === "active-session-should-restart"
         ? "warning"
         : "info";
+  // The standing copy mirrors gateway-lifecycle's `changes-apply-next-session`
+  // snapshot, shown before any toggle so the timing is never a surprise.
+  const label = clean ? "Applies next session" : snapshot.label;
+  const detail = clean
+    ? "Your changes take effect in new sessions. Current sessions are unaffected."
+    : snapshot.detail;
   return (
     <div className="installed-skills-lifecycle" data-tone={tone} role="status">
       <span className="installed-skills-lifecycle-eyebrow">
         <IconCircleInfo size={15} ariaHidden />
-        {snapshot.label}
+        {label}
       </span>
-      <span className="installed-skills-lifecycle-body">{snapshot.detail}</span>
+      <span className="installed-skills-lifecycle-body">{detail}</span>
     </div>
   );
 }
@@ -482,9 +489,11 @@ function SkillRow({
             aria-labelledby={labelId}
             onCheckedChange={onToggle}
           />
-          <span className="installed-skill-timing" aria-hidden>
-            {pending ? "Saving" : "Next session"}
-          </span>
+          {pending ? (
+            <span className="installed-skill-timing" aria-hidden>
+              Saving
+            </span>
+          ) : null}
         </span>
       </div>
 
