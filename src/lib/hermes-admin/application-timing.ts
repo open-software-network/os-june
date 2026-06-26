@@ -37,6 +37,8 @@ export type AdminMutation =
   | "mcp.installCatalog"
   | "env.set"
   | "env.delete"
+  | "config.set"
+  | "config.delete"
   | "gateway.restart";
 
 /**
@@ -49,6 +51,8 @@ export type AdminMutation =
  *   reload.
  * - MCP test: IMMEDIATE (it is a probe, it changes nothing durable).
  * - env writes: GATEWAY RESTART (the runtime reads env at process start).
+ * - skill config writes (`skills.config` in config.yaml): NEXT SESSION (the
+ *   runtime reads skill config when a session starts, like the skill index).
  * - gateway restart itself: IMMEDIATE once the restart completes.
  */
 const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> =
@@ -65,6 +69,8 @@ const TIMING: Readonly<Record<AdminMutation, ApplicationTiming>> =
     "mcp.installCatalog": "gateway-restart",
     "env.set": "gateway-restart",
     "env.delete": "gateway-restart",
+    "config.set": "next-session",
+    "config.delete": "next-session",
     "gateway.restart": "immediate",
   });
 
@@ -122,6 +128,10 @@ export function mutationNotification(
       return `Saved ${subject}. Restart Hermes gateway to apply it.`;
     case "env.delete":
       return `Removed ${subject}. Restart Hermes gateway to apply it.`;
+    case "config.set":
+      return `Saved ${subject}. New sessions use the new value.`;
+    case "config.delete":
+      return `Cleared ${subject}. New sessions use the default.`;
     case "gateway.restart":
       return `Gateway restarted. Tool inventory refreshed.`;
   }

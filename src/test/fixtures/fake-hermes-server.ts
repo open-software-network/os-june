@@ -32,6 +32,9 @@
  *   PUT    /api/env
  *   DELETE /api/env
  *   POST   /api/env/reveal
+ *   GET    /api/config
+ *   PUT    /api/config
+ *   DELETE /api/config
  *
  * SECURITY: fixtures here use OBVIOUSLY FAKE secrets (e.g. `sk-FAKE-...`) so a
  * redaction-leak test that asserts a fake token never appears in a log line has
@@ -58,6 +61,32 @@ export type FakeSkill = {
   fallback_for_toolsets?: string[];
   requires_tools?: string[];
   fallback_for_tools?: string[];
+  /** Setup metadata Hermes forwards from SKILL.md (spec 09). Carried through the
+   * GET verbatim so the setup panel can parse required secrets/config. */
+  required_environment_variables?: Array<
+    | string
+    | {
+        name: string;
+        prompt?: string;
+        help?: string;
+        required_for?: string;
+        required?: boolean;
+        optional?: boolean;
+      }
+  >;
+  metadata?: {
+    hermes?: {
+      config?:
+        | Array<{
+            key: string;
+            prompt?: string;
+            description?: string;
+            default?: unknown;
+            required?: boolean;
+          }>
+        | Record<string, unknown>;
+    };
+  };
 };
 
 export type FakeToolset = {
@@ -190,6 +219,10 @@ export type FakeHermesScenario = {
   gateway?: { gateway_running?: boolean; version?: string };
   /** Initial env keys (values never returned). */
   env?: Record<string, string>;
+  /** Initial config tree, served by GET /api/config and mutated by PUT/DELETE
+   * /api/config (path in the body). Skill config lives under
+   * `skills.config.<skill>.<key>`. */
+  config?: Record<string, unknown>;
   /** When true, hub installs / catalog installs / gateway restart return an
    * action handle and require polling. When false, they complete synchronously. */
   backgroundActions?: boolean;
@@ -233,6 +266,7 @@ export class FakeHermesServer {
   private hubResults: FakeHubResult[];
   private gateway: { gateway_running: boolean; version: string };
   private env: Record<string, string>;
+  private config: Record<string, unknown>;
   private readonly backgroundActions: boolean;
   private readonly actionScripts: Record<string, FakeActionScript>;
   private readonly actions = new Map<string, ActionRecord>();
@@ -254,6 +288,7 @@ export class FakeHermesServer {
       version: scenario.gateway?.version ?? PINNED_HERMES_VERSION,
     };
     this.env = clone(scenario.env ?? {});
+    this.config = clone(scenario.config ?? {});
     this.backgroundActions = scenario.backgroundActions ?? false;
     this.actionScripts = scenario.actionScripts ?? {};
   }
@@ -478,6 +513,36 @@ export class FakeHermesServer {
       return json(200, { key, value: this.env[key] ?? "" });
     }
 
+    // Config (non-secret). GET returns the tree; PUT sets a dotted path; DELETE
+    // clears one (path in the BODY). Skill config lives under
+    // `skills.config.<skill>.<key>`.
+    if (method === "GET" && path === "/api/config") {
+      return json(200, { config: this.config });
+    }
+    if (method === "PUT" && path === "/api/config") {
+      const { path: dotted, value } =
+        (body as { path?: string; value?: unknown }) ?? {};
+      if (typeof dotted !== "string" || dotted.length === 0) {
+        throw new HttpError(422, {
+          code: "validation_error",
+          error: "field required: path",
+        });
+      }
+      setConfigPath(this.config, dotted.split("."), value);
+      return json(200, { ok: true, path: dotted, applies_at: "next-session" });
+    }
+    if (method === "DELETE" && path === "/api/config") {
+      const dotted = (body as { path?: unknown })?.path;
+      if (typeof dotted !== "string" || dotted.length === 0) {
+        throw new HttpError(422, {
+          code: "validation_error",
+          error: "field required: path",
+        });
+      }
+      deleteConfigPath(this.config, dotted.split("."));
+      return json(200, { ok: true, path: dotted, applies_at: "next-session" });
+    }
+
     throw new HttpError(404, { code: "not_found", error: `no route ${path}` });
   }
 
@@ -613,6 +678,40 @@ function json(status: number, payload: unknown): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Sets a dotted path inside a config tree, creating intermediate objects. */
+function setConfigPath(
+  root: Record<string, unknown>,
+  segments: string[],
+  value: unknown,
+): void {
+  let cursor = root;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const key = segments[i];
+    const next = cursor[key];
+    if (typeof next !== "object" || next === null || Array.isArray(next)) {
+      cursor[key] = {};
+    }
+    cursor = cursor[key] as Record<string, unknown>;
+  }
+  cursor[segments[segments.length - 1]] = value;
+}
+
+/** Deletes a dotted path from a config tree, if present. */
+function deleteConfigPath(
+  root: Record<string, unknown>,
+  segments: string[],
+): void {
+  let cursor: Record<string, unknown> | undefined = root;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const next = cursor?.[segments[i]];
+    if (typeof next !== "object" || next === null || Array.isArray(next)) {
+      return;
+    }
+    cursor = next as Record<string, unknown>;
+  }
+  if (cursor) delete cursor[segments[segments.length - 1]];
 }
 
 /** A masked, non-secret preview of an env value for the GET /api/env listing

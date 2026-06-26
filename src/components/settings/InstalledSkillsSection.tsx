@@ -17,11 +17,15 @@ import {
   skillPath,
   sourceMeta,
   useInstalledSkills,
+  useSkillsSetupOverview,
   type HermesAdminMode,
   type HermesSkillInfo,
   type InstalledSkillsState,
+  type SkillSetupBadge as SkillSetupBadgeModel,
+  type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
 import { Switch } from "../ui/Switch";
+import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
 
 /** Sentinel for the "all categories" filter chip. */
 const ALL_CATEGORIES = "__all__";
@@ -54,8 +58,14 @@ export function InstalledSkillsSection({
   onOpenSkill,
 }: InstalledSkillsSectionProps) {
   const state = useInstalledSkills(mode);
+  const setup = useSkillsSetupOverview(mode);
   return (
-    <InstalledSkillsView state={state} mode={mode} onOpenSkill={onOpenSkill} />
+    <InstalledSkillsView
+      state={state}
+      mode={mode}
+      onOpenSkill={onOpenSkill}
+      setup={setup}
+    />
   );
 }
 
@@ -68,13 +78,20 @@ export function InstalledSkillsView({
   state,
   mode = "sandboxed",
   onOpenSkill,
+  setup,
 }: {
   state: InstalledSkillsState;
   mode?: HermesAdminMode;
   onOpenSkill?: (name: string) => void;
+  /** The shared setup overview, so each row can show its setup status badge and
+   * open an inline setup panel. Optional so the view still renders in a test
+   * that does not care about setup. */
+  setup?: SkillsSetupOverview;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
+  // The skill whose inline setup panel is open (one at a time).
+  const [openSetup, setOpenSetup] = useState<string | null>(null);
 
   const categories = useMemo(() => categoriesOf(state.skills), [state.skills]);
   const visible = useMemo(
@@ -215,6 +232,17 @@ export function InstalledSkillsView({
                   onOpen={
                     onOpenSkill ? () => onOpenSkill(skill.name) : undefined
                   }
+                  setupBadge={setup?.badgeFor(skill)}
+                  setupOpen={openSetup === skill.name}
+                  onToggleSetup={
+                    setup
+                      ? () =>
+                          setOpenSetup((current) =>
+                            current === skill.name ? null : skill.name,
+                          )
+                      : undefined
+                  }
+                  setupMode={state.mode ?? mode}
                 />
               ))}
             </ul>
@@ -337,11 +365,23 @@ function SkillRow({
   pending,
   onToggle,
   onOpen,
+  setupBadge,
+  setupOpen,
+  onToggleSetup,
+  setupMode,
 }: {
   skill: HermesSkillInfo;
   pending: boolean;
   onToggle: (enabled: boolean) => void;
   onOpen?: () => void;
+  /** The skill's setup status badge, or undefined when it declares no setup. */
+  setupBadge?: SkillSetupBadgeModel;
+  /** Whether this row's inline setup panel is open. */
+  setupOpen?: boolean;
+  /** Toggles the inline setup panel; undefined hides the setup affordance. */
+  onToggleSetup?: () => void;
+  /** The mode the setup panel targets (so a write's blast radius is explicit). */
+  setupMode?: HermesAdminMode;
 }) {
   const meta = sourceMeta(skill.source);
   const restrictions = platformRestrictions(skill);
@@ -349,6 +389,8 @@ function SkillRow({
   const path = skillPath(skill);
   const readOnly = Boolean(skill.readOnly);
   const labelId = `installed-skill-${cssId(skill.name)}`;
+  const panelId = `installed-skill-setup-${cssId(skill.name)}`;
+  const canSetUp = Boolean(setupBadge && onToggleSetup);
 
   return (
     <li className="installed-skill-row" data-enabled={skill.enabled}>
@@ -361,6 +403,7 @@ function SkillRow({
           {skill.version ? (
             <span className="installed-skill-version">v{skill.version}</span>
           ) : null}
+          {setupBadge ? <SetupStatusBadge badge={setupBadge} /> : null}
           {readOnly ? (
             <span className="installed-skill-readonly" title={meta.blurb}>
               <IconLock size={12} ariaHidden />
@@ -410,6 +453,17 @@ function SkillRow({
       </div>
 
       <div className="installed-skill-actions">
+        {canSetUp ? (
+          <button
+            type="button"
+            className="installed-skill-setup-toggle"
+            aria-expanded={setupOpen}
+            aria-controls={panelId}
+            onClick={onToggleSetup}
+          >
+            {setupOpen ? "Hide setup" : "Set up"}
+          </button>
+        ) : null}
         {onOpen ? (
           <button
             type="button"
@@ -433,6 +487,17 @@ function SkillRow({
           </span>
         </span>
       </div>
+
+      {canSetUp && setupOpen ? (
+        <div className="installed-skill-setup-panel" id={panelId}>
+          <SkillSetupSection
+            skill={skill.name}
+            skillRaw={skill.raw}
+            mode={setupMode}
+            onClose={onToggleSetup}
+          />
+        </div>
+      ) : null}
     </li>
   );
 }

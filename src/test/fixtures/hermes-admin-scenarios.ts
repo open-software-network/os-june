@@ -342,6 +342,77 @@ export function pendingSkillWritesScenario(): FakeHermesScenario {
   };
 }
 
+/** Skill setup matrix (spec 09): a skill that declares a required secret (not
+ * yet set), a skill with a required config value (already set) plus an optional
+ * one (unset), and a skill that declares no setup at all. Drives the setup
+ * panel's required-vs-optional, configured-vs-missing, and badge logic. The
+ * env/config state is seeded so badges read realistically: `OPENAI_API_KEY` is
+ * missing (badge: missing API key); `output_dir` is set, `model` is unset and
+ * optional (badge: optional setup skipped). */
+export function skillSetupScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-skill-setup",
+    skills: [
+      {
+        name: "research",
+        description: "Multi-source research",
+        enabled: true,
+        source: "hub",
+        required_environment_variables: [
+          {
+            name: "OPENAI_API_KEY",
+            prompt: "OpenAI API key",
+            help: "Used to call the research model.",
+            required_for: "model calls",
+            required: true,
+          },
+          {
+            name: "SERP_API_KEY",
+            prompt: "Search API key",
+            required: false,
+          },
+        ],
+      },
+      {
+        name: "exporter",
+        description: "Exports notes to disk",
+        enabled: true,
+        source: "hub",
+        metadata: {
+          hermes: {
+            config: [
+              {
+                key: "output_dir",
+                prompt: "Output directory",
+                description: "Where exports are written.",
+                default: "~/exports",
+                required: true,
+              },
+              {
+                key: "format",
+                prompt: "Export format",
+                default: "md",
+                required: false,
+              },
+            ],
+          },
+        },
+      },
+      {
+        name: "no-setup",
+        description: "Needs nothing",
+        enabled: true,
+        source: "bundled",
+      },
+    ],
+    // OPENAI_API_KEY is intentionally NOT set (missing required secret).
+    env: { SERP_API_KEY: FAKE_SECRET },
+    // output_dir is already configured; format is left at its default.
+    config: { skills: { config: { exporter: { output_dir: "~/notes" } } } },
+    gateway: { gateway_running: true },
+  };
+}
+
 /** MCP with no servers configured. Empty-state for the MCP page. */
 export function mcpNoServersScenario(): FakeHermesScenario {
   return {

@@ -10240,6 +10240,311 @@ input:focus-visible,
   width: 70%;
 }
 
+/* Skill config + required-secret setup (Hermes admin surface, spec 09). The
+ * setup status badge sits inline in a skill row; the per-skill setup panel
+ * expands inline below the row and spans both grid columns. Tokens only. */
+.skill-setup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.skill-setup-badge[data-tone="ready"] {
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  color: var(--success);
+}
+
+.skill-setup-badge[data-tone="attention"] {
+  background: color-mix(in oklch, var(--warm-strong) 16%, transparent);
+  color: var(--warm-strong);
+}
+
+.installed-skill-setup-toggle {
+  align-self: center;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.installed-skill-setup-toggle:hover {
+  background: var(--surface-subtle);
+}
+
+.installed-skill-setup-panel {
+  grid-column: 1 / -1;
+  margin-top: var(--sp-3);
+}
+
+.skill-setup {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.skill-setup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.skill-setup-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-setup-skill {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.skill-setup-close,
+.skill-setup-notification-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.skill-setup-close:hover,
+.skill-setup-notification-dismiss:hover {
+  color: var(--foreground);
+}
+
+.skill-setup-block {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-setup-block-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.skill-setup-block-note,
+.skill-setup-none,
+.skill-setup-loading {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.skill-setup-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.skill-setup-row {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+}
+
+.skill-setup-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-setup-row-name {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
+
+.skill-setup-tag {
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-tag-required {
+  background: color-mix(in oklch, var(--warm-strong) 14%, transparent);
+  color: var(--warm-strong);
+}
+
+.skill-setup-row-state {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-row-state[data-configured="true"],
+.skill-setup-row-state[data-configured] {
+  color: var(--success);
+}
+
+.skill-setup-row-prompt {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-setup-row-help,
+.skill-setup-row-preview,
+.skill-setup-row-revealed {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.skill-setup-row-preview {
+  font-family: var(--font-mono);
+}
+
+.skill-setup-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.skill-setup-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
+
+.skill-setup-input:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 1px;
+}
+
+.skill-setup-field-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.skill-setup-field-toggle:hover {
+  color: var(--foreground);
+}
+
+.skill-setup-field-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-setup-save,
+.skill-setup-reveal,
+.skill-setup-clear,
+.skill-setup-retry {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.skill-setup-save {
+  border-color: transparent;
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.skill-setup-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.skill-setup-clear {
+  color: var(--destructive);
+  border-color: color-mix(in oklch, var(--destructive) 36%, transparent);
+}
+
+.skill-setup-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-notifications {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-setup-notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  font-size: var(--fs-xs);
+}
+
+.skill-setup-notification[data-tone="destructive"] {
+  background: var(--destructive-soft);
+  color: var(--destructive);
+}
+
 /* MCP servers (Hermes admin surface). Mirrors the installed-skills chrome:
  * settings-group / settings-card, a toolbar, a lifecycle banner, durable
  * notifications, and server rows with transport / risk / status pills. Tokens

@@ -1256,6 +1256,271 @@ export function parseEnvWriteResult(
 }
 
 // ----------------------------------------------------------------------------
+// Skill setup requirements (parsed from a skill's metadata)
+// ----------------------------------------------------------------------------
+
+/**
+ * One required environment variable a skill declares for secure setup, read from
+ * `required_environment_variables` in the skill's metadata (or `SKILL.md`
+ * frontmatter Hermes forwards). The VALUE is never modeled here: a secret is
+ * write-only from June, so this carries only the name and the human-facing
+ * prompt/help, never the secret itself.
+ */
+export type HermesSkillEnvRequirement = {
+  /** The env var name, e.g. `OPENAI_API_KEY`. */
+  name: string;
+  /** A short label/prompt for the field, when declared. */
+  prompt?: string;
+  /** Longer help text, when declared. */
+  help?: string;
+  /** What the variable is needed for, when declared. */
+  requiredFor?: string;
+  /** Whether the skill marks this as required (vs optional). Defaults to true:
+   * a declared env var is treated as required unless metadata says otherwise. */
+  required: boolean;
+};
+
+/**
+ * One non-secret config setting a skill declares under `metadata.hermes.config`,
+ * stored under `skills.config` in `config.yaml`. Unlike a secret, the current
+ * value IS shown (it is not sensitive), so the panel can render current vs
+ * default.
+ */
+export type HermesSkillConfigRequirement = {
+  /** The config key, e.g. `output_dir`. */
+  key: string;
+  /** A short label/prompt for the field, when declared. */
+  prompt?: string;
+  /** A longer description, when declared. */
+  description?: string;
+  /** The declared default, rendered as a hint and used to detect "still
+   * default". A string for display; non-string defaults are stringified. */
+  default?: string;
+  /** Whether this config setting is marked required. Defaults to false: config
+   * is optional unless the skill says full functionality requires it. */
+  required: boolean;
+};
+
+/** A skill's parsed setup requirements: the env-style secrets and the
+ * non-secret config settings it declares. Both lists are empty when the skill
+ * declares nothing, so "no setup needed" is distinguishable from "not parsed". */
+export type HermesSkillSetupRequirements = {
+  env: HermesSkillEnvRequirement[];
+  config: HermesSkillConfigRequirement[];
+};
+
+/** A truthy-but-not-explicitly-false read of a `required` flag, defaulting to
+ * `fallback` when the field is absent or malformed. */
+function readRequiredFlag(
+  record: Record<string, unknown>,
+  fallback: boolean,
+): boolean {
+  const explicit =
+    pickBool([record], ["required", "is_required"]) ??
+    // `optional: true` inverts to `required: false`.
+    (pickBool([record], ["optional"]) === true ? false : undefined);
+  return explicit ?? fallback;
+}
+
+/** Stringifies a default value for display. Objects/arrays are JSON-encoded so a
+ * structured default still renders something honest rather than `[object
+ * Object]`; null/undefined become undefined (no default shown). */
+function stringifyDefault(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") return value.length > 0 ? value : undefined;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseEnvRequirement(
+  raw: unknown,
+): HermesSkillEnvRequirement | undefined {
+  // A bare string is just the name (required by default).
+  const bare = nonEmptyString(raw);
+  if (bare) return { name: bare, required: true };
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const name = pickString([record], ["name", "key", "env", "variable", "var"]);
+  if (!name) return undefined;
+  return {
+    name,
+    prompt: pickString([record], ["prompt", "label", "title"]),
+    help: pickString([record], ["help", "description", "desc", "hint"]),
+    requiredFor: pickString(
+      [record],
+      ["required_for", "requiredFor", "for", "purpose"],
+    ),
+    required: readRequiredFlag(record, true),
+  };
+}
+
+function parseConfigRequirement(
+  key: string | undefined,
+  raw: unknown,
+): HermesSkillConfigRequirement | undefined {
+  const record = asRecord(raw);
+  if (!record) {
+    // A plain `key: default` entry: the value is the default, key from the map.
+    if (!key) return undefined;
+    return {
+      key,
+      default: stringifyDefault(raw),
+      required: false,
+    };
+  }
+  const resolvedKey =
+    pickString([record], ["key", "name"]) ?? (key && key.length > 0 ? key : "");
+  if (!resolvedKey) return undefined;
+  return {
+    key: resolvedKey,
+    prompt: pickString([record], ["prompt", "label", "title"]),
+    description: pickString([record], ["description", "desc", "help", "hint"]),
+    default: stringifyDefault(
+      record.default ?? record.fallback ?? record.value,
+    ),
+    required: readRequiredFlag(record, false),
+  };
+}
+
+/** Reads the config requirement list from either an array of entries or a
+ * `key -> default|meta` map (the common YAML shape `metadata.hermes.config`
+ * uses). */
+function parseConfigRequirements(
+  value: unknown,
+): HermesSkillConfigRequirement[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => parseConfigRequirement(undefined, entry))
+      .filter((c): c is HermesSkillConfigRequirement => c !== undefined);
+  }
+  const record = asRecord(value);
+  if (!record) return [];
+  return Object.entries(record)
+    .map(([key, entry]) => parseConfigRequirement(key, entry))
+    .filter((c): c is HermesSkillConfigRequirement => c !== undefined);
+}
+
+/**
+ * Parses a skill's setup requirements from its raw metadata. Tolerates the
+ * documented shapes: `required_environment_variables` (array of names or
+ * `{ name, prompt, help, required_for }`) at the top level or under
+ * `metadata`/`hermes`, and `metadata.hermes.config` (array or key->meta map).
+ * Returns empty lists when nothing is declared. Never throws; never reads a
+ * value.
+ */
+export function parseSkillSetupRequirements(
+  raw: unknown,
+): HermesSkillSetupRequirements {
+  const record = asRecord(raw);
+  if (!record) return { env: [], config: [] };
+  const metadata = asRecord(record.metadata);
+  const hermes =
+    asRecord(metadata?.hermes) ?? asRecord(record.hermes) ?? undefined;
+
+  // Env requirements may sit at the top level, under metadata, or under
+  // metadata.hermes — check each in priority order, first hit wins.
+  const envRaw =
+    record.required_environment_variables ??
+    record.requiredEnvironmentVariables ??
+    metadata?.required_environment_variables ??
+    hermes?.required_environment_variables ??
+    hermes?.env ??
+    metadata?.env;
+  const env = Array.isArray(envRaw)
+    ? envRaw
+        .map(parseEnvRequirement)
+        .filter((e): e is HermesSkillEnvRequirement => e !== undefined)
+    : [];
+
+  const configRaw =
+    hermes?.config ?? metadata?.config ?? record.config ?? undefined;
+  const config = parseConfigRequirements(configRaw);
+
+  return { env, config };
+}
+
+// ----------------------------------------------------------------------------
+// Config (`GET /api/config`, `PUT /api/config`) — non-secret skill config under
+// `skills.config` in config.yaml.
+// ----------------------------------------------------------------------------
+
+/** Result of `GET /api/config`: the raw config tree (so a caller can read a
+ * dotted path out of it). June reads `skills.config.<skill>.<key>` from this;
+ * the tree may carry other keys we leave untouched. */
+export type HermesConfigResult = {
+  config: Record<string, unknown>;
+  raw: unknown;
+};
+
+/** Parses `GET /api/config`. Tolerates the config under `config`/`data` or at
+ * the top level. Never throws. */
+export function parseConfigResult(raw: unknown): HermesConfigResult {
+  const record = asRecord(raw);
+  if (!record) return { config: {}, raw };
+  const inner = asRecord(record.config) ?? asRecord(record.data) ?? record;
+  return { config: inner, raw };
+}
+
+/** Result of a `PUT /api/config` write. Never carries a value back beyond an
+ * ack; the key path is echoed for the notification label. */
+export type HermesConfigWriteResult = {
+  path: string;
+  ok: boolean;
+  /** When the write applies, per Hermes (defaults to next-session for skill
+   * config, which the runtime reads when a session starts). */
+  appliesAt: ApplicationTiming;
+  message?: string;
+  raw: unknown;
+};
+
+export function parseConfigWriteResult(
+  path: string,
+  raw: unknown,
+): HermesConfigWriteResult {
+  const record = asRecord(raw);
+  const ok = pickBool([record], ["ok", "success", "saved", "updated"]) ?? true;
+  const timing = nonEmptyString(
+    record?.applies_at ?? record?.appliesAt ?? record?.timing,
+  )?.toLowerCase();
+  const appliesAt: ApplicationTiming =
+    timing === "immediate"
+      ? "immediate"
+      : timing === "gateway-restart" || timing === "gateway_restart"
+        ? "gateway-restart"
+        : "next-session";
+  return {
+    path,
+    ok,
+    appliesAt,
+    message: pickString([record], ["message", "detail", "status_message"]),
+    raw,
+  };
+}
+
+/** Reads a single dotted path (`a.b.c`) out of a parsed config tree, returning
+ * the value as a display string or undefined when absent. Used to read a skill's
+ * current `skills.config.<skill>.<key>` value. Non-string leaves are stringified
+ * so a numeric/boolean config still renders. */
+export function readConfigPath(
+  config: Record<string, unknown>,
+  path: readonly string[],
+): string | undefined {
+  let cursor: unknown = config;
+  for (const segment of path) {
+    const record = asRecord(cursor);
+    if (!record) return undefined;
+    cursor = record[segment];
+  }
+  return stringifyDefault(cursor);
+}
+
+// ----------------------------------------------------------------------------
 // Shared helpers
 // ----------------------------------------------------------------------------
 

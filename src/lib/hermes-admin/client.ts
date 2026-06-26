@@ -25,6 +25,8 @@ import { HermesAdminError } from "./errors";
 import {
   parseActionHandle,
   parseActionStatus,
+  parseConfigResult,
+  parseConfigWriteResult,
   parseEnvListing,
   parseEnvRevealResult,
   parseEnvWriteResult,
@@ -39,6 +41,8 @@ import {
   parseToolsetList,
   type HermesActionState,
   type HermesActionStatus,
+  type HermesConfigResult,
+  type HermesConfigWriteResult,
   type HermesEnvListing,
   type HermesEnvRevealResult,
   type HermesEnvWriteResult,
@@ -217,6 +221,25 @@ export type HermesAdminClient = {
     reveal(key: string): Promise<HermesEnvRevealResult>;
   };
 
+  readonly config: {
+    /** Reads the config tree for the target profile. `GET /api/config`. A caller
+     * reads a dotted path (e.g. `skills.config.<skill>.<key>`) out of the
+     * result. Non-secret: skill config is not sensitive, so values ARE returned
+     * here (unlike env). */
+    get(): Promise<HermesConfigResult>;
+    /** Writes a single dotted config path. `PUT /api/config` with
+     * `{ path, value, profile? }`. Used for non-secret skill config under
+     * `skills.config`; applies next session (the runtime reads config at session
+     * start). */
+    set(
+      path: string,
+      value: string,
+    ): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Clears a single dotted config path back to its default. `DELETE
+     * /api/config` with `{ path, profile? }` (the path is in the BODY). */
+    delete(path: string): Promise<MutationOutcome<HermesConfigWriteResult>>;
+  };
+
   /**
    * Drives a backgrounded action to a terminal state by polling
    * `/api/actions/{name}/status`. Resolves with the final status (which may be
@@ -255,6 +278,7 @@ export function createHermesAdminClient(
       },
     },
     env: makeEnv(send),
+    config: makeConfig(send),
     pollAction(actionName: string, pollOptions: PollActionOptions = {}) {
       return pollAction(send, actionName, pollOptions);
     },
@@ -502,6 +526,33 @@ function makeEnv(send: AdminTransport): HermesAdminClient["env"] {
         },
         (raw) => parseEnvRevealResult(key, raw),
       );
+    },
+  };
+}
+
+function makeConfig(send: AdminTransport): HermesAdminClient["config"] {
+  return {
+    get() {
+      // GET /api/config (profile via the centrally-added ?profile= query).
+      return send({ method: "GET", path: "/api/config" }, parseConfigResult);
+    },
+    async set(path, value) {
+      // PUT /api/config with ConfigUpdate { path, value }; profile via query.
+      // Skill config is non-secret, but the value is still not logged — the
+      // structural sanitizer masks any credential-shaped value defensively.
+      const result = await send(
+        { method: "PUT", path: "/api/config", body: { path, value } },
+        (raw) => parseConfigWriteResult(path, raw),
+      );
+      return outcome("config.set", result);
+    },
+    async delete(path) {
+      // DELETE /api/config with ConfigDelete { path } in the BODY (not the URL).
+      const result = await send(
+        { method: "DELETE", path: "/api/config", body: { path } },
+        (raw) => parseConfigWriteResult(path, raw),
+      );
+      return outcome("config.delete", result);
     },
   };
 }

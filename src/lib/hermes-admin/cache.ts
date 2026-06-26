@@ -39,7 +39,8 @@ export type AdminResource =
   | "profiles"
   | "gatewayStatus"
   | "actionStatus"
-  | "envConfig";
+  | "envConfig"
+  | "configTree";
 
 /** The resources each mutation invalidates. These encode the spec's rules:
  * - skill toggle / hub install-update-uninstall: skills (+ hub + toolsets for
@@ -47,6 +48,8 @@ export type AdminResource =
  * - MCP add/remove/test/enable/filter: mcpServers AND toolsets;
  * - catalog install: mcpServers, catalog, toolsets;
  * - env writes: envConfig (+ gatewayStatus, since a restart may be needed);
+ * - skill config writes: configTree (+ skills, since a skill's setup status can
+ *   change once its config is filled in);
  * - gateway restart: mcpServers, toolsets, skills, gatewayStatus (full refresh).
  */
 const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
@@ -63,6 +66,8 @@ const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
     "mcp.installCatalog": ["mcpServers", "mcpCatalog", "toolsets"],
     "env.set": ["envConfig", "gatewayStatus"],
     "env.delete": ["envConfig", "gatewayStatus"],
+    "config.set": ["configTree", "skills"],
+    "config.delete": ["configTree", "skills"],
     "gateway.restart": ["mcpServers", "toolsets", "skills", "gatewayStatus"],
   });
 
