@@ -10,8 +10,17 @@
 /** Keys whose values are masked wherever they appear in a payload. Matched
  * case-insensitively against each object key. Covers the obvious secret-bearing
  * names; widen here (one place) if Hermes introduces a new sensitive field. */
+// NOTE: deliberately NO `value` here. A field literally named `value` is far
+// more often a benign tool result (`{result:{value:42}}`, `numericValue`) than
+// a credential, and masking it surfaced `[redacted]` on common tool cards and
+// in the artifact store. The genuine secret path — `secret.request` — never
+// reaches this redactor with its raw value: `classifyPendingAction` structurally
+// drops the value and emits only `{ kind: "secret", keyName, redacted: true }`.
+// Credential-shaped values under benign keys are still caught by the value-shape
+// backstop (`isLikelySecretValue`), so dropping the key match does not widen
+// leakage.
 const SENSITIVE_KEY_PATTERN =
-  /(token|api[_-]?key|secret|password|passphrase|private[_-]?key|credential|authorization|value|pin|otp)/i;
+  /(token|api[_-]?key|secret|password|passphrase|private[_-]?key|credential|authorization|pin|otp)/i;
 
 const REDACTED = "[redacted]";
 

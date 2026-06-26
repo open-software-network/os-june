@@ -2,15 +2,18 @@ import { describe, expect, it } from "vitest";
 import { isSensitiveKey, sanitizePayload } from "../lib/hermes-control-plane";
 
 describe("sanitizePayload — key-based redaction", () => {
-  it("redacts a SHORT value under `value` (the literal key secret/sudo responses use)", () => {
-    // Too short for the value-shape heuristic; only the key match catches it.
-    const out = sanitizePayload({ request_id: "r1", value: "1234" }) as Record<
-      string,
-      unknown
-    >;
-    expect(out.value).toBe("[redacted]");
-    // Non-sensitive siblings are untouched.
-    expect(out.request_id).toBe("r1");
+  it("preserves a `value` field (common non-secret tool result, not a credential)", () => {
+    // `value` was removed from the sensitive-key pattern: it over-redacted
+    // ordinary tool results. The secret path (secret.request) never sends a raw
+    // value through this redactor, so it is safe to keep `value`.
+    const out = sanitizePayload({
+      result: { value: 42 },
+      numericValue: 100,
+      value: "hello world",
+    }) as Record<string, unknown>;
+    expect(out.result).toEqual({ value: 42 });
+    expect(out.numericValue).toBe(100);
+    expect(out.value).toBe("hello world");
   });
 
   it("redacts passphrase / pin / otp regardless of value shape", () => {
@@ -26,8 +29,14 @@ describe("sanitizePayload — key-based redaction", () => {
     expect(out.note).toBe("safe");
   });
 
-  it("treats the new keys as sensitive via isSensitiveKey", () => {
-    expect(isSensitiveKey("value")).toBe(true);
+  it("still redacts genuinely sensitive keys; `value` is no longer sensitive", () => {
+    expect(isSensitiveKey("value")).toBe(false);
+    expect(isSensitiveKey("token")).toBe(true);
+    expect(isSensitiveKey("secret")).toBe(true);
+    expect(isSensitiveKey("password")).toBe(true);
+    expect(isSensitiveKey("authorization")).toBe(true);
+    expect(isSensitiveKey("apiKey")).toBe(true);
+    expect(isSensitiveKey("credential")).toBe(true);
     expect(isSensitiveKey("passphrase")).toBe(true);
     expect(isSensitiveKey("pin")).toBe(true);
     expect(isSensitiveKey("otp")).toBe(true);
