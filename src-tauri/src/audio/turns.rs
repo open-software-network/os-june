@@ -637,6 +637,13 @@ mod tests {
         assert_eq!(pre_rolled[1].extraction_start_ms, 1_800);
     }
 
+    #[test]
+    fn source_configs_keep_pre_roll_below_merge_gap() {
+        for config in [config_for_source("microphone"), config_for_source("system")] {
+            assert!(config.pre_roll_ms < config.merge_gap_ms);
+        }
+    }
+
     fn write_samples(path: &Path, samples: &[i16]) {
         let spec = WavSpec {
             channels: 1,
