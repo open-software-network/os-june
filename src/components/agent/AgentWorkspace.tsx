@@ -4179,7 +4179,16 @@ export function AgentWorkspace({
               .map((entry) => entry.text)
               .join("\n");
             window.setTimeout(() => {
-              void submitHermesSession(followUpText, followUpSession);
+              void submitHermesSession(followUpText, followUpSession).catch(
+                (err: unknown) => {
+                  // The follow-up never reached June (e.g. a gateway reconnect
+                  // or a still-busy session right after completion). Surface it
+                  // rather than silently losing the instruction.
+                  setError(messageFromError(err), {
+                    sessionId: storedSessionId,
+                  });
+                },
+              );
             }, 0);
           }
         }
@@ -5614,6 +5623,11 @@ export function AgentWorkspace({
     // to working (and on a gateway drop no terminal event ever comes to do
     // it). The interrupt then fires below to actually halt the runtime agent.
     sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    // Interrupting tears the listener down before any cancelled terminal event
+    // reaches the terminal handler, so clear the delivery-guarantee steers here
+    // too -- otherwise a steer typed-then-stopped lingers and could auto-submit
+    // as a follow-up after a later run in the same session.
+    delete pendingSteerBySessionIdRef.current[sessionId];
     const activityCounts = clearSessionActivity(sessionId);
     // Feature 11: the per-session listener is gone, so no terminal frame will
     // reach the activity store to retire this row. Record a synthetic terminal
