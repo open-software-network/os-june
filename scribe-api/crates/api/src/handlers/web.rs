@@ -5,6 +5,8 @@ use axum::{Json, extract::State, http::HeaderMap};
 use scribe_domain::{WebFetchResult, WebSearchProvider, WebSearchResults};
 use scribe_services::{WebFetchParams, WebSearchParams};
 use serde::Deserialize;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use url::{Host, Url};
 
 /// Venice clamps `limit` to its own bounds; we mirror them so an out-of-range
 /// value from the agent is normalized rather than rejected.
@@ -77,8 +79,14 @@ pub(crate) async fn fetch(
         return Err(ApiError::bad_request("url_required"));
     }
     validation::validate_text_len("url", &url, validation::MAX_WEB_URL_CHARS)?;
-    if !is_http_url(&url) {
-        return Err(ApiError::bad_request("url_must_be_http"));
+    match validate_public_http_url(&url) {
+        Ok(()) => {}
+        Err(FetchUrlValidationError::NonHttp) => {
+            return Err(ApiError::bad_request("url_must_be_http"));
+        }
+        Err(FetchUrlValidationError::NonPublicHost) => {
+            return Err(ApiError::bad_request("url_must_be_public_http"));
+        }
     }
     let output = state
         .web()
@@ -101,25 +109,142 @@ fn require_request_id(raw: &str) -> Result<String, ApiError> {
     Ok(request_id)
 }
 
-/// Only http(s) URLs reach the upstream scraper. Rejecting other schemes here
-/// keeps `file://`, `data:`, and similar out of the fetch path even though
-/// Venice only scrapes public URLs.
-fn is_http_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FetchUrlValidationError {
+    NonHttp,
+    NonPublicHost,
+}
+
+/// Only public http(s) URLs reach the upstream scraper. This keeps private
+/// network targets and alternate schemes out of the fetch path before the
+/// request is sent to a provider.
+fn validate_public_http_url(url: &str) -> Result<(), FetchUrlValidationError> {
+    let parsed = Url::parse(url).map_err(|_| FetchUrlValidationError::NonHttp)?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(FetchUrlValidationError::NonHttp);
+    }
+
+    match parsed.host() {
+        Some(Host::Domain(domain)) if is_public_domain(domain) => Ok(()),
+        Some(Host::Ipv4(addr)) if is_public_ipv4(addr) => Ok(()),
+        Some(Host::Ipv6(addr)) if is_public_ipv6(addr) => Ok(()),
+        Some(_) | None => Err(FetchUrlValidationError::NonPublicHost),
+    }
+}
+
+fn is_public_domain(domain: &str) -> bool {
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    if domain.is_empty()
+        || domain == "localhost"
+        || domain.ends_with(".localhost")
+        || domain.ends_with(".local")
+        || domain.ends_with(".localdomain")
+        || domain.ends_with(".internal")
+    {
+        return false;
+    }
+
+    // Avoid numeric-only hostnames that some HTTP stacks interpret as
+    // alternate IPv4 forms.
+    !domain
+        .split('.')
+        .all(|label| label.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_public_ipv4(addr: Ipv4Addr) -> bool {
+    match addr.octets() {
+        [0, _, _, _]
+        | [10, _, _, _]
+        | [127, _, _, _]
+        | [169, 254, _, _]
+        | [172, 16..=31, _, _]
+        | [192, 0, 0, _]
+        | [192, 0, 2, _]
+        | [192, 168, _, _]
+        | [198, 18..=19, _, _]
+        | [198, 51, 100, _]
+        | [203, 0, 113, _]
+        | [224..=255, _, _, _] => false,
+        [100, 64..=127, _, _] => false,
+        _ => true,
+    }
+}
+
+fn is_public_ipv6(addr: Ipv6Addr) -> bool {
+    if let Some(ipv4) = addr.to_ipv4_mapped() {
+        return is_public_ipv4(ipv4);
+    }
+
+    let segments = addr.segments();
+    if addr.is_unspecified()
+        || addr.is_loopback()
+        || addr.is_multicast()
+        || segments[..6].iter().all(|segment| *segment == 0)
+    {
+        return false;
+    }
+
+    let first = segments[0];
+    if (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 {
+        return false;
+    }
+
+    !(segments[0] == 0x2001 && segments[1] == 0x0db8)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_http_url;
+    use super::{FetchUrlValidationError, validate_public_http_url};
 
     #[test]
     fn accepts_http_and_https_only() {
-        assert!(is_http_url("https://example.com"));
-        assert!(is_http_url("HTTP://Example.com/page"));
-        assert!(!is_http_url("file:///etc/passwd"));
-        assert!(!is_http_url("ftp://example.com"));
-        assert!(!is_http_url("javascript:alert(1)"));
-        assert!(!is_http_url("example.com"));
+        assert_eq!(validate_public_http_url("https://example.com"), Ok(()));
+        assert_eq!(validate_public_http_url("HTTP://Example.com/page"), Ok(()));
+        assert_eq!(
+            validate_public_http_url("file:///etc/passwd"),
+            Err(FetchUrlValidationError::NonHttp)
+        );
+        assert_eq!(
+            validate_public_http_url("ftp://example.com"),
+            Err(FetchUrlValidationError::NonHttp)
+        );
+        assert_eq!(
+            validate_public_http_url("javascript:alert(1)"),
+            Err(FetchUrlValidationError::NonHttp)
+        );
+        assert_eq!(
+            validate_public_http_url("example.com"),
+            Err(FetchUrlValidationError::NonHttp)
+        );
+    }
+
+    #[test]
+    fn rejects_private_and_local_fetch_targets() {
+        for url in [
+            "http://localhost",
+            "http://foo.localhost/path",
+            "http://service.local/path",
+            "http://service.internal/path",
+            "http://127.0.0.1",
+            "http://10.0.0.1",
+            "http://172.16.0.1",
+            "http://192.168.1.1",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1",
+            "http://198.18.0.1",
+            "http://2130706433",
+            "http://[::1]/",
+            "http://[::]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[fc00::1]/",
+            "http://[fe80::1]/",
+            "http://[2001:db8::1]/",
+        ] {
+            assert_eq!(
+                validate_public_http_url(url),
+                Err(FetchUrlValidationError::NonPublicHost),
+                "{url} should be rejected"
+            );
+        }
     }
 }
