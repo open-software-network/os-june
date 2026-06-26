@@ -18,18 +18,21 @@ function cssRuleFor(selector: string) {
 }
 
 describe("agent turn action styles", () => {
-  it("collapses hidden per-message controls to zero height so non-hovered rows stay tight", () => {
-    // opacity alone (the JUN-114 regression) left the row in flow and reserved
-    // its full height under every message. Collapse it to a 0fr grid row when
-    // hidden so non-hovered messages sit tight; hover opens it to 1fr.
-    expect(cssRuleFor(".agent-turn-actions")).toContain(
-      "grid-template-rows: 0fr;",
-    );
-    // The inner row is clipped so the collapse actually hides the buttons.
-    const inner = cssRuleFor(".agent-turn-actions-inner");
-    expect(inner).toContain("min-height: 0;");
-    expect(inner).toContain("overflow: hidden;");
-    // Hover reveals it without reserving space when hidden.
-    expect(appCss).toContain("grid-template-rows: 1fr;");
+  it("reveals per-message controls without animating or changing row height", () => {
+    const actions = cssRuleFor(".agent-turn-actions");
+    expect(actions).toContain("position: absolute;");
+    expect(actions).toContain("inset-block-start: 100%;");
+    expect(actions).toContain("opacity: 0;");
+    expect(actions).toContain("pointer-events: none;");
+    expect(actions).toContain("transition: none;");
+    expect(actions).not.toContain("grid-template-rows");
+
+    expect(appCss).toContain(`.agent-user-turn:hover .agent-turn-actions,
+.agent-user-turn:focus-within .agent-turn-actions,
+.agent-assistant-turn:hover .agent-turn-actions,
+.agent-assistant-turn:focus-within .agent-turn-actions {
+  opacity: 1;
+  pointer-events: auto;
+}`);
   });
 });
