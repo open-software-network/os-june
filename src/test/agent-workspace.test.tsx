@@ -2581,18 +2581,16 @@ describe("AgentWorkspace", () => {
       within(panel).getByRole("option", { name: /Anonymous Only/ }),
     );
 
-    await waitFor(() =>
-      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
-        sessionId: "session-1",
-        model: "anonymous-only",
-      }),
-    );
     expect(mocks.setVeniceModel).not.toHaveBeenCalled();
     // The composer trigger reflects the new model and the session bar badge
     // its privacy mode.
     expect(
       await screen.findByRole("button", { name: "Model: Anonymous Only" }),
     ).toBeInTheDocument();
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-1",
+      model: "anonymous-only",
+    });
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
@@ -7706,13 +7704,12 @@ describe("AgentWorkspace", () => {
         within(dialog).getByRole("option", { name: /Kimi K2\.6/ }),
       );
 
-      // The model is overridden for this chat only and persisted on the bridge.
-      await waitFor(() =>
-        expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
-          sessionId: "session-1",
-          model: "kimi-k2-6",
-        }),
-      );
+      // The model is overridden for this chat only. The bridge session ensure
+      // path is title-only, so model changes are not persisted through REST.
+      expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+        sessionId: "session-1",
+        model: "kimi-k2-6",
+      });
       // The global default is left untouched.
       expect(mocks.setVeniceModel).not.toHaveBeenCalled();
       // …AND the live session is switched via command.dispatch (/model …).
@@ -7745,17 +7742,15 @@ describe("AgentWorkspace", () => {
       await user.click(screen.getByRole("button", { name: "Send message" }));
 
       await waitFor(() =>
-        expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
-          sessionId: "session-1",
-          model: "kimi-k2-6",
-        }),
-      );
-      await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
           session_id: "session-1",
           command: "/model kimi-k2-6",
         }),
       );
+      expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+        sessionId: "session-1",
+        model: "kimi-k2-6",
+      });
       expect(
         mocks.gatewayRequest.mock.calls.some(
           ([method]) => method === "prompt.submit",
