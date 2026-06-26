@@ -112,9 +112,9 @@ function notifyOnboardingComplete() {
 }
 
 /**
- * Resume point for a wizard quit partway through (e.g. mid free-trial
- * checkout). A relaunch picks up at the saved step instead of replaying the
- * whole flow — steps re-verify their own state, so resuming "too far" is
+ * Resume point for a wizard quit partway through. A relaunch picks up at the
+ * saved step instead of replaying the whole flow — steps re-verify their own
+ * state, so resuming "too far" is
  * harmless. Returns the saved step id, or null for a fresh run.
  */
 export function onboardingResumeStep(): string | null {
@@ -156,7 +156,7 @@ export function setAgentRiskAcknowledged(acknowledged: boolean) {
 
 /**
  * Testing helper: forget that onboarding completed (optionally pinning the
- * step to land on, e.g. "trial") and reload into the wizard. Exposed on the
+ * step to land on, e.g. "permissions") and reload into the wizard. Exposed on the
  * devtools console as `june.replayOnboarding()` by main.tsx.
  */
 export function replayOnboarding(stepId?: string) {

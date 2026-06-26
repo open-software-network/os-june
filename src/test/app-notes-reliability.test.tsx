@@ -51,7 +51,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
-  osAccountsTopUp: vi.fn(),
+  osAccountsUpgrade: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
@@ -106,7 +106,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
-  osAccountsTopUp: mocks.osAccountsTopUp,
+  osAccountsUpgrade: mocks.osAccountsUpgrade,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
@@ -280,7 +280,7 @@ describe("notes recording reliability", () => {
     mocks.osAccountsLogin.mockResolvedValue(account);
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
-    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,

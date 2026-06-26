@@ -1231,7 +1231,7 @@ describe("Agent chat runtime", () => {
 
   it("keeps assistant prose about credits as ordinary text", () => {
     const prose =
-      "If you see insufficient_credits errors, top up from settings.";
+      "If you see insufficient_credits errors, upgrade from settings.";
     const turns = buildHermesSessionChatTurns([
       {
         id: "1",

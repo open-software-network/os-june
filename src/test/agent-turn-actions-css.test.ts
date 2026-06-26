@@ -18,12 +18,21 @@ function cssRuleFor(selector: string) {
 }
 
 describe("agent turn action styles", () => {
-  it("keeps hidden per-message controls compact in flow", () => {
-    expect(cssRuleFor(".agent-turn-actions")).toContain(
-      "margin-top: var(--sp-px);",
-    );
-    expect(cssRuleFor(".agent-turn-action")).toContain(
-      "padding: var(--sp-px) var(--sp-1);",
-    );
+  it("reveals per-message controls without animating or changing row height", () => {
+    const actions = cssRuleFor(".agent-turn-actions");
+    expect(actions).toContain("position: absolute;");
+    expect(actions).toContain("inset-block-start: 100%;");
+    expect(actions).toContain("opacity: 0;");
+    expect(actions).toContain("pointer-events: none;");
+    expect(actions).toContain("transition: none;");
+    expect(actions).not.toContain("grid-template-rows");
+
+    expect(appCss).toContain(`.agent-user-turn:hover .agent-turn-actions,
+.agent-user-turn:focus-within .agent-turn-actions,
+.agent-assistant-turn:hover .agent-turn-actions,
+.agent-assistant-turn:focus-within .agent-turn-actions {
+  opacity: 1;
+  pointer-events: auto;
+}`);
   });
 });

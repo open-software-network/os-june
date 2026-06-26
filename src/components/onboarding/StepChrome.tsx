@@ -4,10 +4,10 @@ import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 /**
  * One onboarding screen = one welcome-card: a serif title, at most one muted
- * line, then whatever the step needs. Reuses the sign-in and trial gates'
- * classes so first-run is literally the same surface the rest of the app
- * greets users with — not a separate tour. The June mark introduces the
- * brand on the first screen only; after that the type carries it.
+ * line, then whatever the step needs. Reuses the sign-in gate chrome so
+ * first-run is literally the same surface the rest of the app greets users
+ * with — not a separate tour. The June mark introduces the brand on the first
+ * screen only; after that the type carries it.
  */
 export function StepCard({
   title,
@@ -29,7 +29,7 @@ export function StepCard({
 }) {
   return (
     <section
-      className={`welcome-card onboarding-card${wide ? " trial-card" : ""}${
+      className={`welcome-card onboarding-card${wide ? " wide-card" : ""}${
         className ? ` ${className}` : ""
       }`}
     >

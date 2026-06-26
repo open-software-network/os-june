@@ -103,7 +103,19 @@ def main() -> None:
 
 
 def read_message() -> dict[str, Any] | None:
+    while True:
+        first = sys.stdin.buffer.readline()
+        if first == b"":
+            return None
+        if first.strip():
+            break
+    if not first.lower().startswith(b"content-length:"):
+        stripped = first.strip()
+        return json.loads(stripped.decode("utf-8"))
+
     headers: dict[str, str] = {}
+    name, _, value = first.decode("ascii", "replace").partition(":")
+    headers[name.lower()] = value.strip()
     while True:
         line = sys.stdin.buffer.readline()
         if line == b"":
@@ -121,10 +133,9 @@ def read_message() -> dict[str, Any] | None:
 
 
 def write_message(payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
-    sys.stdout.buffer.write(body)
-    sys.stdout.buffer.flush()
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 def handle_message(

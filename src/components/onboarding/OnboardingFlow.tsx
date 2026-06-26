@@ -7,17 +7,15 @@ import {
 import { isMacLikePlatform } from "../../lib/platform";
 import { dictationSettings, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
-import { isSubscriptionActive } from "../../lib/trial-checkout";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
-import { TrialStep } from "./steps/TrialStep";
 import {
   usePermissionStatuses,
   useSystemAudioStatus,
 } from "./use-permission-status";
 
-type StepId = "sign-in" | "permissions" | "trial" | "dictation-practice";
+type StepId = "sign-in" | "permissions" | "dictation-practice";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -47,18 +45,12 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const MAC_STEPS: StepId[] = [
-  "sign-in",
-  "permissions",
-  "trial",
-  "dictation-practice",
-];
-const NON_MAC_STEPS: StepId[] = ["sign-in", "permissions", "trial"];
+const MAC_STEPS: StepId[] = ["sign-in", "permissions", "dictation-practice"];
+const NON_MAC_STEPS: StepId[] = ["sign-in", "permissions"];
 
 type Props = {
   account: AccountStatus;
   onAccountChanged: (next: AccountStatus) => void;
-  onRefreshAccount: () => Promise<AccountStatus | undefined>;
   onComplete: () => void;
 };
 
@@ -72,7 +64,6 @@ function initialStepIndex(steps: StepId[]): number {
 export function OnboardingFlow({
   account,
   onAccountChanged,
-  onRefreshAccount,
   onComplete,
 }: Props) {
   const steps = useMemo(
@@ -152,13 +143,7 @@ export function OnboardingFlow({
 
   function goBack() {
     setStepIndex((index) => {
-      let next = Math.max(index - 1, firstReachableStepIndex);
-      // The trial step auto-skips forward for subscribed users; stepping
-      // back onto it would just bounce, so hop over it instead.
-      if (steps[next] === "trial" && isSubscriptionActive(account)) {
-        next = Math.max(next - 1, firstReachableStepIndex);
-      }
-      return next;
+      return Math.max(index - 1, firstReachableStepIndex);
     });
   }
 
@@ -208,12 +193,6 @@ export function OnboardingFlow({
             statuses={permissionStatuses}
             systemAudioStatus={systemAudio.status}
             onAllowSystemAudio={systemAudio.probe}
-            onContinue={goNext}
-          />
-        ) : stepId === "trial" ? (
-          <TrialStep
-            account={account}
-            onRefresh={onRefreshAccount}
             onContinue={goNext}
           />
         ) : stepId === "dictation-practice" ? (

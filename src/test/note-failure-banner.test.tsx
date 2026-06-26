@@ -10,7 +10,7 @@ import {
 describe("classifyFailure", () => {
   it("treats Scribe's low-balance message as a balance issue", () => {
     expect(
-      classifyFailure("Your balance is too low. Add funds to continue."),
+      classifyFailure("Your balance is too low. Upgrade to continue."),
     ).toBe("balance_low");
   });
 
@@ -46,12 +46,12 @@ describe("userFacingFailureMessage", () => {
 });
 
 describe("NoteFailureBanner", () => {
-  it("offers Add funds + Retry when the balance is too low", async () => {
+  it("offers Upgrade + Retry when the balance is too low", async () => {
     const onTopUp = vi.fn();
     const onRetry = vi.fn();
     render(
       <NoteFailureBanner
-        errorMessage="Your balance is too low. Add funds to continue."
+        errorMessage="Your balance is too low. Upgrade to continue."
         audioPreserved
         onRetry={onRetry}
         onTopUp={onTopUp}
@@ -65,7 +65,7 @@ describe("NoteFailureBanner", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /Add funds/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Upgrade/i }));
     expect(onTopUp).toHaveBeenCalledOnce();
 
     await userEvent.click(screen.getByRole("button", { name: /Retry/i }));
@@ -83,7 +83,7 @@ describe("NoteFailureBanner", () => {
     );
     expect(screen.getByText(/Network unreachable/i)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Add funds/i }),
+      screen.queryByRole("button", { name: /Upgrade/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Retry/i })).toBeEnabled();
     expect(

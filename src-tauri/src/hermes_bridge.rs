@@ -80,6 +80,13 @@ const JUNE_SOUL_CONTEXT_MD: &str = r#"
 June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
 "#;
 
+/// Appended to `SOUL.md` for every runtime. This calibrates June's first-turn
+/// behavior around the existing Hermes clarify capability: ask only when the
+/// missing detail materially changes the work, and otherwise keep moving.
+const JUNE_SOUL_CLARIFY_MD: &str = r#"
+Clarifying questions: before acting on a request, especially the first user message in a new session, decide whether the user's goal, target, constraints, and success criteria are clear enough to proceed. If the request is ambiguous, has multiple reasonable interpretations, or a wrong assumption would spend meaningful time, use the clarify capability to ask one or two concise questions before using tools, modifying files, spending money, or starting long work. If a conservative path is obvious and cheap to correct, proceed and state your assumption instead of adding friction. Do not ask questions for routine, low-risk, or already clear requests.
+"#;
+
 /// Appended to `SOUL.md` for every runtime. The `web_search` and `web_fetch`
 /// tools are discovered through the `june_web` MCP server configured below;
 /// this note teaches the model when to reach for them. Web access runs through
@@ -1967,37 +1974,78 @@ pub async fn ensure_hermes_bridge_session(
             "Hermes session ID is required.",
         ));
     }
-    let mut body = serde_json::json!({ "id": session_id });
-    if let Some(title) = request
+    let title = request
         .title
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        body["title"] = serde_json::Value::String(title.to_string());
-    }
-    if let Some(model) = request
+        .map(ToString::to_string);
+    let model = request
         .model
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let unchanged = || {
+        serde_json::json!({
+            "object": "hermes.session.ensure",
+            "id": session_id,
+            "created": false,
+            "updated": false
+        })
+    };
+
+    // Hermes dashboard v0.17 no longer creates sessions over REST. The live
+    // session is created through the gateway; REST is only a best-effort title
+    // update for the sidebar/session browser. Model-only switches stay in the
+    // frontend session override and live gateway dispatch path.
+    let title = match title {
+        Some(title) => title,
+        None => return Ok(unchanged()),
+    };
+    let patch_body = serde_json::json!({ "title": title.clone() });
+    match hermes_api_json(
+        &bridge,
+        reqwest::Method::PATCH,
+        &format!("/api/sessions/{}", urlencoding::encode(session_id)),
+        Some(patch_body),
+    )
+    .await
     {
-        body["model"] = serde_json::Value::String(model.to_string());
-    }
-    match hermes_api_json(&bridge, reqwest::Method::POST, "/api/sessions", Some(body)).await {
-        Ok(value) => Ok(value),
-        Err(error)
-            if error.code == "hermes_bridge_api_failed"
-                && error.message.starts_with("Hermes API returned 409") =>
-        {
-            Ok(serde_json::json!({
-                "object": "hermes.session.ensure",
-                "id": session_id,
-                "created": false
-            }))
+        Ok(value) => return Ok(value),
+        Err(error) if hermes_api_status(&error, 404) || hermes_api_status(&error, 405) => {
+            let mut legacy_body = serde_json::json!({ "id": session_id, "title": title });
+            if let Some(model) = model {
+                legacy_body["model"] = serde_json::Value::String(model);
+            }
+            match hermes_api_json(
+                &bridge,
+                reqwest::Method::POST,
+                "/api/sessions",
+                Some(legacy_body),
+            )
+            .await
+            {
+                Ok(value) => Ok(value),
+                Err(error)
+                    if hermes_api_status(&error, 404)
+                        || hermes_api_status(&error, 405)
+                        || hermes_api_status(&error, 409) =>
+                {
+                    Ok(unchanged())
+                }
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error),
     }
+}
+
+fn hermes_api_status(error: &AppError, status_code: u16) -> bool {
+    error.code == "hermes_bridge_api_failed"
+        && error
+            .message
+            .starts_with(&format!("Hermes API returned {status_code}"))
 }
 
 #[tauri::command]
@@ -5868,10 +5916,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_WEB_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -7307,6 +7355,20 @@ mod tests {
         assert!(soul.contains("meeting notes"));
         assert!(soul.contains("dictation history"));
         assert!(soul.contains("Query it on demand"));
+    }
+
+    #[test]
+    fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("Clarifying questions"));
+        assert!(soul.contains("first user message in a new session"));
+        assert!(soul.contains("multiple reasonable interpretations"));
+        assert!(soul.contains("use the clarify capability"));
+        assert!(soul.contains("Do not ask questions for routine"));
     }
 
     #[test]

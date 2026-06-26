@@ -1,11 +1,12 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
+import { hasLiveSubscription } from "../../lib/account-gate";
 import {
   osAccountsCancelLogin,
   osAccountsLogin,
   osAccountsLogout,
   osAccountsOpenPortal,
-  osAccountsTopUp,
+  osAccountsUpgrade,
 } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 
@@ -169,12 +170,10 @@ export function BillingSettingsSection({
   const [billingStatus, setBillingStatus] = useState<string>();
   const [spins, setSpins] = useState(0);
 
-  async function handleTopUp() {
+  async function handleUpgrade() {
     try {
-      await osAccountsTopUp();
-      setBillingStatus(
-        "Opened OS Accounts. Your balance updates after checkout.",
-      );
+      await osAccountsUpgrade();
+      setBillingStatus("Opened checkout in your browser.");
     } catch (error) {
       setBillingStatus(messageFromError(error));
     }
@@ -189,22 +188,31 @@ export function BillingSettingsSection({
     }
   }
 
-  // Only the states reachable from inside the app: past_due and canceled park
-  // the whole app on the trial gate, so settings never renders them.
   const subscription = account.subscription;
-  const subscriptionRow =
-    subscription?.status === "trialing"
+  const liveSubscription = hasLiveSubscription(account);
+  const billingRecovery =
+    subscription?.subscribed === true &&
+    typeof subscription.status === "string" &&
+    subscription.status.length > 0 &&
+    !liveSubscription;
+  const subscriptionRow = liveSubscription
+    ? {
+        title: "Subscription",
+        detail:
+          subscription?.status === "trialing"
+            ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Active")
+            : (describeEnd("Renews", subscription?.currentPeriodEnd) ??
+              "Active"),
+        cta: "Manage billing",
+      }
+    : billingRecovery
       ? {
-          title: "Free trial",
-          detail: describeEnd("Ends", subscription.trialEnd) ?? "Active now",
+          title: "Billing needs attention",
+          detail: "Open your account portal to update billing.",
+          cta: "Manage billing",
         }
-      : subscription?.status === "active"
-        ? {
-            title: "Subscription",
-            detail:
-              describeEnd("Renews", subscription.currentPeriodEnd) ?? "Active",
-          }
-        : undefined;
+      : undefined;
+  const canUpgrade = account.signedIn && !liveSubscription && !billingRecovery;
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -225,7 +233,7 @@ export function BillingSettingsSection({
         Billing
       </h2>
       <p className="settings-group-description">
-        Managed by OpenSoftware. Your balance updates after checkout.
+        Manage credits and subscription details in OpenSoftware.
       </p>
       {billingStatus ? (
         <p className="settings-status">{billingStatus}</p>
@@ -246,7 +254,7 @@ export function BillingSettingsSection({
                   className="btn btn-secondary"
                   onClick={() => void handleManageSubscription()}
                 >
-                  Manage subscription
+                  {subscriptionRow.cta}
                 </button>
               </div>
             </div>
@@ -273,14 +281,15 @@ export function BillingSettingsSection({
                   style={{ transform: `rotate(${spins * 360}deg)` }}
                 />
               </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={!account.signedIn}
-                onClick={() => void handleTopUp()}
-              >
-                Add funds
-              </button>
+              {canUpgrade ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleUpgrade()}
+                >
+                  Upgrade
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
