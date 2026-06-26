@@ -528,7 +528,8 @@ pub fn os_accounts_top_up() -> Result<(), AppError> {
         return Ok(());
     }
     let cfg = Config::load();
-    open_in_browser(cfg.accounts_url.trim_end_matches('/'))
+    let url = credits_url(&cfg)?;
+    open_in_browser(&url)
 }
 
 /// Opens the accounts portal in the default browser. The webview swallows
@@ -1086,6 +1087,17 @@ fn portal_url(cfg: &Config) -> Option<String> {
     (!url.is_empty()).then(|| url.to_string())
 }
 
+fn credits_url(cfg: &Config) -> Result<String, AppError> {
+    let url = cfg.accounts_url.trim().trim_end_matches('/');
+    if url.is_empty() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    Ok(format!("{url}/billing/credits"))
+}
+
 fn net_error(e: reqwest::Error) -> AppError {
     let mut message = e.to_string();
     let mut source = e.source();
@@ -1392,5 +1404,33 @@ mod tests {
     #[test]
     fn debug_builds_can_opt_into_the_production_keychain_service() {
         assert_eq!(keychain_service_for_build(true, true), KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn credits_url_targets_billing_credits_page() {
+        let cfg = Config {
+            accounts_url: "https://accounts.example/".to_string(),
+            api_url: String::new(),
+            client_id: String::new(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        };
+
+        assert_eq!(
+            credits_url(&cfg).expect("credits url"),
+            "https://accounts.example/billing/credits"
+        );
+    }
+
+    #[test]
+    fn credits_url_rejects_missing_accounts_url() {
+        let cfg = Config {
+            accounts_url: "   ".to_string(),
+            api_url: String::new(),
+            client_id: String::new(),
+            loopback_port: DEFAULT_LOOPBACK_PORT,
+        };
+
+        let error = credits_url(&cfg).expect_err("missing accounts url");
+        assert_eq!(error.code, "os_accounts_unconfigured");
     }
 }

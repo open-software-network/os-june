@@ -85,6 +85,25 @@ describe("FundingGate", () => {
     expect(mocks.osAccountsTopUp).not.toHaveBeenCalled();
   });
 
+  it("opens billing management for incomplete subscriptions", async () => {
+    const user = userEvent.setup();
+    renderFundingGate({
+      ...baseAccount,
+      subscription: { subscribed: true, status: "incomplete" },
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Update billing" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Add credits to continue" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Manage billing" }));
+    expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsTopUp).not.toHaveBeenCalled();
+  });
+
   it("lets a waiting account update be checked or reopened", async () => {
     const user = userEvent.setup();
     const onRefresh = vi.fn(async () => baseAccount);
