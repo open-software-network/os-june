@@ -21,6 +21,7 @@ import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPin } from "central-icons/IconPin";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
@@ -225,6 +226,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "skills",
         label: "Installed skills",
         icon: <IconPlugin2 size={16} />,
+      },
+      {
+        id: "skills-hub",
+        label: "Skills hub",
+        icon: <IconArrowInbox size={16} />,
       },
     ],
   },
