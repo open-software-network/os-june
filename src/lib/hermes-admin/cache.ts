@@ -72,6 +72,11 @@ const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
     "env.delete": ["envConfig", "gatewayStatus"],
     "config.set": ["configTree", "skills"],
     "config.delete": ["configTree", "skills"],
+    // Creating a profile (and writing its SOUL) changes the profile roster; it
+    // does not touch the active runtime's skills/toolsets, so only `profiles`
+    // is invalidated.
+    "profile.create": ["profiles"],
+    "profile.setSoul": ["profiles"],
     "gateway.restart": ["mcpServers", "toolsets", "skills", "gatewayStatus"],
   });
 
