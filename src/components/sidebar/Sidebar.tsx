@@ -6,6 +6,7 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
+import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
@@ -267,6 +268,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "profile-builder",
         label: "Profile builder",
         icon: <IconMagicWand size={16} />,
+      },
+      {
+        id: "import-export",
+        label: "Import / export",
+        icon: <IconBox2 size={16} />,
       },
     ],
   },

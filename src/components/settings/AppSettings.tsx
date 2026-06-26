@@ -79,6 +79,7 @@ import { McpCatalogSection } from "./McpCatalogSection";
 import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
 import { McpServersSection } from "./McpServersSection";
 import { ProfileBuilderSection } from "./ProfileBuilderSection";
+import { SetupSnapshotSection } from "./SetupSnapshotSection";
 import { SkillsHubSection } from "./SkillsHubSection";
 import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -192,6 +193,7 @@ export type SettingsTab =
   | "skills-hub"
   | "toolsets"
   | "profile-builder"
+  | "import-export"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -210,6 +212,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "skills-hub", label: "Skills hub" },
   { id: "toolsets", label: "Toolsets" },
   { id: "profile-builder", label: "Profile builder" },
+  { id: "import-export", label: "Import / export" },
   { id: "about", label: "About" },
 ];
 
@@ -1229,6 +1232,7 @@ export function AppSettings({
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
         {activeTab === "toolsets" ? <ToolsetsSection /> : null}
         {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
+        {activeTab === "import-export" ? <SetupSnapshotSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">
