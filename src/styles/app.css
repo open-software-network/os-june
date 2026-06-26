@@ -10300,6 +10300,348 @@ input:focus-visible,
   line-height: 1.45;
 }
 
+/* Skill bundles manager (admin surfaces spec 11). Reuses the settings-card
+ * chrome and the same tokens as the installed-skills surface. */
+.skill-bundles-mode-note {
+  color: var(--muted-foreground);
+}
+
+.skill-bundles-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.skill-bundles-toolbar {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.skill-bundles-new,
+.skill-bundles-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundles-new {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.skill-bundles-new:disabled,
+.skill-bundles-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skill-bundles-body {
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.skill-bundles-list {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-bundle-row {
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--background);
+}
+
+.skill-bundle-main {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.skill-bundle-name {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.skill-bundle-slash {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  background: var(--secondary);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+}
+
+.skill-bundle-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-members {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+}
+
+.skill-bundle-member {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+
+.skill-bundle-member[data-missing="true"] {
+  border-style: dashed;
+  color: var(--muted-foreground);
+}
+
+.skill-bundle-member-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--warning, var(--muted-foreground));
+}
+
+.skill-bundle-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-note-warning {
+  color: var(--warning, var(--muted-foreground));
+}
+
+.skill-bundle-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundle-start {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.skill-bundle-delete {
+  color: var(--destructive, var(--secondary-foreground));
+}
+
+.skill-bundle-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skill-bundles-empty,
+.skill-bundles-error {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  text-align: center;
+  padding: var(--sp-6) var(--sp-4);
+}
+
+.skill-bundles-empty-icon {
+  color: var(--muted-foreground);
+}
+
+.skill-bundles-empty-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.skill-bundles-empty-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundles-loading {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundles-retry {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+/* The bundle create/edit form. */
+.skill-bundle-editor-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-3);
+  border: none;
+  background: none;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundle-editor-card {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.skill-bundle-field {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-field-label {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-field input,
+.skill-bundle-field textarea {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  outline: none;
+}
+
+.skill-bundle-field input:focus,
+.skill-bundle-field textarea:focus {
+  border-color: var(--ring-focus);
+}
+
+.skill-bundle-slug-input {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.skill-bundle-slug-prefix {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, monospace);
+}
+
+.skill-bundle-field-hint {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-issue {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+
+.skill-bundle-issue[data-severity="error"] {
+  color: var(--destructive, var(--foreground));
+}
+
+.skill-bundle-issue[data-severity="warning"] {
+  color: var(--warning, var(--muted-foreground));
+}
+
+.skill-bundle-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.skill-bundle-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  min-height: var(--control-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.skill-bundle-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+}
+
+.skill-bundle-editor-cancel,
+.skill-bundle-editor-save {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+}
+
+.skill-bundle-editor-save {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+.skill-bundle-editor-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* The one shared admin change-notice surface (AdminNotifications). Every admin
  * section renders its change notices through these classes, so the look is
  * identical across surfaces. */

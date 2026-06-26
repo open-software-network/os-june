@@ -79,6 +79,7 @@ import { McpCatalogSection } from "./McpCatalogSection";
 import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
 import { McpServersSection } from "./McpServersSection";
 import { ProfileBuilderSection } from "./ProfileBuilderSection";
+import { SkillBundlesSection } from "./SkillBundlesSection";
 import { SkillsHubSection } from "./SkillsHubSection";
 import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -191,6 +192,7 @@ export type SettingsTab =
   | "mcp-diagnostics"
   | "skills-hub"
   | "toolsets"
+  | "bundles"
   | "profile-builder"
   | "about";
 
@@ -209,6 +211,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "mcp-diagnostics", label: "MCP diagnostics" },
   { id: "skills-hub", label: "Skills hub" },
   { id: "toolsets", label: "Toolsets" },
+  { id: "bundles", label: "Bundles" },
   { id: "profile-builder", label: "Profile builder" },
   { id: "about", label: "About" },
 ];
@@ -237,6 +240,8 @@ type AppSettingsProps = {
   onCheckForUpdates?: () => void;
   // Opens a new agent session seeded with a report category chip.
   onReportIssue?: (category: ReportCategory) => void;
+  // Opens a new agent session that runs a skill bundle's slash command.
+  onStartBundleChat?: (prompt: string) => void;
 };
 
 export function AppSettings({
@@ -257,6 +262,7 @@ export function AppSettings({
   onTabChange,
   onCheckForUpdates,
   onReportIssue,
+  onStartBundleChat,
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
@@ -1228,6 +1234,9 @@ export function AppSettings({
         {activeTab === "mcp-diagnostics" ? <McpDiagnosticsSection /> : null}
         {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
         {activeTab === "toolsets" ? <ToolsetsSection /> : null}
+        {activeTab === "bundles" ? (
+          <SkillBundlesSection onStartChat={onStartBundleChat} />
+        ) : null}
         {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
 
         {activeTab === "about" ? (

@@ -1178,6 +1178,61 @@ export async function hermesResetBundledSkill(input: {
   });
 }
 
+/** A Hermes skill bundle as June reads/writes it. `slug` is the file stem and
+ * the slash command; `skills` is the ordered member list; `instructions` is the
+ * optional prompt text Hermes prepends at invocation. Mirrors the Rust
+ * `HermesSkillBundle`. */
+export type HermesSkillBundleDto = {
+  slug: string;
+  name?: string;
+  description?: string;
+  skills: string[];
+  instructions?: string;
+};
+
+/**
+ * Lists the skill bundles for the chosen runtime/profile. The dashboard exposes
+ * no bundle endpoints, so this reads the per-profile `skill-bundles` directory
+ * through the Rust bridge. `mode` selects the runtime explicitly (sandboxed vs
+ * unrestricted) with no first-connection fallback. Returns an empty list when no
+ * bundles exist yet.
+ */
+export async function hermesListSkillBundles(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+}) {
+  return invoke<HermesSkillBundleDto[]>("hermes_list_skill_bundles", {
+    request: input,
+  });
+}
+
+/**
+ * Creates or updates a bundle by writing its YAML file. `previousSlug`, when it
+ * differs from `bundle.slug`, removes the old file after the new one is written
+ * (a rename). The slug is validated argument/path safe on both sides; the write
+ * is confined to the bundles directory. Returns the saved bundle.
+ */
+export async function hermesSaveSkillBundle(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  bundle: HermesSkillBundleDto;
+  previousSlug?: string;
+}) {
+  return invoke<HermesSkillBundleDto>("hermes_save_skill_bundle", {
+    request: input,
+  });
+}
+
+/** Deletes a bundle's YAML file. The slug is validated and the path confined to
+ * the bundles directory; a missing file is treated as success. */
+export async function hermesDeleteSkillBundle(input: {
+  mode: "sandboxed" | "unrestricted";
+  profile?: string;
+  slug: string;
+}) {
+  return invoke<void>("hermes_delete_skill_bundle", { request: input });
+}
+
 /** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
  * window. `unrestricted` mirrors the session's mode so the debug session runs
  * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */

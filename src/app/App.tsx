@@ -2070,6 +2070,26 @@ export function App() {
     }, 0);
   }
 
+  // "Start chat with this bundle" from the Bundles settings tab: the same
+  // fresh-chat handshake the dictation prompt path uses, auto-submitting the
+  // bundle's slash command so Hermes resolves the bundle and loads its skills.
+  function handleStartBundleChat(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    pendingSessionProjectRef.current = null;
+    setAgentOrigin(undefined);
+    markAgentNewSessionPending(trimmed);
+    setActiveAgentSession(undefined);
+    setActiveView("agent");
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: trimmed },
+        }),
+      );
+    }, 0);
+  }
+
   // "New session" from inside a project: same fresh-chat handshake, but the
   // session gets filed into the project once Hermes hands back its id.
   function handleNewAgentSessionInProject(folderId: string) {
@@ -2860,6 +2880,7 @@ export function App() {
                   onTabChange={setSettingsTab}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
                   onReportIssue={handleReportIssue}
+                  onStartBundleChat={handleStartBundleChat}
                 />
               ) : activeView === "dictation" ? (
                 <DictationHistoryView

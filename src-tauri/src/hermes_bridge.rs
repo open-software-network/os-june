@@ -2874,6 +2874,519 @@ pub async fn hermes_reset_bundled_skill(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Skill bundles manager (admin surfaces spec 11).
+//
+// A Hermes skill bundle is a YAML alias under
+// `<hermes_home>/skill-bundles/<slug>.yaml` (per profile) that loads several
+// skills under one slash command. The dashboard REST surface (v2026.6.19)
+// exposes NO bundle endpoints, so June reads/writes these files directly. This
+// is the narrow, sanctioned file fallback the spec calls for. These writes run
+// in June's own (un-jailed) Rust process, so the real risk is NOT permissions
+// but PATH TRAVERSAL: the slug is validated to a safe slash-command slug and the
+// resolved file is verified to stay inside the bundles directory before any read
+// or write. The serializer emits a fixed, predictable subset of YAML (the only
+// fields June manages); the parser reads that same subset back, tolerating extra
+// keys it does not understand so a hand-edited file is not destroyed.
+// ---------------------------------------------------------------------------
+
+/// Cap on a single bundle file so a runaway instruction blob cannot exhaust
+/// memory. Bundles are small alias files; this is generous.
+const HERMES_BUNDLE_MAX_BYTES: u64 = 256 * 1024;
+
+/// A skill bundle as June reads/writes it. `slug` is the file stem (and the
+/// slash command); `skills` is the ordered member list; `instructions` is the
+/// optional prompt text Hermes prepends at invocation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesSkillBundle {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListHermesSkillBundlesRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveHermesSkillBundleRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    pub bundle: HermesSkillBundle,
+    /// When renaming, the previous slug whose file should be removed after the
+    /// new file is written. Validated to the same slug rule.
+    #[serde(default)]
+    pub previous_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteHermesSkillBundleRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    pub slug: String,
+}
+
+/// True when a slug is a safe slash-command slug AND file stem: a leading
+/// alphanumeric, then `[A-Za-z0-9._-]`, max 64. Mirrors the TS `isSafeBundleSlug`
+/// validator. A `..`, `/`, or `\` can never satisfy this, so it doubles as the
+/// traversal guard before the path is built.
+fn is_safe_bundle_slug(slug: &str) -> bool {
+    if slug.is_empty() || slug.len() > 64 {
+        return false;
+    }
+    let mut chars = slug.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    slug.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// Resolves the bundles directory for a runtime/profile, creating it if needed.
+/// The default profile uses `<hermes_home>/skill-bundles`; a named profile uses
+/// `<hermes_home>/profiles/<profile>/skill-bundles`. The profile id is held to
+/// the slug rule so it can never inject a traversal segment.
+fn resolve_bundles_dir(hermes_home: &Path, profile: Option<&str>) -> Result<PathBuf, AppError> {
+    let dir = match profile {
+        Some(profile) if profile != "default" => {
+            if !is_safe_bundle_slug(profile) {
+                return Err(AppError::new(
+                    "hermes_bundle_invalid_profile",
+                    "Invalid Hermes profile.",
+                ));
+            }
+            hermes_home
+                .join("profiles")
+                .join(profile)
+                .join("skill-bundles")
+        }
+        _ => hermes_home.join("skill-bundles"),
+    };
+    fs::create_dir_all(&dir)
+        .map_err(|error| AppError::new("hermes_bundle_dir_failed", error.to_string()))?;
+    Ok(dir)
+}
+
+/// Resolves the file path for a bundle slug inside the bundles directory and
+/// verifies it stays inside the directory. The slug is validated first (so it
+/// is a single safe segment), then the canonicalized parent is re-checked to be
+/// the bundles dir. Defense in depth against traversal.
+fn resolve_bundle_file(bundles_dir: &Path, slug: &str) -> Result<PathBuf, AppError> {
+    if !is_safe_bundle_slug(slug) {
+        return Err(AppError::new(
+            "hermes_bundle_invalid_slug",
+            "Invalid bundle name.",
+        ));
+    }
+    let file = bundles_dir.join(format!("{slug}.yaml"));
+    // The slug is already a single safe segment, but verify the joined path's
+    // parent canonicalizes back to the bundles dir so a symlinked or unexpected
+    // layout still cannot escape.
+    let root = bundles_dir
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_dir_failed", error.to_string()))?;
+    let parent = file.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        )
+    })?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_dir_failed", error.to_string()))?;
+    if parent != root {
+        return Err(AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        ));
+    }
+    Ok(file)
+}
+
+/// Escapes a scalar string for the `key: value` YAML the serializer emits.
+/// Always double-quotes and escapes backslashes, quotes, and newlines so any
+/// value round-trips through the parser unambiguously.
+fn yaml_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Serializes a bundle to the fixed YAML subset June manages. Deterministic key
+/// order so a save produces a stable diff. The skills list is a YAML block
+/// sequence; scalars are double-quoted via `yaml_quote`.
+fn serialize_bundle_yaml(bundle: &HermesSkillBundle) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("slug: {}\n", yaml_quote(&bundle.slug)));
+    if let Some(name) = bundle.name.as_deref().filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("name: {}\n", yaml_quote(name)));
+    }
+    if let Some(description) = bundle
+        .description
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push_str(&format!("description: {}\n", yaml_quote(description)));
+    }
+    out.push_str("skills:\n");
+    for skill in &bundle.skills {
+        out.push_str(&format!("  - {}\n", yaml_quote(skill)));
+    }
+    if let Some(instructions) = bundle
+        .instructions
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push_str(&format!("instructions: {}\n", yaml_quote(instructions)));
+    }
+    out
+}
+
+/// Unquotes a YAML scalar the serializer could have produced. Handles the
+/// double-quoted escapes it emits and passes a bare scalar through trimmed, so a
+/// hand-edited unquoted value still parses.
+fn yaml_unquote(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('t') => out.push('\t'),
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => out.push(other),
+                    None => {}
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        return out;
+    }
+    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        return trimmed[1..trimmed.len() - 1].replace("''", "'");
+    }
+    trimmed.to_string()
+}
+
+/// Parses the bundle YAML subset back into a bundle. Reads `slug`, `name`,
+/// `description`, `instructions` scalars and a `skills:` block sequence; ignores
+/// keys it does not recognize. `fallback_slug` (the file stem) is used when the
+/// file omits `slug`, so a bundle always has one. Lossy by design: June only
+/// manages this subset.
+fn parse_bundle_yaml(content: &str, fallback_slug: &str) -> HermesSkillBundle {
+    let mut slug: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut instructions: Option<String> = None;
+    let mut skills: Vec<String> = Vec::new();
+    let mut in_skills = false;
+
+    for raw_line in content.lines() {
+        let line = raw_line;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // A list item under `skills:`.
+        if in_skills {
+            let indented = line.starts_with(' ') || line.starts_with('\t');
+            if indented {
+                if let Some(item) = trimmed.strip_prefix('-') {
+                    let value = yaml_unquote(item.trim());
+                    if !value.is_empty() {
+                        skills.push(value);
+                    }
+                    continue;
+                }
+            }
+            // A non-indented, non-list line ends the sequence.
+            in_skills = false;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "slug" => slug = Some(yaml_unquote(value)),
+                "name" => name = Some(yaml_unquote(value)),
+                "description" => description = Some(yaml_unquote(value)),
+                "instructions" => instructions = Some(yaml_unquote(value)),
+                "skills" => {
+                    in_skills = true;
+                    // Tolerate an inline flow list: `skills: ["a", "b"]`.
+                    if value.starts_with('[') && value.ends_with(']') && value.len() >= 2 {
+                        for part in value[1..value.len() - 1].split(',') {
+                            let item = yaml_unquote(part.trim());
+                            if !item.is_empty() {
+                                skills.push(item);
+                            }
+                        }
+                        in_skills = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let slug = slug
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback_slug.to_string());
+    HermesSkillBundle {
+        slug,
+        name: name.filter(|s| !s.trim().is_empty()),
+        description: description.filter(|s| !s.trim().is_empty()),
+        skills,
+        instructions: instructions.filter(|s| !s.trim().is_empty()),
+    }
+}
+
+/// Reads every bundle file in a directory, sorted by slug for a stable list.
+/// A file that fails to read or parse is skipped rather than failing the whole
+/// listing, so one bad file does not hide the rest.
+fn read_bundles_in_dir(bundles_dir: &Path) -> Result<Vec<HermesSkillBundle>, AppError> {
+    let mut bundles = Vec::new();
+    let entries = match fs::read_dir(bundles_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(bundles),
+        Err(error) => {
+            return Err(AppError::new("hermes_bundle_read_failed", error.to_string()));
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_yaml = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+            .unwrap_or(false);
+        if !is_yaml || !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_safe_bundle_slug(stem) {
+            continue;
+        }
+        if let Ok(metadata) = fs::metadata(&path) {
+            if metadata.len() > HERMES_BUNDLE_MAX_BYTES {
+                continue;
+            }
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        bundles.push(parse_bundle_yaml(&content, stem));
+    }
+    bundles.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(bundles)
+}
+
+/// The connection for a mode, or a "not running" error. Shared by the bundle
+/// commands so each targets the explicitly-chosen runtime, never the first.
+fn bundle_connection(
+    bridge: &State<'_, HermesBridge>,
+    mode: &str,
+) -> Result<HermesBridgeConnection, AppError> {
+    let full_mode = match mode {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    let connections = live_connections(bridge)?;
+    connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_bridge_not_running",
+                "Hermes bridge is not running in the requested mode.",
+            )
+        })
+}
+
+/// Lists the skill bundles for the selected runtime/profile by reading the
+/// per-profile `skill-bundles` directory. Returns an empty list when the
+/// directory does not yet exist. The runtime is chosen by `mode` explicitly.
+#[tauri::command]
+pub async fn hermes_list_skill_bundles(
+    bridge: State<'_, HermesBridge>,
+    request: ListHermesSkillBundlesRequest,
+) -> Result<Vec<HermesSkillBundle>, AppError> {
+    let connection = bundle_connection(&bridge, &request.mode)?;
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let bundles_dir = resolve_bundles_dir(&hermes_home, request.profile.as_deref())?;
+    read_bundles_in_dir(&bundles_dir)
+}
+
+/// Creates or updates a bundle by writing its YAML file atomically. When
+/// `previousSlug` differs from the saved slug (a rename), the old file is
+/// removed after the new one is written. The slug is validated argument/path
+/// safe; the write is confined to the bundles directory.
+#[tauri::command]
+pub async fn hermes_save_skill_bundle(
+    bridge: State<'_, HermesBridge>,
+    request: SaveHermesSkillBundleRequest,
+) -> Result<HermesSkillBundle, AppError> {
+    let connection = bundle_connection(&bridge, &request.mode)?;
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let bundles_dir = resolve_bundles_dir(&hermes_home, request.profile.as_deref())?;
+
+    let mut bundle = request.bundle;
+    bundle.slug = bundle.slug.trim().to_string();
+    if !is_safe_bundle_slug(&bundle.slug) {
+        return Err(AppError::new(
+            "hermes_bundle_invalid_slug",
+            "Invalid bundle name.",
+        ));
+    }
+    bundle.skills.retain(|skill| !skill.trim().is_empty());
+    if bundle.skills.is_empty() {
+        return Err(AppError::new(
+            "hermes_bundle_no_skills",
+            "Add at least one skill to the bundle.",
+        ));
+    }
+
+    let file = resolve_bundle_file(&bundles_dir, &bundle.slug)?;
+    let yaml = serialize_bundle_yaml(&bundle);
+    if yaml.len() as u64 > HERMES_BUNDLE_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_bundle_too_large",
+            "This bundle is too large to save.",
+        ));
+    }
+    write_bundle_file(&bundles_dir, &file, &yaml)?;
+
+    // On a rename, drop the previous file once the new one is in place.
+    if let Some(previous) = request.previous_slug.as_deref() {
+        let previous = previous.trim();
+        if !previous.is_empty() && previous != bundle.slug && is_safe_bundle_slug(previous) {
+            if let Ok(old_file) = resolve_bundle_file(&bundles_dir, previous) {
+                let _ = fs::remove_file(old_file);
+            }
+        }
+    }
+
+    Ok(bundle)
+}
+
+/// Deletes a bundle's YAML file. The slug is validated; the path is confined to
+/// the bundles directory. A missing file is treated as success (idempotent).
+#[tauri::command]
+pub async fn hermes_delete_skill_bundle(
+    bridge: State<'_, HermesBridge>,
+    request: DeleteHermesSkillBundleRequest,
+) -> Result<(), AppError> {
+    let connection = bundle_connection(&bridge, &request.mode)?;
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let bundles_dir = resolve_bundles_dir(&hermes_home, request.profile.as_deref())?;
+    let file = resolve_bundle_file(&bundles_dir, request.slug.trim())?;
+    match fs::remove_file(&file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new("hermes_bundle_delete_failed", error.to_string())),
+    }
+}
+
+/// Writes a bundle YAML file atomically inside the bundles directory: write to a
+/// temp file in the same dir, verify it stayed inside, then rename over the
+/// target. The parent is re-checked to be the bundles root before the write.
+fn write_bundle_file(bundles_dir: &Path, path: &Path, content: &str) -> Result<(), AppError> {
+    let root = bundles_dir
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_write_failed", error.to_string()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_bundle_path_invalid",
+                "Bundle file is outside the bundles directory.",
+            )
+        })?
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_bundle_write_failed", error.to_string()))?;
+    if parent != root {
+        return Err(AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        ));
+    }
+    let file_name = path.file_name().ok_or_else(|| {
+        AppError::new(
+            "hermes_bundle_path_invalid",
+            "Bundle file is outside the bundles directory.",
+        )
+    })?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        let temp_canonical = temp_path.canonicalize()?;
+        if !temp_canonical.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "temporary bundle file escaped the bundles directory",
+            ));
+        }
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temp_path, path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(AppError::new("hermes_bundle_write_failed", error.to_string()));
+    }
+    Ok(())
+}
+
 /// The captured outcome of a bounded CLI wait.
 struct BoundedOutput {
     stdout: String,
@@ -6514,5 +7027,130 @@ mod tests {
         assert!(!is_safe_pending_id(".."));
         assert!(!is_safe_pending_id("a/b"));
         assert!(!is_safe_pending_id("a\\b"));
+    }
+
+    #[test]
+    fn bundle_slug_accepts_safe_and_rejects_unsafe() {
+        assert!(is_safe_bundle_slug("backend-dev"));
+        assert!(is_safe_bundle_slug("a.b_c-d"));
+        assert!(is_safe_bundle_slug("9lives"));
+        assert!(!is_safe_bundle_slug(""));
+        assert!(!is_safe_bundle_slug(".."));
+        assert!(!is_safe_bundle_slug("a/b"));
+        assert!(!is_safe_bundle_slug("a\\b"));
+        assert!(!is_safe_bundle_slug("-leading"));
+        assert!(!is_safe_bundle_slug("has space"));
+        assert!(!is_safe_bundle_slug(&"x".repeat(65)));
+    }
+
+    #[test]
+    fn resolve_bundle_file_rejects_traversal_and_confines_to_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundles = dir.path().join("skill-bundles");
+        fs::create_dir_all(&bundles).expect("mkdir");
+
+        // A traversal-shaped slug never satisfies the slug rule, so it is
+        // rejected before a path is even built.
+        assert!(resolve_bundle_file(&bundles, "../escape").is_err());
+        assert!(resolve_bundle_file(&bundles, "..").is_err());
+        assert!(resolve_bundle_file(&bundles, "a/b").is_err());
+        assert!(resolve_bundle_file(&bundles, "/etc/passwd").is_err());
+
+        let ok = resolve_bundle_file(&bundles, "backend-dev").expect("safe slug");
+        // The returned path lives directly inside the bundles dir (compared
+        // canonically so the macOS /var -> /private/var symlink does not trip it).
+        let canon_root = bundles.canonicalize().expect("canon");
+        assert_eq!(
+            ok.parent().expect("parent").canonicalize().expect("parent canon"),
+            canon_root
+        );
+        assert_eq!(
+            ok.file_name().and_then(|n| n.to_str()),
+            Some("backend-dev.yaml")
+        );
+    }
+
+    #[test]
+    fn resolve_bundles_dir_rejects_unsafe_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(resolve_bundles_dir(dir.path(), Some("../escape")).is_err());
+        // The default profile uses the top-level bundles dir.
+        let default_dir = resolve_bundles_dir(dir.path(), None).expect("default");
+        assert_eq!(default_dir, dir.path().join("skill-bundles"));
+        // A named, safe profile nests under profiles/<name>/skill-bundles.
+        let named = resolve_bundles_dir(dir.path(), Some("team")).expect("named");
+        assert_eq!(
+            named,
+            dir.path().join("profiles").join("team").join("skill-bundles")
+        );
+    }
+
+    #[test]
+    fn bundle_yaml_roundtrips_through_serialize_and_parse() {
+        let bundle = HermesSkillBundle {
+            slug: "backend-dev".to_string(),
+            name: Some("Backend dev".to_string()),
+            description: Some("Skills for backend work".to_string()),
+            skills: vec!["backend-dev".to_string(), "database".to_string()],
+            instructions: Some("Line one\nLine \"two\"".to_string()),
+        };
+        let yaml = serialize_bundle_yaml(&bundle);
+        let parsed = parse_bundle_yaml(&yaml, "fallback");
+        assert_eq!(parsed, bundle);
+    }
+
+    #[test]
+    fn bundle_parse_falls_back_to_file_stem_and_ignores_unknown_keys() {
+        let yaml = "name: \"Only a name\"\nunknown: \"ignored\"\nskills:\n  - \"a\"\n  - \"b\"\n";
+        let parsed = parse_bundle_yaml(yaml, "from-stem");
+        assert_eq!(parsed.slug, "from-stem");
+        assert_eq!(parsed.name.as_deref(), Some("Only a name"));
+        assert_eq!(parsed.skills, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(parsed.description, None);
+    }
+
+    #[test]
+    fn bundle_parse_reads_inline_flow_skills_list() {
+        let yaml = "slug: \"x\"\nskills: [\"a\", \"b\", \"c\"]\n";
+        let parsed = parse_bundle_yaml(yaml, "x");
+        assert_eq!(
+            parsed.skills,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_bundles_in_dir_skips_unsafe_and_non_yaml_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundles = dir.path().join("skill-bundles");
+        fs::create_dir_all(&bundles).expect("mkdir");
+        fs::write(
+            bundles.join("backend-dev.yaml"),
+            serialize_bundle_yaml(&HermesSkillBundle {
+                slug: "backend-dev".to_string(),
+                name: None,
+                description: None,
+                skills: vec!["backend-dev".to_string()],
+                instructions: None,
+            }),
+        )
+        .expect("write yaml");
+        // A non-yaml file and a README are ignored.
+        fs::write(bundles.join("notes.txt"), "ignore me").expect("write txt");
+
+        let read = read_bundles_in_dir(&bundles).expect("read");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].slug, "backend-dev");
+    }
+
+    #[test]
+    fn write_bundle_file_confines_to_bundles_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundles = dir.path().join("skill-bundles");
+        fs::create_dir_all(&bundles).expect("mkdir");
+        let file = resolve_bundle_file(&bundles, "backend-dev").expect("path");
+        write_bundle_file(&bundles, &file, "slug: \"backend-dev\"\n").expect("write");
+        let written = fs::read_to_string(&file).expect("read back");
+        assert!(written.contains("backend-dev"));
     }
 }

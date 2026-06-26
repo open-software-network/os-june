@@ -77,3 +77,5 @@ export * from "./skill-review-view";
 export * from "./use-skill-review";
 export * from "./profile-builder-view";
 export * from "./use-profile-builder";
+export * from "./skill-bundles-view";
+export * from "./use-skill-bundles";
