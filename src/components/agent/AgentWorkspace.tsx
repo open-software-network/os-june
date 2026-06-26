@@ -1928,10 +1928,16 @@ export function AgentWorkspace({
     event: HermesGatewayEvent,
     phase: HermesToolEventPhase,
   ) {
-    const key = toolEventActivityKey(event);
+    const eventKey = toolEventActivityKey(event);
     const current = new Map(
       activeToolCallsBySessionRef.current.get(sessionId) ?? [],
     );
+
+    if (phase === "progress" && eventKey === undefined) {
+      return current.size > 0;
+    }
+
+    const key = eventKey ?? "__anonymous_tool__";
 
     if (phase === "start") {
       current.set(key, (current.get(key) ?? 0) + 1);
@@ -11736,8 +11742,7 @@ function toolEventActivityKey(event: HermesGatewayEvent) {
     stringValue(payload?.tool_call_id) ??
     stringValue(payload?.call_id) ??
     stringValue(payload?.id) ??
-    stringValue(payload?.request_id) ??
-    "__anonymous_tool__"
+    stringValue(payload?.request_id)
   );
 }
 
