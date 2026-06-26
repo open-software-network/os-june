@@ -150,7 +150,7 @@ function compareAgentChatTurns(a: AgentChatTurn, b: AgentChatTurn) {
   return (
     a.createdAt.localeCompare(b.createdAt) ||
     TURN_ROLE_ORDER[a.role] - TURN_ROLE_ORDER[b.role] ||
-    a.id.localeCompare(b.id)
+    a.id.localeCompare(b.id, undefined, { numeric: true })
   );
 }
 

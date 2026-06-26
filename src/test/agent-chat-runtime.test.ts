@@ -166,6 +166,26 @@ describe("Agent chat runtime", () => {
     expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
   });
 
+  it("keeps synthetic same-timestamp assistant turns in numeric suffix order", () => {
+    const receivedAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      Array.from({ length: 12 }, (_, index) => ({
+        type: "message.complete",
+        receivedAt,
+        payload: { text: `Reply ${index}` },
+      })),
+    );
+
+    expect(
+      turns.map((turn) => {
+        const textPart = turn.parts.find((part) => part.type === "text");
+        return textPart?.type === "text" ? textPart.text : "";
+      }),
+    ).toEqual(Array.from({ length: 12 }, (_, index) => `Reply ${index}`));
+  });
+
   it("strips explicit skill context from persisted Hermes user messages", () => {
     const turns = buildHermesSessionChatTurns([
       {
