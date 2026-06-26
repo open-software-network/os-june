@@ -603,6 +603,46 @@ describe("InstalledSkillsView — component", () => {
     expect(dismissNotification).toHaveBeenCalledWith("n1");
   });
 
+  it("auto-dismisses a success notice like a toast but keeps an error", () => {
+    vi.useFakeTimers();
+    try {
+      const dismissNotification = vi.fn();
+      render(
+        <InstalledSkillsView
+          state={stubState({
+            skills: VIEW_SKILLS,
+            dismissNotification,
+            notifications: [
+              {
+                id: "ok1",
+                message: "Skill updated. New sessions can use it.",
+                timing: "next-session",
+                mutation: "skill.toggle",
+                at: 0,
+              },
+              {
+                id: "err1",
+                message: "Could not update the skill.",
+                timing: "next-session",
+                mutation: "skill.toggle",
+                at: 0,
+                isError: true,
+              },
+            ],
+          })}
+        />,
+      );
+      // Nothing auto-dismisses before the toast timeout.
+      expect(dismissNotification).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(5000);
+      // The success notice cleared itself; the error was left for the user.
+      expect(dismissNotification).toHaveBeenCalledWith("ok1");
+      expect(dismissNotification).not.toHaveBeenCalledWith("err1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders an empty install scenario end to end through the controller hook", async () => {
     const harness = makeAdminHarness(emptyInstallScenario());
     function Mounted() {

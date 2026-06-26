@@ -7,7 +7,7 @@ import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
 import { IconWarningSign } from "central-icons/IconWarningSign";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   categoriesOf,
   filterSkills,
@@ -306,14 +306,39 @@ function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
   );
 }
 
-/** The durable admin notifications ("Skill updated. New sessions can use it.").
- * Dismissible, newest first. Errors render with a destructive tone. */
+/** How long a success notice stays before auto-dismissing. Errors never time
+ * out. */
+const NOTIFICATION_TOAST_MS = 4500;
+/** Cap on simultaneously visible notices so a rapid burst of toggles can't grow
+ * the page. */
+const MAX_VISIBLE_NOTIFICATIONS = 3;
+
+/** Admin change notices, rendered as toasts: a successful change shows briefly
+ * then auto-dismisses so they never pile up; an error stays until the user
+ * dismisses it (it must be seen). Newest first, capped. */
 function Notifications({ state }: { state: InstalledSkillsState }) {
-  if (state.notifications.length === 0) return null;
-  const newestFirst = [...state.notifications].reverse();
+  const { notifications, dismissNotification } = state;
+  // Success notices clear themselves a few seconds after activity settles;
+  // errors are never timed out. Re-armed whenever the set changes.
+  useEffect(() => {
+    const timers = notifications
+      .filter((note) => !note.isError)
+      .map((note) =>
+        window.setTimeout(
+          () => dismissNotification(note.id),
+          NOTIFICATION_TOAST_MS,
+        ),
+      );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [notifications, dismissNotification]);
+
+  if (notifications.length === 0) return null;
+  const visible = [...notifications]
+    .reverse()
+    .slice(0, MAX_VISIBLE_NOTIFICATIONS);
   return (
     <ul className="installed-skills-notifications" aria-label="Recent changes">
-      {newestFirst.map((note) => (
+      {visible.map((note) => (
         <li
           key={note.id}
           className="installed-skills-notification"
