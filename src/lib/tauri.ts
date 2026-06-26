@@ -1,5 +1,10 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
+// Re-exported so modules that build their own command calls (e.g. the Hermes
+// admin Rust transport) route through the same `invoke` the rest of the app's
+// bindings use, rather than reaching into `@tauri-apps/api/core` directly.
+export { invoke };
+
 export type ProcessingStatus =
   | "draft"
   | "recording"

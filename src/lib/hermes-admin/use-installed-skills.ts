@@ -28,6 +28,7 @@ import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
+import { createRustAdminFetch } from "./rust-transport";
 import {
   GatewayLifecycle,
   type GatewayLifecycleSnapshot,
@@ -380,7 +381,14 @@ export function useInstalledSkillsEngine(
 
   return useMemo(() => {
     if (!target) return null;
-    const client = createHermesAdminClient(target);
+    // Production routes admin I/O through Rust (`hermes_admin_request`) rather
+    // than a webview fetch the cross-origin dashboard would 401. The fetch is
+    // bound to this target's mode so Rust targets the chosen runtime, never the
+    // first connection. Tests build the engine from the fake-server harness and
+    // keep the injected node fetch, so this branch is production-only.
+    const client = createHermesAdminClient(target, {
+      fetch: createRustAdminFetch(target.mode),
+    });
     const cache = new AdminStateCache(target);
     const lifecycle = new GatewayLifecycle(client, cache);
     return { target, client, cache, lifecycle };

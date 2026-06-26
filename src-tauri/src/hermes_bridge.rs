@@ -1927,6 +1927,54 @@ async fn hermes_api_json(
     hermes_connection_json(connection, method, path, body).await
 }
 
+/// The generic admin proxy the foundation admin client (`src/lib/hermes-admin`)
+/// routes EVERY dashboard call through, instead of fetching cross-origin from
+/// the webview. The Tauri webview (origin `http://localhost:1421`) is
+/// cross-origin to the dashboard (`http://127.0.0.1:<port>`), which sends no
+/// CORS headers and 401s the preflight, so a webview `fetch` can never reach it
+/// — only this server-side reqwest path can. Every admin surface (skills, MCP,
+/// env, toolsets) goes through here.
+///
+/// `mode` is EXPLICIT: the caller names the runtime it manages
+/// (`sandboxed` vs `unrestricted`), mirroring `adminTargetForMode` on the TS
+/// side. Unlike `hermes_api_json`, this never silently falls back to the first
+/// connection — a profile/mode-sensitive admin write must hit the chosen
+/// runtime or fail. The dashboard token is resolved here from the selected
+/// connection, so the webview never has to handle it.
+#[tauri::command]
+pub async fn hermes_admin_request(
+    bridge: State<'_, HermesBridge>,
+    mode: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, AppError> {
+    let full_mode = match mode.as_str() {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    let method = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|_| AppError::new("hermes_admin_invalid_method", "Unsupported HTTP method."))?;
+
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+    else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running in the requested mode.",
+        ));
+    };
+    hermes_connection_json(connection, method, &path, body).await
+}
+
 async fn start_hermes_gateway_if_needed(
     connection: &HermesBridgeConnection,
 ) -> Result<(), AppError> {

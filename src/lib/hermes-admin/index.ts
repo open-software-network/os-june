@@ -48,6 +48,7 @@ export * from "./redact";
 export * from "./schemas";
 export * from "./application-timing";
 export * from "./transport";
+export * from "./rust-transport";
 export * from "./client";
 export * from "./cache";
 export * from "./gateway-lifecycle";
