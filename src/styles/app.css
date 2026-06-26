@@ -10131,7 +10131,10 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-.installed-skills-notifications {
+/* The one shared admin change-notice surface (AdminNotifications). Every admin
+ * section renders its change notices through these classes, so the look is
+ * identical across surfaces. */
+.admin-notifications {
   list-style: none;
   display: grid;
   gap: var(--sp-2);
@@ -10139,7 +10142,7 @@ input:focus-visible,
   padding: 0;
 }
 
-.installed-skills-notification {
+.admin-notification {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10150,17 +10153,17 @@ input:focus-visible,
   background: var(--surface-subtle);
 }
 
-.installed-skills-notification[data-tone="destructive"] {
+.admin-notification[data-tone="destructive"] {
   border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
   background: var(--destructive-soft);
 }
 
-.installed-skills-notification-text {
+.admin-notification-text {
   color: var(--foreground);
   font-size: var(--fs-sm);
 }
 
-.installed-skills-notification-dismiss {
+.admin-notification-dismiss {
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -10172,7 +10175,7 @@ input:focus-visible,
   cursor: pointer;
 }
 
-.installed-skills-notification-dismiss:hover {
+.admin-notification-dismiss:hover {
   color: var(--foreground);
   background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
@@ -10314,8 +10317,7 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.skill-setup-close,
-.skill-setup-notification-dismiss {
+.skill-setup-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -10327,8 +10329,7 @@ input:focus-visible,
   cursor: pointer;
 }
 
-.skill-setup-close:hover,
-.skill-setup-notification-dismiss:hover {
+.skill-setup-close:hover {
   color: var(--foreground);
 }
 
@@ -10519,30 +10520,6 @@ input:focus-visible,
   margin: 0;
   color: var(--destructive);
   font-size: var(--fs-xs);
-}
-
-.skill-setup-notifications {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--sp-2);
-}
-
-.skill-setup-notification {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  font-size: var(--fs-xs);
-}
-
-.skill-setup-notification[data-tone="destructive"] {
-  background: var(--destructive-soft);
-  color: var(--destructive);
 }
 
 /* MCP servers (Hermes admin surface). Mirrors the installed-skills chrome:
@@ -10911,52 +10888,6 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
-}
-
-.mcp-servers-notifications {
-  list-style: none;
-  display: grid;
-  gap: var(--sp-2);
-  margin: 0 0 var(--sp-3);
-  padding: 0;
-}
-
-.mcp-servers-notification {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-}
-
-.mcp-servers-notification[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
-}
-
-.mcp-servers-notification-text {
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-}
-
-.mcp-servers-notification-dismiss {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.mcp-servers-notification-dismiss:hover {
-  color: var(--foreground);
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
 /* Empty / error / loading states. */
@@ -17404,52 +17335,6 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-.skills-hub-notifications {
-  list-style: none;
-  display: grid;
-  gap: var(--sp-2);
-  margin: 0 0 var(--sp-3);
-  padding: 0;
-}
-
-.skills-hub-notification {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-}
-
-.skills-hub-notification[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
-}
-
-.skills-hub-notification-text {
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-}
-
-.skills-hub-notification-dismiss {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.skills-hub-notification-dismiss:hover {
-  color: var(--foreground);
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
-}
-
 /* Empty / error / loading states. */
 .skills-hub-empty,
 .skills-hub-error {
@@ -18228,52 +18113,6 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
-}
-
-.toolsets-notifications {
-  list-style: none;
-  display: grid;
-  gap: var(--sp-2);
-  margin: 0 0 var(--sp-3);
-  padding: 0;
-}
-
-.toolsets-notification {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-}
-
-.toolsets-notification[data-tone="destructive"] {
-  border-color: color-mix(in oklch, var(--destructive) 45%, var(--border));
-  background: var(--destructive-soft);
-}
-
-.toolsets-notification-text {
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-}
-
-.toolsets-notification-dismiss {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-
-.toolsets-notification-dismiss:hover {
-  color: var(--foreground);
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
 /* Skill availability card — explains why skills are visible / hidden / waiting

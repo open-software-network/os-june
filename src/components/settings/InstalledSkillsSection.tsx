@@ -1,13 +1,12 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
-import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
 import { IconWarningSign } from "central-icons/IconWarningSign";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   categoriesOf,
   filterSkills,
@@ -25,6 +24,7 @@ import {
   type SkillsSetupOverview,
 } from "../../lib/hermes-admin";
 import { Switch } from "../ui/Switch";
+import { AdminNotifications } from "./AdminNotifications";
 import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
 
 /** Sentinel for the "all categories" filter chip. */
@@ -133,7 +133,10 @@ export function InstalledSkillsView({
       </p>
 
       <LifecycleBanner state={state} />
-      <Notifications state={state} />
+      <AdminNotifications
+        notifications={state.notifications}
+        onDismiss={state.dismissNotification}
+      />
 
       <div className="settings-card installed-skills-card">
         <div className="installed-skills-toolbar">
@@ -303,63 +306,6 @@ function LifecycleBanner({ state }: { state: InstalledSkillsState }) {
       </span>
       <span className="installed-skills-lifecycle-body">{detail}</span>
     </div>
-  );
-}
-
-/** How long a success notice stays before auto-dismissing. Errors never time
- * out. */
-const NOTIFICATION_TOAST_MS = 4500;
-/** Cap on simultaneously visible notices so a rapid burst of toggles can't grow
- * the page. */
-const MAX_VISIBLE_NOTIFICATIONS = 3;
-
-/** Admin change notices, rendered as toasts: a successful change shows briefly
- * then auto-dismisses so they never pile up; an error stays until the user
- * dismisses it (it must be seen). Newest first, capped. */
-function Notifications({ state }: { state: InstalledSkillsState }) {
-  const { notifications, dismissNotification } = state;
-  // Success notices clear themselves a few seconds after activity settles;
-  // errors are never timed out. Re-armed whenever the set changes.
-  useEffect(() => {
-    const timers = notifications
-      .filter((note) => !note.isError)
-      .map((note) =>
-        window.setTimeout(
-          () => dismissNotification(note.id),
-          NOTIFICATION_TOAST_MS,
-        ),
-      );
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [notifications, dismissNotification]);
-
-  if (notifications.length === 0) return null;
-  const visible = [...notifications]
-    .reverse()
-    .slice(0, MAX_VISIBLE_NOTIFICATIONS);
-  return (
-    <ul className="installed-skills-notifications" aria-label="Recent changes">
-      {visible.map((note) => (
-        <li
-          key={note.id}
-          className="installed-skills-notification"
-          data-tone={note.isError ? "destructive" : "info"}
-          role="status"
-        >
-          <span className="installed-skills-notification-text">
-            {note.message}
-          </span>
-          <button
-            type="button"
-            className="installed-skills-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => state.dismissNotification(note.id)}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 

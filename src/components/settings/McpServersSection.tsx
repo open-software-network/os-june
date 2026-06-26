@@ -30,6 +30,7 @@ import {
   type McpServersState,
   type McpTestState,
 } from "../../lib/hermes-admin";
+import { AdminNotifications } from "./AdminNotifications";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { Switch } from "../ui/Switch";
@@ -103,7 +104,10 @@ export function McpServersView({
       </p>
 
       <LifecycleBanner state={state} />
-      <Notifications state={state} />
+      <AdminNotifications
+        notifications={state.notifications}
+        onDismiss={state.dismissNotification}
+      />
 
       <div className="settings-card mcp-servers-card">
         <div className="mcp-servers-toolbar">
@@ -255,35 +259,6 @@ function LifecycleBanner({ state }: { state: McpServersState }) {
       </span>
       <span className="mcp-servers-lifecycle-body">{snapshot.detail}</span>
     </div>
-  );
-}
-
-/** The durable admin notifications. Dismissible, newest first. */
-function Notifications({ state }: { state: McpServersState }) {
-  if (state.notifications.length === 0) return null;
-  const newestFirst = [...state.notifications].reverse();
-  return (
-    <ul className="mcp-servers-notifications" aria-label="Recent changes">
-      {newestFirst.map((note) => (
-        <li
-          key={note.id}
-          className="mcp-servers-notification"
-          data-tone={note.isError ? "destructive" : "info"}
-          role="status"
-        >
-          <span className="mcp-servers-notification-text">{note.message}</span>
-          <button
-            type="button"
-            className="mcp-servers-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => state.dismissNotification(note.id)}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 

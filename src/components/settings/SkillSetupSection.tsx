@@ -17,6 +17,7 @@ import {
   type SkillSetupBadge as SkillSetupBadgeModel,
   type SkillSetupState,
 } from "../../lib/hermes-admin";
+import { AdminNotifications } from "./AdminNotifications";
 
 /**
  * The skill config and required-secret setup surface (spec 09). For one skill it
@@ -83,7 +84,10 @@ export function SkillSetupView({
         ) : null}
       </div>
 
-      <SetupNotifications state={state} />
+      <AdminNotifications
+        notifications={state.notifications}
+        onDismiss={state.dismissNotification}
+      />
 
       {state.error ? (
         <p className="skill-setup-error" role="alert">
@@ -193,35 +197,6 @@ export function SetupStatusBadge({ badge }: { badge: SkillSetupBadgeModel }) {
       )}
       {badge.label}
     </span>
-  );
-}
-
-/** Durable admin notifications, dismissible, newest first. */
-function SetupNotifications({ state }: { state: SkillSetupState }) {
-  if (state.notifications.length === 0) return null;
-  const newestFirst = [...state.notifications].reverse();
-  return (
-    <ul className="skill-setup-notifications" aria-label="Recent changes">
-      {newestFirst.map((note) => (
-        <li
-          key={note.id}
-          className="skill-setup-notification"
-          data-tone={note.isError ? "destructive" : "info"}
-          role="status"
-        >
-          <span className="skill-setup-notification-text">{note.message}</span>
-          <button
-            type="button"
-            className="skill-setup-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => state.dismissNotification(note.id)}
-          >
-            <IconCrossSmall size={12} ariaHidden />
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 

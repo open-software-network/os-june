@@ -1,6 +1,5 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
-import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconShield } from "central-icons/IconShield";
@@ -22,6 +21,7 @@ import {
   type SkillExplanation,
   type ToolsetsState,
 } from "../../lib/hermes-admin";
+import { AdminNotifications } from "./AdminNotifications";
 
 type ToolsetsSectionProps = {
   /** The write-access mode whose runtime this page inspects. Defaults to the
@@ -94,7 +94,10 @@ export function ToolsetsView({
       </p>
 
       <LifecycleBanner state={state} />
-      <Notifications state={state} />
+      <AdminNotifications
+        notifications={state.notifications}
+        onDismiss={state.dismissNotification}
+      />
 
       <div className="settings-card toolsets-card">
         <div className="toolsets-toolbar">
@@ -337,35 +340,6 @@ function LifecycleBanner({ state }: { state: ToolsetsState }) {
       </span>
       <span className="toolsets-lifecycle-body">{snapshot.detail}</span>
     </div>
-  );
-}
-
-/** The durable admin notifications, dismissible, newest first. */
-function Notifications({ state }: { state: ToolsetsState }) {
-  if (state.notifications.length === 0) return null;
-  const newestFirst = [...state.notifications].reverse();
-  return (
-    <ul className="toolsets-notifications" aria-label="Recent changes">
-      {newestFirst.map((note) => (
-        <li
-          key={note.id}
-          className="toolsets-notification"
-          data-tone={note.isError ? "destructive" : "info"}
-          role="status"
-        >
-          <span className="toolsets-notification-text">{note.message}</span>
-          <button
-            type="button"
-            className="toolsets-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => state.dismissNotification(note.id)}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 

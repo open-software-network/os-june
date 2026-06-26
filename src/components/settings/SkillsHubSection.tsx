@@ -28,6 +28,7 @@ import {
   type HubSourceKind,
   type SkillsHubState,
 } from "../../lib/hermes-admin";
+import { AdminNotifications } from "./AdminNotifications";
 import {
   SkillInstallReviewDialog,
   type SkillInstallReviewDecision,
@@ -172,7 +173,10 @@ export function SkillsHubView({
       </p>
 
       <LifecycleBanner state={state} />
-      <Notifications state={state} />
+      <AdminNotifications
+        notifications={state.notifications}
+        onDismiss={state.dismissNotification}
+      />
 
       <div className="settings-card skills-hub-card">
         <div className="skills-hub-toolbar">
@@ -342,36 +346,6 @@ function LifecycleBanner({ state }: { state: SkillsHubState }) {
       </span>
       <span className="skills-hub-lifecycle-body">{snapshot.detail}</span>
     </div>
-  );
-}
-
-/** Durable admin notifications ("Installed X. New sessions can use it."), and
- * install failures (raised as error notifications). Dismissible, newest first. */
-function Notifications({ state }: { state: SkillsHubState }) {
-  if (state.notifications.length === 0) return null;
-  const newestFirst = [...state.notifications].reverse();
-  return (
-    <ul className="skills-hub-notifications" aria-label="Recent changes">
-      {newestFirst.map((note) => (
-        <li
-          key={note.id}
-          className="skills-hub-notification"
-          data-tone={note.isError ? "destructive" : "info"}
-          role="status"
-        >
-          <span className="skills-hub-notification-text">{note.message}</span>
-          <button
-            type="button"
-            className="skills-hub-notification-dismiss"
-            aria-label="Dismiss"
-            title="Dismiss"
-            onClick={() => state.dismissNotification(note.id)}
-          >
-            <IconCrossSmall size={13} ariaHidden />
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }
 
