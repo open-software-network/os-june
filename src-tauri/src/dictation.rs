@@ -774,7 +774,9 @@ pub fn dictation_helper_command(
     command: serde_json::Value,
 ) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
-    let _ = &app;
+    if helper_command_resets_shortcut_activation(&command) {
+        reset_shortcut_activation(&app);
+    }
 
     #[cfg(not(target_os = "macos"))]
     if state
@@ -787,6 +789,13 @@ pub fn dictation_helper_command(
     }
 
     send_helper_command(&state, command)
+}
+
+fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> bool {
+    matches!(
+        command.get("type").and_then(serde_json::Value::as_str),
+        Some("stop_and_paste" | "discard_recording" | "toggle_listening")
+    )
 }
 
 #[tauri::command]
@@ -3660,6 +3669,52 @@ mod tests {
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, now),
             None
         );
+    }
+
+    #[test]
+    fn external_hands_free_stop_allows_push_to_talk_again() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
+            Some(DictationCommand::ToggleListening)
+        );
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + Duration::from_millis(1)
+            ),
+            None
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + Duration::from_millis(2)
+            ),
+            Some(DictationCommand::StartListening)
+        );
+    }
+
+    #[test]
+    fn direct_helper_listening_commands_reset_shortcut_activation() {
+        assert!(helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "stop_and_paste" })
+        ));
+        assert!(helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "discard_recording" })
+        ));
+        assert!(helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "toggle_listening" })
+        ));
+        assert!(!helper_command_resets_shortcut_activation(
+            &serde_json::json!({ "type": "start_shortcut_capture" })
+        ));
     }
 
     #[test]
