@@ -15,6 +15,7 @@ import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconGift1 } from "central-icons/IconGift1";
+import { IconLayersThree } from "central-icons/IconLayersThree";
 import { IconMagicWand } from "central-icons/IconMagicWand";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
@@ -269,6 +270,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "toolsets",
         label: "Toolsets",
         icon: <IconToolbox size={16} />,
+      },
+      {
+        id: "bundles",
+        label: "Bundles",
+        icon: <IconLayersThree size={16} />,
       },
       {
         id: "profile-builder",
