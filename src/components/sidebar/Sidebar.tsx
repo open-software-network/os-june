@@ -21,6 +21,7 @@ import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPin } from "central-icons/IconPin";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconServer1 } from "central-icons/IconServer1";
@@ -231,6 +232,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "mcp",
         label: "MCP servers",
         icon: <IconServer1 size={16} />,
+      },
+      {
+        id: "skills-hub",
+        label: "Skills hub",
+        icon: <IconArrowInbox size={16} />,
       },
     ],
   },

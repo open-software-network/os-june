@@ -425,15 +425,66 @@ export function parseMcpCatalog(raw: unknown): HermesMcpCatalogEntry[] {
 // Skills Hub search (`GET /api/skills/hub/search`)
 // ----------------------------------------------------------------------------
 
+/** A trust signal Hermes attaches to a hub result, so June can warn before a
+ * lower-trust install. `official` ships from Hermes, `verified` is a vetted tap,
+ * `community` is unvetted, `unknown` when the wire did not say. Higher trust is
+ * lower risk; the UI maps these to a friendly badge + advisory copy. */
+export type HermesHubTrustLevel =
+  | "official"
+  | "verified"
+  | "community"
+  | "unknown";
+
 export type HermesHubSkillResult = {
   /** Stable install identifier (the value to pass to hubInstall). */
   identifier: string;
   name: string;
   description?: string;
+  /** Raw upstream source label (e.g. `skills.sh`, `github`, `url`); the UI maps
+   * it to a friendly label and keeps this visible in the advanced/details area
+   * so the exact install identifier/source stays debuggable. */
   source?: string;
   installed?: boolean;
+  /** True when an installed copy has an update available, when reported. */
+  updateAvailable?: boolean;
+  /** Trust level reported by Hermes, when present. */
+  trust: HermesHubTrustLevel;
+  /** Category/group label, when reported. */
+  category?: string;
+  /** Searchable tags/keywords, when reported. */
+  tags?: string[];
+  /** The skill's version string, when reported. */
+  version?: string;
+  /** Upstream URLs (repo, homepage, the raw SKILL.md for a URL install), when
+   * reported. Shown in the detail surface. */
+  upstreamUrls?: string[];
+  /** Author/publisher, when reported. */
+  author?: string;
   raw: unknown;
 };
+
+/** Normalizes a trust string from a few shapes. `trusted`/`verified`/`tap`
+ * collapse to `verified`; `official`/`builtin`/`bundled` to `official`;
+ * `community`/`unverified`/`third_party`/`url` to `community`. */
+function parseHubTrust(value: unknown): HermesHubTrustLevel {
+  const str = nonEmptyString(value)?.toLowerCase();
+  if (str === "official" || str === "builtin" || str === "bundled") {
+    return "official";
+  }
+  if (str === "verified" || str === "trusted" || str === "tap") {
+    return "verified";
+  }
+  if (
+    str === "community" ||
+    str === "unverified" ||
+    str === "third_party" ||
+    str === "third-party" ||
+    str === "url"
+  ) {
+    return "community";
+  }
+  return "unknown";
+}
 
 export function parseHubSkillResult(
   raw: unknown,
@@ -451,8 +502,37 @@ export function parseHubSkillResult(
     description: pickString([record], ["description", "summary", "desc"]),
     source: pickString([record], ["source", "origin", "tap"]),
     installed: pickBool([record], ["installed", "is_installed"]),
+    updateAvailable: pickBool(
+      [record],
+      ["update_available", "updateAvailable", "has_update", "outdated"],
+    ),
+    trust: parseHubTrust(
+      record.trust ?? record.trust_level ?? record.trustLevel,
+    ),
+    category: pickString([record], ["category", "group", "collection"]),
+    tags: pickStringArray(record.tags ?? record.keywords ?? record.labels),
+    version: pickString([record], ["version", "ver"]),
+    upstreamUrls:
+      pickStringArray(
+        record.urls ?? record.upstream_urls ?? record.upstreamUrls,
+      ) ?? collectUrls(record),
+    author: pickString(
+      [record],
+      ["author", "publisher", "owner", "maintainer"],
+    ),
     raw,
   };
+}
+
+/** Collects single-URL fields into a list, for results that report `url`/
+ * `repo`/`homepage` rather than a `urls` array. Returns undefined when none. */
+function collectUrls(record: Record<string, unknown>): string[] | undefined {
+  const out: string[] = [];
+  for (const key of ["url", "repo", "repository", "homepage", "source_url"]) {
+    const value = nonEmptyString(record[key]);
+    if (value && !out.includes(value)) out.push(value);
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 export function parseHubSearch(raw: unknown): HermesHubSkillResult[] {

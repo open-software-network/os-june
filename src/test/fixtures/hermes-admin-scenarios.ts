@@ -127,6 +127,70 @@ export function richInstallScenario(): FakeHermesScenario {
   };
 }
 
+/** A rich Skills Hub browse fixture: results across multiple sources and trust
+ * levels, with tags/urls/version, plus a backgrounded install that progresses
+ * over polls. Drives the hub browser's search states, source filter, inspect
+ * drawer, and install-progress path. */
+export function hubBrowseScenario(): FakeHermesScenario {
+  return {
+    token: "fake-token-hub",
+    skills: [],
+    hubResults: [
+      {
+        identifier: "official/pdf",
+        name: "PDF",
+        description: "Read and write PDFs",
+        source: "official",
+        trust: "official",
+        category: "Documents",
+        tags: ["documents", "office"],
+        version: "1.2.0",
+        installed: false,
+      },
+      {
+        identifier: "skills.sh/data-science",
+        name: "Data science",
+        description: "Notebooks, pandas, plotting",
+        source: "skills.sh",
+        trust: "verified",
+        tags: ["python", "data"],
+        urls: ["https://skills.sh/data-science"],
+        author: "skills.sh",
+        installed: false,
+      },
+      {
+        identifier: "github:acme/internal-skills/deploy",
+        name: "Deploy",
+        description: "Deploy helpers",
+        source: "github",
+        trust: "community",
+        urls: ["https://github.com/acme/internal-skills"],
+        installed: true,
+        update_available: true,
+      },
+      {
+        identifier: "https://example.test/raw/SKILL.md",
+        name: "Quick note formatter",
+        description: "Single-file skill from a URL",
+        source: "url",
+        trust: "unknown",
+        installed: false,
+      },
+    ],
+    backgroundActions: true,
+    actionScripts: {
+      install: {
+        states: [
+          { state: "queued" },
+          { state: "running", progress: 40, message: "Fetching" },
+          { state: "running", progress: 80, message: "Indexing" },
+          { state: "succeeded", progress: 100 },
+        ],
+      },
+    },
+  };
+}
+
 /** A Skills Hub search result that should trigger a security review (a direct
  * URL single-file install from an untrusted source). The install endpoint still
  * works; the dangerous-block decision is a UI-layer concern, but the data that

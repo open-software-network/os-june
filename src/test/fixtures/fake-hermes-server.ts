@@ -104,6 +104,15 @@ export type FakeHubResult = {
   description?: string;
   source?: string;
   installed?: boolean;
+  /** Optional richer fields the hub returns and the Skills Hub browser renders.
+   * Passed through verbatim so the parser/view logic is exercised end to end. */
+  trust?: "official" | "verified" | "community" | "unknown";
+  category?: string;
+  tags?: string[];
+  version?: string;
+  urls?: string[];
+  author?: string;
+  update_available?: boolean;
 };
 
 /** A backgrounded action's scripted progression: one status per poll, the last
