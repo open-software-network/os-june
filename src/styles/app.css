@@ -11215,6 +11215,112 @@ input:focus-visible,
   font-size: var(--fs-xs);
 }
 
+/* OAuth sign-in panel (spec 17): token status + sign-in action per server. */
+.mcp-server-oauth {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.mcp-server-oauth[data-state="connected"] {
+  border-color: color-mix(
+    in oklch,
+    var(--ring-focus) 30%,
+    var(--border-subtle)
+  );
+}
+
+.mcp-server-oauth[data-state="needs-sign-in"],
+.mcp-server-oauth[data-state="expired"],
+.mcp-server-oauth[data-state="needs-client-credentials"] {
+  border-color: color-mix(
+    in oklch,
+    var(--warm-strong) 30%,
+    var(--border-subtle)
+  );
+}
+
+.mcp-server-oauth-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.mcp-server-oauth-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+.mcp-server-oauth-status[data-tone="ok"] {
+  color: var(--foreground);
+}
+
+.mcp-server-oauth-status[data-tone="attention"] {
+  color: var(--warm-strong);
+}
+
+.mcp-server-oauth-action {
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.mcp-server-oauth-action:hover {
+  background: var(--secondary-hover, var(--secondary));
+}
+
+.mcp-server-oauth-blurb {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.mcp-server-oauth-progress,
+.mcp-server-oauth-done,
+.mcp-server-oauth-error {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+}
+
+.mcp-server-oauth-progress {
+  color: var(--muted-foreground);
+}
+
+.mcp-server-oauth-done {
+  color: var(--foreground);
+}
+
+.mcp-server-oauth-error {
+  color: var(--destructive);
+}
+
+.mcp-server-oauth-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+}
+
 .mcp-server-actions {
   display: inline-flex;
   align-items: center;

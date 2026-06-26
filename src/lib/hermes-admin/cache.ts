@@ -66,6 +66,7 @@ const INVALIDATION: Readonly<Record<AdminMutation, readonly AdminResource[]>> =
     "mcp.remove": ["mcpServers", "toolsets"],
     "mcp.setEnabled": ["mcpServers", "toolsets"],
     "mcp.test": ["mcpServers", "toolsets"],
+    "mcp.oauthLogin": ["mcpServers", "toolsets"],
     "mcp.installCatalog": ["mcpServers", "mcpCatalog", "toolsets"],
     "env.set": ["envConfig", "gatewayStatus"],
     "env.delete": ["envConfig", "gatewayStatus"],

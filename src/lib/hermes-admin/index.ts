@@ -60,6 +60,8 @@ export * from "./skill-detail-view";
 export * from "./use-skill-detail";
 export * from "./mcp-servers-view";
 export * from "./use-mcp-servers";
+export * from "./mcp-oauth-view";
+export * from "./use-mcp-oauth";
 export * from "./mcp-catalog-view";
 export * from "./use-mcp-catalog";
 export * from "./hub-search-view";

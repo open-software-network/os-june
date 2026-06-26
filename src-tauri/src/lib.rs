@@ -166,6 +166,7 @@ pub fn run() {
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::ensure_hermes_bridge_gateway,
             hermes_bridge::hermes_admin_request,
+            hermes_bridge::hermes_mcp_oauth_login,
             hermes_bridge::hermes_bridge_skills,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,

@@ -351,6 +351,31 @@ pub struct HermesSkillRequest {
     pub name: String,
 }
 
+/// Request for an MCP OAuth sign-in. `mode` names the runtime explicitly
+/// ("sandboxed" / "unrestricted"); `server` is the MCP server name (validated
+/// argument-safe on the TS side and passed as a discrete CLI argument, never
+/// shell-interpolated); `profile` targets a specific Hermes profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesMcpOauthLoginRequest {
+    pub mode: String,
+    pub server: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
+/// The redacted result of an MCP OAuth sign-in. It NEVER carries a token: only
+/// whether the CLI reported success, an already-redacted status message, and a
+/// token-free authorization URL so June can offer a manual browser fallback.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesMcpOauthLoginResult {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub auth_url: Option<String>,
+    pub timed_out: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateHermesSkillRequest {
@@ -1989,6 +2014,292 @@ pub async fn hermes_admin_request(
         ));
     };
     hermes_connection_json(connection, method, &path, body).await
+}
+
+/// How long June waits for the `hermes mcp login` CLI to finish before
+/// returning. The browser sign-in is the USER's to complete; June never blocks
+/// indefinitely on it. A generous window covers the common "click approve"
+/// round-trip, after which June reports `timed_out` and the UI keeps showing the
+/// waiting state, refreshing status on its own.
+const MCP_OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// A name a CLI argument is allowed to be: the same slug the TS validator
+/// enforces (`/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/`). This is defense in depth —
+/// the value is already passed as a discrete `Command` argument (no shell), but
+/// rejecting anything outside the slug keeps a malformed name from ever reaching
+/// the CLI as, say, a stray `--flag`.
+fn is_safe_mcp_server_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 64 {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// Builds the `hermes mcp login <server> [--profile <p>]` command, isolated to
+/// the connection's home/token, non-interactive, in the connection's mode. Pure
+/// (no spawn) so a test can assert the exact argument vector and that the server
+/// name is a discrete argument rather than shell-interpolated.
+fn build_hermes_mcp_login_command(
+    connection: &HermesBridgeConnection,
+    server: &str,
+    profile: Option<&str>,
+) -> Command {
+    let hermes_home = PathBuf::from(&connection.hermes_home);
+    let mut cmd = Command::new(&connection.command);
+    cmd.args(["mcp", "login", server]);
+    if let Some(profile) = profile {
+        cmd.args(["--profile", profile]);
+    }
+    apply_isolated_hermes_env(&mut cmd, &hermes_home, &connection.token, None);
+    // Non-interactive: the CLI must print the authorization URL and not block on
+    // a terminal prompt June cannot answer. June opens the URL in the browser.
+    cmd.env("HERMES_NONINTERACTIVE", "1");
+    cmd.current_dir(&hermes_home);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd
+}
+
+/// Extracts the first http(s) authorization URL from CLI output. Returns the URL
+/// verbatim (token-free trimming happens on the TS side via `redactUrl`); pure
+/// so a test can pin it. Stops at whitespace so a trailing log word is not glued
+/// onto the URL.
+fn extract_authorization_url(output: &str) -> Option<String> {
+    for token in output.split_whitespace() {
+        let trimmed = token.trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | ',' | '.' | ';')
+        });
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// Redacts a free-text CLI line for return to June. The CLI may echo a
+/// `Bearer <token>`, a `?token=<value>`, or a long credential-shaped run; this
+/// masks all three so the message that reaches the webview never carries a
+/// secret. Mirrors the TS `redactBodyPreview` string scrub on the Rust side so a
+/// secret can't leak through the bridge result. Returns `None` for an
+/// empty/whitespace result.
+fn redact_cli_message(message: &str) -> Option<String> {
+    let mut out = String::with_capacity(message.len());
+    for word in message.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&redact_cli_word(word));
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Redacts one whitespace-delimited token from CLI output.
+fn redact_cli_word(word: &str) -> String {
+    let lower = word.to_ascii_lowercase();
+    // `key=value` query/env fragments carrying a secret.
+    if let Some(eq) = word.find('=') {
+        let key = lower[..eq].trim_end_matches(['?', '&']);
+        let key = key.rsplit(['?', '&']).next().unwrap_or(key);
+        if matches!(
+            key,
+            "token" | "access_token" | "api_key" | "apikey" | "secret" | "key" | "code"
+        ) {
+            return format!("{}=[redacted]", &word[..eq]);
+        }
+    }
+    // A bare credential-shaped run (long, separator-free, alphanumeric) that is
+    // not a path/URL — mirrors `isCredentialShapedValue` on the TS side.
+    if word.len() >= 32
+        && !word.contains('/')
+        && !word.contains('\\')
+        && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && word.chars().any(|c| c.is_ascii_alphanumeric())
+    {
+        return "[redacted]".to_string();
+    }
+    word.to_string()
+}
+
+/// Classifies success from CLI exit + output without ever inspecting a token.
+/// A zero exit, or output that states authorization completed, counts as
+/// success; otherwise it is a non-success (the caller may have timed out waiting
+/// for the browser step). Pure so a test pins the signal parsing.
+fn mcp_login_succeeded(exit_success: bool, output: &str) -> bool {
+    if exit_success {
+        return true;
+    }
+    let lower = output.to_ascii_lowercase();
+    (lower.contains("authorized") || lower.contains("logged in") || lower.contains("success"))
+        && !lower.contains("fail")
+        && !lower.contains("error")
+}
+
+/// Runs the MCP OAuth sign-in for one server: `hermes mcp login <server>` in the
+/// chosen runtime, opening the authorization URL in the OS browser, and waiting
+/// (bounded) for the CLI to finish. The browser flow is the user's to complete;
+/// June never blocks indefinitely. The result is REDACTED here — it carries no
+/// token, only success, a safe message, and the token-free authorization URL so
+/// June can offer a manual "open in browser" fallback.
+///
+/// `mode` is EXPLICIT (sandboxed / unrestricted): like `hermes_admin_request`,
+/// this never falls back to the first connection. The server name is validated
+/// argument-safe and passed as a discrete CLI argument (no shell).
+#[tauri::command]
+pub async fn hermes_mcp_oauth_login(
+    bridge: State<'_, HermesBridge>,
+    request: HermesMcpOauthLoginRequest,
+) -> Result<HermesMcpOauthLoginResult, AppError> {
+    let full_mode = match request.mode.as_str() {
+        "unrestricted" => true,
+        "sandboxed" => false,
+        other => {
+            return Err(AppError::new(
+                "hermes_admin_invalid_mode",
+                format!("Unknown Hermes admin mode \"{other}\"."),
+            ));
+        }
+    };
+    if !is_safe_mcp_server_name(&request.server) {
+        return Err(AppError::new(
+            "hermes_mcp_oauth_invalid_server",
+            "Invalid MCP server name.",
+        ));
+    }
+
+    let connections = live_connections(&bridge)?;
+    let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.full_mode == full_mode)
+        .cloned()
+    else {
+        return Err(AppError::new(
+            "hermes_bridge_not_running",
+            "Hermes bridge is not running in the requested mode.",
+        ));
+    };
+
+    let server = request.server.clone();
+    let profile = request.profile.clone();
+    let mut cmd = build_hermes_mcp_login_command(&connection, &server, profile.as_deref());
+
+    // Run the short-lived CLI off the async runtime with a bounded wait. We read
+    // its piped output to find the authorization URL; we never persist it.
+    let join = tauri::async_runtime::spawn_blocking(move || {
+        let child = cmd.spawn().map_err(|error| {
+            AppError::new(
+                "hermes_mcp_oauth_login_failed",
+                format!("Could not run `hermes mcp login`. {error}"),
+            )
+        })?;
+        wait_with_timeout(child, MCP_OAUTH_LOGIN_TIMEOUT)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            "hermes_mcp_oauth_login_failed",
+            format!("Could not run the sign-in. {error}"),
+        )
+    })??;
+
+    let combined = format!("{}\n{}", join.stdout, join.stderr);
+    let auth_url = extract_authorization_url(&combined);
+    // Open the authorization URL in the OS browser so the user can complete the
+    // sign-in. macOS only; on other platforms June surfaces the URL for a manual
+    // open. The URL is a navigation target, not a credential, but it is still
+    // redacted before display on the TS side.
+    if let Some(url) = auth_url.as_deref() {
+        open_url_in_browser(url);
+    }
+
+    Ok(HermesMcpOauthLoginResult {
+        ok: mcp_login_succeeded(join.exit_success, &combined),
+        message: redact_cli_message(&combined),
+        auth_url,
+        timed_out: join.timed_out,
+    })
+}
+
+/// The captured outcome of a bounded CLI wait.
+struct BoundedOutput {
+    stdout: String,
+    stderr: String,
+    exit_success: bool,
+    timed_out: bool,
+}
+
+/// Waits up to `timeout` for a child with piped stdout/stderr, then captures
+/// whatever it produced. On timeout the child is killed and `timed_out` is set;
+/// the partial output (which usually already contains the authorization URL the
+/// CLI prints first) is still returned so June can open the browser.
+fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<BoundedOutput, AppError> {
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let exit_success;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit_success = status.success();
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    exit_success = false;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => {
+                return Err(AppError::new(
+                    "hermes_mcp_oauth_login_failed",
+                    format!("Could not wait for the sign-in. {error}"),
+                ));
+            }
+        }
+    }
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    use std::io::Read as _;
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    Ok(BoundedOutput {
+        stdout,
+        stderr,
+        exit_success,
+        timed_out,
+    })
+}
+
+/// Opens a URL in the OS browser. macOS uses `/usr/bin/open`; other platforms
+/// are a no-op (June still surfaces the URL for a manual open). Best-effort: a
+/// failure to launch is non-fatal — the manual fallback covers it.
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/open").arg(url).spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+    }
 }
 
 async fn start_hermes_gateway_if_needed(
@@ -4287,6 +4598,92 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn oauth_test_connection() -> HermesBridgeConnection {
+        HermesBridgeConnection {
+            base_url: "http://127.0.0.1:8787".to_string(),
+            ws_url: "ws://127.0.0.1:8787/api/ws".to_string(),
+            token: "secret-session-token".to_string(),
+            port: 8787,
+            command: "/usr/local/bin/hermes".to_string(),
+            hermes_home: "/tmp/hermes-home".to_string(),
+            cwd: None,
+            provider_proxy_port: 9000,
+            pid: 4242,
+            sandboxed: true,
+            full_mode: false,
+        }
+    }
+
+    #[test]
+    fn mcp_login_command_passes_server_as_discrete_argument() {
+        let connection = oauth_test_connection();
+        let cmd =
+            build_hermes_mcp_login_command(&connection, "linear", Some("work"));
+        let program = cmd.get_program().to_string_lossy().to_string();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(program, "/usr/local/bin/hermes");
+        assert_eq!(args, vec!["mcp", "login", "linear", "--profile", "work"]);
+    }
+
+    #[test]
+    fn mcp_login_command_omits_profile_when_none() {
+        let connection = oauth_test_connection();
+        let cmd = build_hermes_mcp_login_command(&connection, "linear", None);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["mcp", "login", "linear"]);
+    }
+
+    #[test]
+    fn rejects_unsafe_mcp_server_names() {
+        assert!(is_safe_mcp_server_name("linear"));
+        assert!(is_safe_mcp_server_name("my-server_1.2"));
+        assert!(!is_safe_mcp_server_name(""));
+        assert!(!is_safe_mcp_server_name("--flag"));
+        assert!(!is_safe_mcp_server_name("a b"));
+        assert!(!is_safe_mcp_server_name("rm -rf / ; curl evil"));
+        assert!(!is_safe_mcp_server_name("server;name"));
+    }
+
+    #[test]
+    fn extracts_first_http_authorization_url() {
+        let output = "Open this URL to authorize:\n  https://auth.linear.app/authorize?client_id=abc \nWaiting...";
+        assert_eq!(
+            extract_authorization_url(output),
+            Some("https://auth.linear.app/authorize?client_id=abc".to_string())
+        );
+        assert_eq!(extract_authorization_url("nothing to see here"), None);
+    }
+
+    #[test]
+    fn redacts_tokens_and_bearer_from_cli_output() {
+        let message = redact_cli_message(
+            "Authorized. token=sk-super-secret-token-value access granted",
+        )
+        .unwrap();
+        assert!(!message.contains("sk-super-secret-token-value"));
+        assert!(message.contains("[redacted]"));
+
+        // A long credential-shaped bare run is masked regardless of surrounding.
+        let masked =
+            redact_cli_message("saved AKIAIOSFODNN7EXAMPLEKEY1234567890abcd done")
+                .unwrap();
+        assert!(!masked.contains("AKIAIOSFODNN7EXAMPLEKEY1234567890abcd"));
+    }
+
+    #[test]
+    fn classifies_login_success_from_exit_and_output() {
+        assert!(mcp_login_succeeded(true, ""));
+        assert!(mcp_login_succeeded(false, "Successfully authorized linear"));
+        assert!(!mcp_login_succeeded(false, "error: authorization failed"));
+        assert!(!mcp_login_succeeded(false, "waiting for browser"));
+    }
 
     fn request_with_authorization(value: &str) -> HttpRequest {
         HttpRequest {

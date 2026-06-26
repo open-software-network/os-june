@@ -5,31 +5,41 @@ import { IconCircleX } from "central-icons/IconCircleX";
 import { IconCloud } from "central-icons/IconCloud";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
+import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
+import { IconKey1 } from "central-icons/IconKey1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconServer1 } from "central-icons/IconServer1";
 import { IconShield } from "central-icons/IconShield";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   authMeta,
   emptyDraft,
   filterServers,
   hasAvailableTools,
   isLocalSubprocess,
+  oauthStateFor,
+  oauthStatusMeta,
   redactedEnv,
   redactedHeaders,
   serverArgs,
   statusMeta,
   transportMeta,
-  useMcpServers,
+  useMcpOauthController,
+  useMcpServersController,
+  useMcpServersEngine,
+  usesOauth,
   validateDraft,
   type HermesAdminMode,
   type HermesMcpServerInfo,
+  type McpOauthLoginState,
+  type McpOauthState,
   type McpServerDraft,
   type McpServersState,
   type McpTestState,
 } from "../../lib/hermes-admin";
+import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
@@ -42,21 +52,57 @@ type McpServersSectionProps = {
 };
 
 /**
- * June's native MCP servers page (spec 14). Lists the MCP servers Hermes has
- * configured for the targeted profile and lets the user add stdio / HTTP
- * servers, test connections, enable/disable, and delete, all through the typed
+ * June's native MCP servers page (specs 14 + 17). Lists the MCP servers Hermes
+ * has configured for the targeted profile and lets the user add stdio / HTTP
+ * servers, test connections, enable/disable, delete, and — for OAuth servers —
+ * sign in / re-authenticate through the browser, all through the typed
  * `hermes-admin` client, the shared cache, and the gateway lifecycle (so the
  * apply-timing copy is honest: MCP changes are "restart required").
  *
- * Secrets (env values, header values, tokens) are never surfaced. The data lives
- * entirely in {@link useMcpServers}; this component is presentation + local
- * filter / dialog state.
+ * The servers list and the OAuth login flow share ONE engine (one client, one
+ * cache, one lifecycle) so a sign-in's inventory refresh and the list's view
+ * stay consistent. Secrets (env values, header values, OAuth tokens) are never
+ * surfaced; this component is presentation + local filter / dialog state.
  */
 export function McpServersSection({
   mode = "sandboxed",
 }: McpServersSectionProps) {
-  const state = useMcpServers(mode);
-  return <McpServersView state={state} mode={mode} />;
+  const [bridge, setBridge] = useState<HermesBridgeStatus>();
+  const [bridgeError, setBridgeError] = useState<string>();
+
+  useEffect(() => {
+    let cancelled = false;
+    hermesBridgeStatus()
+      .then((status) => {
+        if (!cancelled) setBridge(status);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setBridgeError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const engine = useMcpServersEngine(bridge, mode);
+  const serversState = useMcpServersController(engine);
+  const oauthState = useMcpOauthController(engine);
+
+  const state: McpServersState =
+    engine === null && bridgeError
+      ? {
+          ...serversState,
+          status: "error",
+          error: bridgeError,
+          retryable: true,
+        }
+      : serversState;
+
+  return <McpServersView state={state} oauth={oauthState} mode={mode} />;
 }
 
 /**
@@ -66,9 +112,13 @@ export function McpServersSection({
  */
 export function McpServersView({
   state,
+  oauth,
   mode = "sandboxed",
 }: {
   state: McpServersState;
+  /** The OAuth sign-in slice. Optional so a component test can drive the list
+   * without it; the empty controller state is used when absent. */
+  oauth?: McpOauthState;
   mode?: HermesAdminMode;
 }) {
   const [query, setQuery] = useState("");
@@ -185,6 +235,8 @@ export function McpServersView({
                   server={server}
                   pending={state.pending.has(server.name)}
                   test={state.tests.get(server.name)}
+                  oauthLogin={oauth?.logins.get(server.name)}
+                  onSignIn={oauth ? () => oauth.signIn(server.name) : undefined}
                   onToggle={(enabled) => state.setEnabled(server.name, enabled)}
                   onTest={() => void state.test(server.name)}
                   onDelete={() => setToDelete(server)}
@@ -270,6 +322,8 @@ function ServerRow({
   server,
   pending,
   test,
+  oauthLogin,
+  onSignIn,
   onToggle,
   onTest,
   onDelete,
@@ -277,6 +331,8 @@ function ServerRow({
   server: HermesMcpServerInfo;
   pending: boolean;
   test?: McpTestState;
+  oauthLogin?: McpOauthLoginState;
+  onSignIn?: () => void;
   onToggle: (enabled: boolean) => void;
   onTest: () => void;
   onDelete: () => void;
@@ -290,6 +346,7 @@ function ServerRow({
   const local = isLocalSubprocess(server);
   const labelId = `mcp-server-${cssId(server.name)}`;
   const tools = test?.result?.tools ?? server.tools ?? [];
+  const oauth = usesOauth(server);
 
   return (
     <li className="mcp-server-row" data-enabled={server.enabled}>
@@ -344,6 +401,10 @@ function ServerRow({
         ) : null}
 
         <TestResult test={test} tools={tools} />
+
+        {oauth ? (
+          <OauthStatus server={server} login={oauthLogin} onSignIn={onSignIn} />
+        ) : null}
       </div>
 
       <div className="mcp-server-actions">
@@ -447,6 +508,100 @@ function StatusIcon({ tone }: { tone: "ok" | "error" | "neutral" }) {
   if (tone === "ok") return <IconCircleCheck size={13} ariaHidden />;
   if (tone === "error") return <IconCircleX size={13} ariaHidden />;
   return <IconCircleInfo size={13} ariaHidden />;
+}
+
+/**
+ * The OAuth sign-in panel for an OAuth-authenticated HTTP MCP server (spec 17).
+ * Shows the token status (connected / needs sign-in / expired / waiting / needs
+ * client setup / unknown) and offers the matching action: sign in, sign in
+ * again, or add client details. While a sign-in is in flight it shows the
+ * waiting state; when it finishes it shows the safe (redacted) result. A
+ * `waiting` (timed-out) login keeps the row in the waiting state with a manual
+ * "open sign-in page" fallback, because the browser step is the user's to
+ * finish and June never blocks on it. Token values are never shown.
+ */
+function OauthStatus({
+  server,
+  login,
+  onSignIn,
+}: {
+  server: HermesMcpServerInfo;
+  login?: McpOauthLoginState;
+  onSignIn?: () => void;
+}) {
+  const inFlight = login?.phase === "signing-in" || login?.phase === "waiting";
+  const meta = oauthStatusMeta(oauthStateFor(server, inFlight));
+  // The configure action is a setup step (client id/secret); a sign-in action
+  // runs the browser flow. We only wire the sign-in here. Client-detail setup is
+  // surfaced as guidance: this Hermes version configures client credentials in
+  // the server's config / env, which the add/edit and secret-setup surfaces own.
+  const canSignIn =
+    Boolean(onSignIn) &&
+    (meta.action === "sign-in" || meta.action === "re-auth") &&
+    !inFlight;
+
+  return (
+    <div className="mcp-server-oauth" data-state={meta.state} role="group">
+      <div className="mcp-server-oauth-head">
+        <span className="mcp-server-oauth-status" data-tone={meta.tone}>
+          <IconKey1 size={13} ariaHidden />
+          {meta.label}
+        </span>
+        {canSignIn ? (
+          <button
+            type="button"
+            className="mcp-server-oauth-action"
+            onClick={onSignIn}
+          >
+            {meta.actionLabel}
+          </button>
+        ) : null}
+      </div>
+
+      <p className="mcp-server-oauth-blurb">{meta.blurb}</p>
+
+      {login?.phase === "signing-in" ? (
+        <p className="mcp-server-oauth-progress" role="status">
+          <IconCloud size={13} ariaHidden />A browser window should have opened.
+          Approve the sign-in there to finish.
+        </p>
+      ) : null}
+
+      {login?.phase === "waiting" ? (
+        <p className="mcp-server-oauth-progress" role="status">
+          <IconCloud size={13} ariaHidden />
+          Still waiting for the browser sign-in. Finish it, then test the server
+          to confirm.
+        </p>
+      ) : null}
+
+      {login?.phase === "failed" && login.error ? (
+        <p className="mcp-server-oauth-error" role="alert">
+          <IconExclamationCircle size={13} ariaHidden />
+          {login.error}
+        </p>
+      ) : null}
+
+      {login?.phase === "done" && login.message ? (
+        <p className="mcp-server-oauth-done" role="status">
+          <IconCircleCheck size={13} ariaHidden />
+          {login.message}
+        </p>
+      ) : null}
+
+      {login?.authUrl ? (
+        <a
+          className="mcp-server-oauth-link"
+          href={login.authUrl}
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          <IconArrowUpRight size={12} ariaHidden />
+          Open the sign-in page
+        </a>
+      ) : null}
+    </div>
+  );
 }
 
 /** Renders the connection target for a stdio server: command plus its args. */
