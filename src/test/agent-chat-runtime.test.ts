@@ -166,6 +166,60 @@ describe("Agent chat runtime", () => {
     expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
   });
 
+  it("preserves same-timestamp Hermes same-role source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "z-message",
+        role: "assistant",
+        content: "First assistant row.",
+        timestamp: createdAt,
+      },
+      {
+        id: "a-message",
+        role: "assistant",
+        content: "Second assistant row.",
+        timestamp: createdAt,
+      },
+    ]);
+
+    expect(
+      turns.map((turn) => {
+        const textPart = turn.parts.find((part) => part.type === "text");
+        return textPart?.type === "text" ? textPart.text : "";
+      }),
+    ).toEqual(["First assistant row.", "Second assistant row."]);
+  });
+
+  it("preserves same-timestamp task same-role source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const messages: AgentMessageDto[] = [
+      {
+        id: "z-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "First assistant row.",
+        createdAt,
+      },
+      {
+        id: "a-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Second assistant row.",
+        createdAt,
+      },
+    ];
+
+    const turns = buildAgentChatTurns(messages, []);
+
+    expect(
+      turns.map((turn) => {
+        const textPart = turn.parts.find((part) => part.type === "text");
+        return textPart?.type === "text" ? textPart.text : "";
+      }),
+    ).toEqual(["First assistant row.", "Second assistant row."]);
+  });
+
   it("keeps synthetic same-timestamp assistant turns in numeric suffix order", () => {
     const receivedAt = "2026-06-11T12:00:00.000Z";
     const turns = buildAgentChatTurns(

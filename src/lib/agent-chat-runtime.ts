@@ -145,8 +145,7 @@ function compareAgentChatTurns(a: AgentChatTurn, b: AgentChatTurn) {
   if (timestampOrder !== 0) return timestampOrder;
   const userAssistantOrder = compareUserAssistantTurns(a, b);
   if (userAssistantOrder !== 0) return userAssistantOrder;
-  if (a.role !== b.role) return 0;
-  return a.id.localeCompare(b.id, undefined, { numeric: true });
+  return 0;
 }
 
 function compareUserAssistantTurns(a: AgentChatTurn, b: AgentChatTurn) {
