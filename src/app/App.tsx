@@ -220,6 +220,18 @@ function agentSessionTabTitle(session?: HermesSessionInfo): string | undefined {
   return session?.title?.trim() || session?.preview?.trim() || undefined;
 }
 
+function refreshedTabNav(current: TabNav, live: TabNav): TabNav | undefined {
+  if (!navEquals(current, live)) return live;
+  if (current.view !== "agent" || live.view !== "agent") return undefined;
+
+  const liveTitle = live.agentSessionTitle?.trim();
+  if (!liveTitle || current.agentSessionTitle?.trim() === liveTitle) {
+    return undefined;
+  }
+
+  return { ...current, agentSessionTitle: liveTitle };
+}
+
 // The icon + label a tab shows for a snapshot. Titles for entity views (note,
 // project, agent session) are looked up live from the loaded data, so a tab's
 // label tracks renames. Agent tabs also carry a fallback title so a newly
@@ -621,11 +633,11 @@ export function App() {
       return;
     }
     setTabs((prev) =>
-      prev.map((tab) =>
-        tab.id === activeTabId && !navEquals(tab.nav, liveNav)
-          ? { ...tab, nav: liveNav }
-          : tab,
-      ),
+      prev.map((tab) => {
+        if (tab.id !== activeTabId) return tab;
+        const nav = refreshedTabNav(tab.nav, liveNav);
+        return nav ? { ...tab, nav } : tab;
+      }),
     );
   }, [liveNav, activeTabId]);
 

@@ -416,6 +416,78 @@ describe("App shortcuts", () => {
     }
   });
 
+  it("fills restored session tab metadata from a follow-up before sessions hydrate", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
+    const user = userEvent.setup();
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.startHermesBridge.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.listHermesSessions.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+
+    try {
+      render(<App />);
+
+      expect(
+        await screen.findByRole("heading", { name: HERO_GREETING }),
+      ).toBeInTheDocument();
+
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+            detail: {
+              sessions: [],
+              selectedSessionId: "session-1",
+              workingSessionIds: [],
+            },
+          }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("heading", { name: HERO_GREETING }),
+        ).not.toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByRole("button", { name: "New tab" }));
+      expect(
+        await screen.findByRole("heading", { name: HERO_GREETING }),
+      ).toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: "1", metaKey: true });
+
+      const composer = await screen.findByRole("textbox");
+      await user.type(composer, "triage the launch checklist");
+      const send = screen.getByRole("button", { name: "Send message" });
+      await waitFor(() => expect(send).not.toBeDisabled());
+      await user.click(send);
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "triage the launch checklist",
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "triage the launch checklist" }),
+        ).toHaveAttribute("data-active", "true"),
+      );
+    } finally {
+      restoreNavigator();
+    }
+  });
+
   it("keeps each agent tab tied to its selected session", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "MacIntel",

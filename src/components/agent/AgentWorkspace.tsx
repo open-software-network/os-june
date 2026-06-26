@@ -4371,9 +4371,10 @@ export function AgentWorkspace({
           const mergedSession: HermesSessionInfo = targetSessionId
             ? {
                 ...existingSession,
-                ...(existingSession.title?.trim()
-                  ? { preview: displayContent }
-                  : {}),
+                title: existingSession.title?.trim()
+                  ? existingSession.title
+                  : sessionDisplayTitle,
+                preview: displayContent,
                 last_active: createdAt,
                 message_count:
                   typeof existingSession.message_count === "number"
