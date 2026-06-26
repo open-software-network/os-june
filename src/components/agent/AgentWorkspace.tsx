@@ -1475,7 +1475,7 @@ export function AgentWorkspace({
   // track the text and resend it as a follow-up on completion when no tool
   // consumed it (cleared on a tool.complete or a clean terminal).
   const pendingSteerBySessionIdRef = useRef<
-    Record<string, { text: string; registered: boolean }[]>
+    Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
   >({});
   const restoredToolCallSessionIdsRef = useRef(
     new Set(Object.keys(continuity?.activeToolCallsBySession ?? {})),
@@ -3351,7 +3351,7 @@ export function AgentWorkspace({
       // clean completion resend anything still pending as a follow-up.
       // `registered` tracks whether Hermes accepted the steer, so a
       // tool.complete only clears ones a tool could actually have drained.
-      const steerEntry = { text: message, registered: false };
+      const steerEntry = { text: message, accepted: false, toolDrained: false };
       pendingSteerBySessionIdRef.current = {
         ...pendingSteerBySessionIdRef.current,
         [steerSessionId]: [
@@ -3361,7 +3361,7 @@ export function AgentWorkspace({
       };
       void steerActiveSession(steerSessionId, message)
         .then(() => {
-          steerEntry.registered = true;
+          steerEntry.accepted = true;
         })
         .catch((err: unknown) => {
           // A rejected steer (common during a no-tool phase) is not fatal — the
@@ -4100,20 +4100,17 @@ export function AgentWorkspace({
       setLiveEvents(liveEventsRef.current);
       const toolEventPhase = hermesToolEventPhase(event.type);
       if (toolEventPhase === "complete") {
-        // A completed tool drains the steers Hermes accepted (run_agent.steer);
-        // keep any it rejected — no tool drained those, so the completion
-        // fallback must still deliver them.
+        // Hermes drains every accepted steer into the tool result it just
+        // produced (run_agent.steer). Mark the pending entries drained rather
+        // than removing them here: whether a steer was ACCEPTED is settled
+        // asynchronously (the steer RPC's .then), which can resolve AFTER this
+        // event, so the consume-vs-resend decision is deferred to the terminal
+        // handler where both flags are final. Removing on `registered` alone
+        // here would resubmit a steer that was accepted + drained before its
+        // .then ran (the duplicate-delivery race).
         const list = pendingSteerBySessionIdRef.current[storedSessionId];
-        const remaining = list?.filter((entry) => !entry.registered);
-        if (list && remaining && remaining.length !== list.length) {
-          if (remaining.length) {
-            pendingSteerBySessionIdRef.current = {
-              ...pendingSteerBySessionIdRef.current,
-              [storedSessionId]: remaining,
-            };
-          } else {
-            delete pendingSteerBySessionIdRef.current[storedSessionId];
-          }
+        if (list) {
+          for (const entry of list) entry.toolDrained = true;
         }
       }
       if (toolEventPhase !== undefined) {
@@ -4167,7 +4164,11 @@ export function AgentWorkspace({
         // message always reaches June; drop them on a failed/cancelled run.
         const unconsumedSteers =
           status === "completed"
-            ? pendingSteerBySessionIdRef.current[storedSessionId]
+            ? pendingSteerBySessionIdRef.current[storedSessionId]?.filter(
+                // Consumed = Hermes accepted it AND a tool result drained it.
+                // Resend the rest (rejected, or accepted but no tool ran).
+                (entry) => !(entry.accepted && entry.toolDrained),
+              )
             : undefined;
         delete pendingSteerBySessionIdRef.current[storedSessionId];
         if (unconsumedSteers?.length) {
