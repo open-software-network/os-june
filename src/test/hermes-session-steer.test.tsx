@@ -71,6 +71,44 @@ describe("ComposerSteerInput", () => {
     });
   });
 
+  it("queues instead of steering while a tool call is active", async () => {
+    const onSteer = vi.fn().mockResolvedValue(undefined);
+    const onQueue = vi.fn();
+    const { rerender } = render(
+      <ComposerSteerInput
+        onSteer={onSteer}
+        onQueue={onQueue}
+        queueWhileToolActive
+      />,
+    );
+
+    await userEvent.type(
+      screen.getByRole("textbox", { name: /add instruction|steer june/i }),
+      "  focus after this command  ",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Queue instruction" }),
+    );
+
+    expect(onQueue).toHaveBeenCalledWith("focus after this command");
+    expect(onSteer).not.toHaveBeenCalled();
+    rerender(
+      <ComposerSteerInput
+        onSteer={onSteer}
+        onQueue={onQueue}
+        queueWhileToolActive
+        queuedInstruction={{
+          text: "focus after this command",
+          queuedAt: "2026-06-26T10:00:00Z",
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Queued to run after this tool call/),
+    ).toHaveTextContent("focus after this command");
+  });
+
   it("clears the input after a successful steer", async () => {
     const steer = vi.fn().mockResolvedValue(undefined);
     render(<ComposerSteerInput onSteer={steer} />);
@@ -82,6 +120,19 @@ describe("ComposerSteerInput", () => {
       screen.getByRole("button", { name: /send|add instruction|steer/i }),
     );
     await waitFor(() => expect(input).toHaveValue(""));
+  });
+
+  it("submits with Enter without relying on a nested form", async () => {
+    const steer = vi.fn().mockResolvedValue(undefined);
+    render(<ComposerSteerInput onSteer={steer} />);
+    await userEvent.type(
+      screen.getByRole("textbox", { name: /add instruction|steer june/i }),
+      "keep the current plan{Enter}",
+    );
+
+    await waitFor(() =>
+      expect(steer).toHaveBeenCalledWith("keep the current plan"),
+    );
   });
 
   it("shows a visible error and keeps the text when Hermes rejects the steer", async () => {

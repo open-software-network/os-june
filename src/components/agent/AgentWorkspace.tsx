@@ -765,6 +765,13 @@ type PendingIssueReport = {
   diagnosisStartedAt?: string;
 };
 
+type QueuedSteerInstruction = {
+  text: string;
+  queuedAt: string;
+  flushing?: boolean;
+  error?: string;
+};
+
 type AgentWorkspaceError = {
   message: string;
   /** Null means the error belongs to the no-session workspace surface. */
@@ -1402,6 +1409,14 @@ export function AgentWorkspace({
     () => new Set(continuity?.workingSessionIds),
   );
   const workingSessionIdsRef = useRef<Set<string>>(workingSessionIds);
+  const [toolCallSessionIds, setToolCallSessionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toolCallSessionIdsRef = useRef<Set<string>>(toolCallSessionIds);
+  const [queuedSteerBySessionId, setQueuedSteerBySessionId] = useState<
+    Record<string, QueuedSteerInstruction>
+  >({});
+  const queuedSteerBySessionIdRef = useRef(queuedSteerBySessionId);
   const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
     () => new Set(continuity?.waitingSessionIds),
   );
@@ -1746,16 +1761,45 @@ export function AgentWorkspace({
   useEffect(() => {
     selectedHermesSessionIdRef.current = selectedHermesSessionId;
     workingSessionIdsRef.current = workingSessionIds;
+    toolCallSessionIdsRef.current = toolCallSessionIds;
+    queuedSteerBySessionIdRef.current = queuedSteerBySessionId;
     waitingSessionIdsRef.current = waitingSessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
     hermesSessionItemsRef.current = hermesSessionItems;
   }, [
     hermesSessionItems,
     pendingHermesMessages,
+    queuedSteerBySessionId,
     selectedHermesSessionId,
+    toolCallSessionIds,
     waitingSessionIds,
     workingSessionIds,
   ]);
+
+  const clearQueuedSteerInstruction = useCallback((sessionId: string) => {
+    setQueuedSteerBySessionId((current) => {
+      if (!current[sessionId]) return current;
+      const next = omitRecordKey(current, sessionId);
+      queuedSteerBySessionIdRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const setSessionToolCallActive = useCallback(
+    (sessionId: string, active: boolean) => {
+      setToolCallSessionIds((current) => {
+        const next = new Set(current);
+        if (active) {
+          next.add(sessionId);
+        } else {
+          next.delete(sessionId);
+        }
+        toolCallSessionIdsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   const setSessionWorking = useCallback(
     (sessionId: string, working: boolean) => {
@@ -1789,22 +1833,27 @@ export function AgentWorkspace({
     [],
   );
 
-  const clearSessionActivity = useCallback((sessionId: string) => {
-    const nextWorking = new Set(workingSessionIdsRef.current);
-    nextWorking.delete(sessionId);
-    workingSessionIdsRef.current = nextWorking;
-    setWorkingSessionIds(nextWorking);
+  const clearSessionActivity = useCallback(
+    (sessionId: string) => {
+      setSessionToolCallActive(sessionId, false);
 
-    const nextWaiting = new Set(waitingSessionIdsRef.current);
-    nextWaiting.delete(sessionId);
-    waitingSessionIdsRef.current = nextWaiting;
-    setWaitingSessionIds(nextWaiting);
+      const nextWorking = new Set(workingSessionIdsRef.current);
+      nextWorking.delete(sessionId);
+      workingSessionIdsRef.current = nextWorking;
+      setWorkingSessionIds(nextWorking);
 
-    return {
-      activeCount: nextWorking.size + nextWaiting.size,
-      needsUserCount: nextWaiting.size,
-    };
-  }, []);
+      const nextWaiting = new Set(waitingSessionIdsRef.current);
+      nextWaiting.delete(sessionId);
+      waitingSessionIdsRef.current = nextWaiting;
+      setWaitingSessionIds(nextWaiting);
+
+      return {
+        activeCount: nextWorking.size + nextWaiting.size,
+        needsUserCount: nextWaiting.size,
+      };
+    },
+    [setSessionToolCallActive],
+  );
 
   // Shared teardown for a session that is going away: its messages, pending
   // sends, working/waiting flags, live gateway listener, and buffered live
@@ -1819,6 +1868,7 @@ export function AgentWorkspace({
         return next;
       });
       clearSessionActivity(sessionId);
+      clearQueuedSteerInstruction(sessionId);
       // Feature 11: a deleted session has no activity to show, so drop its row
       // from the activity drawer's store as well.
       hermesActivityStore.clearSession(sessionId);
@@ -1830,7 +1880,7 @@ export function AgentWorkspace({
       // A deleted session must not be the restore target on the next mount.
       forgetLastOpenSessionId(sessionId);
     },
-    [clearSessionActivity],
+    [clearQueuedSteerInstruction, clearSessionActivity],
   );
 
   const selectedTask = useMemo(
@@ -4106,6 +4156,15 @@ export function AgentWorkspace({
         [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
+      const toolEventPhase = hermesToolEventPhase(event.type);
+      if (toolEventPhase === "active") {
+        setSessionToolCallActive(storedSessionId, true);
+      } else if (toolEventPhase === "complete") {
+        setSessionToolCallActive(storedSessionId, false);
+        window.setTimeout(() => {
+          void flushQueuedSteerInstruction(storedSessionId);
+        }, 0);
+      }
       const status = agentStatusFromHermesEvent(event);
       if (status === "waitingForUser") {
         setSessionWorking(storedSessionId, false);
@@ -4860,6 +4919,67 @@ export function AgentWorkspace({
         receivedAt: new Date().toISOString(),
       }),
     );
+  }
+
+  function queueSteerInstruction(sessionId: string, text: string) {
+    const instruction = normalizeSteerText(text);
+    if (!instruction) return;
+    setQueuedSteerBySessionId((current) => {
+      const next = {
+        ...current,
+        [sessionId]: {
+          text: instruction,
+          queuedAt: new Date().toISOString(),
+        },
+      };
+      queuedSteerBySessionIdRef.current = next;
+      return next;
+    });
+  }
+
+  async function flushQueuedSteerInstruction(sessionId: string) {
+    const queued = queuedSteerBySessionIdRef.current[sessionId];
+    if (!queued || queued.flushing) return;
+    if (toolCallSessionIdsRef.current.has(sessionId)) return;
+
+    setQueuedSteerBySessionId((current) => {
+      const currentQueued = current[sessionId];
+      if (!currentQueued || currentQueued.text !== queued.text) return current;
+      const next = {
+        ...current,
+        [sessionId]: {
+          ...currentQueued,
+          flushing: true,
+          error: undefined,
+        },
+      };
+      queuedSteerBySessionIdRef.current = next;
+      return next;
+    });
+
+    try {
+      await steerActiveSession(sessionId, queued.text);
+      clearQueuedSteerInstruction(sessionId);
+    } catch (err) {
+      setQueuedSteerBySessionId((current) => {
+        const currentQueued = current[sessionId];
+        if (!currentQueued || currentQueued.text !== queued.text) {
+          return current;
+        }
+        const next = {
+          ...current,
+          [sessionId]: {
+            ...currentQueued,
+            flushing: false,
+            error: isSessionBusyError(err)
+              ? "June is finishing that tool call. The instruction is still queued."
+              : steerErrorNotice(err),
+          },
+        };
+        queuedSteerBySessionIdRef.current = next;
+        return next;
+      });
+    }
   }
 
   async function startNewTask(
@@ -5840,6 +5960,13 @@ export function AgentWorkspace({
             onSteer={(text) =>
               steerActiveSession(selectedHermesSessionId, text)
             }
+            onQueue={(text) =>
+              queueSteerInstruction(selectedHermesSessionId, text)
+            }
+            queueWhileToolActive={toolCallSessionIds.has(
+              selectedHermesSessionId,
+            )}
+            queuedInstruction={queuedSteerBySessionId[selectedHermesSessionId]}
           />
         ) : null}
         <div ref={composerBoxRef} className="agent-composer-box">
@@ -9206,23 +9333,43 @@ function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void }) {
  * Compact instruction input shown while a session is working (feature 06). It
  * lets the user steer the running turn through the dedicated `session.steer`
  * method (injected as `onSteer`) WITHOUT touching the Stop control that owns the
- * send slot. Submit (Enter or the send button) sends the trimmed text; a blank
- * instruction is inert. On success the field clears; on a rejection it keeps the
- * unsent text and shows a clear, recoverable message (busy / dropped connection
- * / generic) so a failed steer never crashes the composer.
+ * send slot. Submit (Enter or the send button) sends or queues the trimmed
+ * text; a blank instruction is inert. On success the field clears; on a
+ * rejection it keeps the unsent text and shows a clear, recoverable message
+ * (busy / dropped connection / generic) so a failed steer never crashes the
+ * composer.
  */
 export function ComposerSteerInput({
   onSteer,
+  onQueue,
+  queueWhileToolActive = false,
+  queuedInstruction,
 }: {
   onSteer: (text: string) => Promise<unknown>;
+  onQueue?: (text: string) => void;
+  queueWhileToolActive?: boolean;
+  queuedInstruction?: QueuedSteerInstruction;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const trimmed = normalizeSteerText(text);
+  const queuedText = queuedInstruction?.text;
+  const disabled = sending || Boolean(queuedInstruction?.flushing);
+  const submitLabel = queueWhileToolActive
+    ? queuedText
+      ? "Replace queued instruction"
+      : "Queue instruction"
+    : "Send instruction";
 
   async function send() {
-    if (!trimmed || sending) return;
+    if (!trimmed || disabled) return;
+    if (queueWhileToolActive && onQueue) {
+      onQueue(trimmed);
+      setText("");
+      setError(null);
+      return;
+    }
     setSending(true);
     setError(null);
     try {
@@ -9239,13 +9386,7 @@ export function ComposerSteerInput({
 
   return (
     <div className="agent-composer-steer">
-      <form
-        className="agent-composer-steer-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send();
-        }}
-      >
+      <div className="agent-composer-steer-row">
         <span className="agent-composer-steer-icon" aria-hidden>
           <IconArrowCornerDownRight size={14} />
         </span>
@@ -9253,27 +9394,61 @@ export function ComposerSteerInput({
           type="text"
           className="agent-composer-steer-input"
           aria-label="Add instruction"
-          placeholder="Add an instruction while June works"
+          placeholder={
+            queuedText
+              ? "Replace queued instruction"
+              : queueWhileToolActive
+                ? "Queue after this tool call"
+                : "Add an instruction while June works"
+          }
           value={text}
-          disabled={sending}
+          disabled={disabled}
           onChange={(event) => {
             setText(event.target.value);
             if (error) setError(null);
           }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            void send();
+          }}
         />
         <button
-          type="submit"
+          type="button"
           className="agent-composer-steer-send"
-          aria-label="Send instruction"
-          title="Send instruction"
-          disabled={!trimmed || sending}
+          aria-label={submitLabel}
+          title={submitLabel}
+          disabled={!trimmed || disabled}
+          onClick={() => {
+            void send();
+          }}
         >
-          {sending ? <Spinner /> : <IconArrowUp size={14} />}
+          {sending || queuedInstruction?.flushing ? (
+            <Spinner />
+          ) : (
+            <IconArrowUp size={14} />
+          )}
         </button>
-      </form>
+      </div>
+      {queuedInstruction ? (
+        <p className="agent-composer-steer-queued" role="status">
+          {queuedInstruction.flushing ? (
+            "Sending queued instruction..."
+          ) : (
+            <>
+              Queued to run after this tool call:{" "}
+              <span>{queuedInstruction.text}</span>
+            </>
+          )}
+        </p>
+      ) : null}
       {error ? (
         <p className="agent-composer-steer-error" role="alert">
           {error}
+        </p>
+      ) : queuedInstruction?.error ? (
+        <p className="agent-composer-steer-error" role="alert">
+          {queuedInstruction.error}
         </p>
       ) : null}
     </div>
@@ -11246,6 +11421,15 @@ function isTerminalHermesEvent(type: string) {
     normalized === "background.complete" ||
     normalized === "background.completed"
   );
+}
+
+function hermesToolEventPhase(type: string): "active" | "complete" | undefined {
+  const normalized = type.toLowerCase();
+  if (normalized === "tool.complete") return "complete";
+  if (normalized === "tool.start" || normalized === "tool.progress") {
+    return "active";
+  }
+  return undefined;
 }
 
 function agentStatusFromHermesEvent(

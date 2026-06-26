@@ -4003,6 +4003,18 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+.agent-composer-steer-queued {
+  margin: var(--sp-2) 0 0;
+  padding: 0 var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.agent-composer-steer-queued span {
+  color: var(--foreground);
+}
+
 .agent-composer-notice-action {
   flex-wrap: wrap;
   justify-content: center;
