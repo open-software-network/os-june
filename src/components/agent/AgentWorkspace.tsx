@@ -3909,7 +3909,17 @@ export function AgentWorkspace({
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
     const sessionDisplayTitle = sessionTitle || fallbackSessionTitle;
+    const ensureStoredHermesSession = () =>
+      withTimeout(
+        ensureHermesBridgeSession({
+          sessionId: storedSessionId,
+          title: sessionDisplayTitle,
+          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        }),
+        2500,
+      ).catch(() => undefined);
     if (optimisticSession) {
+      await ensureStoredHermesSession();
       migrateOptimisticHermesSession({
         createdAt: optimisticSession.createdAt,
         displayContent,
@@ -3930,14 +3940,9 @@ export function AgentWorkspace({
       // bridge closure). Re-map the current list so the order doesn't matter.
       setHermesSessionItems((current) => applySessionTitleOverrides(current));
     }
-    await withTimeout(
-      ensureHermesBridgeSession({
-        sessionId: storedSessionId,
-        title: sessionDisplayTitle,
-        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-      }),
-      2500,
-    ).catch(() => undefined);
+    if (!optimisticSession) {
+      await ensureStoredHermesSession();
+    }
     let runtimeSessionId: string | undefined;
     try {
       runtimeSessionId =
