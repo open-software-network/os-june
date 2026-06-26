@@ -1,8 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { BranchFromHereAction } from "../components/agent/AgentWorkspace";
+import {
+  BranchFromHereAction,
+  branchSourceSessionIdForTurn,
+} from "../components/agent/AgentWorkspace";
 import { createHermesMethods } from "../lib/hermes-control-plane";
+import type { AgentChatPart } from "../lib/agent-chat-runtime";
 import {
   isBranchableMessageId,
   parseBranchSessionResult,
@@ -117,6 +121,70 @@ describe("isBranchableMessageId", () => {
   });
 });
 
+describe("branchSourceSessionIdForTurn", () => {
+  function turnWith(part: AgentChatPart) {
+    return { parts: [part] };
+  }
+
+  it("uses delegated action part session ids as the branch source", () => {
+    expect(
+      branchSourceSessionIdForTurn(
+        turnWith({
+          type: "approval",
+          id: "approval-1",
+          sessionId: "delegated-approval",
+          command: "pnpm test",
+          description: "Run tests",
+          allowPermanent: true,
+          status: "pending",
+        }),
+      ),
+    ).toBe("delegated-approval");
+    expect(
+      branchSourceSessionIdForTurn(
+        turnWith({
+          type: "clarify",
+          id: "clarify-1",
+          sessionId: "delegated-clarify",
+          question: "Which path?",
+          choices: [],
+          status: "pending",
+        }),
+      ),
+    ).toBe("delegated-clarify");
+    expect(
+      branchSourceSessionIdForTurn(
+        turnWith({
+          type: "sudo",
+          id: "sudo-1",
+          sessionId: "delegated-sudo",
+          command: "make install",
+          status: "pending",
+        }),
+      ),
+    ).toBe("delegated-sudo");
+    expect(
+      branchSourceSessionIdForTurn(
+        turnWith({
+          type: "secret",
+          id: "secret-1",
+          sessionId: "delegated-secret",
+          keyName: "OPENAI_API_KEY",
+          status: "pending",
+        }),
+      ),
+    ).toBe("delegated-secret");
+  });
+
+  it("leaves normal assistant turns on the selected session fallback", () => {
+    expect(
+      branchSourceSessionIdForTurn(
+        turnWith({ type: "text", text: "Done", status: "complete" }),
+      ),
+    ).toBeUndefined();
+  });
+});
+
 describe("BranchFromHereAction", () => {
   it("sends session.branch with the session and from_message_id when clicked", async () => {
     const request = vi.fn().mockResolvedValue({
@@ -133,9 +201,39 @@ describe("BranchFromHereAction", () => {
       screen.getByRole("button", { name: /branch from here/i }),
     );
 
-    expect(onBranch).toHaveBeenCalledWith("m-3");
+    expect(onBranch).toHaveBeenCalledWith("m-3", undefined);
     expect(request).toHaveBeenCalledWith("session.branch", {
       session_id: "sess-1",
+      from_message_id: "m-3",
+    });
+  });
+
+  it("threads a delegated session id to session.branch when provided", async () => {
+    const request = vi.fn().mockResolvedValue({
+      new_session_id: "sess-fork",
+    });
+    const methods = createHermesMethods(request);
+    const onBranch = vi.fn((messageId: string, sessionId?: string) =>
+      methods.branchSession({
+        sessionId: sessionId ?? "sess-parent",
+        fromMessageId: messageId,
+      }),
+    );
+
+    render(
+      <BranchFromHereAction
+        messageId="m-3"
+        sessionId="sess-delegated"
+        onBranch={onBranch}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /branch from here/i }),
+    );
+
+    expect(onBranch).toHaveBeenCalledWith("m-3", "sess-delegated");
+    expect(request).toHaveBeenCalledWith("session.branch", {
+      session_id: "sess-delegated",
       from_message_id: "m-3",
     });
   });

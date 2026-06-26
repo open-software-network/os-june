@@ -4781,13 +4781,27 @@ export function AgentWorkspace({
   // and the new session inherits the source's write-access mode so a follow-up
   // routes to the right runtime. On failure the UI stays in the source session
   // with an actionable banner.
-  async function branchFromMessage(sessionId: string, fromMessageId: string) {
+  async function branchFromMessage(
+    sessionId: string | undefined,
+    fromMessageId: string,
+    modeSessionId = sessionId,
+  ) {
     if (branchingMessageId) return;
+    if (!sessionId) {
+      setError(
+        "Cannot branch from this message because its session is unavailable.",
+        {
+          sessionId: modeSessionId ?? null,
+        },
+      );
+      return;
+    }
     setBranchingMessageId(fromMessageId);
     const sourceTitle =
-      hermesSessionItems.find((session) => session.id === sessionId)?.title ??
-      "this session";
-    const unrestricted = sessionUnrestricted(sessionId);
+      hermesSessionItems.find(
+        (session) => session.id === sessionId || session.id === modeSessionId,
+      )?.title ?? "this session";
+    const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
       const raw = await createHermesMethods(gateway).branchSession({
@@ -6263,8 +6277,12 @@ export function AgentWorkspace({
               sessionUnrestricted(selectedHermesSessionId),
             )
           }
-          onBranch={(messageId) =>
-            void branchFromMessage(selectedHermesSessionId, messageId)
+          onBranch={(messageId, sessionId) =>
+            void branchFromMessage(
+              sessionId ?? selectedHermesSessionId,
+              messageId,
+              selectedHermesSessionId,
+            )
           }
           branchingMessageId={branchingMessageId}
           onEditUserPrompt={editUserPrompt}
@@ -8599,7 +8617,7 @@ function AgentChatTurnRow({
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
-  onBranch?: (messageId: string) => void;
+  onBranch?: (messageId: string, sessionId?: string) => void;
   /** The message id a branch is currently in flight for, so its action shows a
    * working/disabled state. */
   branchingMessageId?: string | null;
@@ -8699,9 +8717,11 @@ function AgentChatTurnRow({
   // Per-turn transcript actions. Branch is rendered only on Hermes-session rows
   // (which pass `onBranch`); it self-disables when the turn id is not a
   // persisted message id (see isBranchableMessageId).
+  const branchSessionId = branchSourceSessionIdForTurn(turn);
   const branchAction = onBranch ? (
     <BranchFromHereAction
       messageId={turn.id}
+      sessionId={branchSessionId}
       onBranch={onBranch}
       submitting={branchingMessageId === turn.id}
     />
@@ -9692,6 +9712,17 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
   return "Resolved";
 }
 
+export function branchSourceSessionIdForTurn(
+  turn: Pick<AgentChatTurn, "parts">,
+) {
+  for (const part of turn.parts) {
+    if (!("sessionId" in part)) continue;
+    const sessionId = part.sessionId?.trim();
+    if (sessionId) return sessionId;
+  }
+  return undefined;
+}
+
 /** The per-message "Branch from here" action (feature 07). Forks the
  * conversation into a NEW session that starts from this message, leaving the
  * source session untouched. Message-level branching is honest only when the
@@ -9702,10 +9733,12 @@ function approvalChoiceLabel(choice?: AgentApprovalChoice, pending = false) {
 export function BranchFromHereAction({
   messageId,
   onBranch,
+  sessionId,
   submitting,
 }: {
   messageId: string;
-  onBranch: (messageId: string) => void;
+  onBranch: (messageId: string, sessionId?: string) => void;
+  sessionId?: string;
   submitting?: boolean;
 }) {
   const branchable = isBranchableMessageId(messageId);
@@ -9723,7 +9756,7 @@ export function BranchFromHereAction({
       }
       aria-label="Branch from here"
       disabled={disabled}
-      onClick={() => onBranch(messageId)}
+      onClick={() => onBranch(messageId, sessionId)}
     >
       <IconBranchSimple size={13} aria-hidden />
       <span>Branch from here</span>
