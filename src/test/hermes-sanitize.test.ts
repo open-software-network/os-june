@@ -133,6 +133,15 @@ describe("sanitizeText", () => {
     expect(out).toContain("view=1");
     expect(out).not.toContain("secret-token-123");
   });
+
+  it("redacts websocket URL tokens inside longer text", () => {
+    const out = sanitizeText(
+      "Gateway failed at ws://127.0.0.1:51234/api/ws?token=secret-token-123&profile=default",
+    );
+
+    expect(out).toContain("profile=default");
+    expect(out).not.toContain("secret-token-123");
+  });
 });
 
 describe("sanitizePayload — cycle detection", () => {

@@ -15,7 +15,7 @@ const SENSITIVE_KEY_PATTERN =
 
 const REDACTED = "[redacted]";
 const URL_REDACTION_VALUE = "redacted";
-const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`]+/gi;
 const BEARER_PATTERN = /\bbearer\s+[^\s"'<>]+/gi;
 const JWT_PATTERN =
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
