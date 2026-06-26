@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent E2E QA"
+  short_description: "Run live app walkthroughs with browser and desktop tools."
+  default_prompt: "Use $agent-e2e-qa to run a live QA walkthrough for the changed June app flow."
