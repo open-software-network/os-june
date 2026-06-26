@@ -140,22 +140,14 @@ export type AgentChatTurn = {
   isScheduledRun?: boolean;
 };
 
-function compareAgentChatTurns(a: AgentChatTurn, b: AgentChatTurn) {
-  const timestampOrder = a.createdAt.localeCompare(b.createdAt);
-  if (timestampOrder !== 0) return timestampOrder;
-  const userAssistantOrder = compareUserAssistantTurns(a, b);
-  if (userAssistantOrder !== 0) return userAssistantOrder;
-  return 0;
-}
-
-function compareUserAssistantTurns(a: AgentChatTurn, b: AgentChatTurn) {
-  // Only force the tie that breaks the gap-vs-per-turn Thinking invariant.
-  // Other cross-role ties preserve stream insertion order, especially steering
-  // system turns inserted during an assistant response.
-  return (
-    (a.role === "user" && b.role === "assistant" ? -1 : 0) ||
-    (a.role === "assistant" && b.role === "user" ? 1 : 0)
-  );
+function sortAgentChatTurns(turns: AgentChatTurn[]) {
+  return turns
+    .map((turn, index) => ({ turn, index }))
+    .sort(
+      (a, b) =>
+        a.turn.createdAt.localeCompare(b.turn.createdAt) || a.index - b.index,
+    )
+    .map(({ turn }) => turn);
 }
 
 export function buildAgentChatTurns(
@@ -166,11 +158,11 @@ export function buildAgentChatTurns(
   const turns = messages.map(messageToTurn);
   appendPersistedToolEvents(turns, toolEvents);
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
+  return sortAgentChatTurns(
+    turns.filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort(compareAgentChatTurns);
+    ),
+  );
 }
 
 export function buildHermesSessionChatTurns(
@@ -265,11 +257,11 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return turns
-    .filter((turn) =>
+  return sortAgentChatTurns(
+    turns.filter((turn) =>
       turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    )
-    .sort(compareAgentChatTurns);
+    ),
+  );
 }
 
 // Contraction/possessive enclitics the gateway tokenizes as their own chunk

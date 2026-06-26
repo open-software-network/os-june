@@ -122,19 +122,19 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("orders same-timestamp Hermes user turns before assistant turns", () => {
+  it("preserves same-timestamp Hermes user-before-assistant source order", () => {
     const createdAt = "2026-06-11T12:00:00.000Z";
     const turns = buildHermesSessionChatTurns([
-      {
-        id: "assistant-message",
-        role: "assistant",
-        content: "Thinking about it.",
-        timestamp: createdAt,
-      },
       {
         id: "user-message",
         role: "user",
         content: "Please check this.",
+        timestamp: createdAt,
+      },
+      {
+        id: "assistant-message",
+        role: "assistant",
+        content: "Thinking about it.",
         timestamp: createdAt,
       },
     ]);
@@ -142,16 +142,9 @@ describe("Agent chat runtime", () => {
     expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
   });
 
-  it("orders same-timestamp task user turns before assistant turns", () => {
+  it("preserves same-timestamp task user-before-assistant source order", () => {
     const createdAt = "2026-06-11T12:00:00.000Z";
     const messages: AgentMessageDto[] = [
-      {
-        id: "assistant-message",
-        taskId: "task-1",
-        role: "assistant",
-        content: "Thinking about it.",
-        createdAt,
-      },
       {
         id: "user-message",
         taskId: "task-1",
@@ -159,11 +152,62 @@ describe("Agent chat runtime", () => {
         content: "Please check this.",
         createdAt,
       },
+      {
+        id: "assistant-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Thinking about it.",
+        createdAt,
+      },
     ];
 
     const turns = buildAgentChatTurns(messages, []);
 
     expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("preserves same-timestamp Hermes assistant-before-user source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-message",
+        role: "assistant",
+        content: "Here is the answer.",
+        timestamp: createdAt,
+      },
+      {
+        id: "user-follow-up",
+        role: "user",
+        content: "One more thing.",
+        timestamp: createdAt,
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["assistant", "user"]);
+  });
+
+  it("preserves same-timestamp task assistant-before-user source order", () => {
+    const createdAt = "2026-06-11T12:00:00.000Z";
+    const messages: AgentMessageDto[] = [
+      {
+        id: "assistant-message",
+        taskId: "task-1",
+        role: "assistant",
+        content: "Here is the answer.",
+        createdAt,
+      },
+      {
+        id: "user-follow-up",
+        taskId: "task-1",
+        role: "user",
+        content: "One more thing.",
+        createdAt,
+      },
+    ];
+
+    const turns = buildAgentChatTurns(messages, []);
+
+    expect(turns.map((turn) => turn.role)).toEqual(["assistant", "user"]);
   });
 
   it("preserves same-timestamp Hermes same-role source order", () => {
@@ -220,7 +264,7 @@ describe("Agent chat runtime", () => {
     ).toEqual(["First assistant row.", "Second assistant row."]);
   });
 
-  it("keeps synthetic same-timestamp assistant turns in numeric suffix order", () => {
+  it("keeps synthetic same-timestamp assistant turns in source order", () => {
     const receivedAt = "2026-06-11T12:00:00.000Z";
     const turns = buildAgentChatTurns(
       [],
