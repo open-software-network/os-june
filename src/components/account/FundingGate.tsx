@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { hasLiveSubscription } from "../../lib/account-gate";
 import { osAccountsOpenPortal, osAccountsTopUp } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
@@ -18,9 +19,13 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   const [portalError, setPortalError] = useState<string>();
   const handle = account.user?.handle;
   const status = account.subscription?.status;
-  const pastDue = status === "past_due";
+  const billingRecovery =
+    account.subscription?.subscribed === true &&
+    typeof status === "string" &&
+    status.length > 0 &&
+    !hasLiveSubscription(account);
 
-  const copy = pastDue
+  const copy = billingRecovery
     ? {
         title: "Update billing",
         subtitle:
@@ -46,7 +51,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   async function handleOpenPortal() {
     setPortalError(undefined);
     try {
-      if (pastDue) {
+      if (billingRecovery) {
         await osAccountsOpenPortal();
       } else {
         await osAccountsTopUp();
