@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { hasLiveSubscription } from "../../lib/account-gate";
-import { osAccountsOpenPortal, osAccountsTopUp } from "../../lib/tauri";
+import { osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 import { Spinner } from "../ui/Spinner";
 import { JuneMark } from "./AccountGate";
@@ -29,16 +29,18 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
     ? {
         title: "Update billing",
         subtitle:
-          "Your payment needs attention. Update billing, or add credits, to keep using June.",
+          "Your payment needs attention. Update billing to keep using June.",
         cta: "Manage billing",
         waiting: "Waiting for your billing update",
+        reopen: "Reopen billing",
       }
     : {
-        title: "Add credits to continue",
+        title: "Upgrade to continue",
         subtitle:
-          "June uses credits for recordings, dictation, and agent work. Add credits in your OpenSoftware account to keep going.",
-        cta: "Add credits",
-        waiting: "Waiting for your credits",
+          "Your starter credits are used up. Upgrade to a paid plan to keep using June.",
+        cta: "Upgrade",
+        waiting: "Waiting for your upgrade",
+        reopen: "Reopen checkout",
       };
 
   useEffect(() => {
@@ -54,7 +56,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       if (billingRecovery) {
         await osAccountsOpenPortal();
       } else {
-        await osAccountsTopUp();
+        await osAccountsUpgrade();
       }
       setOpenedPortal(true);
     } catch (error) {
@@ -108,7 +110,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
                   className="funding-gate-link"
                   onClick={() => void handleOpenPortal()}
                 >
-                  Reopen account
+                  {copy.reopen}
                 </button>
               </p>
             </>

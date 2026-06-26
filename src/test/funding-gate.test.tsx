@@ -6,12 +6,12 @@ import type { AccountStatus } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   osAccountsOpenPortal: vi.fn(),
-  osAccountsTopUp: vi.fn(),
+  osAccountsUpgrade: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
-  osAccountsTopUp: mocks.osAccountsTopUp,
+  osAccountsUpgrade: mocks.osAccountsUpgrade,
 }));
 
 const baseAccount: AccountStatus = {
@@ -36,10 +36,10 @@ describe("FundingGate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
-    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
   });
 
-  it("asks users with no credits to add credits, not start a card trial", async () => {
+  it("asks users with no credits to upgrade, not add credits", async () => {
     const user = userEvent.setup();
     const onSignOut = vi.fn();
     render(
@@ -51,7 +51,7 @@ describe("FundingGate", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "Add credits to continue" }),
+      screen.getByRole("heading", { name: "Upgrade to continue" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Start free trial" }),
@@ -60,10 +60,10 @@ describe("FundingGate", () => {
       screen.queryByRole("list", { name: "How your free trial works" }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Add credits" }));
-    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
-    await screen.findByText("Waiting for your credits");
+    await screen.findByText("Waiting for your upgrade");
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     expect(onSignOut).toHaveBeenCalledOnce();
@@ -82,7 +82,7 @@ describe("FundingGate", () => {
 
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
-    expect(mocks.osAccountsTopUp).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
   it("opens billing management for incomplete subscriptions", async () => {
@@ -96,12 +96,12 @@ describe("FundingGate", () => {
       screen.getByRole("heading", { name: "Update billing" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "Add credits to continue" }),
+      screen.queryByRole("heading", { name: "Upgrade to continue" }),
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
-    expect(mocks.osAccountsTopUp).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
   it("lets a waiting account update be checked or reopened", async () => {
@@ -115,14 +115,14 @@ describe("FundingGate", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Add credits" }));
-    await screen.findByText("Waiting for your credits");
+    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    await screen.findByText("Waiting for your upgrade");
 
     await user.click(screen.getByRole("button", { name: "Check again" }));
     expect(onRefresh).toHaveBeenCalledOnce();
 
-    await user.click(screen.getByRole("button", { name: "Reopen account" }));
-    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "Reopen checkout" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(2);
   });
 
   it("polls account refresh while the gate is visible", async () => {

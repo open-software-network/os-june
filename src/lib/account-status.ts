@@ -53,7 +53,7 @@ export function useAccountStatus(
     };
   }, [forceLogoutOnMount, refresh]);
 
-  // Refetch when the app regains attention so the user sees their post-top-up
+  // Refetch when the app regains attention so the user sees their post-upgrade
   // balance without hunting for a refresh button. `focus` and `visibilitychange`
   // both fire in Tauri webviews; the inFlight flag de-dupes a focus event that
   // arrives while the on-mount fetch is still pending.

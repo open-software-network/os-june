@@ -53,7 +53,7 @@ const mocks = vi.hoisted(() => ({
   listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
-  osAccountsTopUp: vi.fn(),
+  osAccountsUpgrade: vi.fn(),
   setVeniceModel: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
@@ -112,7 +112,7 @@ vi.mock("../lib/tauri", () => ({
   listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
-  osAccountsTopUp: mocks.osAccountsTopUp,
+  osAccountsUpgrade: mocks.osAccountsUpgrade,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
@@ -7459,9 +7459,9 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
   });
 
-  it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {
+  it("renders an out-of-credits notice with an upgrade action instead of the raw 402 error", async () => {
     const user = userEvent.setup();
-    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
         id: "m1",
@@ -7485,8 +7485,8 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/Error code: 402/)).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Add funds" }));
-    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {
@@ -7505,7 +7505,7 @@ describe("AgentWorkspace", () => {
       // Turn-level samples from the catalog (section label + the card itself)…
       expect(screen.getAllByText("Out of credits").length).toBeGreaterThan(0);
       expect(
-        screen.getByRole("button", { name: "Add funds" }),
+        screen.getByRole("button", { name: "Upgrade" }),
       ).toBeInTheDocument();
       // …plus the forced chrome samples the turn gallery can't represent.
       expect(

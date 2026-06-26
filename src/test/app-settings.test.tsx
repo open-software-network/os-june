@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
-  osAccountsTopUp: vi.fn(),
+  osAccountsUpgrade: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
@@ -66,7 +66,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
-  osAccountsTopUp: mocks.osAccountsTopUp,
+  osAccountsUpgrade: mocks.osAccountsUpgrade,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
@@ -324,7 +324,7 @@ describe("AppSettings", () => {
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
-    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.osAccountsUpgrade.mockResolvedValue(undefined);
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
@@ -391,7 +391,7 @@ describe("AppSettings", () => {
     });
   });
 
-  it("opens OS Accounts from Add funds in billing settings", async () => {
+  it("opens checkout from Upgrade in billing settings", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -407,8 +407,8 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
-    await user.click(screen.getByRole("button", { name: "Add funds" }));
-    expect(mocks.osAccountsTopUp).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Upgrade" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
   });
 
   it("runs sign-in, cancel, and sign-out actions from account settings", async () => {
@@ -500,9 +500,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
-    await user.click(
-      screen.getByRole("button", { name: "Manage subscription" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
     expect(
       await screen.findByText("Opened your account portal in the browser."),
